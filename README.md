@@ -723,6 +723,34 @@ OpenMontage is built to be extended. The two most common contributions:
 
 See `docs/ARCHITECTURE.md` for the full technical reference, `docs/PROVIDERS.md` for the complete provider guide (setup, pricing, free tiers), and `AGENT_GUIDE.md` for the agent contract.
 
+## Maintaining this fork
+
+This fork uses two long-lived branches: `development` integrates upstream changes with
+fork-specific work, while `main` remains stable. Promote tested changes from `development`
+to `main` through a pull request.
+
+`origin` is the writable fork. `upstream` fetches only the official `main` branch, does not
+fetch tags, and rejects pushes. To bring upstream changes into `development`:
+
+```bash
+git fetch upstream --prune
+git switch development
+git pull --ff-only origin development
+git merge upstream/main
+
+make test-contracts
+git push origin development
+```
+
+After validation passes, open a pull request from `development` to `main`. Create
+fork-specific work from `development`:
+
+```bash
+git switch development
+git pull --ff-only origin development
+git switch -c codex/<short-topic>
+```
+
 ### Join the Community
 
 We use [GitHub Discussions](https://github.com/calesthio/OpenMontage/discussions) to share work and ideas:
