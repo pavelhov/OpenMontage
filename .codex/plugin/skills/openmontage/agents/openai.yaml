@@ -1,0 +1,4 @@
+interface:
+  display_name: "OpenMontage"
+  short_description: "Produce videos through the OpenMontage engine"
+  default_prompt: "Use $openmontage to produce a polished video through its governed pipeline."

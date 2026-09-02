@@ -1,0 +1,37 @@
+{
+  "name": "openmontage",
+  "version": "0.1.0+codex.20260902171340",
+  "description": "Use OpenMontage as a governed video-production engine from any Codex task.",
+  "author": {
+    "name": "Pavel Hov",
+    "url": "https://github.com/pavelhov"
+  },
+  "homepage": "https://github.com/pavelhov/OpenMontage",
+  "repository": "https://github.com/pavelhov/OpenMontage.git",
+  "license": "AGPL-3.0-only",
+  "keywords": [
+    "video",
+    "production",
+    "openmontage",
+    "grok",
+    "tiktok"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "OpenMontage",
+    "shortDescription": "Governed local video-production pipelines.",
+    "longDescription": "Routes Codex video-production work through OpenMontage capability preflight, pipeline directors, checkpoints, Backlot review, provider governance, and final composition.",
+    "developerName": "Pavel Hov",
+    "category": "Productivity",
+    "capabilities": [
+      "Video production",
+      "Pipeline orchestration",
+      "Media generation"
+    ],
+    "defaultPrompt": [
+      "Use OpenMontage to produce a polished TikTok video.",
+      "Resume my current OpenMontage production from its next checkpoint.",
+      "Preflight OpenMontage and show me the available production stack."
+    ]
+  }
+}

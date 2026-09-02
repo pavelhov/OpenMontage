@@ -200,6 +200,17 @@ Open the project in your AI coding assistant and tell it what you want:
 "Make a 60-second animated explainer about how neural networks learn"
 ```
 
+### Optional: use OpenMontage from any Codex workspace
+
+The repository includes a lightweight Codex plugin. Install it from the checkout when you want `$openmontage` available outside this project:
+
+```bash
+codex plugin marketplace add /path/to/OpenMontage
+codex plugin add openmontage@openmontage
+```
+
+Start a new Codex task after installation. The isolated wrapper under `.codex/plugin/` routes work to the OpenMontage checkout; it does not duplicate the engine or replace Backlot. It prefers the checkout's `.venv/bin/python`, so complete `make setup` before invoking it from another workspace.
+
 Or if you want the real-footage path:
 
 ```text
@@ -695,7 +706,7 @@ OpenMontage works with any AI coding assistant that can read files and execute P
 | **Claude Code** | `CLAUDE.md` |
 | **Cursor** | `CURSOR.md` + `.cursor/rules/` |
 | **GitHub Copilot** | `COPILOT.md` + `.github/copilot-instructions.md` |
-| **Codex** | `CODEX.md` |
+| **Codex** | `CODEX.md` + optional bundled Codex plugin |
 | **Windsurf** | `.windsurfrules` |
 
 All platform files point to the shared `AGENT_GUIDE.md` (operating guide and agent contract) and `PROJECT_CONTEXT.md` (architecture reference).
