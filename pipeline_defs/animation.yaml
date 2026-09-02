@@ -159,12 +159,12 @@ stages:
     human_approval_default: true
     review_focus:
       - Scene system is coherent and follows reuse strategy from proposal
-      - Animation mode specified per scene, consistent with proposal
+      - Animation mode is specified per scene; visual-development, animatic, and continuity sidecars are present when the scene actually needs them
       - Transition logic is limited and meaningful
       - Every scene has a feasible tool path
     success_criteria:
       - Schema-valid scene_plan artifact
-      - Every scene includes animation mode and visual treatment
+      - Every scene has a visual treatment; applicable animation-mode, animatic, and continuity detail lives in metadata sidecars keyed by existing scene IDs
 
   - name: assets
     skill: pipelines/animation/asset-director
@@ -215,11 +215,14 @@ stages:
       - "Clip duration maximized (prefer 10s over 5s) to reduce API calls and cost"
       - "Use selector tools (video_selector, tts_selector, image_selector) — never call provider tools directly"
       - "Read Layer 2 skills for each tool BEFORE reading source code — skills contain usage guidance, source code is implementation detail"
+      - Generated visual assets have pre/critique/post prompt audits; provider-capable reference roles and approved-keyframe handoffs are required when used
+      - Controlled image/video edits have pre-call attempt records plus finalized Change/Preserve/Constraints contracts and source/output lineage
     success_criteria:
       - Schema-valid asset_manifest artifact
       - All referenced asset files exist on disk
       - layer3_skills_read list is present and includes all tools used for generation
       - Real 3D-world briefs include semantic or wireframe diagnostic review before compose
+      - Prompt audits and motion handoffs live in asset_manifest.metadata and are keyed by existing asset IDs
 
   - name: edit
     skill: pipelines/animation/edit-director

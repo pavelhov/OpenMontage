@@ -154,6 +154,23 @@ Camera intent: medium shot of stylized atom; slow rotation; deep focus.
 
 The camera-intent line is consumed verbatim by the scene-director's 5-aspect spec — keep it concrete, no mood adjectives.
 
+## Dramaturgy and Shot Jobs
+
+> Adapted from Visual Skills by Serge Shima, CC BY 4.0. See
+> `THIRD_PARTY_NOTICES.md` for source, license, and modification details.
+
+For a narrative or camera-led generated/high-stakes visual beat, convert the
+narrative purpose into a filmable job before the scene plan: name the desire,
+visible obstacle or pressure, spatial geometry, controlled gaze path, and edit
+rhythm. A shot must change emotion, advance action/information, or increase
+pressure; a camera move must reveal a change or follow that pressure.
+Deterministic data-, diagram-, or text-led scenes instead record their
+information role, focal hierarchy, and transition intent; do not invent a body,
+desire, or camera move for them. The Scene Director records the applicable shot
+card, continuity state, and any animatic/keyframe handoff in top-level metadata
+sidecars—not inside closed scene items. See
+`skills/creative/visual-development.md` for the complete shared workflow.
+
 ## Pacing Rules
 
 | Rule | Value | Source |

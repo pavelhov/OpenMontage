@@ -154,9 +154,11 @@ stages:
       - Hero frames and reveal moments are defined
       - Source-led scenes remain primary when source media exists
       - Transition and aspect-ratio choices support the mood
+      - Hero/generated shots have visual-development sidecar cards and clip-boundary continuity states
     success_criteria:
       - Schema-valid scene_plan artifact
       - Every beat has a scene treatment and asset path
+      - Visual-development records, when needed, live in scene_plan.metadata and are keyed by existing scene IDs
 
   - name: assets
     skill: pipelines/cinematic/asset-director
@@ -202,9 +204,12 @@ stages:
       - Optional generated inserts stay limited and justified
       - Explicit 3D worlds preserve one coherent scene graph across global, regional, and walk views
       - Hero 3D worlds use the production fidelity tier with licensed textured models and PBR terrain layers; primitive-only blockouts cannot pass
+      - Generated assets have prompt audits; reference-role records and keyframe-to-motion handoffs are required when those inputs are used
+      - Controlled image/video edits have pre-call attempt records plus finalized Change/Preserve/Constraints contracts and source/output lineage
     success_criteria:
       - Schema-valid asset_manifest artifact
       - All referenced asset files exist on disk
+      - Visual generation records live in asset_manifest.metadata and are keyed by existing asset IDs
 
   - name: edit
     skill: pipelines/cinematic/edit-director

@@ -12,6 +12,7 @@ You are deciding how each cinematic beat will look and transition. This is where
 | Prior artifacts | `state.artifacts["script"]["script"]`, `state.artifacts["proposal"]["proposal_packet"]` | Beat map and source truth |
 | Tools | `frame_sampler`, `scene_detect` | Source inspection and reframing checks |
 | Playbook | Active style playbook | Color and typography consistency |
+| Shared visual development | `skills/creative/visual-development.md` | Hero-frame jobs, clip-boundary ledger, and sidecar shot cards |
 
 ## Process
 
@@ -61,14 +62,24 @@ Recommended metadata keys:
 >
 > See `skills/creative/video-gen-prompting.md` for the primitive vocabulary.
 
-> **Overlays callout.** Overlays (titles, subtitles, HUD, watermarks, framing graphics, lower-thirds, name plates, end-tag cards) are NOT part of the scene's foreground/midground/background depth axis. List them separately in scene metadata (`overlays: [...]`) with content and placement. Never describe an overlay as "in the foreground" — that confuses both downstream tools and any video-understanding model that re-analyzes the output.
+> **Overlays callout.** Overlays (titles, subtitles, HUD, watermarks, framing graphics, lower-thirds, name plates, end-tag cards) are NOT part of the scene's foreground/midground/background depth axis. Summarize them in canonical `overlay_notes`; optional exact content/placement belongs in `scene_plan.metadata.visual_development.shot_cards[scene_id].structured_overlays`, with `overlay_notes` authoritative. Never describe an overlay as "in the foreground" — that confuses both downstream tools and any video-understanding model that re-analyzes the output.
+
+### 5b. Hero-Frame and Boundary Sidecars
+
+For each hero frame, generated shot, or chained clip, use
+`creative/visual-development.md` and persist the dramatic job, spatial
+geometry, gaze, physical details, and motivated cut in
+`scene_plan.metadata.visual_development.shot_cards[scene_id]`. Persist each
+entry and exit visual state in the matching `continuity_ledger[scene_id]`; an
+intentional mismatch needs an editorial bridge. Do not add arbitrary metadata
+to the closed `scenes[]` item.
 
 ### 6. Quality Gate
 
 - every beat has a scene treatment,
 - hero frames are identifiable AND fully specified across all 5 aspects,
 - support inserts are justified,
-- overlays are recorded under `overlays:`, never inside the depth/framing description,
+- overlays are summarized in canonical `overlay_notes`; optional structured details live in the matching shot-card sidecar, never inside depth/framing or an arbitrary scene field,
 - the visual language stays consistent across the piece.
 
 ## Common Pitfalls

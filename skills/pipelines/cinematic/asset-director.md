@@ -29,6 +29,7 @@ Before authoring title cards, name plates, or SVG overlays, read **`skills/meta/
 | Prior artifacts | `state.artifacts["scene_plan"]["scene_plan"]`, `state.artifacts["script"]["script"]`, `state.artifacts["proposal"]["proposal_packet"]` | Scene intent and beat plan |
 | Tools | `subtitle_gen`, `audio_enhance`, `image_selector`, `video_selector`, `pixabay_music` (free, default), `freesound_music` (free), `music_gen` (ElevenLabs, paid) — selectors auto-discover all available providers from the registry. **Default to `pixabay_music` before reaching for `music_gen`.** | Optional support asset creation |
 | Playbook | Active style playbook | Brand and typography consistency |
+| Shared visual development | `skills/creative/visual-development.md`, `skills/meta/prompt-audit.md` | Reference roles, motion handoff, and prompt readiness |
 
 ## Process
 
@@ -115,21 +116,18 @@ Recommended metadata keys:
 - `generated_support_assets`
 - `rights_notes`
 
-### Pre/Post Self-Review for Generation Prompts
+### 4b. Prompt, Reference, and Motion Records
 
-> Before sending a prompt to any image or video generation tool, run a three-step self-review modeled on the CHAI oversight loop ("Building a Precise Video Language with Human-AI Oversight", arXiv 2604.21718v2). Cost is small (no extra tool calls); benefit is large (avoids wasted generations). For cinematic, this matters most for **hero-frame prompts** — one bad hero frame ruins the piece, and hero frames are the most expensive shots to regenerate.
->
-> **Step 1 — Pre-caption pass.** Write the prompt the way you'd write it today. Do not over-edit; aim for a complete first draft.
->
-> **Step 2 — Critique pass.** Score the draft against the 5-aspect checklist (Subject / Subject Motion / Scene / Spatial Framing / Camera). For each aspect:
-> - Is it specified? If not, is the omission deliberate (e.g., "no subject — scenery shot") or accidental?
-> - Are confusable terms disambiguated? (dolly vs zoom, pan vs truck, bird's-eye vs aerial, fisheye vs barrel, full shot vs close-up)
-> - Are emotional adjectives ("epic", "moody", "cinematic") replaced with their visual causes (low-key lighting, slow push-in, anamorphic flare, deep shadows)?
-> - For multi-shot prompts and identity-anchored hero frames: is identity anchored verbatim across shots?
->
-> **Step 3 — Post-caption pass.** Rewrite filling the missing aspects, fixing confusable terms, and replacing subjective language. The post-caption is what gets sent to the generation tool.
->
-> Log the (pre, critique, post) triplet in the asset metadata for traceability. This mirrors the CHAI workflow and creates a record the reviewer can audit.
+For every generated hero/support asset, run `skills/meta/prompt-audit.md` after
+reading the scene's `creative/visual-development.md` sidecar. Persist declared
+reference roles under `asset_manifest.metadata.reference_assets[asset_id]`, the
+working or blocked audit under `metadata.prompt_attempts[attempt_id]`, the
+successful pre/critique/post audit under `metadata.prompt_audits[asset_id]`, and approved
+keyframe-to-motion Change/Preserve/Constraints under
+`metadata.motion_handoffs[asset_id]`. Controlled edits start in
+`metadata.edit_attempts[edit_attempt_id]` before execution and finalize under
+`metadata.edit_contracts[output_asset_id]` only after success. Do not place these fields inside the
+closed-schema `asset_manifest.assets[]` record.
 
 ### 5. Quality Gate
 

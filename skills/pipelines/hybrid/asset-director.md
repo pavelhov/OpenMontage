@@ -12,6 +12,7 @@ This stage prepares the support kit around the anchor edit: subtitles, diagrams,
 | Prior artifacts | `state.artifacts["scene_plan"]["scene_plan"]`, `state.artifacts["script"]["script"]`, `state.artifacts["idea"]["brief"]` | Support needs and variant plan |
 | Tools | `subtitle_gen`, `tts_selector`, `image_selector`, `video_selector`, `diagram_gen`, `code_snippet`, `music_gen`, `audio_enhance` — selectors auto-discover all available providers from the registry | Optional support asset production |
 | Playbook | Active style playbook | Consistency rules |
+| Shared visual development | `skills/creative/visual-development.md`, `skills/meta/prompt-audit.md` | Use only for generated support assets |
 
 ## Process
 
@@ -55,6 +56,15 @@ Recommended metadata keys:
 - `scene_asset_index`
 - `source_vs_generated_map`
 - `variant_assets`
+
+When the selected support path generates images or clips, run the shared prompt
+audit and keep reference roles, prompt audits, and keyframe-to-motion handoffs
+in `asset_manifest.metadata.reference_assets`, `.prompt_attempts`,
+`.prompt_audits`, and `.motion_handoffs`. Attempts use attempt IDs; successful
+asset records use existing canonical asset IDs. Never add those records inside
+the closed-schema asset object, and do not impose this workflow on source-only assets.
+Controlled support edits likewise start in `.edit_attempts` before execution
+and finalize in `.edit_contracts` only after the canonical output asset exists.
 
 ### 5. Quality Gate
 

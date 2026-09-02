@@ -115,6 +115,61 @@ Structure your review as:
 - Success criteria met: N/M
 ```
 
+## Visual-Development Cross-Stage Review
+
+> Adapted from Visual Skills by Serge Shima, CC BY 4.0. See
+> `THIRD_PARTY_NOTICES.md` for source, license, and modification details.
+
+Run these checks for the opt-in `animated-explainer`, `animation`, and
+`cinematic` pipelines, plus the generated-support branch of `hybrid`. Other
+pipelines use them only when their manifest/director explicitly opts in. The
+`character-animation` pipeline keeps identity and continuity in its existing
+character-design and rig artifacts; do not create a second character bible.
+These checks supplement the manifest focus; they do not create a new stage.
+
+- **Scene plan:** narrative/camera-led shot cards carry dramaturgy (desire,
+  pressure, spatial relationships, gaze, rhythm), movement/cut motivation, and
+  concrete physical detail. Deterministic/data/text scenes instead carry their
+  canonical information role plus focal hierarchy, transition intent, and
+  honest N/A rationale—never fake desire or body acting. `continuity_ledger` gives neighboring clip boundaries
+  compatible entry/exit states or a declared editorial bridge.
+- **Assets:** reference roles live in
+  `asset_manifest.metadata.reference_assets[asset_id]`; preflight/blocked
+  attempts live in `asset_manifest.metadata.prompt_attempts[attempt_id]` and
+  successful prompt audits live in `asset_manifest.metadata.prompt_audits[asset_id]`; approved-keyframe motion
+  handoffs live in `asset_manifest.metadata.motion_handoffs[asset_id]`; image
+  or video edit attempts live in `asset_manifest.metadata.edit_attempts[edit_attempt_id]`
+  and successful contracts live in `asset_manifest.metadata.edit_contracts[asset_id]`.
+  Scene/asset keyed maps must use existing canonical IDs. Attempt/history maps
+  are the exception: `prompt_attempts` and `edit_attempts` use stable unique
+  attempt IDs that must not be presented as asset IDs.
+- **Prompt readiness:** every audited generated asset has pre/critique/post
+  text, dramaturgical function, reference-role completeness, continuity risks,
+  provider capacity/syntax findings, and a stronger post version actually sent.
+  Unsupported references or operations are blockers, not silently omitted
+  assumptions.
+- **Edit and compose:** the rendered transition preserves the ledger's boundary
+  state, or visibly uses the declared bridge. For keyframe-to-motion, verify
+  `change`, `preserve`, and `constraints` were respected before accepting the
+  clip.
+- **Controlled edits:** each pre-call `edit_attempts[edit_attempt_id]` record
+  exists before execution; on success, `edit_contracts[output_asset_id]` points to
+  an existing source master, names exactly one concrete change for that pass,
+  repeats the complete preserve list, supplies constraints/catch-all stability,
+  and records provider operation plus source/output revision lineage.
+- **Schema safety:** critical detail must not be placed in arbitrary fields on
+  `scene_plan.scenes[]` or `asset_manifest.assets[]`, whose schemas are closed.
+  It belongs under the artifact-level `metadata` sidecar maps.
+
+Missing dramaturgical direction or an accidental continuity break is a
+**suggestion** until it breaks the approved delivery promise, makes a planned
+shot unproducible, or causes a failed/unsupported generation; then it is
+**critical**. A missing or wrongly keyed sidecar is a referential-integrity
+finding, not automatically a JSON-Schema failure. It becomes **critical** when
+the pipeline's manifest requires it or when the missing link makes the approved
+shot unproducible. Arbitrary fields placed inside closed scene/asset items are
+schema-invalid and always **critical**.
+
 ## Key Principles
 
 1. **Be specific, not vague.** "The hook is weak" is useless. "The hook asks a question but doesn't create urgency — try leading with the surprising stat from key_point #2" is actionable.

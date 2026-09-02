@@ -132,6 +132,58 @@ class TestBoardState:
         assert cards["sc2"]["generating"] is True
         assert cards["sc2"]["generating_tool"] == "img"
 
+    def test_visual_development_sidecars_surface_on_storyboard(self, projects_root):
+        p = _make_project(projects_root, "visual-sidecars")
+        scene_plan = {
+            **SCENE_PLAN,
+            "metadata": {
+                "visual_development": {
+                    "shot_cards": {"sc1": {"dramaturgy": {"desire": "reveal"}}},
+                    "continuity_ledger": {"sc1": {"entry_state": {"screen_direction": "ltr"}}},
+                    "animatic_keyframes": {"sc1": {"keyframe_requirements": ["opening"]}},
+                }
+            },
+        }
+        _write(p / "artifacts" / "scene_plan.json", scene_plan)
+        _write(p / "artifacts" / "asset_manifest.json", {
+            "version": "1.0",
+            "assets": [{
+                "id": "a1", "type": "image", "path": "assets/images/sc1.png",
+                "scene_id": "sc1", "source_tool": "image_selector",
+            }],
+            "metadata": {
+                "reference_assets": {"a1": {"roles": ["composition"]}},
+                "prompt_attempts": {"attempt-1": {"scene_id": "sc1", "resolved_asset_id": "a1"}},
+                "prompt_audits": {"a1": {"attempt_id": "attempt-1", "status": "passed"}},
+                "motion_handoffs": {"a1": {"preserve": ["composition"]}},
+                "edit_attempts": {"edit-1": {"scene_id": "sc1", "output_asset_id": "a1"}},
+                "edit_contracts": {"a1": {"source_master_asset_id": "source-1"}},
+            },
+        })
+        (p / "assets" / "images" / "sc1.png").write_bytes(b"fake")
+
+        card = load_board_state(p)["storyboard"]["scenes"][0]
+        assert card["visual_development"]["dramaturgy"]["desire"] == "reveal"
+        assert card["continuity"]["entry_state"]["screen_direction"] == "ltr"
+        assert card["animatic_keyframes"]["keyframe_requirements"] == ["opening"]
+        assert card["prompt_attempts"][0]["attempt_id"] == "attempt-1"
+        assert card["edit_attempts"][0]["edit_attempt_id"] == "edit-1"
+        assert card["visual"]["reference_record"]["roles"] == ["composition"]
+        assert card["visual"]["prompt_audit"]["status"] == "passed"
+        assert card["visual"]["motion_handoff"]["preserve"] == ["composition"]
+        assert card["visual"]["edit_contract"]["source_master_asset_id"] == "source-1"
+        assert card["visual"]["prompt_attempts"][0]["attempt_id"] == "attempt-1"
+        assert card["visual"]["edit_attempts"][0]["edit_attempt_id"] == "edit-1"
+
+    def test_non_object_scene_metadata_does_not_crash_storyboard(self, projects_root):
+        p = _make_project(projects_root, "malformed-scene-metadata")
+        scene_plan = {**SCENE_PLAN, "metadata": []}
+        _write(p / "artifacts" / "scene_plan.json", scene_plan)
+
+        card = load_board_state(p)["storyboard"]["scenes"][0]
+
+        assert card["id"] == "sc1"
+
     def test_degraded_project_never_crashes(self, projects_root):
         p = projects_root / "bare"
         p.mkdir()

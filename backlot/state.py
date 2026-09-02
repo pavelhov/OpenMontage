@@ -410,17 +410,86 @@ def _build_storyboard(
     if not scene_plan or not isinstance(scene_plan.get("scenes"), list):
         return None
     sections = (artifacts.get("script") or {}).get("sections") or []
-    manifest_assets = (artifacts.get("asset_manifest") or {}).get("assets") or []
+    manifest = artifacts.get("asset_manifest") or {}
+    if not isinstance(manifest, dict):
+        manifest = {}
+    manifest_assets = manifest.get("assets") or []
 
     def scene_key(value: Any) -> str:
         # 0 is a legitimate scene id — only None/absent collapses to "".
         return str(value) if value is not None else ""
+
+    scene_metadata = scene_plan.get("metadata") or {}
+    if not isinstance(scene_metadata, dict):
+        scene_metadata = {}
+    visual_development = scene_metadata.get("visual_development") or {}
+    if not isinstance(visual_development, dict):
+        visual_development = {}
+    manifest_metadata = manifest.get("metadata") or {}
+    if not isinstance(manifest_metadata, dict):
+        manifest_metadata = {}
+
+    def metadata_map(container: dict, key: str) -> dict:
+        value = container.get(key) or {}
+        return value if isinstance(value, dict) else {}
+
+    shot_cards = metadata_map(visual_development, "shot_cards")
+    continuity_ledger = metadata_map(visual_development, "continuity_ledger")
+    animatic_keyframes = metadata_map(visual_development, "animatic_keyframes")
+    reference_assets = metadata_map(manifest_metadata, "reference_assets")
+    prompt_attempts = metadata_map(manifest_metadata, "prompt_attempts")
+    prompt_audits = metadata_map(manifest_metadata, "prompt_audits")
+    motion_handoffs = metadata_map(manifest_metadata, "motion_handoffs")
+    edit_attempts = metadata_map(manifest_metadata, "edit_attempts")
+    edit_contracts = metadata_map(manifest_metadata, "edit_contracts")
+
+    def attempts_by_scene(
+        attempt_map: dict,
+        *,
+        id_field: str,
+    ) -> dict[str, list[dict]]:
+        grouped: dict[str, list[dict]] = {}
+        for attempt_id, record in attempt_map.items():
+            if not isinstance(record, dict):
+                continue
+            sid = scene_key(record.get("scene_id"))
+            if not sid:
+                continue
+            item = {**record, id_field: attempt_id}
+            grouped.setdefault(sid, []).append(item)
+        return grouped
+
+    prompt_attempts_by_scene = attempts_by_scene(
+        prompt_attempts,
+        id_field="attempt_id",
+    )
+    edit_attempts_by_scene = attempts_by_scene(
+        edit_attempts,
+        id_field="edit_attempt_id",
+    )
 
     assets_by_scene: dict[str, list[dict]] = {}
     for asset in manifest_assets:
         if not isinstance(asset, dict):
             continue
         entry = _asset_entry(project_dir, asset)
+        asset_id = scene_key(entry.get("id"))
+        entry["reference_record"] = reference_assets.get(asset_id)
+        entry["prompt_audit"] = prompt_audits.get(asset_id)
+        entry["motion_handoff"] = motion_handoffs.get(asset_id)
+        entry["edit_contract"] = edit_contracts.get(asset_id)
+        entry["prompt_attempts"] = [
+            {**record, "attempt_id": attempt_id}
+            for attempt_id, record in prompt_attempts.items()
+            if isinstance(record, dict)
+            and scene_key(record.get("resolved_asset_id") or record.get("asset_id")) == asset_id
+        ]
+        entry["edit_attempts"] = [
+            {**record, "edit_attempt_id": attempt_id}
+            for attempt_id, record in edit_attempts.items()
+            if isinstance(record, dict)
+            and scene_key(record.get("resolved_asset_id") or record.get("output_asset_id")) == asset_id
+        ]
         assets_by_scene.setdefault(scene_key(entry.get("scene_id")), []).append(entry)
 
     # A scene is "generating" if its most recent top-level event is an
@@ -474,6 +543,11 @@ def _build_storyboard(
             "shot_intent": scene.get("shot_intent"),
             "framing": scene.get("framing"),
             "movement": scene.get("movement"),
+            "visual_development": shot_cards.get(sid),
+            "continuity": continuity_ledger.get(sid),
+            "animatic_keyframes": animatic_keyframes.get(sid),
+            "prompt_attempts": prompt_attempts_by_scene.get(sid, []),
+            "edit_attempts": edit_attempts_by_scene.get(sid, []),
             "narration": (section or {}).get("text"),
             "section_label": (section or {}).get("label"),
             "required_assets": scene.get("required_assets") or [],
@@ -484,7 +558,7 @@ def _build_storyboard(
             "generating_tool": (generating.get(sid) or {}).get("tool"),
         })
 
-    total = scene_plan.get("metadata", {}).get("total_duration_seconds")
+    total = scene_metadata.get("total_duration_seconds")
     if total is None and cards:
         ends = [c["end_seconds"] for c in cards if c["end_seconds"] is not None]
         total = max(ends) if ends else None

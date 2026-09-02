@@ -153,9 +153,11 @@ stages:
       - "Visual variety: no 3+ consecutive scenes of same type"
       - Asset feasibility - every required_asset uses a tool from the production plan
       - Playbook adherence - transitions, colors, pacing rules
+      - Narrative or camera-led generated/high-stakes scenes have visual-development sidecar shot cards with dramatic job, gaze, motivated camera/cut, and continuity risk; deterministic data/text scenes use information role, focal hierarchy, and transition intent
     success_criteria:
       - Schema-valid scene_plan with required_assets per scene
       - At least 3 different scene types used
+      - Visual-development records, when needed, live in scene_plan.metadata and are keyed by existing scene IDs
 
   - name: assets
     skill: pipelines/explainer/asset-director
@@ -191,9 +193,12 @@ stages:
       - Narration assets apply the approved voice performance plan and sample settings
       - Total cost within approved budget from proposal_packet
       - Image style consistency across all generated visuals
+      - Generated visual assets have pre/critique/post prompt audits; provider-capable reference roles are required when references are used
+      - Controlled image/video edits have pre-call attempt records plus finalized Change/Preserve/Constraints contracts and source/output lineage
     success_criteria:
       - Schema-valid asset_manifest with all required assets generated
       - All file paths resolve to existing files
+      - Prompt audits and any approved-keyframe motion handoffs are in asset_manifest.metadata and are keyed by existing asset IDs
 
   - name: edit
     skill: pipelines/explainer/edit-director

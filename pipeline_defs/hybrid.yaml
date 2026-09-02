@@ -106,9 +106,11 @@ stages:
       - Source content remains visually primary where intended
       - Overlay and support layers do not overload the frame
       - Platform or aspect-ratio variants are planned deliberately
+      - Generated support, when used, has visual-development sidecars without displacing source truth
     success_criteria:
       - Schema-valid scene_plan artifact
       - Every scene has a defined source/support treatment
+      - Any generated-support visual-development records live in scene_plan.metadata and are keyed by existing scene IDs
 
   - name: assets
     skill: pipelines/hybrid/asset-director
@@ -143,9 +145,12 @@ stages:
       - Support assets clearly map to real narrative gaps
       - Shared template assets are reused
       - Optional generated inserts do not eclipse source truth
+      - Generated support assets, when used, have prompt audits and reference-role records when references are supplied
+      - Controlled image/video support edits have pre-call attempt records plus finalized Change/Preserve/Constraints contracts and source/output lineage
     success_criteria:
       - Schema-valid asset_manifest artifact
       - All referenced asset files exist on disk
+      - Generated-support prompt records live in asset_manifest.metadata and are keyed by existing asset IDs
 
   - name: edit
     skill: pipelines/hybrid/edit-director

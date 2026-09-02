@@ -12,6 +12,7 @@ You are translating the hybrid structure into a visual system that keeps the sou
 | Prior artifacts | `state.artifacts["script"]["script"]`, `state.artifacts["idea"]["brief"]` | Hybrid structure and source truth |
 | Tools | `frame_sampler`, `scene_detect` | Optional source inspection |
 | Playbook | Active style playbook | Layout consistency |
+| Shared visual development | `skills/creative/visual-development.md` | Apply only when the plan includes generated support or chained support clips |
 
 ## Process
 
@@ -47,6 +48,12 @@ Recommended metadata keys:
 - `safe_zones`
 - `variant_rules`
 - `overlay_density_limits`
+
+When generated support is planned, additionally use
+`scene_plan.metadata.visual_development` sidecars keyed by existing scene IDs
+for the support shot card, reference requirements, and source-to-support continuity.
+Keep source footage primary; this is conditional support direction, not a second
+scene-planning system. Do not add arbitrary metadata to the closed-schema `scenes[]` item.
 
 ### 5. Quality Gate
 

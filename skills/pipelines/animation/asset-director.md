@@ -33,6 +33,7 @@ Quick routing for common animation-pipeline needs:
 | Prior artifacts | `state.artifacts["scene_plan"]["scene_plan"]`, `state.artifacts["script"]["script"]`, `state.artifacts["proposal"]["proposal_packet"]` | Tool path and beat map |
 | Tools | `tts_selector`, `image_selector`, `video_selector`, `math_animate`, `diagram_gen`, `code_snippet`, `threejs_world`, `music_gen`, `fal_elevenlabs_music` — selectors auto-discover all available providers from the registry | Asset production options |
 | Playbook | Active style playbook | Visual consistency |
+| Shared visual development | `skills/creative/visual-development.md`, `skills/meta/prompt-audit.md` | Reference roles, approved-keyframe handoff, and prompt audit |
 
 ## Process
 
@@ -67,7 +68,7 @@ When `animation_mode == "image_animation"`, each scene needs **2-3 images** for 
 
 **Image generation workflow:**
 
-1. **Define a VISUAL SYSTEM** — a reusable set of anchors used across all images in the project. This ensures visual coherence without flattening every shot into the same prompt. Store it as reusable metadata.
+1. **Define a VISUAL SYSTEM** — a reusable set of anchors used across all images in the project. This ensures visual coherence without flattening every shot into the same prompt. Store it in `asset_manifest.metadata` (not a per-asset metadata field).
    ```
    Example: "Hand-painted nature fantasy, warm moss-and-amber palette,
    soft diffused light, painterly foliage textures, gentle wonder."
@@ -124,6 +125,24 @@ Recommended metadata keys:
 - `voice_performance`: sample approval path, provider settings, and whether delivery cues were applied
 - `scene_asset_index`
 - `blocked_assets`
+- `reference_assets[asset_id]` for provider-neutral role declarations
+- `prompt_attempts[attempt_id]` for preflight, blocked, and failed generation attempts
+- `prompt_audits[asset_id]` for required pre/critique/post generation audits
+- `motion_handoffs[keyframe_asset_id]` for approved-keyframe Change/Preserve/Constraints
+- `edit_attempts[edit_attempt_id]` before a controlled edit and `edit_contracts[output_asset_id]` after success
+
+Before each visually directed image/video generation, use
+`skills/meta/prompt-audit.md`. Start under `prompt_attempts[attempt_id]`; after
+successful generation, finalize under `prompt_audits[asset_id]` using the real
+canonical asset ID. Never invent an asset ID for a blocked attempt or add
+arbitrary metadata fields to individual closed-schema asset objects. Keep character-animation identity
+and rig data in its existing dedicated artifacts rather than creating a second
+character bible here.
+
+For controlled image/video edits, follow `visual-development.md`: create the
+pre-call `edit_attempts` record first, keep blocked/failed attempts without a
+fake asset, then finalize `edit_contracts` only after the canonical output
+asset exists.
 
 ### 5. Quality Gate
 

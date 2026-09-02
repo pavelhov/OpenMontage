@@ -11,6 +11,7 @@ You are converting the script into a feasible animation plan. This is the stage 
 | Schema | `schemas/artifacts/scene_plan.schema.json` | Artifact validation |
 | Prior artifacts | `state.artifacts["script"]["script"]`, `state.artifacts["proposal"]["proposal_packet"]` | Beat map and tool path |
 | Playbook | Active style playbook | Palette, typography, motion consistency |
+| Shared visual development | `skills/creative/visual-development.md` | Dramatic jobs, animatic/keyframe cards, and continuity sidecars |
 
 ## Process
 
@@ -95,15 +96,27 @@ Recommended metadata keys:
 > 4. **Spatial Framing** — shot size + position-in-frame + depth (FG/MG/BG) + camera-height-relative; and how those CHANGE. Manim cares about layout grid + element positions; AI-video cares about full cinematographic framing.
 > 5. **Camera** — playback speed → lens distortion → height → angle → focus/DoF → steadiness → movement. For Manim and pure motion-graphics, default to N/A unless using a virtual camera move (`MoveCamera`, `self.frame`). For `anime_scene` and AI-video, specify fully.
 >
-> Tie this back to `animation_mode` in scene metadata: a Manim scene that lists Camera fully is over-specified; an AI-video scene that omits Camera is under-specified. See `skills/creative/video-gen-prompting.md` for the primitive vocabulary.
+> Tie this back to `animation_mode` in the scene's visual-development sidecar: a Manim scene that lists Camera fully is over-specified; an AI-video scene that omits Camera is under-specified. The canonical closed-schema scene item has no `animation_mode` field, so store this rich direction under `scene_plan.metadata.visual_development`, keyed by the existing scene ID. See `skills/creative/video-gen-prompting.md` for the primitive vocabulary.
 
-> **Overlays callout.** Overlays (titles, subtitles, HUD, watermarks, framing graphics, lower-thirds, `hero_title`, `section_title`, `provider_chip`) are NOT part of the scene's foreground/midground/background depth axis. List them separately in scene metadata (`overlays: [...]`) with content and placement. Never describe an overlay as "in the foreground" — that confuses both downstream tools and any video-understanding model that re-analyzes the output.
+> **Overlays callout.** Overlays (titles, subtitles, HUD, watermarks, framing graphics, lower-thirds, `hero_title`, `section_title`, `provider_chip`) are NOT part of the scene's foreground/midground/background depth axis. Summarize them in canonical `overlay_notes`; optional exact content/placement belongs in `scene_plan.metadata.visual_development.shot_cards[scene_id].structured_overlays`, with `overlay_notes` authoritative. Do not add `overlays` to the closed scene item. Never describe an overlay as "in the foreground" — that confuses both downstream tools and any video-understanding model that re-analyzes the output.
+
+### 5b. Animatic and Keyframe Handoff
+
+For image-driven or generated motion, create
+`scene_plan.metadata.visual_development.animatic_keyframes[scene_id]` using the
+shared visual-development skill. The scene plan records keyframe requirements,
+not speculative future asset IDs. After creating the canonical keyframe asset,
+the Asset Director must use its real ID in
+`asset_manifest.metadata.motion_handoffs[keyframe_asset_id]` with explicit
+Change / Preserve / Constraints. Use the continuity ledger for clips that must
+chain. This complements rather than duplicates character-animation's identity
+and rig contracts.
 
 ### 6. Quality Gate
 
 - every scene has a clear timing intent,
 - the 5-aspect checklist is satisfied for the scene's `animation_mode` (with explicit N/A where appropriate),
-- overlays live under `overlays:`, never inside the framing description,
+- overlays are summarized in canonical `overlay_notes`; optional structured details live in the matching shot-card sidecar, never inside framing or an arbitrary scene field,
 - the transition system is limited and meaningful,
 - the tool path is explicit,
 - the sequence feels like one designed system.

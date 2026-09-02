@@ -31,6 +31,7 @@ Quick routing for common explainer needs:
 | Schema | `schemas/artifacts/asset_manifest.schema.json` | Artifact validation |
 | Prior artifacts | `state.artifacts["scene_plan"]["scene_plan"]`, `state.artifacts["script"]["script"]`, `state.artifacts["proposal"]["proposal_packet"]` | What to produce |
 | Playbook | Active style playbook | Image prompts, diagram style, audio preferences |
+| Shared visual development | `skills/creative/visual-development.md`, `skills/meta/prompt-audit.md` | Reference roles, continuity, motion handoff, and prompt record |
 | Tools | `tts_selector`, `image_selector`, `video_selector`, `diagram_gen`, `code_snippet`, `music_gen` — selectors auto-discover all available providers from the registry | Generation capabilities |
 | Cost tracker | `tools/cost_tracker.py` | Budget governance |
 
@@ -190,21 +191,20 @@ Assemble all generated assets into the manifest:
 }
 ```
 
-### Pre/Post Self-Review for Generation Prompts
+### Prompt, Reference, and Motion Records
 
-> Before sending a prompt to any generation tool — `image_selector`, `diagram_gen`, `video_selector`, even `code_snippet` styling prompts — run a three-step self-review modeled on the CHAI oversight loop ("Building a Precise Video Language with Human-AI Oversight", arXiv 2604.21718v2). Cost is small (no extra tool calls); benefit is large (avoids wasted generations). This applies just as strongly to `diagram_gen` Mermaid prompts and `image_selector` illustration prompts as it does to video generation — bad explainer visuals fail in the same way: missing subject, missing framing, vague "make it look educational."
->
-> **Step 1 — Pre-caption pass.** Write the prompt the way you'd write it today. Do not over-edit; aim for a complete first draft.
->
-> **Step 2 — Critique pass.** Score the draft against the 5-aspect checklist (Subject / Subject Motion / Scene / Spatial Framing / Camera). For each aspect:
-> - Is it specified? If not, is the omission deliberate (e.g., "Camera N/A — Remotion native scene", "no subject motion — static diagram") or accidental?
-> - Are confusable terms disambiguated? (dolly vs zoom, pan vs truck, bird's-eye vs aerial, fisheye vs barrel, full shot vs close-up; for diagrams: flowchart vs sequence vs state diagram, top-down vs left-right)
-> - Are emotional adjectives ("clean", "professional", "modern") replaced with their visual causes (sans-serif typography, generous whitespace, monochromatic palette with one accent)?
-> - For multi-shot prompts: is identity anchored verbatim across shots? For `image_selector` prompts that recur (a character or world appearing in multiple scenes), are consistency anchors specified verbatim?
->
-> **Step 3 — Post-caption pass.** Rewrite filling the missing aspects, fixing confusable terms, and replacing subjective language. The post-caption is what gets sent to the generation tool.
->
-> Log the (pre, critique, post) triplet in the asset metadata for traceability. This mirrors the CHAI workflow and creates a record the reviewer can audit.
+Before each visually directed generation request, read and run
+`skills/meta/prompt-audit.md`; use the scene's visual-development sidecar for
+its dramatic job, reference roles, and continuity state. Keep reference roles
+under `asset_manifest.metadata.reference_assets[asset_id]`, working/blocked
+audits under `asset_manifest.metadata.prompt_attempts[attempt_id]`, successful
+audits under `asset_manifest.metadata.prompt_audits[asset_id]`, and approved-keyframe
+Change/Preserve/Constraints handoffs under
+`asset_manifest.metadata.motion_handoffs[asset_id]`. `asset_manifest.assets[]`
+is a closed schema: do not put audit or arbitrary metadata fields on individual
+assets. Never fabricate an asset ID for a blocked attempt. Controlled edits
+start in `metadata.edit_attempts[edit_attempt_id]` before the call and finalize
+under `metadata.edit_contracts[output_asset_id]` only after success.
 
 ### Step 7: Verify All Assets
 

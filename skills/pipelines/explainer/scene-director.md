@@ -13,6 +13,7 @@ This is where words become visuals. A great script with a bad scene plan produce
 | Schema | `schemas/artifacts/scene_plan.schema.json` | Artifact validation |
 | Prior artifacts | `state.artifacts["script"]["script"]`, `state.artifacts["proposal"]["proposal_packet"]` | Script sections and proposal packet |
 | Playbook | Active style playbook | Visual language, transitions, motion rules |
+| Shared visual development | `skills/creative/visual-development.md` | Dramatic shot jobs, sidecar shot cards, continuity, and keyframe handoff |
 | Layer 3 | `.agents/skills/flux-best-practices/`, `.agents/skills/beautiful-mermaid/`, `.agents/skills/manim-composer/` | Image gen, diagram, animation knowledge |
 
 ## Process
@@ -180,7 +181,16 @@ If the video includes narration, the script **must** be written to fit the video
 >
 > See `skills/creative/video-gen-prompting.md` for the primitive vocabulary.
 
-> **Overlays callout.** Overlays (titles, subtitles, HUD, watermarks, framing graphics, lower-thirds, section_title bars, stat_reveal chips, hero_title overlays, provider chips) are NOT part of the scene's foreground/midground/background depth axis. List them separately in scene metadata (`overlays: [...]`) with content and placement. Never describe an overlay as "in the foreground" — that confuses both downstream tools and any video-understanding model that re-analyzes the output.
+> **Overlays callout.** Overlays (titles, subtitles, HUD, watermarks, framing graphics, lower-thirds, section_title bars, stat_reveal chips, hero_title overlays, provider chips) are NOT part of the scene's foreground/midground/background depth axis. Summarize them in canonical `overlay_notes`; optional exact content/placement belongs in `scene_plan.metadata.visual_development.shot_cards[scene_id].structured_overlays`, with `overlay_notes` authoritative. Never describe an overlay as "in the foreground" — that confuses both downstream tools and any video-understanding model that re-analyzes the output.
+
+### Step 4d: Record Visual-Development Sidecars
+
+For each generated or high-stakes scene, follow `skills/creative/visual-development.md`.
+Store its shot card, continuity entry/exit state, and optional animatic/keyframe
+plan under `scene_plan.metadata.visual_development`, keyed by existing scene
+IDs. The canonical scene-item schema remains closed: do not add `metadata`,
+`animation_mode`, or `overlays` fields to an individual
+`scene_plan.scenes[]` item.
 
 ### Step 5: Validate Against Playbook
 
