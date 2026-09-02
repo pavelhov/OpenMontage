@@ -86,11 +86,12 @@ The qualified route uses:
 Success requires all of the following, not merely process exit code zero:
 
 1. exactly one call to the requested media tool;
-2. a completed terminal tool update with the expected media result type;
-3. a terminal stream result;
-4. an absolute artifact path contained under the configured Grok sessions root;
-5. a non-empty, decodable image or playable video;
-6. a verified copy at the caller's requested OpenMontage `output_path`.
+2. sealed media-tool arguments that match after normalizing trailing newlines on string fields (real content edits still reject);
+3. a completed terminal tool update with the expected media result type;
+4. a terminal stream result;
+5. an absolute artifact path contained under the configured Grok sessions root;
+6. a non-empty, decodable image or playable video;
+7. a verified copy at the caller's requested OpenMontage `output_path`.
 
 The observed 480p image-to-video artifact was 736x400, not a canonical 854x480.
 Validation therefore checks a positive, playable video stream and the requested

@@ -743,6 +743,79 @@ def test_changed_tool_arguments_are_rejected(monkeypatch: pytest.MonkeyPatch, tm
     assert result.data["error_category"] == "protocol"
     assert "changed" in result.error.lower()
 
+
+def test_trailing_newline_prompt_drift_is_accepted(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Grok CLI 1.0.13 may drop a trailing newline from sealed prompts.
+
+    That mutation is semantically identical and must not reject a successful
+    media generation. Real prompt content edits still fail protocol checks.
+    """
+
+    sessions = tmp_path / "sessions"
+    artifact = _artifact(sessions, "videos", ".mp4")
+    source = tmp_path / "source.jpg"
+    source.write_bytes(b"source")
+    inputs = _common_inputs(tmp_path, sessions, ".mp4") | {
+        "operation": "image_to_video",
+        "duration": 6,
+        "resolution": "720p",
+        "image_path": str(source),
+        "prompt": "Animate this exact first frame.\n",
+    }
+    sealed_prompt = inputs["prompt"].rstrip("\n\r")
+    drifted = {
+        "prompt": sealed_prompt,  # no trailing newline
+        "image": str(source.resolve()),
+        "duration": 6,
+        "resolution_name": "720p",
+    }
+    stdout = _stream("image_to_video", "ImageToVideo", artifact, raw_input=drifted)
+    fake = FakeProcesses(
+        media_stdout=stdout,
+        probe={
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "width": 720,
+                    "height": 1280,
+                    "duration": "6.04",
+                }
+            ],
+            "format": {"duration": "6.04"},
+        },
+    )
+    _install_fake(monkeypatch, fake)
+
+    result = _execute_video(inputs)
+
+    assert result.success, result.error
+    assert result.data["operation"] == "image_to_video"
+
+
+def test_trailing_newline_normalization_still_rejects_real_prompt_edits(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    sessions = tmp_path / "sessions"
+    artifact = _artifact(sessions, "images", ".jpg")
+    inputs = _common_inputs(tmp_path, sessions, ".jpg")
+    inputs["prompt"] = "A single cinematic fixture shot\n"
+    stdout = _stream(
+        "image_gen",
+        "ImageGen",
+        artifact,
+        raw_input={"prompt": "a silently changed prompt", "aspect_ratio": "auto"},
+    )
+    fake = FakeProcesses(media_stdout=stdout)
+    _install_fake(monkeypatch, fake)
+
+    result = _execute_image(inputs)
+
+    assert not result.success
+    assert result.data["error_category"] == "protocol"
+    assert "changed" in result.error.lower()
+
+
 @pytest.mark.parametrize("artifact_case", ["missing_path", "outside_root", "missing_file"])
 def test_missing_or_untrusted_artifact_is_rejected(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, artifact_case: str

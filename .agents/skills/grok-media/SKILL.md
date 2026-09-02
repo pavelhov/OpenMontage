@@ -25,7 +25,9 @@ the selector request must set `preferred_provider="grok_cli"` and make
 OpenMontage qualifies Grok CLI `1.0.13` with model `grok-4.6`. The adapter runs
 one sealed native media-tool call through streaming JSON, disables web search
 and subagents, denies shell/project-file/MCP access, validates the returned
-session artifact with `ffprobe`, and never retries or falls back.
+session artifact with `ffprobe`, and never retries or falls back. Trailing
+newline drift on sealed prompt strings is treated as equivalent; other argument
+mutations still reject.
 
 Supported native operations:
 

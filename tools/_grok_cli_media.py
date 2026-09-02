@@ -107,12 +107,16 @@ def _failure(error: GrokCLIContractError, *, started: float) -> ToolResult:
 def validate_prompt(prompt: Any) -> str:
     if not isinstance(prompt, str) or not prompt.strip():
         raise GrokCLIContractError("invalid_argument", "prompt is required")
-    if len(prompt) > MAX_MEDIA_PROMPT_CHARS:
+    # Grok CLI occasionally strips a trailing newline from sealed media prompts.
+    # Normalize at seal time so the handshake does not reject otherwise-identical
+    # successful generations.
+    normalized = prompt.rstrip("\n\r")
+    if len(normalized) > MAX_MEDIA_PROMPT_CHARS:
         raise GrokCLIContractError(
             "prompt_length",
             f"prompt exceeds the Grok Imagine limit of {MAX_MEDIA_PROMPT_CHARS} characters",
         )
-    return prompt
+    return normalized
 
 
 def validate_local_image_paths(values: Any, *, field: str, minimum: int, maximum: int) -> list[str]:
@@ -263,6 +267,34 @@ def _content_text(value: Any) -> str:
     return ""
 
 
+def _normalize_sealed_argument_value(value: Any) -> Any:
+    """Normalize values for sealed media-arg equality checks.
+
+    Grok CLI 1.0.13 has been observed to drop a trailing newline from sealed
+    prompt strings while still generating the requested artifact. Treat that as
+    semantically identical. Keep every other mutation as a hard protocol reject.
+    """
+
+    if isinstance(value, str):
+        return value.rstrip("\n\r")
+    if isinstance(value, list):
+        return [_normalize_sealed_argument_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_normalize_sealed_argument_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): _normalize_sealed_argument_value(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _sealed_arguments_match(observed: Any, expected: dict[str, Any]) -> bool:
+    if not isinstance(observed, dict):
+        return False
+    return _normalize_sealed_argument_value(observed) == _normalize_sealed_argument_value(expected)
+
+
 def _parse_stream(
     stdout: str, *, tool_name: str, expected_arguments: dict[str, Any]
 ) -> tuple[Path, float | None, str]:
@@ -319,7 +351,7 @@ def _parse_stream(
             dispatch_status="indeterminate",
         )
 
-    if tool_call.get("rawInput") != expected_arguments:
+    if not _sealed_arguments_match(tool_call.get("rawInput"), expected_arguments):
         raise GrokCLIContractError(
             "protocol",
             "Grok changed the sealed media-tool arguments; the artifact was rejected",
