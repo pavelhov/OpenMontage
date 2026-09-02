@@ -22,11 +22,10 @@ from tools.video.grok_cli_video import GrokCLIVideo
 from tools.video.video_selector import VideoSelector
 
 
-EXPECTED_DENIES = {
+EXPECTED_NON_READ_DENIES = {
     "Bash(*)",
     "Edit(*)",
     "Write(*)",
-    "Read(*)",
     "Grep(*)",
     "WebFetch(*)",
     "MCPTool(*)",
@@ -287,7 +286,8 @@ def test_image_success_shapes_and_exact_headless_boundary(
     assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
     assert "--no-subagents" in argv and "--disable-web-search" in argv and "--verbatim" in argv
     deny_values = {argv[index + 1] for index, value in enumerate(argv) if value == "--deny"}
-    assert deny_values == EXPECTED_DENIES
+    expected_denies = EXPECTED_NON_READ_DENIES | ({"Read(*)"} if operation == "image_gen" else set())
+    assert deny_values == expected_denies
     assert kwargs["cwd"] == str(tmp_path)
     assert kwargs["stdin"] is subprocess.DEVNULL
     assert kwargs["shell"] is False
@@ -371,6 +371,9 @@ def test_video_success_shapes(
     assert result.data["duration_seconds"] == pytest.approx(6.0)
     assert result.data["codec_name"] == "h264"
     assert len(fake.media_calls) == 1
+    argv, _ = fake.media_calls[0]
+    deny_values = {argv[index + 1] for index, value in enumerate(argv) if value == "--deny"}
+    assert deny_values == EXPECTED_NON_READ_DENIES
 
 
 def test_unknown_terminal_cost_is_not_reported_as_free(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -642,6 +645,7 @@ def test_prompt_4097_fails_before_any_subprocess(monkeypatch: pytest.MonkeyPatch
         ("unavailable under zero data retention (ZDR); output storage bucket required", "zdr_storage"),
         ("native tool image_gen is unavailable", "capability"),
         ("cannot prompt because no TTY is available", "headless"),
+        ("Denied by permission policy: deny rule on read", "permission_policy"),
     ],
 )
 def test_semantic_failures_are_classified(

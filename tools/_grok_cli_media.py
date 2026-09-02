@@ -70,6 +70,12 @@ _DENY_RULES = (
     "MCPTool(*)",
 )
 
+_LOCAL_INPUT_MEDIA_TOOLS = {
+    "image_edit",
+    "image_to_video",
+    "reference_to_video",
+}
+
 
 class GrokCLIContractError(Exception):
     """A classified, non-retryable Grok CLI adapter failure."""
@@ -157,6 +163,8 @@ def _classify_message(message: str, *, dispatched: bool) -> GrokCLIContractError
         return GrokCLIContractError("invalid_argument", clean, dispatch_status=dispatch_status)
     if "tty" in lower or "interactive" in lower and ("required" in lower or "prompt" in lower):
         return GrokCLIContractError("headless", clean, dispatch_status=dispatch_status)
+    if "denied by permission policy" in lower or "deny rule on read" in lower:
+        return GrokCLIContractError("permission_policy", clean, dispatch_status=dispatch_status)
     if "tool" in lower and any(word in lower for word in ("unavailable", "unknown", "not found", "disabled")):
         return GrokCLIContractError("capability", clean, dispatch_status=dispatch_status)
     return GrokCLIContractError("cli", clean, dispatch_status=dispatch_status)
@@ -239,6 +247,8 @@ def _generation_argv(grok_path: str, prompt_path: Path, tool_name: str, cwd: Pat
         str(cwd),
     ]
     for rule in _DENY_RULES:
+        if rule == "Read(*)" and tool_name in _LOCAL_INPUT_MEDIA_TOOLS:
+            continue
         argv.extend(("--deny", rule))
     return argv
 
