@@ -196,7 +196,11 @@ Before choosing or generating a playbook, read `skills/meta/taste-direction.md` 
 6. **Generate a custom playbook when presets don't match.** Use `lib/playbook_generator.py` to create one from your design decisions. The Remotion theme system will automatically derive colors, fonts, and motion from whatever playbook you create — including custom ones.
 
 **Record your visual identity choices in the proposal_packet:**
-- `production_plan.playbook`: name of preset OR "custom"
+- `production_plan.playbook`: name of the loadable preset or saved custom
+  playbook (for example, `coffee-craft` after generating
+  `styles/custom/coffee-craft.yaml`). Never use the literal value `custom` as a
+  placeholder. For atelier art direction without a saved playbook, omit this
+  optional field.
 - `production_plan.taste_profile`: design read, taste dials, reference strategy, and anti-patterns
 - If custom, include color choices and font choices in the concept's `visual_approach`
 - Include the reasoning: "Warm amber palette because the subject is coffee craftsmanship"

@@ -24,6 +24,7 @@ from lib.checkpoint import (
     STAGES,
     get_next_stage,
     read_checkpoint,
+    validate_checkpoint,
     write_checkpoint,
 )
 from lib.media_profiles import get_profile, ffmpeg_output_args, ALL_PROFILES
@@ -337,6 +338,134 @@ class TestCheckpoint:
                 "mystery",
                 {"research_brief": sample_artifact("research_brief")},
             )
+
+    def test_cinematic_proposal_without_style_playbook_is_valid(self, tmp_path):
+        proposal = sample_artifact("proposal_packet")
+        proposal["production_plan"].update(
+            {
+                "pipeline": "cinematic",
+                "composition_mode": "atelier",
+                "art_direction": "Project-local art-direction.md",
+            }
+        )
+
+        path = write_checkpoint(
+            tmp_path,
+            "proj",
+            "proposal",
+            "completed",
+            {"proposal_packet": proposal},
+        )
+
+        assert path.exists()
+
+    def test_proposal_checkpoint_rejects_unknown_playbook_reference(self, tmp_path):
+        proposal = sample_artifact("proposal_packet")
+        proposal["production_plan"].update(
+            {
+                "pipeline": "cinematic",
+                "playbook": "cinematic",
+            }
+        )
+
+        with pytest.raises(
+            CheckpointValidationError,
+            match=r"proposal_packet\.production_plan\.playbook.*cinematic",
+        ):
+            write_checkpoint(
+                tmp_path,
+                "proj",
+                "proposal",
+                "completed",
+                {"proposal_packet": proposal},
+            )
+
+        assert not (tmp_path / "proj" / "checkpoint_proposal.json").exists()
+
+    def test_scene_plan_checkpoint_rejects_unknown_playbook_reference(self, tmp_path):
+        scene_plan = sample_artifact("scene_plan")
+        scene_plan["style_playbook"] = "cinematic"
+
+        with pytest.raises(
+            CheckpointValidationError,
+            match=r"scene_plan\.style_playbook.*cinematic",
+        ):
+            write_checkpoint(
+                tmp_path,
+                "proj",
+                "scene_plan",
+                "completed",
+                {"scene_plan": scene_plan},
+            )
+
+        assert not (tmp_path / "proj" / "checkpoint_scene_plan.json").exists()
+
+    def test_checkpoint_accepts_known_artifact_playbook_references(self, tmp_path):
+        proposal = sample_artifact("proposal_packet")
+        proposal["production_plan"]["playbook"] = "clean-professional"
+        scene_plan = sample_artifact("scene_plan")
+        scene_plan["style_playbook"] = "flat-motion-graphics"
+
+        proposal_path = write_checkpoint(
+            tmp_path,
+            "proposal-proj",
+            "proposal",
+            "completed",
+            {"proposal_packet": proposal},
+        )
+        scene_path = write_checkpoint(
+            tmp_path,
+            "scene-proj",
+            "scene_plan",
+            "completed",
+            {"scene_plan": scene_plan},
+        )
+
+        assert proposal_path.exists()
+        assert scene_path.exists()
+
+    def test_checkpoint_accepts_saved_custom_playbook_reference(
+        self, tmp_path, monkeypatch
+    ):
+        styles_dir = tmp_path / "styles"
+        custom_dir = styles_dir / "custom"
+        custom_dir.mkdir(parents=True)
+        custom_playbook = custom_dir / "coffee-craft.yaml"
+        custom_playbook.write_text(
+            (PROJECT_ROOT / "styles" / "clean-professional.yaml").read_text(
+                encoding="utf-8"
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("styles.playbook_loader.STYLES_DIR", styles_dir)
+
+        proposal = sample_artifact("proposal_packet")
+        proposal["production_plan"]["playbook"] = "coffee-craft"
+
+        path = write_checkpoint(
+            tmp_path,
+            "proj",
+            "proposal",
+            "completed",
+            {"proposal_packet": proposal},
+        )
+
+        assert path.exists()
+
+    def test_legacy_checkpoint_with_unknown_artifact_playbook_remains_readable(self):
+        proposal = sample_artifact("proposal_packet")
+        proposal["production_plan"]["playbook"] = "cinematic"
+        checkpoint = {
+            "version": "1.0",
+            "project_id": "legacy-proj",
+            "pipeline_type": "cinematic",
+            "stage": "proposal",
+            "status": "completed",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "artifacts": {"proposal_packet": proposal},
+        }
+
+        validate_checkpoint(checkpoint)
 
     def test_supplementary_video_analysis_brief_is_validated(self, tmp_path):
         write_checkpoint(

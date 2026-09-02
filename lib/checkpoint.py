@@ -115,6 +115,38 @@ def _validate_style_playbook(style_playbook: str | None) -> None:
         ) from exc
 
 
+def _validate_artifact_style_playbooks(artifacts: dict[str, Any]) -> None:
+    """Validate optional playbook references before writing new checkpoints."""
+
+    references: list[tuple[str, str | None]] = []
+    proposal = artifacts.get("proposal_packet")
+    if isinstance(proposal, dict):
+        production_plan = proposal.get("production_plan")
+        if isinstance(production_plan, dict):
+            references.append(
+                (
+                    "proposal_packet.production_plan.playbook",
+                    production_plan.get("playbook"),
+                )
+            )
+
+    scene_plan = artifacts.get("scene_plan")
+    if isinstance(scene_plan, dict):
+        references.append(
+            ("scene_plan.style_playbook", scene_plan.get("style_playbook"))
+        )
+
+    for location, playbook_name in references:
+        if playbook_name is None:
+            continue
+        try:
+            _validate_style_playbook(playbook_name)
+        except CheckpointValidationError as exc:
+            raise CheckpointValidationError(
+                f"Invalid playbook reference at {location}: {exc}"
+            ) from exc
+
+
 @lru_cache(maxsize=1)
 def _load_checkpoint_schema() -> dict[str, Any]:
     with open(CHECKPOINT_SCHEMA_PATH, encoding="utf-8") as f:
@@ -523,6 +555,11 @@ def write_checkpoint(
         checkpoint["error"] = error
     if metadata is not None:
         checkpoint["metadata"] = metadata
+
+    # Artifact schemas can express that a playbook name is optional, but JSON
+    # Schema cannot prove that the referenced YAML exists. Enforce referential
+    # integrity for new writes while keeping legacy checkpoints readable.
+    _validate_artifact_style_playbooks(artifacts)
 
     # Merge decision_log: if this checkpoint carries new decisions,
     # append them to the project-level decision log file, then write the

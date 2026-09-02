@@ -69,7 +69,7 @@
       "required": ["pipeline", "stages", "render_runtime"],
       "properties": {
         "pipeline": { "type": "string", "description": "Pipeline manifest name, e.g., 'animated-explainer'" },
-        "playbook": { "type": "string", "description": "Selected style playbook" },
+        "playbook": { "type": "string", "description": "Optional selected style playbook. When present, it must name a loadable preset or custom playbook. Omit for atelier art direction; never use a pipeline name as a sentinel." },
         "stages": {
           "type": "array",
           "items": {

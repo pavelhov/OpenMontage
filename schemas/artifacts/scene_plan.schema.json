@@ -7,7 +7,7 @@
   "required": ["version", "scenes"],
   "properties": {
     "version": { "type": "string", "const": "1.0" },
-    "style_playbook": { "type": "string", "description": "Name of the active style playbook" },
+    "style_playbook": { "type": "string", "description": "Optional name of a loadable active style playbook. Omit when the approved style path is project-local atelier art direction." },
     "scenes": {
       "type": "array",
       "items": {

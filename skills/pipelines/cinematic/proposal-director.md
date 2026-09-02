@@ -49,6 +49,14 @@ A `render_runtime_selection` decision with only one option considered when both 
 | Style playbooks | `styles/*.yaml` | Available visual styles |
 | User input | Subject, footage, preferences | Creative direction |
 
+### Pipeline and playbook are separate
+
+`cinematic` is the pipeline name, not a style playbook. Only set
+`production_plan.playbook` when the chosen value exists in `styles/` or
+`styles/custom/`. The field is optional. For hero work using atelier mode,
+record `production_plan.art_direction` and `taste_profile`, and omit `playbook`.
+Never use `cinematic`, `custom`, or `none` as a placeholder playbook value.
+
 ## Process
 
 ### Step 0: Check for Reference Video Context

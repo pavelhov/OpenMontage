@@ -70,6 +70,11 @@ Use the dials to pick one of three paths:
 
 Do not let preset availability override the design read. If the content calls for a custom visual world, write the custom playbook or art direction.
 
+`production_plan.playbook` is optional. For atelier art direction, omit it rather
+than using the pipeline name, `custom`, or `none` as a sentinel. Pipeline names
+select workflow stages; playbook names must resolve to an actual preset or saved
+custom playbook.
+
 ### 4. Plan References
 
 If the work uses AI image/video, mood boards, brand assets, or atelier composition, create a reference strategy:
