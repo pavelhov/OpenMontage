@@ -241,10 +241,28 @@ class ImageSelector(BaseTool):
         logger = logging.getLogger(__name__)
         task_context = self._prepare_task_context(inputs)
         rank_mode = inputs.get("operation") == "rank"
-        candidates = self._filter_candidates(inputs, self._providers(), rank_mode=rank_mode)
+        providers = self._providers()
+        candidates = self._filter_candidates(inputs, providers, rank_mode=rank_mode)
 
         # Rank mode — return scored provider rankings without generating
         if inputs.get("operation") == "rank":
+            # Explicit-only providers are intentionally absent from automatic
+            # ranking. An exact singleton pin is different: surface the chosen
+            # provider for preflight, but do not score it (which could mistake
+            # an unknown cost for zero) or invoke the provider.
+            explicit = self._exact_explicit_candidate(
+                inputs,
+                self._filter_candidates(inputs, providers),
+            )
+            if explicit is not None:
+                return ToolResult(
+                    success=True,
+                    data={
+                        "rankings": [self._explicit_pin_ranking(explicit)],
+                        "explanation": f"{explicit.name}: explicitly pinned; not scored",
+                        "normalized_task_context": task_context,
+                    },
+                )
             rankings = rank_providers(candidates, task_context)
             return ToolResult(
                 success=True,
@@ -434,6 +452,28 @@ class ImageSelector(BaseTool):
                 item["status"] = str(tool.get_status())
             serialized.append(item)
         return serialized
+
+    @staticmethod
+    def _explicit_pin_ranking(tool: BaseTool) -> dict[str, Any]:
+        """Serialize an exact explicit-only pin without sending it to scoring."""
+        info = tool.get_info()
+        supports = info.get("supports", getattr(tool, "supports", {}))
+        cost_preestimate = supports.get("cost_preestimate")
+        return {
+            "tool_name": tool.name,
+            "provider": tool.provider,
+            "weighted_score": None,
+            "selection_mode": "explicit_pin",
+            "cost_estimate_status": (
+                "unknown" if cost_preestimate is False else "not_evaluated"
+            ),
+            "estimated_cost_usd": None,
+            "agent_skills": info.get("agent_skills", []),
+            "usage_location": info.get("usage_location"),
+            "best_for": info.get("best_for", []),
+            "supports": supports,
+            "status": str(tool.get_status()),
+        }
 
     def _filter_candidates(
         self,

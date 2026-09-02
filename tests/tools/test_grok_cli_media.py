@@ -14,11 +14,12 @@ from typing import Any
 
 import pytest
 
-from tools.base_tool import ToolRuntime
+from tools.base_tool import ToolRuntime, ToolStatus
 from tools._grok_cli_media import DEFAULT_GROK_PATH, grok_cli_is_qualified
 from tools.graphics.grok_cli_image import GrokCLIImage
 from tools.graphics.image_selector import ImageSelector
 from tools.video.grok_cli_video import GrokCLIVideo
+from tools.video.video_selector import VideoSelector
 
 
 EXPECTED_DENIES = {
@@ -488,6 +489,78 @@ def test_image_selector_executes_real_grok_cli_adapter(
     assert result.data["selected_tool"] == "grok_cli_image"
     assert result.data["selected_provider"] == "grok_cli"
     assert len(fake.media_calls) == 1
+
+
+def test_selectors_report_exact_pinned_grok_cli_rank_preflights_offline(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Exact rank pins are metadata-only and never start a Grok media call."""
+    image_provider = GrokCLIImage()
+    video_provider = GrokCLIVideo()
+    monkeypatch.setattr(image_provider, "get_status", lambda: ToolStatus.UNAVAILABLE)
+    monkeypatch.setattr(video_provider, "get_status", lambda: ToolStatus.UNAVAILABLE)
+    monkeypatch.setattr(
+        "lib.scoring.rank_providers",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not score")),
+    )
+
+    image_selector = ImageSelector()
+    image_selector._providers = lambda: [image_provider]  # type: ignore[assignment]
+    image_result = image_selector.execute({
+        "prompt": "offline rank fixture",
+        "operation": "rank",
+        "preferred_provider": "grok_cli",
+        "allowed_providers": ["grok_cli"],
+    })
+
+    video_selector = VideoSelector()
+    video_selector._providers = lambda: [video_provider]  # type: ignore[assignment]
+    video_result = video_selector.execute({
+        "prompt": "offline rank fixture",
+        "operation": "rank",
+        "target_operation": "image_to_video",
+        "preferred_provider": "grok_cli",
+        "allowed_providers": ["grok_cli"],
+    })
+
+    for result, tool_name in ((image_result, "grok_cli_image"), (video_result, "grok_cli_video")):
+        assert result.success, result.error
+        row = result.data["rankings"][0]
+        assert row["tool_name"] == tool_name
+        assert row["weighted_score"] is None
+        assert row["selection_mode"] == "explicit_pin"
+        assert row["cost_estimate_status"] == "unknown"
+        assert row["estimated_cost_usd"] is None
+        assert row["status"] == str(ToolStatus.UNAVAILABLE)
+
+
+def test_video_selector_rank_rejects_unsupported_grok_cli_text_to_video(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    provider = GrokCLIVideo()
+    monkeypatch.setattr(provider, "get_status", lambda: ToolStatus.UNAVAILABLE)
+    monkeypatch.setattr(
+        provider,
+        "execute",
+        lambda inputs: (_ for _ in ()).throw(AssertionError("must not execute")),
+    )
+    monkeypatch.setattr(
+        "lib.scoring.rank_providers",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not score")),
+    )
+    selector = VideoSelector()
+    selector._providers = lambda: [provider]  # type: ignore[assignment]
+
+    result = selector.execute({
+        "prompt": "offline rank fixture",
+        "operation": "rank",
+        "target_operation": "text_to_video",
+        "preferred_provider": "grok_cli",
+        "allowed_providers": ["grok_cli"],
+    })
+
+    assert result.success, result.error
+    assert result.data["rankings"] == []
 
 
 def test_video_adapter_preserves_selector_reference_image_path_contract(

@@ -323,6 +323,38 @@ class VideoSelector(BaseTool):
         if inputs.get("operation") == "rank":
             rank_inputs = self._rank_inputs(inputs)
             task_context = self._prepare_task_context(rank_inputs)
+            pinned_explicit = self._exact_explicit_candidate(rank_inputs, candidates)
+            if (
+                pinned_explicit is not None
+                and not self._rank_operation_eligible(pinned_explicit, rank_inputs)
+            ):
+                return ToolResult(
+                    success=True,
+                    data={
+                        "rankings": [],
+                        "explanation": (
+                            f"{pinned_explicit.name}: does not support "
+                            f"{rank_inputs['operation']}"
+                        ),
+                        "normalized_task_context": task_context,
+                    },
+                )
+            # Explicit-only providers stay out of automatic ranking. For an
+            # exact singleton pin, return an unscored preflight row only when
+            # the requested target operation is actually supported.
+            explicit = self._exact_explicit_candidate(
+                rank_inputs,
+                self._filter_candidates(rank_inputs, candidates),
+            )
+            if explicit is not None:
+                return ToolResult(
+                    success=True,
+                    data={
+                        "rankings": [self._explicit_pin_ranking(explicit)],
+                        "explanation": f"{explicit.name}: explicitly pinned; not scored",
+                        "normalized_task_context": task_context,
+                    },
+                )
             candidates = self._filter_candidates(rank_inputs, candidates, rank_mode=True)
             rankings = rank_providers(candidates, task_context)
             return ToolResult(
@@ -512,6 +544,28 @@ class VideoSelector(BaseTool):
             serialized.append(item)
         return serialized
 
+    @staticmethod
+    def _explicit_pin_ranking(tool: BaseTool) -> dict[str, object]:
+        """Serialize an exact explicit-only pin without sending it to scoring."""
+        info = tool.get_info()
+        supports = info.get("supports", getattr(tool, "supports", {}))
+        cost_preestimate = supports.get("cost_preestimate")
+        return {
+            "tool_name": tool.name,
+            "provider": tool.provider,
+            "weighted_score": None,
+            "selection_mode": "explicit_pin",
+            "cost_estimate_status": (
+                "unknown" if cost_preestimate is False else "not_evaluated"
+            ),
+            "estimated_cost_usd": None,
+            "agent_skills": info.get("agent_skills", []),
+            "usage_location": info.get("usage_location"),
+            "best_for": info.get("best_for", []),
+            "supports": supports,
+            "status": str(tool.get_status()),
+        }
+
     def _filter_candidates(
         self,
         inputs: dict[str, object],
@@ -613,6 +667,16 @@ class VideoSelector(BaseTool):
                 and self._is_exact_provider_pin(inputs, tool.provider)
             ),
             None,
+        )
+
+    @staticmethod
+    def _rank_operation_eligible(tool: BaseTool, inputs: dict[str, object]) -> bool:
+        """Honor a provider's explicit operation denial during rank preflight."""
+        operation = str(inputs.get("operation", "text_to_video"))
+        supports = getattr(tool, "supports", {})
+        return (
+            supports.get(operation) is not False
+            and VideoSelector._operation_ready(tool, operation)
         )
 
     @staticmethod

@@ -367,7 +367,44 @@ def test_explicit_only_video_provider_is_excluded_without_exact_singleton_pin(ra
     assert private not in filtered
 
 
-def test_rank_mode_excludes_explicit_only_video_even_with_exact_pin(monkeypatch):
+def test_exact_explicit_video_rank_returns_unscored_preflight_without_scoring(monkeypatch):
+    public = _StubTool("public_video", "public")
+    private = _StubTool("private_video", "private", explicit_only=True)
+    private.supports["cost_preestimate"] = False
+    monkeypatch.setattr(
+        "lib.scoring.rank_providers",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not score")),
+    )
+    selector = VideoSelector()
+    selector._providers = lambda: [public, private]  # type: ignore[assignment]
+
+    result = selector.execute({
+        "prompt": "x",
+        "operation": "rank",
+        "target_operation": "text_to_video",
+        "preferred_provider": "private",
+        "allowed_providers": ["private"],
+    })
+
+    assert result.success is True
+    assert result.data["rankings"] == [{
+        "tool_name": "private_video",
+        "provider": "private",
+        "weighted_score": None,
+        "selection_mode": "explicit_pin",
+        "cost_estimate_status": "unknown",
+        "estimated_cost_usd": None,
+        "agent_skills": [],
+        "usage_location": None,
+        "best_for": ["private_video"],
+        "supports": private.supports,
+        "status": str(ToolStatus.AVAILABLE),
+    }]
+    assert private.execute_calls == 0
+    assert private.estimate_calls == 0
+
+
+def test_rank_mode_excludes_explicit_only_video_without_exact_pin(monkeypatch):
     public = _StubTool("public_video", "public")
     private = _StubTool("private_video", "private", explicit_only=True)
     seen: list[_StubTool] = []
@@ -385,11 +422,35 @@ def test_rank_mode_excludes_explicit_only_video_even_with_exact_pin(monkeypatch)
         "operation": "rank",
         "target_operation": "text_to_video",
         "preferred_provider": "private",
-        "allowed_providers": ["private"],
+        "allowed_providers": ["private", "public"],
     })
 
     assert result.success is True
     assert private not in seen
+
+
+def test_exact_explicit_video_rank_honors_operation_readiness(monkeypatch):
+    private = _StubTool("private_video", "private", explicit_only=True)
+    monkeypatch.setattr(private, "is_operation_available", lambda operation: False)
+    monkeypatch.setattr(
+        "lib.scoring.rank_providers",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not score")),
+    )
+    selector = VideoSelector()
+    selector._providers = lambda: [private]  # type: ignore[assignment]
+
+    result = selector.execute({
+        "prompt": "x",
+        "operation": "rank",
+        "target_operation": "reference_to_video",
+        "preferred_provider": "private",
+        "allowed_providers": ["private"],
+    })
+
+    assert result.success is True
+    assert result.data["rankings"] == []
+    assert private.execute_calls == 0
+    assert private.estimate_calls == 0
 
 
 def test_exact_explicit_video_pin_bypasses_ranking(monkeypatch):

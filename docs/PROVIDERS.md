@@ -158,9 +158,12 @@ or post-generation upscaling as provider primitives.
 
 This route is **explicit-only**: callers must set both
 `preferred_provider: grok_cli` and `allowed_providers: [grok_cli]`. It never
-enters automatic ranking or fallbacks, and every failure is terminal for that
-selection. A generation call additionally requires `allow_unknown_cost: true`
-after the user approves proceeding without a reliable media-cost estimate.
+enters automatic ranking or fallbacks. An exact-pinned `operation: rank`
+preflight may report it as an unscored explicit-pin row (including its actual
+readiness and unknown-cost status); that is not automatic selection. Every
+generation failure is terminal for that selection. A generation call additionally
+requires `allow_unknown_cost: true` after the user approves proceeding without a
+reliable media-cost estimate.
 
 The CLI's terminal dollar field covers the coding-agent turn, not the
 subscription media charge. OpenMontage therefore reports the media cost as

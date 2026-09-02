@@ -12,6 +12,12 @@ The installed Grok CLI has a workable, automatable Imagine tool surface for a
 the existing xAI REST providers and must never be selected as an automatic or
 silent fallback.
 
+It is also absent from automatic ranking. When the caller exactly pins
+`grok_cli` and requests `operation: rank`, selector preflight may show an
+unscored explicit-pin row with its actual readiness and an unknown media-cost
+status. That informational row does not make the CLI route automatically
+selectable or invoke a media operation.
+
 This supersedes the earlier blocker conclusion. Historical local sessions now
 provide live success and failure evidence for the exact headless route. No new
 paid media generation was run during this audit.
@@ -127,8 +133,9 @@ must not replace or mutate the REST tools.
 1. Offline fake-executable tests pin argv, stdin, version, NDJSON parsing,
    failures, artifact containment, copy, and media validation.
 2. Selector tests prove `grok_cli` is excluded from automatic ranking,
-   estimates, and fallbacks and is admitted only by an explicit, exclusive
-   provider request.
+   estimates, and fallbacks. An exact, exclusive rank preflight may report an
+   unscored informational row; it is admitted for generation only by an
+   explicit, exclusive provider request.
 3. Registry/contract tests prove REST and CLI identities remain distinct.
 4. After the adapter is complete, a new live canary may be run only with explicit
    user approval. It should use one shortest qualified operation, stop after one

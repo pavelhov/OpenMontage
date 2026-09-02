@@ -113,7 +113,42 @@ def test_explicit_only_image_provider_requires_exact_singleton_pin(inputs):
     assert private not in ImageSelector()._filter_candidates(inputs, [public, private])
 
 
-def test_rank_mode_excludes_explicit_only_image_even_with_exact_pin(monkeypatch):
+def test_exact_explicit_image_rank_returns_unscored_preflight_without_scoring(monkeypatch):
+    public = _StubImageTool("public_image", "public")
+    private = _StubImageTool("private_image", "private", explicit_only=True)
+    private.supports["cost_preestimate"] = False
+    monkeypatch.setattr(
+        "lib.scoring.rank_providers",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not score")),
+    )
+    selector = ImageSelector()
+    selector._providers = lambda: [public, private]  # type: ignore[assignment]
+    result = selector.execute({
+        "prompt": "x",
+        "operation": "rank",
+        "preferred_provider": "private",
+        "allowed_providers": ["private"],
+    })
+
+    assert result.success is True
+    assert result.data["rankings"] == [{
+        "tool_name": "private_image",
+        "provider": "private",
+        "weighted_score": None,
+        "selection_mode": "explicit_pin",
+        "cost_estimate_status": "unknown",
+        "estimated_cost_usd": None,
+        "agent_skills": [],
+        "usage_location": None,
+        "best_for": ["private_image"],
+        "supports": private.supports,
+        "status": str(ToolStatus.AVAILABLE),
+    }]
+    assert private.execute_calls == 0
+    assert private.estimate_calls == 0
+
+
+def test_rank_mode_excludes_explicit_only_image_without_exact_pin(monkeypatch):
     public = _StubImageTool("public_image", "public")
     private = _StubImageTool("private_image", "private", explicit_only=True)
     seen: list[_StubImageTool] = []
@@ -125,11 +160,12 @@ def test_rank_mode_excludes_explicit_only_image_even_with_exact_pin(monkeypatch)
     monkeypatch.setattr("lib.scoring.rank_providers", fake_rank)
     selector = ImageSelector()
     selector._providers = lambda: [public, private]  # type: ignore[assignment]
+
     result = selector.execute({
         "prompt": "x",
         "operation": "rank",
         "preferred_provider": "private",
-        "allowed_providers": ["private"],
+        "allowed_providers": ["private", "public"],
     })
 
     assert result.success is True
