@@ -404,39 +404,55 @@ class VideoStitch(BaseTool):
 
     def _resolve_normalization_target(
         self, inputs: dict[str, Any], probes: list[dict[str, Any]]
-    ) -> tuple[int, int, int, str, str]:
+    ) -> tuple[int, int, int, str, str, str]:
         """Determine the target resolution, fps, and codecs for normalization.
 
-        Returns (width, height, fps, video_codec, audio_codec).
+        Returns (width, height, fps, video_codec, audio_codec, fit).
         """
-        # If a media profile is specified, use it
-        profile_name = inputs.get("profile")
-        if profile_name:
-            try:
-                from lib.media_profiles import get_profile
-                profile = get_profile(profile_name)
-                return (profile.width, profile.height, profile.fps, profile.codec, profile.audio_codec)
-            except (ImportError, ValueError):
-                pass
+        from lib.media_profiles import default_fit_for_aspect, resolve_delivery_geometry
 
-        # Explicit target overrides
+        ref = probes[0] if probes else {}
+        delivery = resolve_delivery_geometry(
+            profile_name=inputs.get("profile"),
+            target_resolution=inputs.get("target_resolution"),
+            platform_hint=inputs.get("platform") or inputs.get("delivery_platform"),
+            observed_width=ref.get("width"),
+            observed_height=ref.get("height"),
+            auto_snap_near_9_16=False,
+        )
+        if delivery:
+            fps = int(inputs.get("target_fps") or delivery.get("fps") or ref.get("fps") or 30)
+            video_codec = str(inputs.get("codec") or delivery.get("codec") or "libx264")
+            audio_codec = str(delivery.get("audio_codec") or "aac")
+            fit = str(delivery.get("fit") or default_fit_for_aspect(
+                "9:16" if int(delivery["height"]) > int(delivery["width"]) else "16:9"
+            ))
+            return (
+                int(delivery["width"]),
+                int(delivery["height"]),
+                fps,
+                video_codec,
+                audio_codec,
+                fit,
+            )
+
         target_w, target_h = None, None
         if inputs.get("target_resolution"):
-            parts = inputs["target_resolution"].split("x")
+            parts = str(inputs["target_resolution"]).split("x")
             if len(parts) == 2:
-                target_w, target_h = int(parts[0]), int(parts[1])
+                try:
+                    target_w, target_h = int(parts[0]), int(parts[1])
+                except ValueError:
+                    target_w, target_h = None, None
 
         target_fps = inputs.get("target_fps")
-
-        # Fall back to first clip as reference
-        ref = probes[0] if probes else {}
         width = target_w or ref.get("width", 1920)
         height = target_h or ref.get("height", 1080)
         fps = target_fps or ref.get("fps", 30)
         video_codec = inputs.get("codec", "libx264")
         audio_codec = "aac"
-
-        return (width, height, int(fps), video_codec, audio_codec)
+        fit = default_fit_for_aspect("9:16" if int(height) > int(width) else "16:9")
+        return (int(width), int(height), int(fps), str(video_codec), str(audio_codec), fit)
 
     def _normalize_clip(
         self,
@@ -449,12 +465,15 @@ class VideoStitch(BaseTool):
         audio_codec: str,
         crf: int,
         preset: str,
+        fit: str = "pad",
     ) -> None:
         """Re-encode a clip to the target format."""
+        from lib.media_profiles import ffmpeg_geometry_filter
+
         cmd = [
             "ffmpeg", "-y",
             "-i", str(clip_path),
-            "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2",
+            "-vf", ffmpeg_geometry_filter(width, height, fit=fit),
             "-r", str(fps),
             "-c:v", video_codec, "-crf", str(crf), "-preset", preset,
             "-c:a", audio_codec, "-ar", "44100", "-ac", "2",
@@ -473,6 +492,44 @@ class VideoStitch(BaseTool):
                 if ref.get(key) != probe.get(key) and ref.get(key) is not None:
                     return True
         return False
+
+    def _resolve_delivery_geometry(
+        self, inputs: dict[str, Any], probes: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        """Resolve exact delivery geometry for social package gates."""
+        from lib.media_profiles import resolve_delivery_geometry
+
+        ref = probes[0] if probes else {}
+        return resolve_delivery_geometry(
+            profile_name=inputs.get("profile"),
+            target_resolution=inputs.get("target_resolution"),
+            platform_hint=inputs.get("platform") or inputs.get("delivery_platform"),
+            observed_width=ref.get("width"),
+            observed_height=ref.get("height"),
+            # Safety net for TikTok-style vertical stitches that omit profile:
+            # near-9:16 720p masters (e.g. 720x1264) snap to 720x1280.
+            auto_snap_near_9_16=True,
+        )
+
+    def _clips_match_delivery_geometry(
+        self, probes: list[dict[str, Any]], delivery: dict[str, Any] | None
+    ) -> bool:
+        """True when every probed clip already matches the delivery geometry."""
+        if not delivery or not probes:
+            return True
+        from lib.media_profiles import dimensions_match
+
+        target_w = int(delivery["width"])
+        target_h = int(delivery["height"])
+        return all(
+            dimensions_match(
+                int(probe.get("width") or 0),
+                int(probe.get("height") or 0),
+                target_w,
+                target_h,
+            )
+            for probe in probes
+        )
 
     # ------------------------------------------------------------------
     # stitch
@@ -512,9 +569,13 @@ class VideoStitch(BaseTool):
             probes.append(info)
 
         needs_norm = self._needs_normalization(probes)
+        delivery = self._resolve_delivery_geometry(inputs, probes)
+        delivery_norm = bool(delivery) and not self._clips_match_delivery_geometry(probes, delivery)
 
         # If clips are incompatible and auto_normalize is off, fail with advice
-        if needs_norm and not auto_normalize and transition == "cut":
+        # Delivery-geometry mismatches always normalize (cover/crop for 9:16)
+        # instead of silently concat-copying off-geometry TikTok masters.
+        if needs_norm and not auto_normalize and not delivery_norm and transition == "cut":
             return ToolResult(
                 success=False,
                 error=(
@@ -531,11 +592,31 @@ class VideoStitch(BaseTool):
         try:
             # Normalize clips if needed
             working_clips: list[str] = []
-            if needs_norm or auto_normalize or transition != "cut":
-                width, height, fps, vid_codec, aud_codec = self._resolve_normalization_target(inputs, probes)
+            if needs_norm or auto_normalize or delivery_norm or transition != "cut":
+                width, height, fps, vid_codec, aud_codec, fit = self._resolve_normalization_target(
+                    inputs, probes
+                )
+                if delivery:
+                    width = int(delivery["width"])
+                    height = int(delivery["height"])
+                    fit = str(delivery.get("fit") or fit)
+                    fps = int(inputs.get("target_fps") or delivery.get("fps") or fps)
+                    vid_codec = str(inputs.get("codec") or delivery.get("codec") or vid_codec)
+                    aud_codec = str(delivery.get("audio_codec") or aud_codec)
                 for i, clip in enumerate(clips):
                     norm_path = temp_dir / f"norm_{i:04d}.mp4"
-                    self._normalize_clip(clip, norm_path, width, height, fps, vid_codec, aud_codec, crf, preset)
+                    self._normalize_clip(
+                        clip,
+                        norm_path,
+                        width,
+                        height,
+                        fps,
+                        vid_codec,
+                        aud_codec,
+                        crf,
+                        preset,
+                        fit=fit,
+                    )
                     working_clips.append(str(norm_path))
                     temp_files.append(norm_path)
             else:
@@ -562,6 +643,15 @@ class VideoStitch(BaseTool):
             file_size = output_path.stat().st_size if output_path.exists() else 0
             out_probe = self._probe_clip(str(output_path))
             out_duration = out_probe.get("duration", 0) if out_probe else 0
+            out_width = int((out_probe or {}).get("width") or 0)
+            out_height = int((out_probe or {}).get("height") or 0)
+
+            if delivery:
+                from lib.media_profiles import delivery_geometry_issue
+
+                geometry_issue = delivery_geometry_issue(out_width, out_height, delivery)
+                if geometry_issue:
+                    return ToolResult(success=False, error=geometry_issue)
 
             return ToolResult(
                 success=True,
@@ -570,7 +660,18 @@ class VideoStitch(BaseTool):
                     "clip_count": len(clips),
                     "transition": transition,
                     "transition_duration": transition_dur if transition != "cut" else 0,
-                    "auto_normalized": needs_norm or auto_normalize,
+                    "auto_normalized": needs_norm or auto_normalize or delivery_norm,
+                    "delivery_geometry": (
+                        {
+                            "width": int(delivery["width"]),
+                            "height": int(delivery["height"]),
+                            "fit": delivery.get("fit"),
+                            "source": delivery.get("source"),
+                            "profile": delivery.get("profile"),
+                        }
+                        if delivery
+                        else None
+                    ),
                     "output": str(output_path),
                     "duration": round(out_duration, 2),
                     "file_size_bytes": file_size,

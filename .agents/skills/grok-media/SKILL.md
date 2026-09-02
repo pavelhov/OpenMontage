@@ -34,11 +34,19 @@ Supported native operations:
 - `image_gen`: prompt plus aspect ratio.
 - `image_edit`: prompt plus 1-5 local image paths.
 - `image_to_video`: one local first-frame image, 6 or 10 seconds, 480p/720p.
+  Geometry is photo-true from the source frame — there is no `aspect_ratio`
+  argument. Near-9:16 drifts such as `720x1264` are common and must be
+  normalized at compose/stitch to exact TikTok-safe `720x1280` (or
+  `1080x1920`) before shipping.
 - `reference_to_video`: 1-7 local reference images, 1-15 seconds,
-  480p/720p, and an explicit aspect ratio.
+  480p/720p, and an explicit aspect ratio. Prefer this when exact `9:16`
+  pixels are required at generation time.
 
 The CLI adapter does not expose direct text-to-video, video edit, extend, or
 upscale. Do not emulate those operations with a hidden multi-step workflow.
+For TikTok delivery after `image_to_video`, package through `video_stitch` /
+`video_compose` with `profile="tiktok_720p"` (or `compose_target`
+`720x1280`) — never raw ffmpeg concat `-c copy` of off-geometry clips.
 
 CLI media pricing cannot be pre-estimated from the coding-agent transcript.
 Treat it as unknown subscription media cost and require the user's explicit

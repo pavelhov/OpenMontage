@@ -31,7 +31,7 @@ tool calls and durable local artifacts for all four relevant primitives:
 |---|---|---|
 | `image_gen` | prompt, aspect ratio | 1280x720 JPEG |
 | `image_edit` | prompt, two local image references, aspect ratio | 1280x720 JPEG |
-| `image_to_video` | local source image, motion prompt, 6 seconds, 480p | 6.04-second H.264/AAC MP4 |
+| `image_to_video` | local source image, motion prompt, 6 seconds, 480p/720p; no aspect_ratio (photo-true geometry) | H.264/AAC MP4 that preserves source aspect (e.g. 720x1264 from drifted keyframes) |
 | `reference_to_video` | up to seven local references in the observed run, 9:16, 15 seconds, 480p; another run proved four references at 720p | 15.04-second H.264/AAC MP4 |
 
 Two additional headless runs used a native Grok model with only
@@ -57,7 +57,7 @@ adapter must fail closed on an unqualified version.
 |---|---|---|
 | Text to image | Proven | `image_gen` through a separate `grok_cli` image adapter |
 | Image editing / compositing | Proven | `image_edit` through the same image adapter |
-| Image to video | Proven | `image_to_video` through a separate `grok_cli` video adapter |
+| Image to video | Proven | `image_to_video` through a separate `grok_cli` video adapter. No aspect_ratio control; package/normalize to exact 9:16 (`tiktok_720p` / 720x1280) before TikTok delivery. |
 | Reference to video | Proven | `reference_to_video`; reference images and preset voices are supported by the observed/current tool surface |
 | Direct text to video | Not exposed as a primitive | Do not advertise it. `/imagine-video` is an agent workflow that first makes an image and then animates it. |
 | Video editing or extension | No installed CLI primitive found | Fail explicitly; use no substitute automatically. |

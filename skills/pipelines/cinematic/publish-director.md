@@ -47,7 +47,9 @@ Store in `publish_log.metadata`:
 - hero export is clearly identified,
 - derivative exports are labeled by purpose,
 - metadata fits the tone,
-- the package is usable without manual cleanup.
+- the package is usable without manual cleanup,
+- TikTok / Reels / Shorts masters are exact platform geometry (`720x1280` or `1080x1920`). Refuse `720x1264` / other near-9:16 drift; re-package with `video_stitch`/`video_compose` and `tiktok_720p` or `compose_target` before shipping.
+
 
 ## Common Pitfalls
 

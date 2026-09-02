@@ -476,6 +476,13 @@ class VideoCompose(BaseTool):
                 from lib.media_profiles import get_profile
                 p = get_profile(profile_name)
                 resolution = f"{p.width}x{p.height}"
+                # Vertical social profiles default to cover/crop unless the
+                # caller explicitly set compose_target.fit.
+                if (
+                    not (isinstance(compose_target, dict) and compose_target.get("fit") in ("pad", "cover"))
+                    and getattr(p.aspect_ratio, "value", str(p.aspect_ratio)) == "9:16"
+                ):
+                    fit_mode = "cover"
             except (ImportError, ValueError):
                 pass
         try:
@@ -1075,6 +1082,7 @@ class VideoCompose(BaseTool):
             proposal_packet=inputs.get("proposal_packet"),
             narration_transcript_path=inputs.get("narration_transcript_path"),
             script_text=inputs.get("script_text"),
+            profile_name=inputs.get("profile") or inputs.get("output_profile"),
         )
 
         atelier_checks = self._run_atelier_checks(entry_path, bespoke)
@@ -1727,6 +1735,7 @@ class VideoCompose(BaseTool):
                 script_text=inputs.get("script_text") or self._read_text_file(
                     inputs.get("script_path")
                 ),
+                profile_name=profile,
             )
 
             # Attach final_review to the ToolResult data so the compose-director
@@ -1864,6 +1873,7 @@ class VideoCompose(BaseTool):
                 script_text=inputs.get("script_text") or self._read_text_file(
                     inputs.get("script_path")
                 ),
+                profile_name=profile,
             )
             if render_result.data is None:
                 render_result.data = {}
@@ -1924,6 +1934,7 @@ class VideoCompose(BaseTool):
                 script_text=inputs.get("script_text") or self._read_text_file(
                     inputs.get("script_path")
                 ),
+                profile_name=profile,
             )
             if render_result.data is None:
                 render_result.data = {}
@@ -2289,6 +2300,7 @@ class VideoCompose(BaseTool):
         proposal_packet: dict[str, Any] | None = None,
         narration_transcript_path: str | Path | None = None,
         script_text: str | None = None,
+        profile_name: str | None = None,
     ) -> dict[str, Any]:
         """Run post-render self-review and produce a final_review artifact.
 
@@ -2372,6 +2384,55 @@ class VideoCompose(BaseTool):
                 if width < 320 or height < 240:
                     technical_probe["issues"].append(
                         f"Resolution {width}x{height} is very low"
+                    )
+
+                # Social / compose delivery geometry gate.
+                # Exact TikTok/Reels/Shorts masters must land on the requested
+                # profile or compose_target. Near-9:16 off-by-N heights like
+                # 720x1264 are a hard fail for vertical social delivery.
+                try:
+                    from lib.media_profiles import (
+                        delivery_geometry_issue,
+                        resolve_delivery_geometry,
+                    )
+
+                    metadata = (edit_decisions or {}).get("metadata") or {}
+                    compose_target = metadata.get("compose_target")
+                    platform_hint = None
+                    if isinstance(proposal_packet, dict):
+                        production_plan = proposal_packet.get("production_plan") or {}
+                        platform_hint = (
+                            production_plan.get("platform")
+                            or production_plan.get("target_platform")
+                            or proposal_packet.get("platform")
+                        )
+                    platform_hint = (
+                        platform_hint
+                        or metadata.get("platform")
+                        or metadata.get("delivery_platform")
+                        or (edit_decisions or {}).get("platform")
+                    )
+                    delivery = resolve_delivery_geometry(
+                        profile_name=profile_name or metadata.get("profile") or metadata.get("output_profile"),
+                        compose_target=compose_target if isinstance(compose_target, dict) else None,
+                        platform_hint=platform_hint,
+                        observed_width=width,
+                        observed_height=height,
+                        auto_snap_near_9_16=True,
+                    )
+                    geometry_issue = delivery_geometry_issue(width, height, delivery)
+                    if geometry_issue:
+                        technical_probe["issues"].append(geometry_issue)
+                        technical_probe["delivery_geometry"] = {
+                            "width": delivery.get("width") if delivery else None,
+                            "height": delivery.get("height") if delivery else None,
+                            "source": delivery.get("source") if delivery else None,
+                            "profile": delivery.get("profile") if delivery else None,
+                            "observed": f"{width}x{height}",
+                        }
+                except Exception as e:
+                    technical_probe["issues"].append(
+                        f"Delivery geometry check error: {e}"
                     )
                 if not audio_stream:
                     technical_probe["issues"].append("No audio stream in output")
@@ -2655,6 +2716,7 @@ class VideoCompose(BaseTool):
                 "silent downgrade", "delivery promise violation",
                 "effectively silent", "ffprobe failed", "suspiciously short",
                 "tts punctuation leak",  # reading literal punctuation aloud
+                "delivery geometry mismatch",  # off-aspect TikTok/social masters
             ])
         ]
 

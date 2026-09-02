@@ -85,6 +85,17 @@ Recommended metadata keys:
 - `mix_notes`
 - `variant_outputs`
 
+### 5. Enforce Delivery Geometry (HARD GATE for TikTok / Reels / Shorts)
+
+Exact platform geometry is a packaging gate, not a note.
+
+- For TikTok / Reels / Shorts delivery, the final master must be exact `9:16`.
+- Prefer `profile="tiktok_720p"` (`720x1280`) for Grok 720p stitches, or `profile="tiktok"` (`1080x1920`) when that path is intentional.
+- You may also set `edit_decisions.metadata.compose_target = {"width":720,"height":1280,"fit":"cover"}`.
+- Do **not** raw-ffmpeg `concat -c copy` off-geometry clips (for example `720x1264`). Use `video_stitch` / `video_compose` so the delivery gate can normalize or fail closed.
+- `image_to_video` is photo-geometry-preserving and does **not** expose `aspect_ratio`. If exact `9:16` is required upstream, use `reference_to_video` with `aspect_ratio="9:16"`, or normalize at package time.
+- `final_review.technical_probe` must report the target geometry. Near-9:16 misses such as `720x1264` are blocking for social delivery.
+
 ## Common Pitfalls
 
 - Flattening the audio so the piece loses dynamics.
