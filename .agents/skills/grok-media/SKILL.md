@@ -1,6 +1,6 @@
 ---
 name: grok-media
-description: xAI Grok image and video generation guide covering authentication, endpoints, prompt structure, image editing, reference-image video, and async polling.
+description: xAI Grok media guide covering the REST API and the separate, explicit-only local Grok CLI route.
 metadata:
   author: OpenMontage
   version: "1.0.0"
@@ -9,14 +9,58 @@ metadata:
 
 # Grok Media
 
-Use this skill when working with xAI media models in OpenMontage.
+Use this skill when working with xAI media models in OpenMontage. First identify
+the selected tool's provider contract. The two routes are not interchangeable:
 
-## Models
+- `provider="grok"` uses the xAI REST API and `XAI_API_KEY`.
+- `provider="grok_cli"` uses a locally installed, already signed-in Grok CLI
+  OAuth/subscription session. It does not use `XAI_API_KEY`.
+
+Never substitute one route for the other. The CLI providers are explicit-only:
+the selector request must set `preferred_provider="grok_cli"` and make
+`allowed_providers` exactly `["grok_cli"]`.
+
+## Local Grok CLI contract
+
+OpenMontage qualifies Grok CLI `1.0.13` with model `grok-4.6`. The adapter runs
+one sealed native media-tool call through streaming JSON, disables web search
+and subagents, denies shell/project-file/MCP access, validates the returned
+session artifact with `ffprobe`, and never retries or falls back.
+
+Supported native operations:
+
+- `image_gen`: prompt plus aspect ratio.
+- `image_edit`: prompt plus 1-5 local image paths.
+- `image_to_video`: one local first-frame image, 6 or 10 seconds, 480p/720p.
+- `reference_to_video`: 1-7 local reference images, 1-15 seconds,
+  480p/720p, and an explicit aspect ratio.
+
+The CLI adapter does not expose direct text-to-video, video edit, extend, or
+upscale. Do not emulate those operations with a hidden multi-step workflow.
+
+CLI media pricing cannot be pre-estimated from the coding-agent transcript.
+Treat it as unknown subscription media cost and require the user's explicit
+approval before setting `allow_unknown_cost=true`. A positive terminal
+`total_cost_usd` is coding-agent cost only, not the Imagine media charge.
+
+Authentication is human-managed outside production runs. If the adapter
+reports `auth`, ask the user to sign in with `grok login`; never initiate login,
+open a browser, or fall back to REST. Treat `spending_limit`, `tier`,
+`zdr_storage`, `headless`, `capability`, `version`, `protocol`, `artifact`, and
+timeout failures as terminal for that dispatch.
+
+For CLI prompts, request one shot and one main motion idea. Map each reference
+image to a specific role in plain language. Keep the full prompt at or below
+4096 characters and preserve continuity constraints from the scene plan.
+
+The remaining sections describe the REST API route only.
+
+## REST API models
 
 - `grok-imagine-image` for image generation and image editing
 - `grok-imagine-video` for text-to-video, image-to-video, and reference-image video
 
-## Authentication
+## REST API authentication
 
 - Env var: `XAI_API_KEY`
 - Base URL: `https://api.x.ai/v1`

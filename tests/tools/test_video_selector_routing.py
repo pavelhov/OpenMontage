@@ -41,6 +41,9 @@ class _StubTool:
         status: ToolStatus = ToolStatus.AVAILABLE,
         cost: float = 0.10,
         runtime: float = 60.0,
+        explicit_only: bool = False,
+        execute_success: bool = True,
+        estimate_error: str | None = None,
     ) -> None:
         self.name = name
         self.provider = provider
@@ -49,12 +52,17 @@ class _StubTool:
         self.supports = {
             "text_to_video": True,
             "image_to_video": supports_image_to_video,
+            "explicit_selection_only": explicit_only,
         }
         self.input_schema = {"properties": {"prompt": {}}}
         self._status = status
         self._cost = cost
         self._runtime = runtime
         self.last_execute_inputs: dict[str, Any] | None = None
+        self.execute_calls = 0
+        self.estimate_calls = 0
+        self._execute_success = execute_success
+        self._estimate_error = estimate_error
 
     # --- BaseTool surface used by the selector -------------------------------
     def get_status(self) -> ToolStatus:
@@ -74,14 +82,22 @@ class _StubTool:
         }
 
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
+        self.estimate_calls += 1
+        if self._estimate_error:
+            raise ValueError(self._estimate_error)
         return self._cost
 
     def estimate_runtime(self, inputs: dict[str, Any]) -> float:
         return self._runtime
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
+        self.execute_calls += 1
         self.last_execute_inputs = dict(inputs)
-        return ToolResult(success=True, data={})
+        return ToolResult(
+            success=self._execute_success,
+            data={},
+            error=None if self._execute_success else "provider failed",
+        )
 
 
 # ProviderScore.weighted_score is a read-only computed property, so we can't
@@ -321,3 +337,171 @@ def test_ark_local_reference_routes_without_fal_upload(rankings, monkeypatch, tm
     assert "image_url" not in ark.last_execute_inputs
     assert result.data["selected_tool"] == "seedance_ark"
     assert result.data["selected_provider"] == "ark"
+
+
+# ---------------------------------------------------------------------------
+# Explicit-selection-only providers
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "inputs",
+    [
+        {"prompt": "x"},
+        {"prompt": "x", "preferred_provider": "private"},
+        {"prompt": "x", "allowed_providers": ["private"]},
+        {
+            "prompt": "x",
+            "preferred_provider": "private",
+            "allowed_providers": ["private", "public"],
+        },
+    ],
+)
+def test_explicit_only_video_provider_is_excluded_without_exact_singleton_pin(rankings, inputs):
+    public = _StubTool("public_video", "public")
+    private = _StubTool("private_video", "private", explicit_only=True)
+    rankings[:] = [_ScoreStub("private_video", "private", 0.99), _ScoreStub("public_video", "public", 0.50)]
+
+    selector = VideoSelector()
+    filtered = selector._filter_candidates(inputs, [public, private])
+
+    assert private not in filtered
+
+
+def test_rank_mode_excludes_explicit_only_video_even_with_exact_pin(monkeypatch):
+    public = _StubTool("public_video", "public")
+    private = _StubTool("private_video", "private", explicit_only=True)
+    seen: list[_StubTool] = []
+
+    def fake_rank(candidates, task_context):  # noqa: ANN001
+        seen.extend(candidates)
+        return []
+
+    monkeypatch.setattr("lib.scoring.rank_providers", fake_rank)
+    selector = VideoSelector()
+    selector._providers = lambda: [public, private]  # type: ignore[assignment]
+
+    result = selector.execute({
+        "prompt": "x",
+        "operation": "rank",
+        "target_operation": "text_to_video",
+        "preferred_provider": "private",
+        "allowed_providers": ["private"],
+    })
+
+    assert result.success is True
+    assert private not in seen
+
+
+def test_exact_explicit_video_pin_bypasses_ranking(monkeypatch):
+    private = _StubTool("private_video", "private", explicit_only=True)
+
+    def fail_rank(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("exact explicit routing must not invoke scoring")
+
+    monkeypatch.setattr("lib.scoring.rank_providers", fail_rank)
+    selector = VideoSelector()
+    selector._providers = lambda: [private]  # type: ignore[assignment]
+
+    result = selector.execute({
+        "prompt": "x",
+        "preferred_provider": "private",
+        "allowed_providers": [" private ", "private"],
+    })
+
+    assert result.success is True
+    assert private.execute_calls == 1
+    assert result.data["alternatives_considered"] == []
+    assert result.data["fallback_tools"] == []
+
+
+def test_automatic_video_estimate_never_touches_explicit_only_unknown_estimator(rankings):
+    public = _StubTool("public_video", "public", cost=0.42)
+    private = _StubTool(
+        "private_video", "private", explicit_only=True,
+        estimate_error="unknown media cost",
+    )
+    rankings[:] = [_ScoreStub("public_video", "public", 0.90)]
+    selector = VideoSelector()
+    selector._providers = lambda: [public, private]  # type: ignore[assignment]
+
+    assert selector.estimate_cost({"prompt": "x"}) == pytest.approx(0.42)
+    assert private.estimate_calls == 0
+
+
+def test_exact_explicit_video_estimate_propagates_unknown_cost_without_scoring(monkeypatch):
+    private = _StubTool(
+        "private_video", "private", explicit_only=True,
+        estimate_error="unknown media cost",
+    )
+    monkeypatch.setattr(
+        "lib.scoring.rank_providers",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not score")),
+    )
+    selector = VideoSelector()
+    selector._providers = lambda: [private]  # type: ignore[assignment]
+
+    with pytest.raises(ValueError, match="unknown media cost"):
+        selector.estimate_cost({
+            "prompt": "x",
+            "preferred_provider": "private",
+            "allowed_providers": ["private"],
+        })
+
+
+def test_video_discovery_surfaces_and_fallbacks_omit_explicit_only_provider():
+    public = _StubTool("public_video", "public")
+    private = _StubTool("private_video", "private", explicit_only=True)
+    selector = VideoSelector()
+    selector._providers = lambda: [public, private]  # type: ignore[assignment]
+
+    assert selector.get_status() == ToolStatus.AVAILABLE
+    assert "private" not in selector.provider_matrix
+    assert "private_video" not in selector.fallback_tools
+    assert "private_video" not in selector.fallback_tools_for({"operation": "text_to_video"})
+    assert selector.fallback_tools_for({
+        "operation": "text_to_video",
+        "preferred_provider": "private",
+        "allowed_providers": ["private"],
+    }) == []
+
+    selector._providers = lambda: [private]  # type: ignore[assignment]
+    assert selector.get_status() == ToolStatus.UNAVAILABLE
+
+
+def test_exact_explicit_video_runtime_estimate_bypasses_scoring(monkeypatch):
+    private = _StubTool("private_video", "private", explicit_only=True, runtime=321.0)
+    monkeypatch.setattr(
+        "lib.scoring.rank_providers",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not score")),
+    )
+    selector = VideoSelector()
+    selector._providers = lambda: [private]  # type: ignore[assignment]
+
+    assert selector.estimate_runtime({
+        "prompt": "x",
+        "preferred_provider": "private",
+        "allowed_providers": ["private"],
+    }) == pytest.approx(321.0)
+
+
+def test_explicit_video_failure_is_terminal_and_reports_no_fallbacks(monkeypatch):
+    private = _StubTool("private_video", "private", explicit_only=True, execute_success=False)
+    public = _StubTool("public_video", "public")
+    monkeypatch.setattr(
+        "lib.scoring.rank_providers",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not score")),
+    )
+    selector = VideoSelector()
+    selector._providers = lambda: [private, public]  # type: ignore[assignment]
+
+    result = selector.execute({
+        "prompt": "x",
+        "preferred_provider": "private",
+        "allowed_providers": ["private"],
+    })
+
+    assert result.success is False
+    assert private.execute_calls == 1
+    assert public.execute_calls == 0
+    assert result.data["alternatives_considered"] == []
+    assert result.data["fallback_tools"] == []

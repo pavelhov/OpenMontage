@@ -191,29 +191,48 @@ class ImageSelector(BaseTool):
 
     @property
     def fallback_tools(self) -> list[str]:
-        """Dynamically built from discovered providers."""
-        return [t.name for t in self._providers()]
+        """Dynamically built from automatically routable providers."""
+        return [t.name for t in self._automatic_candidates()]
+
+    def fallback_tools_for(self, inputs: dict[str, Any]) -> list[str]:
+        """Return input-aware fallbacks without exposing explicit-only routes."""
+        if self._exact_explicit_candidate(inputs, self._providers()) is not None:
+            return []
+        return [t.name for t in self._filter_candidates(inputs, self._providers())]
 
     @property
     def provider_matrix(self) -> dict[str, dict[str, str]]:
         """Built at runtime from each provider's best_for field."""
         matrix = {}
-        for tool in self._providers():
+        for tool in self._automatic_candidates():
             strength = ", ".join(tool.best_for) if tool.best_for else tool.name
             matrix[tool.provider] = {"tool": tool.name, "strength": strength}
         return matrix
 
     def get_status(self) -> ToolStatus:
-        if any(tool.get_status() == ToolStatus.AVAILABLE for tool in self._providers()):
+        if any(tool.get_status() == ToolStatus.AVAILABLE for tool in self._automatic_candidates()):
             return ToolStatus.AVAILABLE
         return ToolStatus.UNAVAILABLE
 
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
-        candidates = self._providers()
+        candidates = self._filter_candidates(inputs, self._providers())
         if not candidates:
             return 0.0
+        explicit = self._exact_explicit_candidate(inputs, candidates)
+        if explicit is not None:
+            return explicit.estimate_cost(inputs)
         tool, _ = self._select_best_tool(inputs, candidates, self._prepare_task_context(inputs))
         return tool.estimate_cost(inputs) if tool else 0.0
+
+    def estimate_runtime(self, inputs: dict[str, Any]) -> float:
+        candidates = self._filter_candidates(inputs, self._providers())
+        if not candidates:
+            return 0.0
+        explicit = self._exact_explicit_candidate(inputs, candidates)
+        if explicit is not None:
+            return explicit.estimate_runtime(inputs)
+        tool, _ = self._select_best_tool(inputs, candidates, self._prepare_task_context(inputs))
+        return tool.estimate_runtime(inputs) if tool else 0.0
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         import logging
@@ -221,7 +240,8 @@ class ImageSelector(BaseTool):
 
         logger = logging.getLogger(__name__)
         task_context = self._prepare_task_context(inputs)
-        candidates = self._filter_candidates(inputs, self._providers())
+        rank_mode = inputs.get("operation") == "rank"
+        candidates = self._filter_candidates(inputs, self._providers(), rank_mode=rank_mode)
 
         # Rank mode — return scored provider rankings without generating
         if inputs.get("operation") == "rank":
@@ -236,9 +256,17 @@ class ImageSelector(BaseTool):
             )
 
         # Normal generation — use scored selection
+        explicit_route = self._exact_explicit_candidate(inputs, candidates) is not None
         tool, score = self._select_best_tool(inputs, candidates, task_context)
         if tool is None:
-            return ToolResult(success=False, error="No image provider available.")
+            return ToolResult(
+                success=False,
+                data=(
+                    {"alternatives_considered": [], "fallback_tools": []}
+                    if explicit_route else {}
+                ),
+                error="No image provider available.",
+            )
 
         # Adapt input keys: stock tools use 'query' while generators use 'prompt'
         adapted = dict(inputs)
@@ -318,6 +346,9 @@ class ImageSelector(BaseTool):
                 )
 
         result = tool.execute(adapted)
+        if explicit_route:
+            result.data["alternatives_considered"] = []
+            result.data["fallback_tools"] = []
         if result.success:
             result.data.setdefault("selected_tool", tool.name)
             result.data["selected_provider"] = tool.provider
@@ -325,10 +356,12 @@ class ImageSelector(BaseTool):
             if score:
                 result.data["provider_score"] = score.to_dict()
             result.data.update(self._tool_context_payload(tool))
-            result.data["alternatives_considered"] = [
-                t.name for t in candidates
-                if t.name != tool.name and t.get_status().value == "available"
-            ]
+            if not explicit_route:
+                result.data["alternatives_considered"] = [
+                    t.name for t in candidates
+                    if t.name != tool.name and t.get_status().value == "available"
+                ]
+                result.data.setdefault("fallback_tools", self.fallback_tools_for(inputs))
         return result
 
     def _select_best_tool(
@@ -340,13 +373,15 @@ class ImageSelector(BaseTool):
         """Select the best provider using scored ranking."""
         from lib.scoring import rank_providers
 
-        preferred = inputs.get("preferred_provider", "auto")
-        allowed = set(inputs.get("allowed_providers") or [])
-        if allowed:
-            candidates = [tool for tool in candidates if tool.provider in allowed]
         candidates = self._filter_candidates(inputs, candidates)
 
+        explicit = self._exact_explicit_candidate(inputs, candidates)
+        if explicit is not None:
+            return (explicit, None) if self._tool_selectable(explicit, inputs) else (None, None)
+
         rankings = rank_providers(candidates, task_context)
+
+        preferred = inputs.get("preferred_provider", "auto")
 
         tool_by_provider: dict[str, BaseTool] = {}
         for tool in candidates:
@@ -400,7 +435,26 @@ class ImageSelector(BaseTool):
             serialized.append(item)
         return serialized
 
-    def _filter_candidates(self, inputs: dict[str, Any], candidates: list[BaseTool]) -> list[BaseTool]:
+    def _filter_candidates(
+        self,
+        inputs: dict[str, Any],
+        candidates: list[BaseTool],
+        *,
+        rank_mode: bool = False,
+    ) -> list[BaseTool]:
+        allowed = self._allowed_provider_set(inputs)
+        if allowed:
+            candidates = [tool for tool in candidates if tool.provider in allowed]
+
+        candidates = [
+            tool for tool in candidates
+            if not self._is_explicit_only(tool)
+            or (
+                not rank_mode
+                and self._is_exact_provider_pin(inputs, tool.provider)
+            )
+        ]
+
         exact_model = inputs.get("model")
         if exact_model:
             model_matches = [
@@ -436,6 +490,48 @@ class ImageSelector(BaseTool):
             ):
                 filtered.append(tool)
         return filtered or candidates
+
+    def _automatic_candidates(self) -> list[BaseTool]:
+        return [tool for tool in self._providers() if not self._is_explicit_only(tool)]
+
+    @staticmethod
+    def _is_explicit_only(tool: BaseTool) -> bool:
+        return bool(getattr(tool, "supports", {}).get("explicit_selection_only"))
+
+    @staticmethod
+    def _allowed_provider_set(inputs: dict[str, Any]) -> set[str]:
+        values = inputs.get("allowed_providers") or []
+        if not isinstance(values, (list, tuple, set, frozenset)):
+            values = [values]
+        return {
+            value.strip()
+            for item in values
+            if (value := str(item).strip())
+        }
+
+    def _is_exact_provider_pin(
+        self,
+        inputs: dict[str, Any],
+        provider: str,
+    ) -> bool:
+        preferred = inputs.get("preferred_provider", "auto")
+        return preferred == provider and self._allowed_provider_set(inputs) == {provider}
+
+    def _exact_explicit_candidate(
+        self,
+        inputs: dict[str, Any],
+        candidates: list[BaseTool],
+    ) -> BaseTool | None:
+        preferred = inputs.get("preferred_provider")
+        return next(
+            (
+                tool for tool in candidates
+                if tool.provider == preferred
+                and self._is_explicit_only(tool)
+                and self._is_exact_provider_pin(inputs, tool.provider)
+            ),
+            None,
+        )
 
     @staticmethod
     def _has_custom_workflow(inputs: dict[str, Any]) -> bool:

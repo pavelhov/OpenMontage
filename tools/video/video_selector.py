@@ -259,7 +259,7 @@ class VideoSelector(BaseTool):
         See :meth:`fallback_tools_for` for the input-aware form used during
         routing, which drops ``image_selector`` for motion-required briefs.
         """
-        return [t.name for t in self._providers()] + ["image_selector"]
+        return [t.name for t in self._automatic_candidates()] + ["image_selector"]
 
     def fallback_tools_for(self, inputs: dict[str, object]) -> list[str]:
         """Input-aware fallback list used during routing.
@@ -271,7 +271,10 @@ class VideoSelector(BaseTool):
         caller — with no director skill enforcing the prohibition — still cannot
         fall back to an image tool when motion was requested.
         """
-        tools = [t.name for t in self._providers()]
+        providers = self._providers()
+        if self._exact_explicit_candidate(inputs, providers) is not None:
+            return []
+        tools = [t.name for t in self._filter_candidates(inputs, providers)]
         operation = inputs.get("operation", "text_to_video")
         if operation in self.MOTION_REQUIRED_OPERATIONS:
             return tools
@@ -281,13 +284,13 @@ class VideoSelector(BaseTool):
     def provider_matrix(self) -> dict[str, dict[str, str]]:
         """Built at runtime from each provider's best_for field."""
         matrix = {}
-        for tool in self._providers():
+        for tool in self._automatic_candidates():
             strength = ", ".join(tool.best_for) if tool.best_for else tool.name
             matrix[tool.provider] = {"tool": tool.name, "strength": strength}
         return matrix
 
     def get_status(self) -> ToolStatus:
-        if any(tool.get_status() == ToolStatus.AVAILABLE for tool in self._providers()):
+        if any(tool.get_status() == ToolStatus.AVAILABLE for tool in self._automatic_candidates()):
             return ToolStatus.AVAILABLE
         return ToolStatus.UNAVAILABLE
 
@@ -295,13 +298,19 @@ class VideoSelector(BaseTool):
         candidates = self._filter_candidates(inputs, self._providers())
         if not candidates:
             return 0.0
+        explicit = self._exact_explicit_candidate(inputs, candidates)
+        if explicit is not None:
+            return explicit.estimate_cost(inputs)
         tool, _ = self._select_best_tool(inputs, candidates, self._prepare_task_context(inputs))
         return tool.estimate_cost(inputs) if tool else 0.0
 
     def estimate_runtime(self, inputs: dict[str, object]) -> float:
-        candidates = self._providers()
+        candidates = self._filter_candidates(inputs, self._providers())
         if not candidates:
             return 0.0
+        explicit = self._exact_explicit_candidate(inputs, candidates)
+        if explicit is not None:
+            return explicit.estimate_runtime(inputs)
         tool, _ = self._select_best_tool(inputs, candidates, self._prepare_task_context(inputs))
         return tool.estimate_runtime(inputs) if tool else 0.0
 
@@ -314,7 +323,7 @@ class VideoSelector(BaseTool):
         if inputs.get("operation") == "rank":
             rank_inputs = self._rank_inputs(inputs)
             task_context = self._prepare_task_context(rank_inputs)
-            candidates = self._filter_candidates(rank_inputs, candidates)
+            candidates = self._filter_candidates(rank_inputs, candidates, rank_mode=True)
             rankings = rank_providers(candidates, task_context)
             return ToolResult(
                 success=True,
@@ -327,9 +336,18 @@ class VideoSelector(BaseTool):
 
         # Normal generation — use scored selection
         task_context = self._prepare_task_context(inputs)
+        candidates = self._filter_candidates(inputs, candidates)
+        explicit_route = self._exact_explicit_candidate(inputs, candidates) is not None
         tool, score = self._select_best_tool(inputs, candidates, task_context)
         if tool is None:
-            return ToolResult(success=False, error="No video generation provider available.")
+            return ToolResult(
+                success=False,
+                data=(
+                    {"alternatives_considered": [], "fallback_tools": []}
+                    if explicit_route else {}
+                ),
+                error="No video generation provider available.",
+            )
 
         # Adapt input keys: stock tools use 'query' while generators use 'prompt'
         adapted = dict(inputs)
@@ -347,9 +365,19 @@ class VideoSelector(BaseTool):
                     from tools.video._shared import upload_image_fal
                     adapted["image_url"] = upload_image_fal(adapted["reference_image_path"])
                 except Exception as e:
-                    return ToolResult(success=False, error=f"Failed to upload reference image: {e}")
+                    return ToolResult(
+                        success=False,
+                        data=(
+                            {"alternatives_considered": [], "fallback_tools": []}
+                            if explicit_route else {}
+                        ),
+                        error=f"Failed to upload reference image: {e}",
+                    )
 
         result = tool.execute(adapted)
+        if explicit_route:
+            result.data["alternatives_considered"] = []
+            result.data["fallback_tools"] = []
         if result.success:
             result.data.setdefault("selected_tool", tool.name)
             result.data["selected_provider"] = tool.provider
@@ -357,12 +385,13 @@ class VideoSelector(BaseTool):
             if score:
                 result.data["provider_score"] = score.to_dict()
             result.data.update(self._tool_context_payload(tool))
-            result.data["alternatives_considered"] = [
-                t.name for t in candidates
-                if t.name != tool.name and t.get_status().value == "available"
-            ]
-            # Input-aware fallback list (drops image_selector for motion-required briefs).
-            result.data.setdefault("fallback_tools", self.fallback_tools_for(inputs))
+            if not explicit_route:
+                result.data["alternatives_considered"] = [
+                    t.name for t in candidates
+                    if t.name != tool.name and t.get_status().value == "available"
+                ]
+                # Input-aware fallback list (drops image_selector for motion-required briefs).
+                result.data.setdefault("fallback_tools", self.fallback_tools_for(inputs))
         return result
 
     def _select_best_tool(
@@ -376,13 +405,15 @@ class VideoSelector(BaseTool):
         Respects preferred_provider and environment hints as tie-breakers,
         but the scoring engine drives the primary selection.
         """
-        from lib.scoring import rank_providers, ProviderScore
+        from lib.scoring import rank_providers
+
+        candidates = self._filter_candidates(inputs, candidates)
+
+        explicit = self._exact_explicit_candidate(inputs, candidates)
+        if explicit is not None:
+            return (explicit, None) if self._tool_selectable(explicit, inputs) else (None, None)
 
         preferred = inputs.get("preferred_provider", "auto")
-        allowed = set(inputs.get("allowed_providers") or [])
-        if allowed:
-            candidates = [tool for tool in candidates if tool.provider in allowed]
-        candidates = self._filter_candidates(inputs, candidates)
 
         env_hint = os.environ.get("VIDEO_GEN_LOCAL_MODEL", "").lower()
         env_map = {
@@ -485,7 +516,22 @@ class VideoSelector(BaseTool):
         self,
         inputs: dict[str, object],
         candidates: list[BaseTool],
+        *,
+        rank_mode: bool = False,
     ) -> list[BaseTool]:
+        allowed = self._allowed_provider_set(inputs)
+        if allowed:
+            candidates = [tool for tool in candidates if tool.provider in allowed]
+
+        candidates = [
+            tool for tool in candidates
+            if not self._is_explicit_only(tool)
+            or (
+                not rank_mode
+                and self._is_exact_provider_pin(inputs, tool.provider)
+            )
+        ]
+
         exact_model = inputs.get("model")
         if exact_model:
             model_matches = [
@@ -530,6 +576,44 @@ class VideoSelector(BaseTool):
                 filtered.append(tool)
 
         return filtered if matched_operation else candidates
+
+    def _automatic_candidates(self) -> list[BaseTool]:
+        return [tool for tool in self._providers() if not self._is_explicit_only(tool)]
+
+    @staticmethod
+    def _is_explicit_only(tool: BaseTool) -> bool:
+        return bool(getattr(tool, "supports", {}).get("explicit_selection_only"))
+
+    @staticmethod
+    def _allowed_provider_set(inputs: dict[str, object]) -> set[str]:
+        values = inputs.get("allowed_providers") or []
+        if not isinstance(values, (list, tuple, set, frozenset)):
+            values = [values]
+        return {
+            value.strip()
+            for item in values
+            if (value := str(item).strip())
+        }
+
+    def _is_exact_provider_pin(self, inputs: dict[str, object], provider: str) -> bool:
+        preferred = inputs.get("preferred_provider", "auto")
+        return preferred == provider and self._allowed_provider_set(inputs) == {provider}
+
+    def _exact_explicit_candidate(
+        self,
+        inputs: dict[str, object],
+        candidates: list[BaseTool],
+    ) -> BaseTool | None:
+        preferred = inputs.get("preferred_provider")
+        return next(
+            (
+                tool for tool in candidates
+                if tool.provider == preferred
+                and self._is_explicit_only(tool)
+                and self._is_exact_provider_pin(inputs, tool.provider)
+            ),
+            None,
+        )
 
     @staticmethod
     def _operation_ready(tool: BaseTool, operation: str) -> bool:

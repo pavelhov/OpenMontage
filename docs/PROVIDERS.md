@@ -106,12 +106,16 @@ stable contract for them at the time of this update.
 
 ## Cloud Providers
 
-### xAI — Grok Image + Video
+### xAI — Grok Image + Video (REST API)
 
 > **Best if you want one provider for image edits and reference-conditioned short video.** Grok covers both image generation/editing and video generation under one key.
 
 **Tools unlocked:** `grok_image`, `grok_video`
 **Env var:** `XAI_API_KEY`
+
+This section describes OpenMontage's registered **xAI REST API** tools, which
+use `XAI_API_KEY`. They are distinct from the locally installed `grok` coding
+agent CLI.
 
 #### Setup
 
@@ -138,6 +142,34 @@ Current xAI docs pricing for the Grok media models:
 | `grok-imagine-video` input images | $0.002 per input image |
 
 OpenMontage now uses those published rates in the Grok tool estimators.
+
+#### Grok CLI OAuth/subscription route
+
+**Tools unlocked:** `grok_cli_image`, `grok_cli_video`
+
+**Auth:** cached Grok OAuth/subscription session; no `XAI_API_KEY` required
+
+**Qualified version:** Grok CLI `1.0.13`
+
+The CLI route is a separate `grok_cli` provider. It exposes the proven native
+Imagine primitives `image_gen`, `image_edit`, `image_to_video`, and
+`reference_to_video`. It does not expose direct text-to-video, video editing,
+or post-generation upscaling as provider primitives.
+
+This route is **explicit-only**: callers must set both
+`preferred_provider: grok_cli` and `allowed_providers: [grok_cli]`. It never
+enters automatic ranking or fallbacks, and every failure is terminal for that
+selection. A generation call additionally requires `allow_unknown_cost: true`
+after the user approves proceeding without a reliable media-cost estimate.
+
+The CLI's terminal dollar field covers the coding-agent turn, not the
+subscription media charge. OpenMontage therefore reports the media cost as
+unknown rather than free and records any reported agent cost separately.
+No adapter starts login, opens a browser, retries an indeterminate call, or
+falls back to the REST provider.
+
+See the [Grok CLI compatibility audit](GROK_CLI_COMPATIBILITY.md) for the
+version-pinned command, artifact, failure, and verification contracts.
 
 ---
 
