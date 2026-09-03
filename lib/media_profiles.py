@@ -176,6 +176,178 @@ def ffmpeg_output_args(profile: MediaProfile) -> list[str]:
     return args
 
 
+# Social masters that must pass delivery timing gates (no concat copy).
+DELIVERY_TIMING_PROFILES: frozenset[str] = frozenset({
+    "tiktok",
+    "tiktok_720p",
+    "instagram_reels",
+    "instagram_feed",
+    "youtube_shorts",
+})
+
+
+def delivery_requires_timing_gate(
+    delivery: dict | None,
+    *,
+    profile_name: str | None = None,
+) -> bool:
+    """True when a resolved delivery target needs timing-safe re-encode."""
+    if profile_name and profile_name in DELIVERY_TIMING_PROFILES:
+        return True
+    if not delivery:
+        return False
+    profile = str(delivery.get("profile") or "")
+    if profile in DELIVERY_TIMING_PROFILES:
+        return True
+    source = str(delivery.get("source") or "")
+    return any(
+        token in source
+        for token in (
+            "profile:tiktok",
+            "profile:instagram",
+            "profile:youtube_shorts",
+            "auto_snap_near_9_16",
+        )
+    )
+
+
+def ffmpeg_delivery_output_args(
+    profile: MediaProfile | str,
+    *,
+    crf: int | None = None,
+    preset: str = "medium",
+) -> list[str]:
+    """Timing-safe FFmpeg output args for social delivery masters.
+
+    Enforces CFR, no B-frames, IDR at t=0, and faststart so QuickTime/TikTok
+    preview UIs render the first frame immediately.
+    """
+    resolved = get_profile(profile) if isinstance(profile, str) else profile
+    gop = max(1, int(resolved.fps))
+    return [
+        "-c:v", resolved.codec,
+        "-profile:v", "main",
+        "-pix_fmt", resolved.pixel_format,
+        "-crf", str(crf if crf is not None else resolved.crf),
+        "-preset", preset,
+        "-r", str(resolved.fps),
+        "-bf", "0",
+        "-g", str(gop),
+        "-keyint_min", "1",
+        "-force_key_frames", "0",
+        "-c:a", resolved.audio_codec,
+        "-ar", "44100",
+        "-ac", "2",
+        "-movflags", "+faststart",
+    ]
+
+
+def _parse_probe_rate(rate: str | None) -> float | None:
+    if not rate:
+        return None
+    try:
+        if "/" in rate:
+            num, den = rate.split("/", 1)
+            den_val = float(den)
+            if den_val == 0:
+                return None
+            return float(num) / den_val
+        return float(rate)
+    except (TypeError, ValueError):
+        return None
+
+
+def delivery_timing_issues(
+    probe_data: dict,
+    *,
+    target_fps: int | None = None,
+) -> list[str]:
+    """Return blocking timing issues for a social delivery master."""
+    issues: list[str] = []
+    streams = probe_data.get("streams") or []
+    fmt = probe_data.get("format") or {}
+    video_stream = next(
+        (s for s in streams if s.get("codec_type") == "video"), {}
+    )
+    audio_stream = next(
+        (s for s in streams if s.get("codec_type") == "audio"), {}
+    )
+
+    if not video_stream:
+        return ["No video stream in output"]
+
+    if int(video_stream.get("has_b_frames", 0) or 0) > 0:
+        issues.append("B-frames present in social delivery master")
+
+    format_start = float(fmt.get("start_time", 0) or 0)
+    if abs(format_start) > 0.001:
+        issues.append(f"Non-zero container start_time: {format_start:.6f}s")
+
+    video_start = float(video_stream.get("start_time", 0) or 0)
+    if abs(video_start) > 0.001:
+        issues.append(
+            f"Non-zero video start_time: {video_start:.6f}s"
+        )
+
+    if audio_stream:
+        audio_start = float(audio_stream.get("start_time", 0) or 0)
+        if abs(audio_start) > 0.001:
+            issues.append(
+                f"Non-zero audio start_time: {audio_start:.6f}s"
+            )
+
+    if target_fps:
+        r_rate = _parse_probe_rate(video_stream.get("r_frame_rate"))
+        avg_rate = _parse_probe_rate(video_stream.get("avg_frame_rate"))
+        if r_rate is not None and abs(r_rate - float(target_fps)) > 0.01:
+            issues.append(
+                f"Non-{target_fps}fps output: r_frame_rate={video_stream.get('r_frame_rate')}"
+            )
+        if avg_rate is not None and abs(avg_rate - float(target_fps)) > 0.01:
+            issues.append(
+                f"Non-{target_fps}fps output: avg_frame_rate={video_stream.get('avg_frame_rate')}"
+            )
+
+    return issues
+
+
+def delivery_timing_issue(
+    probe_data: dict | str | Path,
+    *,
+    delivery: dict | None = None,
+    profile_name: str | None = None,
+) -> str | None:
+    """Return a blocking timing issue string for a social delivery master."""
+    import json
+    import subprocess
+    from pathlib import Path as _Path
+
+    resolved_profile = profile_name or (delivery or {}).get("profile")
+    target_fps = None
+    if delivery and delivery.get("fps"):
+        target_fps = int(delivery["fps"])
+    elif resolved_profile:
+        try:
+            target_fps = int(get_profile(resolved_profile).fps)
+        except ValueError:
+            target_fps = None
+
+    if isinstance(probe_data, (str, _Path)):
+        cmd = [
+            "ffprobe", "-v", "quiet", "-print_format", "json",
+            "-show_format", "-show_streams", str(probe_data),
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if proc.returncode != 0:
+            return f"ffprobe failed for delivery timing check: {proc.stderr.strip()}"
+        probe_data = json.loads(proc.stdout)
+
+    issues = delivery_timing_issues(probe_data, target_fps=target_fps)
+    if not issues:
+        return None
+    return "; ".join(issues)
+
+
 # ---- Delivery geometry helpers ----
 
 GEOMETRY_PIXEL_TOLERANCE = 8
@@ -388,11 +560,17 @@ def resolve_delivery_geometry(
         )
     ):
         width, height = snap_portrait_9_16(observed_width, observed_height)
+        profile_name = "tiktok_720p" if width <= 800 else "tiktok"
+        profile = get_profile(profile_name)
         return {
             "width": width,
             "height": height,
             "fit": "cover",
+            "fps": profile.fps,
+            "codec": profile.codec,
+            "audio_codec": profile.audio_codec,
             "source": "auto_snap_near_9_16",
+            "profile": profile.name,
         }
 
     return None

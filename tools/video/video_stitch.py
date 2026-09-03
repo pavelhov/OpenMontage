@@ -466,20 +466,57 @@ class VideoStitch(BaseTool):
         crf: int,
         preset: str,
         fit: str = "pad",
+        delivery: dict[str, Any] | None = None,
     ) -> None:
         """Re-encode a clip to the target format."""
-        from lib.media_profiles import ffmpeg_geometry_filter
+        from lib.media_profiles import (
+            delivery_requires_timing_gate,
+            ffmpeg_delivery_output_args,
+            ffmpeg_geometry_filter,
+        )
+
+        timing_gate = delivery_requires_timing_gate(delivery)
+        profile_name = (delivery or {}).get("profile")
 
         cmd = [
             "ffmpeg", "-y",
             "-i", str(clip_path),
-            "-vf", ffmpeg_geometry_filter(width, height, fit=fit),
-            "-r", str(fps),
-            "-c:v", video_codec, "-crf", str(crf), "-preset", preset,
-            "-c:a", audio_codec, "-ar", "44100", "-ac", "2",
-            "-pix_fmt", "yuv420p",
-            str(output_path),
         ]
+        # Grok raw MP4s can include MJPEG attached_pic sidecars; map only
+        # the primary video/audio streams during delivery normalization.
+        if timing_gate:
+            cmd.extend(["-map", "0:v:0", "-map", "0:a:0?"])
+        cmd.extend(["-vf", ffmpeg_geometry_filter(width, height, fit=fit)])
+        if timing_gate and profile_name:
+            cmd.extend(
+                ffmpeg_delivery_output_args(
+                    profile_name,
+                    crf=crf,
+                    preset=preset,
+                )
+            )
+        else:
+            cmd.extend(
+                [
+                    "-r",
+                    str(fps),
+                    "-c:v",
+                    video_codec,
+                    "-crf",
+                    str(crf),
+                    "-preset",
+                    preset,
+                    "-c:a",
+                    audio_codec,
+                    "-ar",
+                    "44100",
+                    "-ac",
+                    "2",
+                    "-pix_fmt",
+                    "yuv420p",
+                ]
+            )
+        cmd.append(str(output_path))
         self.run_command(cmd)
 
     def _needs_normalization(self, probes: list[dict[str, Any]]) -> bool:
@@ -571,11 +608,20 @@ class VideoStitch(BaseTool):
         needs_norm = self._needs_normalization(probes)
         delivery = self._resolve_delivery_geometry(inputs, probes)
         delivery_norm = bool(delivery) and not self._clips_match_delivery_geometry(probes, delivery)
+        from lib.media_profiles import delivery_requires_timing_gate
+
+        delivery_timing = delivery_requires_timing_gate(delivery)
 
         # If clips are incompatible and auto_normalize is off, fail with advice
         # Delivery-geometry mismatches always normalize (cover/crop for 9:16)
         # instead of silently concat-copying off-geometry TikTok masters.
-        if needs_norm and not auto_normalize and not delivery_norm and transition == "cut":
+        if (
+            needs_norm
+            and not auto_normalize
+            and not delivery_norm
+            and not delivery_timing
+            and transition == "cut"
+        ):
             return ToolResult(
                 success=False,
                 error=(
@@ -592,7 +638,13 @@ class VideoStitch(BaseTool):
         try:
             # Normalize clips if needed
             working_clips: list[str] = []
-            if needs_norm or auto_normalize or delivery_norm or transition != "cut":
+            if (
+                needs_norm
+                or auto_normalize
+                or delivery_norm
+                or delivery_timing
+                or transition != "cut"
+            ):
                 width, height, fps, vid_codec, aud_codec, fit = self._resolve_normalization_target(
                     inputs, probes
                 )
@@ -616,6 +668,7 @@ class VideoStitch(BaseTool):
                         crf,
                         preset,
                         fit=fit,
+                        delivery=delivery,
                     )
                     working_clips.append(str(norm_path))
                     temp_files.append(norm_path)
@@ -631,7 +684,15 @@ class VideoStitch(BaseTool):
                 )
 
             if transition == "cut":
-                result_data = self._stitch_cut(working_clips, output_path, temp_dir, temp_files)
+                result_data = self._stitch_cut(
+                    working_clips,
+                    output_path,
+                    temp_dir,
+                    temp_files,
+                    delivery=delivery,
+                    crf=crf,
+                    preset=preset,
+                )
             elif transition == "crossfade":
                 result_data = self._stitch_crossfade(working_clips, output_path, transition_dur, probes)
             elif transition == "fade":
@@ -647,11 +708,20 @@ class VideoStitch(BaseTool):
             out_height = int((out_probe or {}).get("height") or 0)
 
             if delivery:
-                from lib.media_profiles import delivery_geometry_issue
+                from lib.media_profiles import (
+                    delivery_geometry_issue,
+                    delivery_timing_issue,
+                )
 
                 geometry_issue = delivery_geometry_issue(out_width, out_height, delivery)
                 if geometry_issue:
                     return ToolResult(success=False, error=geometry_issue)
+                timing_issue = delivery_timing_issue(
+                    str(output_path),
+                    delivery=delivery,
+                )
+                if timing_issue:
+                    return ToolResult(success=False, error=timing_issue)
 
             return ToolResult(
                 success=True,
@@ -660,7 +730,10 @@ class VideoStitch(BaseTool):
                     "clip_count": len(clips),
                     "transition": transition,
                     "transition_duration": transition_dur if transition != "cut" else 0,
-                    "auto_normalized": needs_norm or auto_normalize or delivery_norm,
+                    "auto_normalized": (
+                        needs_norm or auto_normalize or delivery_norm or delivery_timing
+                    ),
+                    "delivery_timing_gate": delivery_timing,
                     "delivery_geometry": (
                         {
                             "width": int(delivery["width"]),
@@ -688,8 +761,43 @@ class VideoStitch(BaseTool):
         output_path: Path,
         temp_dir: Path,
         temp_files: list[Path],
+        delivery: dict[str, Any] | None = None,
+        crf: int = 23,
+        preset: str = "medium",
     ) -> dict[str, Any]:
         """Simple concat via FFmpeg concat demuxer (no transition)."""
+        from lib.media_profiles import (
+            delivery_requires_timing_gate,
+            ffmpeg_delivery_output_args,
+        )
+
+        if delivery_requires_timing_gate(delivery):
+            profile_name = (delivery or {}).get("profile")
+            if not profile_name:
+                raise ValueError("Delivery timing gate requires a named profile")
+
+            working_clips = self._ensure_audio_for_clips(
+                clips, temp_dir, temp_files,
+            )
+            inputs: list[str] = []
+            for clip in working_clips:
+                inputs.extend(["-i", clip])
+
+            n = len(working_clips)
+            concat_inputs = "".join(f"[{i}:v][{i}:a]" for i in range(n))
+            filter_complex = f"{concat_inputs}concat=n={n}:v=1:a=1[v][a]"
+
+            cmd = [
+                "ffmpeg", "-y",
+                *inputs,
+                "-filter_complex", filter_complex,
+                "-map", "[v]", "-map", "[a]",
+                *ffmpeg_delivery_output_args(profile_name, crf=crf, preset=preset),
+                str(output_path),
+            ]
+            self.run_command(cmd)
+            return {"method": "filter_concat_delivery_safe"}
+
         concat_list = temp_dir / "concat_list.txt"
         temp_files.append(concat_list)
         with open(concat_list, "w", encoding="utf-8") as f:

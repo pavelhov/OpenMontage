@@ -2393,6 +2393,7 @@ class VideoCompose(BaseTool):
                 try:
                     from lib.media_profiles import (
                         delivery_geometry_issue,
+                        delivery_timing_issue,
                         resolve_delivery_geometry,
                     )
 
@@ -2429,6 +2430,28 @@ class VideoCompose(BaseTool):
                             "source": delivery.get("source") if delivery else None,
                             "profile": delivery.get("profile") if delivery else None,
                             "observed": f"{width}x{height}",
+                        }
+                    timing_issue = delivery_timing_issue(
+                        probe_data,
+                        profile_name=(
+                            profile_name
+                            or metadata.get("profile")
+                            or metadata.get("output_profile")
+                            or (delivery or {}).get("profile")
+                        ),
+                    )
+                    if timing_issue:
+                        technical_probe["issues"].append(timing_issue)
+                        technical_probe["delivery_timing"] = {
+                            "profile": (
+                                profile_name
+                                or metadata.get("profile")
+                                or metadata.get("output_profile")
+                                or (delivery or {}).get("profile")
+                            ),
+                            "observed_fps": fps_str,
+                            "has_b_frames": video_stream.get("has_b_frames"),
+                            "start_time": video_stream.get("start_time"),
                         }
                 except Exception as e:
                     technical_probe["issues"].append(
@@ -2717,6 +2740,9 @@ class VideoCompose(BaseTool):
                 "effectively silent", "ffprobe failed", "suspiciously short",
                 "tts punctuation leak",  # reading literal punctuation aloud
                 "delivery geometry mismatch",  # off-aspect TikTok/social masters
+                "b-frames",  # social delivery timing gate
+                "non-zero",  # start_time offsets break QuickTime/TikTok preview
+                "non-30fps",  # CFR requirement for TikTok masters
             ])
         ]
 
