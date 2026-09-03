@@ -21,7 +21,7 @@ from typing import Any
 from tools.base_tool import ToolResult
 
 
-PINNED_CLI_VERSION = "1.0.13"
+PINNED_CLI_VERSION = "1.0.18"
 PINNED_MODEL = "grok-4.6"
 MAX_MEDIA_PROMPT_CHARS = 4096
 DEFAULT_GROK_PATH = "grok"
