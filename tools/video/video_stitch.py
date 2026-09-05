@@ -471,7 +471,9 @@ class VideoStitch(BaseTool):
         """Re-encode a clip to the target format."""
         from lib.media_profiles import (
             delivery_requires_timing_gate,
+            ffmpeg_delivery_audio_filter,
             ffmpeg_delivery_output_args,
+            ffmpeg_delivery_video_filter,
             ffmpeg_geometry_filter,
         )
 
@@ -486,7 +488,13 @@ class VideoStitch(BaseTool):
         # the primary video/audio streams during delivery normalization.
         if timing_gate:
             cmd.extend(["-map", "0:v:0", "-map", "0:a:0?"])
-        cmd.extend(["-vf", ffmpeg_geometry_filter(width, height, fit=fit)])
+            cmd.extend([
+                "-vf",
+                ffmpeg_delivery_video_filter(width, height, fit=fit, fps=fps),
+            ])
+            cmd.extend(["-af", ffmpeg_delivery_audio_filter()])
+        else:
+            cmd.extend(["-vf", ffmpeg_geometry_filter(width, height, fit=fit)])
         if timing_gate and profile_name:
             cmd.extend(
                 ffmpeg_delivery_output_args(

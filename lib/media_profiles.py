@@ -311,6 +311,54 @@ def delivery_timing_issues(
     return issues
 
 
+def delivery_first_video_packet_issues(
+    probe_data: dict | str | Path,
+) -> list[str]:
+    """Return blocking issues when the first video packet does not start at t=0."""
+    import json
+    import subprocess
+    from pathlib import Path as _Path
+
+    path: _Path | None = None
+    if isinstance(probe_data, (str, _Path)):
+        path = _Path(probe_data)
+    else:
+        path_value = probe_data.get("_path") or probe_data.get("path")
+        if path_value:
+            path = _Path(path_value)
+
+    if path is None:
+        return []
+
+    cmd = [
+        "ffprobe", "-v", "error", "-select_streams", "v:0",
+        "-show_packets", "-read_intervals", "%+#1",
+        "-show_entries", "packet=pts_time,dts_time,flags",
+        "-of", "json", str(path),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    if proc.returncode != 0:
+        return [f"First-packet timing check failed: {proc.stderr.strip()}"]
+
+    packets = json.loads(proc.stdout or "{}").get("packets") or []
+    if not packets:
+        return ["No video packets found for first-packet timing check"]
+
+    first = packets[0]
+    pts_time = float(first.get("pts_time", -1) or -1)
+    if abs(pts_time) > 0.001:
+        issues = [f"First video packet PTS not zero: {pts_time:.6f}s"]
+        flags = str(first.get("flags") or "")
+        if not flags.startswith("K"):
+            issues.append("First video packet is not a keyframe")
+        return issues
+
+    flags = str(first.get("flags") or "")
+    if not flags.startswith("K"):
+        return ["First video packet is not a keyframe"]
+    return []
+
+
 def delivery_timing_issue(
     probe_data: dict | str | Path,
     *,
@@ -343,6 +391,8 @@ def delivery_timing_issue(
         probe_data = json.loads(proc.stdout)
 
     issues = delivery_timing_issues(probe_data, target_fps=target_fps)
+    if isinstance(probe_data, (str, _Path)):
+        issues.extend(delivery_first_video_packet_issues(probe_data))
     if not issues:
         return None
     return "; ".join(issues)
@@ -455,6 +505,27 @@ def ffmpeg_geometry_filter(
         f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black"
     )
+
+
+def ffmpeg_delivery_video_filter(
+    width: int,
+    height: int,
+    *,
+    fit: str = "pad",
+    fps: int = 30,
+) -> str:
+    """Timing-safe video filter chain for social delivery normalization.
+
+    Resets clip PTS to zero, applies exact delivery geometry, and enforces CFR
+    before concat/stitch so QuickTime/TikTok preview UIs get a frame at t=0.
+    """
+    geometry = ffmpeg_geometry_filter(width, height, fit=fit)
+    return f"setpts=PTS-STARTPTS,{geometry},fps={fps}"
+
+
+def ffmpeg_delivery_audio_filter() -> str:
+    """Reset audio PTS to zero for delivery-safe concat/stitch."""
+    return "asetpts=PTS-STARTPTS"
 
 
 def resolve_delivery_geometry(
