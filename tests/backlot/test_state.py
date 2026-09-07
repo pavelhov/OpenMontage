@@ -52,6 +52,30 @@ SCRIPT = {
 
 
 class TestBoardState:
+    @pytest.mark.parametrize("with_storyboard", [False, True])
+    def test_reference_images_remain_available_with_storyboard(self, projects_root, with_storyboard):
+        p = _make_project(projects_root, "references")
+        image_dir = p / "assets" / "images"
+        for name in ("a.png", "CONTACT-SHEET-overview.jpg", "z.WEBP", "notes.txt"):
+            (image_dir / name).write_bytes(b"fixture")
+        (image_dir / "folder.png").mkdir()
+        if with_storyboard:
+            _write(p / "artifacts" / "scene_plan.json", SCENE_PLAN)
+
+        state = load_board_state(p)
+
+        assert bool(state["storyboard"]) is with_storyboard
+        assert state["media"]["images"] == [
+            {"path": f"assets/images/{name}", "name": name}
+            for name in ("CONTACT-SHEET-overview.jpg", "a.png", "z.WEBP")
+        ]
+        assert state["media"]["snapshots"] == []
+
+    def test_reference_images_empty_when_directory_absent(self, projects_root):
+        p = _make_project(projects_root, "no-references")
+        (p / "assets" / "images").rmdir()
+        assert load_board_state(p)["media"]["images"] == []
+
     def test_full_project(self, projects_root):
         p = _make_project(projects_root, "film")
         _write(p / "project.json", {"project_id": "film", "title": "My Film",

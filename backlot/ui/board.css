@@ -1040,3 +1040,17 @@ body:not(.first) .approval-review { animation: none; }
   .approval-review-foot button { width: 100%; }
   .approval-status { white-space: normal; }
 }
+
+/* Reference thumbnails carry a filename so a viewer can name what they picked;
+   the grid itself is shared with "what the watcher found". */
+.reference-card { min-width: 0; }
+.reference-card .thumb-caption {
+  display: block;
+  padding: 4px 2px 0;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--text-3);
+  word-break: break-all;
+}
+.reference-link { display: block; }
+.reference-link:focus-visible { outline: 2px solid var(--accent, #e8a33d); outline-offset: 2px; }

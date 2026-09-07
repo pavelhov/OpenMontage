@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 import time
@@ -165,6 +166,55 @@ def staged_backlot_server():
             server.wait(timeout=5)
         except subprocess.TimeoutExpired:
             server.kill()
+
+
+def test_references_show_full_captions_and_links_with_storyboard(staged_backlot_server):
+    from PIL import Image
+
+    project = backlot_screenshot_stage.STAGE_DIR / "reference-panel"
+    (project / "artifacts").mkdir(parents=True, exist_ok=True)
+    image_dir = project / "assets" / "images"
+    image_dir.mkdir(parents=True, exist_ok=True)
+    filename = "reference-with-a-long-filename-that-must-wrap-without-being-clipped.png"
+    Image.new("RGB", (640, 360), "navy").save(image_dir / filename)
+    (project / "artifacts" / "scene_plan.json").write_text(json.dumps({
+        "version": "1.0", "scenes": [{
+            "id": "s1", "type": "generated", "description": "Reference test shot",
+            "start_seconds": 0, "end_seconds": 4,
+        }],
+    }))
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True)
+        try:
+            for width in (1280, 390):
+                page = browser.new_page(viewport={"width": width, "height": 900})
+                page.goto(f"{staged_backlot_server}/p/reference-panel?static=1")
+                page.locator(".scene-card").first.wait_for()
+                caption = page.locator(".reference-card .thumb-caption")
+                caption.wait_for()
+                assert caption.inner_text() == filename
+                caption.scroll_into_view_if_needed()
+                assert caption.evaluate("""el => {
+                    const r = el.getBoundingClientRect();
+                    const p = el.parentElement.getBoundingClientRect();
+                    return r.bottom <= p.bottom + 1 && r.left >= 0 &&
+                        r.right <= innerWidth && el.scrollHeight <= el.clientHeight + 1;
+                }""")
+                assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+                link = page.locator(".reference-link")
+                assert link.get_attribute("href").endswith(f"/assets/images/{filename}")
+                assert link.locator("img").evaluate("el => el.complete && el.naturalWidth > 0")
+                with page.expect_popup() as opened:
+                    link.click()
+                popup = opened.value
+                popup.wait_for_load_state()
+                assert popup.url.endswith(f"/assets/images/{filename}")
+                assert popup.locator("img").evaluate("el => el.naturalWidth === 640")
+                popup.close()
+                page.close()
+        finally:
+            browser.close()
 
 
 def test_project_pages_fit_mobile_and_tablet_widths(staged_backlot_server):

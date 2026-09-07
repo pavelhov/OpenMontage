@@ -604,8 +604,21 @@ def _scan_media(project_dir: Path) -> dict[str, list[dict]]:
                 if f.suffix.lower() in MEDIA_IMAGE_EXT and f.is_file():
                     snapshots.append({"path": _rel(project_dir, f)})
 
+    # assets/images/ is the project convention's home for generated stills
+    # (AGENT_GUIDE "Project Directory Convention"), so reference frames and
+    # contact sheets land here. Kept separate from snapshots because that
+    # bucket only renders in the board's degraded, no-storyboard view.
+    images: list[dict] = []
+    images_dir = project_dir / "assets" / "images"
+    if images_dir.is_dir():
+        for f in sorted(images_dir.iterdir()):
+            if f.suffix.lower() in MEDIA_IMAGE_EXT and f.is_file():
+                images.append({"path": _rel(project_dir, f), "name": f.name})
+    # A contact sheet indexes the rest, so it leads.
+    images.sort(key=lambda i: (not i["name"].upper().startswith("CONTACT-SHEET"), i["name"]))
+
     renders.sort(key=lambda r: r.get("mtime", 0), reverse=True)
-    return {"renders": renders, "snapshots": snapshots, "music": music}
+    return {"renders": renders, "snapshots": snapshots, "music": music, "images": images}
 
 
 def _find_poster(project_dir: Path, state: dict) -> Optional[str]:

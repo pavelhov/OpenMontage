@@ -24,5 +24,9 @@ export function resolveAsset(src: string): string {
     return posix.startsWith("/") ? `file://${posix}` : `file:///${posix}`;
   }
 
-  return staticFile(clean);
+  // staticFile() paths are already relative to public/, and Remotion throws
+  // when the prefix is included. Callers writing props by hand get this wrong
+  // (remotion_caption_burn shipped "public/talking-head/..." and every render
+  // failed), so strip it here rather than fail at render time.
+  return staticFile(clean.replace(/^\.?\/?public\//, ""));
 }

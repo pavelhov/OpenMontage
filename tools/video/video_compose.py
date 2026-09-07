@@ -506,7 +506,13 @@ class VideoCompose(BaseTool):
         inputs["subtitle_style"] = resolved_sub_style
 
         ed_subs = edit_decisions.get("subtitles", {})
-        if ed_subs.get("source") and not subtitle_path:
+        # Explicit disable flags also override a directly supplied subtitle path.
+        if (
+            not inputs.get("options", {}).get("subtitle_burn", True)
+            or not ed_subs.get("enabled", True)
+        ):
+            subtitle_path = None
+        elif ed_subs.get("source") and not subtitle_path:
             subtitle_path = ed_subs["source"]
 
         temp_dir = output_path.parent / ".compose_tmp"
@@ -903,7 +909,7 @@ class VideoCompose(BaseTool):
         """
 
         staged_by_source: dict[Path, str] = {}
-        media_keys = {"source", "src", "backgroundSrc"}
+        media_keys = {"source", "src", "backgroundSrc", "backgroundImage", "backgroundVideo"}
 
         def visit(node: Any, parent_key: str | None = None) -> Any:
             if isinstance(node, dict):
