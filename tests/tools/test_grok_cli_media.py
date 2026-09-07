@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from tools.base_tool import ToolRuntime, ToolStatus
-from tools._grok_cli_media import DEFAULT_GROK_PATH, grok_cli_is_qualified
+from tools._grok_cli_media import DEFAULT_GROK_PATH, PINNED_CLI_VERSION, grok_cli_is_qualified
 from tools.graphics.grok_cli_image import GrokCLIImage
 from tools.graphics.image_selector import ImageSelector
 from tools.video.grok_cli_video import GrokCLIVideo
@@ -91,7 +91,7 @@ class FakeProcesses:
         self,
         *,
         media_stdout: str,
-        version: str = "grok 1.0.13 (fixture) [stable]\n",
+        version: str = f"grok {PINNED_CLI_VERSION} (fixture) [stable]\n",
         media_returncode: int = 0,
         media_stderr: str = "",
         probe: dict[str, Any] | None = None,
@@ -218,7 +218,7 @@ def test_status_requires_pinned_version_and_ffprobe(monkeypatch: pytest.MonkeyPa
     fake.version = "grok 1.0.14\n"
     assert grok_cli_is_qualified(str(executable)) is False
 
-    fake.version = "grok 1.0.13\n"
+    fake.version = f"grok {PINNED_CLI_VERSION}\n"
     monkeypatch.setattr("tools._grok_cli_media.shutil.which", lambda name: None)
     assert grok_cli_is_qualified(str(executable)) is False
 
@@ -620,7 +620,7 @@ def test_version_mismatch_fails_before_media_call(monkeypatch: pytest.MonkeyPatc
     inputs = _common_inputs(tmp_path, tmp_path / "sessions", ".jpg")
     result = _execute_image(inputs)
     assert not result.success
-    assert "version" in result.error.lower() and "1.0.13" in result.error
+    assert "version" in result.error.lower() and PINNED_CLI_VERSION in result.error
     assert fake.media_calls == []
 
 

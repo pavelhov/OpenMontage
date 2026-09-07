@@ -241,13 +241,33 @@ class HyperFramesCompose(BaseTool):
 
     _NODE_FLOOR_MAJOR = 22
     _NPM_PACKAGE = "hyperframes"  # published npm name (NOT @hyperframes/cli — that's 404)
-    # Process-level cache for the npm resolve check. Shape:
+    # Process-level cache for the installed CLI / npm version check. Shape:
     #   {"version": "0.4.5"}   → package resolves
     #   {"error": "<short>"}   → resolution failed (offline, unpublished, etc.)
     # We cache per-process so the first call pays ~2-5s and subsequent calls
     # (get_info spam from the registry) are free.
     _npm_resolve_cache: Optional[dict[str, str]] = None
     _cli_probe_cache: Optional[dict[str, str]] = None
+    _cli_command_cache: Optional[tuple[str, ...]] = None
+
+    @classmethod
+    def _cli_command(cls) -> tuple[str, ...]:
+        """Select once so doctor and workspace commands use the same install.
+
+        Prefer a direct installed executable. In particular, probing npx from
+        the repository and running it from a generated workspace can select
+        different package versions. Absolute paths keep local selection stable.
+        """
+        if cls._cli_command_cache is None:
+            local_bin_dir = Path(__file__).resolve().parents[2] / "node_modules" / ".bin"
+            executable = shutil.which(cls._NPM_PACKAGE, path=str(local_bin_dir))
+            executable = executable or shutil.which(cls._NPM_PACKAGE)
+            if executable:
+                cls._cli_command_cache = (os.path.abspath(executable),)
+            else:
+                npx = shutil.which("npx") or "npx"
+                cls._cli_command_cache = (npx, "--yes", cls._NPM_PACKAGE)
+        return cls._cli_command_cache
 
     @classmethod
     def _node_major_version(cls) -> Optional[int]:
@@ -270,19 +290,32 @@ class HyperFramesCompose(BaseTool):
 
     @classmethod
     def _resolve_npm_package(cls) -> dict[str, str]:
-        """Verify the `hyperframes` npm package actually resolves.
+        """Read the installed CLI version first, falling back to npm metadata.
 
-        `_runtime_check` previously only verified that node/ffmpeg/npx existed
-        on PATH, which meant `runtime_available: True` on any machine with
-        Node + FFmpeg — even offline, even if npm was down, even if the
-        package was unpublished. This method performs a cheap
-        `npm view hyperframes version` (5s timeout) and caches the answer
-        for the rest of the process.
-
-        Returns {"version": "X.Y.Z"} on success, {"error": "<short>"} on any
-        failure (404, timeout, network error, npm missing). Never raises.
+        Local readiness must not depend on registry access. Version success
+        still requires a separate doctor check before reporting availability.
+        Cache the result for repeated registry queries in this process.
         """
         if cls._npm_resolve_cache is not None:
+            return cls._npm_resolve_cache
+
+        command = cls._cli_command()
+        if len(command) == 1:
+            try:
+                proc = subprocess.run(
+                    [*command, "--version"], capture_output=True, text=True, timeout=5
+                )
+                version = (proc.stdout or "").strip()
+                if proc.returncode == 0 and re.fullmatch(
+                    r"v?\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?", version
+                ):
+                    cls._npm_resolve_cache = {"version": version.removeprefix("v")}
+                else:
+                    cls._npm_resolve_cache = {"error": "installed CLI version check failed"}
+            except (OSError, subprocess.SubprocessError) as exc:
+                cls._npm_resolve_cache = {
+                    "error": f"installed CLI version failed: {type(exc).__name__}"
+                }
             return cls._npm_resolve_cache
 
         npm = shutil.which("npm")
@@ -335,14 +368,14 @@ class HyperFramesCompose(BaseTool):
         if cls._cli_probe_cache is not None:
             return cls._cli_probe_cache
 
-        npx = shutil.which("npx")
-        if not npx:
+        command = cls._cli_command()
+        if len(command) > 1 and not shutil.which("npx"):
             cls._cli_probe_cache = {"error": "npx not on PATH"}
             return cls._cli_probe_cache
 
         try:
             proc = subprocess.run(
-                [npx, "--yes", cls._NPM_PACKAGE, "doctor", "--json"],
+                [*command, "doctor", "--json"],
                 capture_output=True,
                 text=True,
                 timeout=20,
@@ -365,10 +398,8 @@ class HyperFramesCompose(BaseTool):
     def _runtime_check(self) -> dict[str, Any]:
         """Return availability state for the HyperFrames runtime.
 
-        Checks BOTH local binaries (node >= 22, ffmpeg, npx) AND that the
-        `hyperframes` npm package actually resolves. A missing/404 package
-        counts as unavailable — `runtime_available: True` means the runtime
-        can genuinely run end-to-end, not just that the local tooling exists.
+        Check the local tooling floor, installed CLI or npm package version,
+        and doctor. A version alone is not evidence of a working runtime.
         """
         node_major = self._node_major_version()
         ffmpeg_ok = shutil.which("ffmpeg") is not None
@@ -1354,13 +1385,13 @@ class HyperFramesCompose(BaseTool):
         timeout: int,
         check: bool,
     ) -> subprocess.CompletedProcess:
-        """Invoke `npx hyperframes <args>` with the right Windows quirks.
+        """Invoke the selected HyperFrames CLI with the right Windows quirks.
 
         We intentionally bypass `self.run_command` here because we do NOT
         want to raise CalledProcessError on non-zero exits — the caller
         parses lint/validate/render exit codes itself.
         """
-        cmd = ["npx", "--yes", "hyperframes", *args]
+        cmd = [*self._cli_command(), *args]
         # On Windows, resolve the .cmd wrapper so subprocess can find it
         # without shell=True.
         if os.name == "nt":

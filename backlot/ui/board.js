@@ -867,6 +867,27 @@ function renderFoundMedia(s) {
     grid);
 }
 
+function renderReferences(s) {
+  // Reference stills from assets/images/. Deliberately NOT gated on the
+  // absence of a storyboard the way renderFoundMedia is — these stay useful
+  // once shots exist, which is exactly when you want to compare a take
+  // against the frame it came from.
+  const images = s.media.images;
+  if (!images.length) return null;
+  const grid = el("div", { class: "found-grid" });
+  for (const img of images) {
+    grid.append(el("div", { class: "reference-card" },
+      el("a", { class: "thumb reference-link", href: mediaURL(s.project_id, img.path), target: "_blank",
+                rel: "noopener", title: img.name || img.path },
+        el("img", { src: thumbURL(s.project_id, img.path, 640), loading: "lazy", alt: img.name || "" })),
+      el("span", { class: "thumb-caption" }, img.name || img.path)));
+  }
+  return el("div", {},
+    el("div", { class: "section-title" }, "References",
+      el("span", { class: "meta" }, `${images.length} image${images.length === 1 ? "" : "s"} · click to open full size`)),
+    grid);
+}
+
 function renderNoState(s) {
   if (s.has_pipeline_state) return null;
   return el("div", { class: "notice", style: "border-color:#2b2b33;background:var(--surface-2);color:var(--text-3)" },
@@ -1084,16 +1105,17 @@ function render() {
   // never pushes them below the fold — the column flows beside the rail.
   const storyboard = renderStoryboard(s);
   const found = renderFoundMedia(s);
+  const references = renderReferences(s);
   const renders = renderRenders(s);
 
   if (approvalReview || script || decisions || activity) {
-    for (const section of [storyboard, found, renders]) {
+    for (const section of [storyboard, found, references, renders]) {
       if (section) main.append(section);
     }
     const hasAside = Boolean(decisions || activity);
     app.append(el("div", { class: `board${hasAside ? "" : " solo"}` }, main, hasAside ? aside : null));
   } else {
-    for (const section of [storyboard, found, renders]) {
+    for (const section of [storyboard, found, references, renders]) {
       if (section) app.append(section);
     }
   }
@@ -1112,6 +1134,7 @@ function normalize(s) {
   s.media.renders = Array.isArray(s.media.renders) ? s.media.renders : [];
   s.media.snapshots = Array.isArray(s.media.snapshots) ? s.media.snapshots : [];
   s.media.music = Array.isArray(s.media.music) ? s.media.music : [];
+  s.media.images = Array.isArray(s.media.images) ? s.media.images : [];
   s.events = Array.isArray(s.events) ? s.events : [];
   if (s.storyboard && Array.isArray(s.storyboard.scenes)) {
     for (const c of s.storyboard.scenes) {
