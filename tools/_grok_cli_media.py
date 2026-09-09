@@ -1,7 +1,7 @@
 """Strict subprocess boundary shared by the Grok CLI media adapters.
 
 This module deliberately implements a narrow contract around Grok Build
-1.0.13.  It does not discover tools, drive a browser, log in, retry, or select
+1.0.18.  It does not discover tools, drive a browser, log in, retry, or select
 fallback providers.  A successful result requires one exact native media tool
 call, a complete semantic NDJSON transcript, and a locally verified artifact.
 """
@@ -70,7 +70,10 @@ _DENY_RULES = (
     "MCPTool(*)",
 )
 
-_LOCAL_INPUT_MEDIA_TOOLS = {
+_READ_CLASSIFIED_MEDIA_TOOLS = {
+    # Grok 1.0.18 classifies even text-to-image as a read operation.
+    # --tools still exposes only the selected native media tool, not Read.
+    "image_gen",
     "image_edit",
     "image_to_video",
     "reference_to_video",
@@ -251,7 +254,7 @@ def _generation_argv(grok_path: str, prompt_path: Path, tool_name: str, cwd: Pat
         str(cwd),
     ]
     for rule in _DENY_RULES:
-        if rule == "Read(*)" and tool_name in _LOCAL_INPUT_MEDIA_TOOLS:
+        if rule == "Read(*)" and tool_name in _READ_CLASSIFIED_MEDIA_TOOLS:
             continue
         argv.extend(("--deny", rule))
     return argv

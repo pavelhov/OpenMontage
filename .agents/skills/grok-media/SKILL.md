@@ -22,12 +22,19 @@ the selector request must set `preferred_provider="grok_cli"` and make
 
 ## Local Grok CLI contract
 
-OpenMontage qualifies Grok CLI `1.0.13` with model `grok-4.6`. The adapter runs
+OpenMontage qualifies Grok CLI `1.0.18` with model `grok-4.6`. The adapter runs
 one sealed native media-tool call through streaming JSON, disables web search
 and subagents, denies shell/project-file/MCP access, validates the returned
 session artifact with `ffprobe`, and never retries or falls back. Trailing
 newline drift on sealed prompt strings is treated as equivalent; other argument
 mutations still reject.
+
+Grok CLI 1.0.18 classifies all four native media operations, including
+text-to-image, under read permissions. The adapter therefore omits the generic
+`Read(*)` denial for these four operations only. Filesystem Read is still not
+exposed: `--tools` allows exactly the selected media operation, with shell,
+write, edit, search, web, MCP, and subagents excluded. Do not use
+`--always-approve` or broaden the tool allowlist to fix media permissions.
 
 Supported native operations:
 

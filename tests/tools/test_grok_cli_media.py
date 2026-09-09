@@ -286,7 +286,7 @@ def test_image_success_shapes_and_exact_headless_boundary(
     assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
     assert "--no-subagents" in argv and "--disable-web-search" in argv and "--verbatim" in argv
     deny_values = {argv[index + 1] for index, value in enumerate(argv) if value == "--deny"}
-    expected_denies = EXPECTED_NON_READ_DENIES | ({"Read(*)"} if operation == "image_gen" else set())
+    expected_denies = EXPECTED_NON_READ_DENIES
     assert deny_values == expected_denies
     assert kwargs["cwd"] == str(tmp_path)
     assert kwargs["stdin"] is subprocess.DEVNULL
@@ -1092,3 +1092,23 @@ def test_unknown_cost_requires_explicit_approval_before_subprocess(
     dry = GrokCLIImage().dry_run(inputs)
     assert dry["would_execute"] is True
     assert dry["paid_submission"] is False
+
+
+@pytest.mark.parametrize("operation", ["image_gen", "image_edit", "image_to_video", "reference_to_video"])
+def test_media_read_classification_does_not_expose_filesystem_tools(tmp_path, operation):
+    from tools._grok_cli_media import _generation_argv
+    argv = _generation_argv("grok", tmp_path / "prompt.txt", operation, tmp_path)
+    assert "Read(*)" not in argv
+    assert argv[argv.index("--tools") + 1] == operation
+    assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
+    assert "--always-approve" not in argv
+    assert "--no-subagents" in argv
+    assert "--disable-web-search" in argv
+    denies = {argv[i + 1] for i, v in enumerate(argv) if v == "--deny"}
+    assert denies == EXPECTED_NON_READ_DENIES
+
+
+def test_unknown_tool_keeps_read_denial(tmp_path):
+    from tools._grok_cli_media import _generation_argv
+    argv = _generation_argv("grok", tmp_path / "prompt.txt", "unknown", tmp_path)
+    assert "Read(*)" in argv
