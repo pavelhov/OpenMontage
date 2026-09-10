@@ -67,6 +67,19 @@ the jacket from <IMAGE_2>. Soft studio lighting, premium fashion campaign, confi
 - Use image-to-video when the source image should act like the opening frame.
 - Use reference-to-video when the source images should influence the content but not freeze the composition.
 
+### Pinned endpoints and loops (REST Video 1.5)
+
+Explicitly select `grok_video`, `model="grok-imagine-video-1.5"`, and
+`operation="first_last_frame"`. Provide `last_image_path`/`last_image_url` and
+optionally a first image using `image_path`/`image_url`. The same image at both
+ends is useful for a loop. Describe a cyclic action, a stable camera, and the
+return to the initial pose; inspect velocity and sound across repeated playback.
+Keep frame pairs at 480p/720p. Do not invent a `loop` parameter or send endpoint
+constraints through `grok_cli_video`, which cannot enforce them.
+
+Use Image 2.0 (`grok-imagine-image-2.0`) to prepare stills; it is separate from
+the Video 1.5 model. Read `grok-media` for the verified route and pricing.
+
 ## Common Mistakes
 
 - Treating Grok reference images like strict storyboards. They are influence inputs, not exact frame locks.

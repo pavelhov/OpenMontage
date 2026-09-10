@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from jsonschema import Draft7Validator
+
 from tools.base_tool import (
     BaseTool,
     Determinism,
@@ -45,7 +47,7 @@ def _normalize_image_input(url_value: str | None, path_value: str | None) -> dic
 
 class GrokImage(BaseTool):
     name = "grok_image"
-    version = "0.1.0"
+    version = "0.2.0"
     tier = ToolTier.GENERATE
     capability = "image_generation"
     provider = "grok"
@@ -96,7 +98,7 @@ class GrokImage(BaseTool):
             },
             "model": {
                 "type": "string",
-                "enum": ["grok-imagine-image"],
+                "enum": ["grok-imagine-image", "grok-imagine-image-2.0"],
                 "default": "grok-imagine-image",
             },
             "aspect_ratio": {"type": "string", "description": "Examples: 1:1, 3:2, 16:9, 9:16"},
@@ -104,6 +106,10 @@ class GrokImage(BaseTool):
                 "type": "string",
                 "enum": ["1k", "2k"],
                 "description": "xAI image output resolution tier",
+            },
+            "quality": {
+                "type": "string", "enum": ["low", "medium", "auto"],
+                "description": "Image 2.0 only. Auto currently uses low for generation and medium for edits.",
             },
             "n": {
                 "type": "integer",
@@ -125,13 +131,17 @@ class GrokImage(BaseTool):
             },
             "output_path": {"type": "string"},
         },
+        "allOf": [{
+            "if": {"required": ["quality"]},
+            "then": {"required": ["model"], "properties": {"model": {"const": "grok-imagine-image-2.0"}}},
+        }],
     }
 
     resource_profile = ResourceProfile(
         cpu_cores=1, ram_mb=512, vram_mb=0, disk_mb=100, network_required=True
     )
-    retry_policy = RetryPolicy(max_retries=2, retryable_errors=["rate_limit", "timeout"])
-    idempotency_key_fields = ["prompt", "generation_mode", "model", "aspect_ratio", "resolution", "n"]
+    retry_policy = RetryPolicy(max_retries=0, retryable_errors=[])
+    idempotency_key_fields = ["prompt", "generation_mode", "model", "aspect_ratio", "resolution", "quality", "n"]
     side_effects = ["writes image file(s) to output_path", "calls xAI image API"]
     user_visible_verification = ["Inspect generated image(s) for composition quality and edit fidelity"]
 
@@ -152,11 +162,29 @@ class GrokImage(BaseTool):
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
         output_count = int(inputs.get("n", 1))
         input_count = self._input_image_count(inputs)
+        if inputs.get("model") == "grok-imagine-image-2.0":
+            quality = inputs.get("quality", "auto")
+            if quality == "auto":
+                quality = "medium" if input_count or inputs.get("generation_mode") == "edit" else "low"
+            resolution = inputs.get("resolution", "1k")
+            rates = {("low", "1k"): 0.04, ("low", "2k"): 0.06, ("medium", "1k"): 0.06, ("medium", "2k"): 0.08}
+            return output_count * rates[(quality, resolution)] + input_count * 0.01
         # xAI currently publishes Grok Imagine Image at $0.02 per generated
         # image plus $0.002 per input image for edits or composites.
         return output_count * 0.02 + input_count * 0.002
 
     def _build_payload(self, inputs: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        error = next(Draft7Validator(self.input_schema).iter_errors(inputs), None)
+        if error is not None:
+            raise ValueError(f"Invalid image input: {error.validator} constraint failed")
+        if not inputs["prompt"].strip():
+            raise ValueError("A non-empty prompt is required")
+        if "quality" in inputs and inputs.get("model") != "grok-imagine-image-2.0":
+            raise ValueError("quality requires explicit model=grok-imagine-image-2.0")
+        if inputs.get("model") == "grok-imagine-image-2.0" and self._input_image_count(inputs) > 5:
+            raise ValueError("Image 2.0 supports at most 5 source images")
+        if inputs.get("image_url") and inputs.get("image_path"):
+            raise ValueError("Provide image_url or image_path, not both")
         mode = inputs.get("generation_mode", "generate")
         payload: dict[str, Any] = {
             "model": inputs.get("model", "grok-imagine-image"),
@@ -168,6 +196,8 @@ class GrokImage(BaseTool):
             payload["resolution"] = inputs["resolution"]
         if inputs.get("n"):
             payload["n"] = inputs["n"]
+        if "quality" in inputs:
+            payload["quality"] = inputs["quality"]
 
         primary_image = _normalize_image_input(inputs.get("image_url"), inputs.get("image_path"))
         extra_images = [
@@ -223,6 +253,10 @@ class GrokImage(BaseTool):
         return [base.parent / f"{base.name}_{idx + 1}{suffix}" for idx in range(count)]
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
+        try:
+            endpoint, payload = self._build_payload(inputs)
+        except (ValueError, TypeError, OSError) as exc:
+            return ToolResult(success=False, error=f"Grok image invalid input: {exc}")
         api_key = os.environ.get("XAI_API_KEY")
         if not api_key:
             return ToolResult(
@@ -234,7 +268,6 @@ class GrokImage(BaseTool):
 
         start = time.time()
         try:
-            endpoint, payload = self._build_payload(inputs)
             response = requests.post(
                 endpoint,
                 headers={

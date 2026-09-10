@@ -1,9 +1,10 @@
 """Strict subprocess boundary shared by the Grok CLI media adapters.
 
-This module deliberately implements a narrow contract around Grok Build
-1.0.18.  It does not discover tools, drive a browser, log in, retry, or select
-fallback providers.  A successful result requires one exact native media tool
-call, a complete semantic NDJSON transcript, and a locally verified artifact.
+This module implements a narrow contract around the installed Grok Build CLI.
+It requires a minimum version and advertised options. It never drives a browser,
+logs in, retries, or selects fallback providers. A successful result requires one
+exact native media tool call, a complete semantic NDJSON transcript, and a
+locally verified artifact.
 """
 
 from __future__ import annotations
@@ -11,26 +12,29 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
+from uuid import uuid4
 
 from tools.base_tool import ToolResult
 
 
-PINNED_CLI_VERSION = "1.0.18"
+MIN_CLI_VERSION = "1.0.18"
 PINNED_MODEL = "grok-4.6"
 MAX_MEDIA_PROMPT_CHARS = 4096
 DEFAULT_GROK_PATH = "grok"
 
 
 def grok_cli_is_qualified(grok_path: str | None = None) -> bool:
-    """Return whether the pinned CLI and local artifact probe are usable.
+    """Return whether the installed CLI interface and artifact probe are usable.
 
-    This performs only the documented, non-generating ``--version`` check.
+    This performs only non-generating ``--version`` and ``--help`` checks.
     Authentication and media entitlement remain execute-time concerns.
     """
 
@@ -48,7 +52,7 @@ def grok_cli_is_qualified(grok_path: str | None = None) -> bool:
     if shutil.which("ffprobe") is None:
         return False
     try:
-        _verify_version(executable, cwd=Path.cwd())
+        _verify_compatibility(executable, cwd=Path.cwd())
     except (GrokCLIContractError, OSError):
         return False
     return True
@@ -83,25 +87,31 @@ _READ_CLASSIFIED_MEDIA_TOOLS = {
 class GrokCLIContractError(Exception):
     """A classified, non-retryable Grok CLI adapter failure."""
 
-    def __init__(self, category: str, message: str, *, dispatch_status: str = "not_dispatched"):
+    def __init__(
+        self, category: str, message: str, *, dispatch_status: str = "not_dispatched",
+        diagnostics: dict[str, Any] | None = None,
+    ):
         super().__init__(message)
         self.category = category
         self.dispatch_status = dispatch_status
+        self.diagnostics = diagnostics or {}
 
 
-def _failure(error: GrokCLIContractError, *, started: float) -> ToolResult:
+def _failure(error: GrokCLIContractError, *, started: float, cli_version: str | None = None) -> ToolResult:
     return ToolResult(
         success=False,
         data={
             "provider": "grok_cli",
             "model": PINNED_MODEL,
-            "cli_version": PINNED_CLI_VERSION,
+            "cli_version": cli_version or error.diagnostics.get("cli_version"),
             "error_category": error.category,
             "dispatch_status": error.dispatch_status,
             "retry_attempted": False,
             "fallback_attempted": False,
+            "diagnostics": error.diagnostics,
         },
         error=f"Grok CLI {error.category} error: {error}",
+        cost_usd=None if error.dispatch_status != "not_dispatched" else 0.0,  # type: ignore[arg-type]
         duration_seconds=round(time.monotonic() - started, 2),
         model=PINNED_MODEL,
     )
@@ -177,6 +187,80 @@ def _classify_message(message: str, *, dispatched: bool) -> GrokCLIContractError
     return GrokCLIContractError("cli", clean, dispatch_status=dispatch_status)
 
 
+_DIAGNOSTIC_LOG_LIMIT = 256 * 1024
+_DIAGNOSTIC_EVENTS = {
+    "turn_started", "turn_ended", "tool_started", "tool_completed", "tool_call",
+    "tool_call_update", "end", "user_message_chunk", "agent_message_chunk",
+    "agent_thought_chunk", "mcp_init_completed", "first_token",
+}
+
+
+def _activity_summary(raw: str | bytes | None) -> dict[str, Any]:
+    """Summarize bounded partial logs without exposing prompts, args or secrets.
+
+    Absence of a recorded tool call is evidence about logging only, never proof
+    that a remote request was not submitted. Accept native NDJSON and persisted
+    ACP session updates; ignore incomplete/unknown records.
+    """
+    data = raw.encode("utf-8", errors="replace") if isinstance(raw, str) else raw or b""
+    tail = data[-_DIAGNOSTIC_LOG_LIMIT:]
+    counts: dict[str, int] = {}
+    last_event: str | None = None
+    completed = False
+    for line in tail.splitlines():
+        try:
+            event = json.loads(line)
+        except (ValueError, UnicodeError, RecursionError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        params = event.get("params")
+        if isinstance(params, dict) and isinstance(params.get("update"), dict):
+            event = params["update"]
+        kind = event.get("type") or event.get("sessionUpdate")
+        if not isinstance(kind, str) or kind not in _DIAGNOSTIC_EVENTS:
+            continue
+        counts[kind] = counts.get(kind, 0) + 1
+        last_event = kind
+        if kind == "tool_completed" or kind == "tool_call_update" and event.get("status") == "completed":
+            completed = True
+    called = bool(counts.get("tool_call") or counts.get("tool_started"))
+    if completed:
+        observed_stage = "tool_completion_recorded"
+    elif called:
+        observed_stage = "tool_call_recorded"
+    elif counts:
+        observed_stage = "no_tool_call_recorded"
+    else:
+        observed_stage = "no_activity_recorded"
+    return {
+        "bytes_examined": len(tail),
+        "truncated": len(data) > len(tail),
+        "event_counts": counts,
+        "last_recorded_event": last_event,
+        "tool_call_observed": called,
+        "tool_completion_observed": completed,
+        "observed_stage": observed_stage,
+    }
+
+
+def _session_diagnostics(root: Path, cwd: Path, session_id: str) -> dict[str, Any]:
+    directory = root.expanduser() / quote(str(cwd), safe="") / session_id
+    diagnostics: dict[str, Any] = {"session_id": session_id, "session_directory": str(directory)}
+    for name in ("events.jsonl", "updates.jsonl"):
+        try:
+            # Only inspect this dispatch's known directory, never scan other sessions.
+            with (directory / name).open("rb") as handle:
+                size = handle.seek(0, os.SEEK_END)
+                handle.seek(max(0, size - _DIAGNOSTIC_LOG_LIMIT))
+                summary = _activity_summary(handle.read(_DIAGNOSTIC_LOG_LIMIT))
+                summary["truncated"] = size > _DIAGNOSTIC_LOG_LIMIT
+                diagnostics[name] = summary
+        except OSError:
+            diagnostics[name] = {"readable": False}
+    return diagnostics
+
+
 def _run_process(argv: list[str], *, cwd: Path, timeout: int) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -193,10 +277,24 @@ def _run_process(argv: list[str], *, cwd: Path, timeout: int) -> subprocess.Comp
             check=False,
         )
     except subprocess.TimeoutExpired as exc:
+        if "--prompt-file" in argv:
+            process_stage = "media_dispatch"
+        elif "--version" in argv:
+            process_stage = "version_check"
+        elif "--help" in argv:
+            process_stage = "compatibility_check"
+        else:
+            process_stage = "artifact_probe"
         raise GrokCLIContractError(
             "timeout",
-            "the headless Grok process exceeded its hard timeout; dispatch may have occurred, so the adapter will not retry",
-            dispatch_status="indeterminate",
+            "the process exceeded its hard timeout; recorded activity does not establish remote submission state; the adapter will not retry",
+            dispatch_status="not_dispatched" if any(flag in argv for flag in ("--version", "--help")) else "indeterminate",
+            diagnostics={
+                "timeout_seconds": timeout,
+                "process_stage": process_stage,
+                "stdout": _activity_summary(exc.stdout),
+                "stderr_present": bool(exc.stderr),
+            },
         ) from exc
     except FileNotFoundError as exc:
         raise GrokCLIContractError("capability", f"Grok CLI executable not found: {argv[0]}") from exc
@@ -204,18 +302,59 @@ def _run_process(argv: list[str], *, cwd: Path, timeout: int) -> subprocess.Comp
         raise GrokCLIContractError("headless", f"could not start the headless Grok CLI: {exc}") from exc
 
 
-def _verify_version(grok_path: str, *, cwd: Path) -> None:
+def _verify_version(grok_path: str, *, cwd: Path) -> str:
     process = _run_process([grok_path, "--version"], cwd=cwd, timeout=10)
     output = "\n".join(part for part in (process.stdout, process.stderr) if part).strip()
     if process.returncode != 0:
         raise _classify_message(output, dispatched=False)
-    first_line = output.splitlines()[0] if output else ""
-    version_token = first_line.split()[1] if len(first_line.split()) >= 2 else ""
-    if version_token != PINNED_CLI_VERSION:
+    match = re.search(
+        r"(?m)^grok\s+v?((\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?)(?=\s|$)",
+        output,
+    )
+    if match is None:
+        raise GrokCLIContractError("version", "could not read a Grok CLI release version")
+    version = match.group(1)
+    release = tuple(int(match.group(i)) for i in (2, 3, 4))
+    minimum = tuple(int(part) for part in MIN_CLI_VERSION.split("."))
+    if release < minimum or (release == minimum and match.group(5)):
         raise GrokCLIContractError(
             "version",
-            f"requires Grok CLI {PINNED_CLI_VERSION}; observed {first_line or 'no version output'}",
+            f"requires Grok CLI {MIN_CLI_VERSION} or newer; observed {version}",
+            diagnostics={"cli_version": version},
         )
+    return version
+
+
+def _verify_compatibility(grok_path: str, *, cwd: Path) -> str:
+    """Check the advertised CLI interface, not media entitlement or semantics."""
+    version = _verify_version(grok_path, cwd=cwd)
+    try:
+        process = _run_process([grok_path, "--help"], cwd=cwd, timeout=10)
+        if process.returncode != 0:
+            raise GrokCLIContractError("capability", "could not inspect Grok CLI options with --help")
+        help_text = process.stdout
+        headings = list(re.finditer(
+            r"(?m)^[ \t]+(?:-[A-Za-z],?[ \t]+)?(--[a-z][a-z0-9-]*)(?=[ \t\n]|$)",
+            help_text,
+        ))
+        options = {
+            heading.group(1): help_text[heading.end():headings[index + 1].start() if index + 1 < len(headings) else len(help_text)]
+            for index, heading in enumerate(headings)
+        }
+        # Derive the required option names from the actual dispatch builder so
+        # adding a new control cannot silently omit its compatibility check.
+        argv = _generation_argv(grok_path, Path("prompt.md"), "image_gen", cwd, session_id="probe")
+        required = {arg for arg in argv[1:] if arg.startswith("--")}
+        missing = sorted(required - options.keys())
+        for option, value in (("--output-format", "streaming-json"), ("--permission-mode", "dontAsk")):
+            if option in options and not re.search(r"(?<![\w-])" + re.escape(value) + r"(?![\w-])", options[option]):
+                missing.append(f"{option}={value}")
+        if missing:
+            raise GrokCLIContractError("capability", "Grok CLI lacks required interface: " + ", ".join(missing))
+    except GrokCLIContractError as exc:
+        exc.diagnostics["cli_version"] = version
+        raise
+    return version
 
 
 def _build_instruction(tool_name: str, arguments: dict[str, Any]) -> str:
@@ -230,7 +369,9 @@ def _build_instruction(tool_name: str, arguments: dict[str, Any]) -> str:
     )
 
 
-def _generation_argv(grok_path: str, prompt_path: Path, tool_name: str, cwd: Path) -> list[str]:
+def _generation_argv(
+    grok_path: str, prompt_path: Path, tool_name: str, cwd: Path, *, session_id: str | None = None,
+) -> list[str]:
     argv = [
         grok_path,
         "--model",
@@ -253,6 +394,8 @@ def _generation_argv(grok_path: str, prompt_path: Path, tool_name: str, cwd: Pat
         "--cwd",
         str(cwd),
     ]
+    if session_id is not None:
+        argv.extend(("--session-id", session_id))
     for rule in _DENY_RULES:
         if rule == "Read(*)" and tool_name in _READ_CLASSIFIED_MEDIA_TOOLS:
             continue
@@ -611,10 +754,13 @@ def execute_grok_cli_media(
     timeout_seconds: int,
     media_kind: str,
 ) -> ToolResult:
-    """Execute one pinned Grok media primitive and import its artifact."""
+    """Execute one explicit Grok media primitive and import its artifact."""
 
     started = time.monotonic()
     prompt_path: Path | None = None
+    dispatch_session_id: str | None = None
+    cli_version: str | None = None
+    media_process_returned = False
     try:
         if tool_name not in _RAW_OUTPUT_TYPES:
             raise GrokCLIContractError("capability", f"unsupported Grok CLI media tool: {tool_name}")
@@ -623,7 +769,12 @@ def execute_grok_cli_media(
             raise GrokCLIContractError("invalid_argument", f"cwd is not a directory: {cwd}")
         target = _prepare_output_path(output_path)
 
-        _verify_version(grok_path, cwd=working_directory)
+        # Resolve once so discovery and dispatch use the same PATH selection.
+        grok_path = str(Path(grok_path).expanduser())
+        resolved = shutil.which(grok_path) if not Path(grok_path).is_absolute() else grok_path
+        if resolved:
+            grok_path = str(Path(resolved).absolute())
+        cli_version = _verify_compatibility(grok_path, cwd=working_directory)
         instruction = _build_instruction(tool_name, arguments)
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", prefix="openmontage-grok-cli-", suffix=".md", delete=False
@@ -632,11 +783,18 @@ def execute_grok_cli_media(
             prompt_path = Path(prompt_file.name)
         os.chmod(prompt_path, 0o600)
 
-        process = _run_process(
-            _generation_argv(grok_path, prompt_path, tool_name, working_directory),
-            cwd=working_directory,
-            timeout=timeout_seconds,
-        )
+        dispatch_session_id = str(uuid4())
+        try:
+            process = _run_process(
+                _generation_argv(grok_path, prompt_path, tool_name, working_directory, session_id=dispatch_session_id),
+                cwd=working_directory,
+                timeout=timeout_seconds,
+            )
+            media_process_returned = True
+        except GrokCLIContractError as exc:
+            if exc.category == "timeout":
+                exc.diagnostics.update(_session_diagnostics(Path(sessions_root), working_directory, dispatch_session_id))
+            raise
         if process.returncode != 0:
             raise _classify_message(
                 "\n".join(part for part in (process.stderr, process.stdout) if part),
@@ -660,7 +818,7 @@ def execute_grok_cli_media(
             data={
                 "provider": "grok_cli",
                 "model": PINNED_MODEL,
-                "cli_version": PINNED_CLI_VERSION,
+                "cli_version": cli_version,
                 "operation": tool_name,
                 "output": str(target.expanduser().resolve(strict=False)),
                 "source_artifact": str(trusted_source),
@@ -680,9 +838,15 @@ def execute_grok_cli_media(
             model=PINNED_MODEL,
         )
     except GrokCLIContractError as exc:
-        return _failure(exc, started=started)
+        if media_process_returned and exc.dispatch_status == "not_dispatched":
+            exc.dispatch_status = "indeterminate"
+        return _failure(exc, started=started, cli_version=cli_version)
     except (TypeError, ValueError, OSError) as exc:
-        return _failure(GrokCLIContractError("invalid_argument", str(exc)), started=started)
+        error = GrokCLIContractError(
+            "invalid_argument", str(exc),
+            dispatch_status="indeterminate" if media_process_returned else "not_dispatched",
+        )
+        return _failure(error, started=started, cli_version=cli_version)
     finally:
         if prompt_path is not None:
             try:

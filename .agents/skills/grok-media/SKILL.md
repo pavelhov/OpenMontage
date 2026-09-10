@@ -3,7 +3,7 @@ name: grok-media
 description: xAI Grok media guide covering the REST API and the separate, explicit-only local Grok CLI route.
 metadata:
   author: OpenMontage
-  version: "1.0.0"
+  version: "1.1.0"
   tags: xai, grok, image-generation, video-generation, media
 ---
 
@@ -22,7 +22,12 @@ the selector request must set `preferred_provider="grok_cli"` and make
 
 ## Local Grok CLI contract
 
-OpenMontage qualifies Grok CLI `1.0.18` with model `grok-4.6`. The adapter runs
+OpenMontage uses `grok` from PATH (or an explicit `GROK_CLI_PATH`) with model
+`grok-4.6`. It requires CLI `1.0.18` or newer and verifies required command
+options and values with `--help` before dispatch. Compatible updates need no
+separate binary or version-pin change. These checks establish advertised CLI
+compatibility, not media entitlement. Results record the observed CLI version.
+The adapter runs
 one sealed native media-tool call through streaming JSON, disables web search
 and subagents, denies shell/project-file/MCP access, validates the returned
 session artifact with `ffprobe`, and never retries or falls back. Trailing
@@ -72,10 +77,46 @@ image to a specific role in plain language. Keep the full prompt at or below
 
 The remaining sections describe the REST API route only.
 
+## Verified current capabilities (2026-09-10)
+
+Image 2.0 is a still-image model; Video 1.5 is the current separate video model.
+For REST stills, explicitly set `model="grok-imagine-image-2.0"`; optional
+`quality` is `low`, `medium`, or `auto`. Auto currently selects low for generation
+and medium for edits. Up to five source images are supported by Image 2.0.
+
+REST video supports pinned endpoints on `model="grok-imagine-video-1.5"`.
+Use `operation="first_last_frame"`, `last_image_url` or `last_image_path`, and
+optionally `image_url`/`image_path` (selector aliases: `reference_image_url` or
+`reference_image_path`). The adapter sends REST `last_frame` and `image`.
+Use the same image for both endpoints to author a loop. There is no native
+`loop` switch; review motion and audio at the seam. Duration: 1–15 seconds;
+frame pairs/reference guidance: 480p or 720p. Prompts and first frames are
+optional in last-frame requests. Reference images can accompany the frame pins.
+
+Classic `grok-imagine-video` cannot accept a last frame. Never silently change
+the model, omit the last frame, or replace endpoint control with a prompt.
+The CLI contract exposes neither ending-frame pins nor Imagine model selection.
+Offline inspection of newer alpha CLI 1.0.27 found the same gap; do not upgrade
+or loosen the production pin on the assumption that this enables REST features.
+CLI coding model `grok-4.6` is not an Imagine media model identifier.
+
+On timeout, inspect the returned `diagnostics`: configured deadline, process
+stage, session UUID, stdout activity, and session event/update summaries.
+`no_tool_call_recorded` is not proof of no submission or no charge. A media
+timeout stays `indeterminate` and must not trigger an automatic retry. C36's
+failed and successful retry sessions used the same CLI/model; causation by the
+update is unproven.
+
+Sources and limits: [audit](../../../docs/GROK_IMAGINE_CAPABILITIES_2026-09-10.md),
+[official first/last-frame guide](https://docs.x.ai/developers/model-capabilities/video/reference-to-video),
+[official Image 2.0](https://x.ai/news/grok-imagine-image-2).
+
 ## REST API models
 
 - `grok-imagine-image` for image generation and image editing
-- `grok-imagine-video` for text-to-video, image-to-video, and reference-image video
+- `grok-imagine-image-2.0` for current still-image generation/editing
+- `grok-imagine-video` for classic text-to-video, image-to-video, and reference-image video
+- `grok-imagine-video-1.5` for current video including pinned first/last frames
 
 ## REST API authentication
 
@@ -135,7 +176,7 @@ The remaining sections describe the REST API route only.
 ### Video constraints
 
 - Grok video is best treated as short-form generation
-- Current output resolutions are `480p` and `720p`
+- Classic/frame-pair/reference output is `480p` or `720p`; 1.5 text/image-to-video also supports `1080p`
 - Reference-image video supports multiple images and is useful for product placement, wardrobe transfer, and identity consistency
 - Download outputs promptly; provider URLs may be temporary
 
@@ -147,6 +188,12 @@ The remaining sections describe the REST API route only.
   - `480p`: `$0.05` per second
   - `720p`: `$0.07` per second
 - `grok-imagine-video` image-conditioned requests: add `$0.002` per input image
+
+- `grok-imagine-video-1.5`: $0.08/s at 480p, $0.14/s at 720p, $0.25/s at
+  1080p, plus $0.01 per input image (including each endpoint slot).
+- `grok-imagine-image-2.0`: low 1k/2k $0.04/$0.06; medium 1k/2k $0.06/$0.08;
+  plus $0.01 per source image. These are REST estimates, not CLI media charges.
+- Verify [current pricing](https://docs.x.ai/developers/pricing) before production.
 
 ## Grok-Specific Prompt Guidance
 

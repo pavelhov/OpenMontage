@@ -13,7 +13,7 @@ from typing import Any
 
 from tools._grok_cli_media import (
     DEFAULT_GROK_PATH,
-    PINNED_CLI_VERSION,
+    MIN_CLI_VERSION,
     PINNED_MODEL,
     GrokCLIContractError,
     execute_grok_cli_media,
@@ -40,7 +40,7 @@ _REFERENCE_ASPECT_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
 
 class GrokCLIVideo(BaseTool):
     name = "grok_cli_video"
-    version = "0.1.0"
+    version = "0.2.0"
     tier = ToolTier.GENERATE
     capability = "video_generation"
     provider = "grok_cli"
@@ -51,7 +51,7 @@ class GrokCLIVideo(BaseTool):
 
     dependencies = ["cmd:grok", "cmd:ffprobe"]
     install_instructions = (
-        f"Install Grok CLI {PINNED_CLI_VERSION} on PATH (or set GROK_CLI_PATH), "
+        f"Install Grok CLI {MIN_CLI_VERSION} or newer on PATH (or set GROK_CLI_PATH), "
         "then sign in interactively with `grok login`. This adapter never initiates login."
     )
     agent_skills = ["grok-media", "ai-video-gen"]
@@ -61,6 +61,7 @@ class GrokCLIVideo(BaseTool):
         "text_to_video": False,
         "image_to_video": True,
         "reference_to_video": True,
+        "first_last_frame": False,
         "video_edit": False,
         "upscale": False,
         "reference_image": True,
@@ -83,6 +84,7 @@ class GrokCLIVideo(BaseTool):
         "offline or free generation",
         "implicit provider selection",
         "safe automatic retry after a timeout",
+        "pinned last frames or guaranteed seamless loops (not exposed by this adapter)",
     ]
     fallback_tools: list[str] = []
 
@@ -96,6 +98,12 @@ class GrokCLIVideo(BaseTool):
                 "enum": ["image_to_video", "reference_to_video"],
             },
             "image_path": {"type": "string"},
+            "last_image_url": False,
+            "last_image_path": False,
+            "last_frame": False,
+            "end_frame": False,
+            "loop": False,
+            "seamless_loop": False,
             "reference_image_path": {
                 "type": "string",
                 "description": "OpenMontage selector-compatible alias for image_path.",
@@ -158,7 +166,8 @@ class GrokCLIVideo(BaseTool):
             "tool": self.name,
             "provider": self.provider,
             "model": PINNED_MODEL,
-            "cli_version": PINNED_CLI_VERSION,
+            "cli_version": None,
+            "minimum_cli_version": MIN_CLI_VERSION,
             "operation": inputs.get("operation"),
             "status": "not_checked_offline",
             "would_execute": approved,
@@ -177,7 +186,7 @@ class GrokCLIVideo(BaseTool):
             data={
                 "provider": "grok_cli",
                 "model": PINNED_MODEL,
-                "cli_version": PINNED_CLI_VERSION,
+                "cli_version": None,
                 "error_category": error.category,
                 "dispatch_status": error.dispatch_status,
                 "retry_attempted": False,
@@ -189,6 +198,18 @@ class GrokCLIVideo(BaseTool):
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         try:
+            frame_controls = {
+                "last_image_url", "last_image_path", "last_frame", "last_frame_url", "last_frame_path",
+                "end_frame", "end_frame_url", "end_frame_path", "loop", "seamless_loop",
+            }
+            if frame_controls.intersection(inputs) or inputs.get("operation") == "first_last_frame":
+                raise GrokCLIContractError(
+                    "capability",
+                    "The Grok CLI adapter does not expose pinned last frames or a seamless-loop control; "
+                    "REST grok_video with explicit model=grok-imagine-video-1.5 is a separate route",
+                )
+            if any(key in inputs for key in ("model", "model_name")):
+                raise GrokCLIContractError("capability", "Grok CLI video does not expose Imagine model selection")
             prompt = validate_prompt(inputs.get("prompt"))
             operation = str(inputs.get("operation") or "image_to_video")
             if operation not in {"image_to_video", "reference_to_video"}:

@@ -12,7 +12,7 @@ from typing import Any
 
 from tools._grok_cli_media import (
     DEFAULT_GROK_PATH,
-    PINNED_CLI_VERSION,
+    MIN_CLI_VERSION,
     PINNED_MODEL,
     GrokCLIContractError,
     execute_grok_cli_media,
@@ -54,7 +54,7 @@ _ASPECT_RATIOS = {
 
 class GrokCLIImage(BaseTool):
     name = "grok_cli_image"
-    version = "0.1.0"
+    version = "0.2.0"
     tier = ToolTier.GENERATE
     capability = "image_generation"
     provider = "grok_cli"
@@ -65,7 +65,7 @@ class GrokCLIImage(BaseTool):
 
     dependencies = ["cmd:grok", "cmd:ffprobe"]
     install_instructions = (
-        f"Install Grok CLI {PINNED_CLI_VERSION} on PATH (or set GROK_CLI_PATH), "
+        f"Install Grok CLI {MIN_CLI_VERSION} or newer on PATH (or set GROK_CLI_PATH), "
         "then sign in interactively with `grok login`. This adapter never initiates login."
     )
     agent_skills = ["grok-media"]
@@ -161,7 +161,8 @@ class GrokCLIImage(BaseTool):
             "tool": self.name,
             "provider": self.provider,
             "model": PINNED_MODEL,
-            "cli_version": PINNED_CLI_VERSION,
+            "cli_version": None,
+            "minimum_cli_version": MIN_CLI_VERSION,
             "operation": inputs.get("operation", "image_gen"),
             "status": "not_checked_offline",
             "would_execute": approved,
@@ -180,7 +181,7 @@ class GrokCLIImage(BaseTool):
             data={
                 "provider": "grok_cli",
                 "model": PINNED_MODEL,
-                "cli_version": PINNED_CLI_VERSION,
+                "cli_version": None,
                 "error_category": error.category,
                 "dispatch_status": error.dispatch_status,
                 "retry_attempted": False,
@@ -192,6 +193,12 @@ class GrokCLIImage(BaseTool):
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         try:
+            if any(key in inputs for key in ("model", "model_name", "quality")):
+                raise GrokCLIContractError(
+                    "capability",
+                    "The qualified Grok CLI image tool does not expose Imagine model or quality selection; "
+                    "Image 2.0 requires the separate REST grok_image route",
+                )
             prompt = validate_prompt(inputs.get("prompt"))
             native_operation = inputs.get("operation")
             if native_operation == "generate":

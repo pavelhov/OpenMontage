@@ -73,6 +73,7 @@ class ImageSelector(BaseTool):
                 "type": "string",
                 "description": "Exact provider model id, e.g. an Atlas Cloud live model route.",
             },
+            "quality": {"type": "string", "description": "Provider-specific quality, e.g. low/medium/auto for Grok Image 2.0."},
             "generation_mode": {
                 "type": "string",
                 "enum": ["generate", "edit"],
@@ -220,9 +221,18 @@ class ImageSelector(BaseTool):
             return 0.0
         explicit = self._exact_explicit_candidate(inputs, candidates)
         if explicit is not None:
-            return explicit.estimate_cost(inputs)
+            return explicit.estimate_cost(self._normalize_model_input(explicit, inputs))
         tool, _ = self._select_best_tool(inputs, candidates, self._prepare_task_context(inputs))
-        return tool.estimate_cost(inputs) if tool else 0.0
+        return tool.estimate_cost(self._normalize_model_input(tool, inputs)) if tool else 0.0
+
+    @staticmethod
+    def _normalize_model_input(tool: BaseTool, inputs: dict[str, Any]) -> dict[str, Any]:
+        """Use the same provider model for quotes and generation."""
+        adapted = dict(inputs)
+        props = getattr(tool, "input_schema", {}).get("properties", {})
+        if "model_name" in adapted and "model" in props and "model" not in adapted:
+            adapted["model"] = adapted["model_name"]
+        return adapted
 
     def estimate_runtime(self, inputs: dict[str, Any]) -> float:
         candidates = self._filter_candidates(inputs, self._providers())
@@ -287,7 +297,7 @@ class ImageSelector(BaseTool):
             )
 
         # Adapt input keys: stock tools use 'query' while generators use 'prompt'
-        adapted = dict(inputs)
+        adapted = self._normalize_model_input(tool, inputs)
         if hasattr(tool, 'input_schema'):
             props = tool.input_schema.get("properties", {})
             if "query" in props and "query" not in adapted:
@@ -303,14 +313,6 @@ class ImageSelector(BaseTool):
                 )
                 if refs:
                     adapted["images"] = refs
-            # The selector exposes a provider-neutral ``model_name`` field,
-            # while several providers call the same input ``model``.
-            if (
-                "model_name" in adapted
-                and "model" in props
-                and "model" not in adapted
-            ):
-                adapted["model"] = adapted["model_name"]
             if "n" in adapted and "num_images" in props and "num_images" not in adapted:
                 adapted["num_images"] = adapted["n"]
 
@@ -495,14 +497,14 @@ class ImageSelector(BaseTool):
             )
         ]
 
-        exact_model = inputs.get("model")
+        exact_model = inputs.get("model") or inputs.get("model_name")
         if exact_model:
             model_matches = [
                 tool for tool in candidates
                 if exact_model in getattr(tool, "input_schema", {}).get("properties", {}).get("model", {}).get("enum", [])
                 or exact_model in tool.get_info().get("model_catalog", {})
             ]
-            if model_matches:
+            if model_matches or str(exact_model).startswith("grok-imagine-"):
                 candidates = model_matches
 
         # A caller-supplied custom workflow is provider-specific (ComfyUI graph

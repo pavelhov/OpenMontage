@@ -24,12 +24,12 @@ class VideoSelector(BaseTool):
 
     # Operations that REQUIRE motion: an image-only tool (image_selector) is not
     # an acceptable last-resort fallback for these, so fallback_tools_for() drops it.
-    MOTION_REQUIRED_OPERATIONS = frozenset({"image_to_video", "reference_to_video", "video_edit"})
+    MOTION_REQUIRED_OPERATIONS = frozenset({"image_to_video", "reference_to_video", "first_last_frame", "video_edit"})
     # Default score gap for the preferred_provider override (see input_schema).
     PREFERRED_PROVIDER_GAP = 0.15
 
     capabilities = [
-        "text_to_video", "image_to_video", "reference_to_video", "video_edit", "stock_video",
+        "text_to_video", "image_to_video", "reference_to_video", "first_last_frame", "video_edit", "stock_video",
         "provider_selection", "search_video", "download_video",
     ]
     supports = {
@@ -46,7 +46,6 @@ class VideoSelector(BaseTool):
 
     input_schema = {
         "type": "object",
-        "required": ["prompt"],
         "properties": {
             "prompt": {"type": "string"},
             "preferred_provider": {
@@ -70,12 +69,12 @@ class VideoSelector(BaseTool):
             "allowed_providers": {"type": "array", "items": {"type": "string"}},
             "operation": {
                 "type": "string",
-                "enum": ["text_to_video", "image_to_video", "reference_to_video", "video_edit", "rank"],
+                "enum": ["text_to_video", "image_to_video", "reference_to_video", "first_last_frame", "video_edit", "rank"],
                 "default": "text_to_video",
             },
             "target_operation": {
                 "type": "string",
-                "enum": ["text_to_video", "image_to_video", "reference_to_video", "video_edit"],
+                "enum": ["text_to_video", "image_to_video", "reference_to_video", "first_last_frame", "video_edit"],
                 "description": "Operation to score when operation='rank'.",
                 "default": "text_to_video",
             },
@@ -276,7 +275,7 @@ class VideoSelector(BaseTool):
             return []
         tools = [t.name for t in self._filter_candidates(inputs, providers)]
         operation = inputs.get("operation", "text_to_video")
-        if operation in self.MOTION_REQUIRED_OPERATIONS:
+        if operation in self.MOTION_REQUIRED_OPERATIONS or self._requires_final_frame(inputs):
             return tools
         return tools + ["image_selector"]
 
@@ -317,6 +316,16 @@ class VideoSelector(BaseTool):
     def execute(self, inputs: dict[str, object]) -> ToolResult:
         from lib.scoring import rank_providers
 
+        unsupported_frame_controls = {
+            "last_frame", "last_frame_url", "last_frame_path", "end_frame",
+            "end_frame_url", "end_frame_path", "loop", "seamless_loop",
+        }
+        if unsupported_frame_controls.intersection(inputs):
+            return ToolResult(
+                success=False,
+                data={"fallback_tools": [], "fallback_attempted": False},
+                error="Use last_image_url or last_image_path for a pinned final frame; no loop switch or other ending-frame alias is supported.",
+            )
         candidates = self._providers()
 
         # Rank mode — return scored provider rankings without generating
@@ -376,9 +385,12 @@ class VideoSelector(BaseTool):
                 success=False,
                 data=(
                     {"alternatives_considered": [], "fallback_tools": []}
-                    if explicit_route else {}
+                    if explicit_route or self._requires_final_frame(inputs) else {}
                 ),
-                error="No video generation provider available.",
+                error=(
+                    "No available provider supports the requested pinned final frame/model; no fallback was attempted."
+                    if self._requires_final_frame(inputs) else "No video generation provider available."
+                ),
             )
 
         # Adapt input keys: stock tools use 'query' while generators use 'prompt'
@@ -387,12 +399,21 @@ class VideoSelector(BaseTool):
             required = tool.input_schema.get("properties", {})
             if "query" in required and "query" not in adapted:
                 adapted["query"] = adapted.get("prompt", "")
+            # The selector accepts duration hints as strings; strict provider
+            # schemas accept integral seconds. Do not truncate fractional input.
+            duration = adapted.get("duration")
+            if required.get("duration", {}).get("type") == "integer" and isinstance(duration, str) and duration.isdecimal():
+                adapted["duration"] = int(duration)
 
         # Auto-resolve reference_image_path to a URL for providers that need it
         if adapted.get("operation") == "image_to_video" and adapted.get("reference_image_path"):
             tool_props = getattr(tool, "input_schema", {}).get("properties", {})
             # If the provider uses image_url (not reference_image_path), upload and convert
-            if "image_url" in tool_props and "image_url" not in adapted:
+            if "image_path" in tool_props:
+                if adapted.get("image_path") and adapted["image_path"] != adapted["reference_image_path"]:
+                    return ToolResult(success=False, error="Conflicting image_path and reference_image_path")
+                adapted["image_path"] = adapted["reference_image_path"]
+            elif "image_url" in tool_props and "image_url" not in adapted:
                 try:
                     from tools.video._shared import upload_image_fal
                     adapted["image_url"] = upload_image_fal(adapted["reference_image_path"])
@@ -593,8 +614,11 @@ class VideoSelector(BaseTool):
                 if exact_model in getattr(tool, "input_schema", {}).get("properties", {}).get("model", {}).get("enum", [])
                 or exact_model in tool.get_info().get("model_catalog", {})
             ]
-            if model_matches:
+            if model_matches or self._requires_final_frame(inputs) or str(exact_model).startswith("grok-imagine-"):
                 candidates = model_matches
+
+        if self._requires_final_frame(inputs):
+            candidates = [tool for tool in candidates if self._final_frame_eligible(tool, inputs)]
 
         # A caller-supplied custom workflow is provider-specific (ComfyUI graph
         # JSON). Route it only to custom-workflow-capable providers whose server
@@ -611,6 +635,12 @@ class VideoSelector(BaseTool):
         for tool in candidates:
             supports = getattr(tool, "supports", {})
             props = getattr(tool, "input_schema", {}).get("properties", {})
+
+            if operation == "first_last_frame":
+                matched_operation = True
+                if supports.get("first_last_frame") is True:
+                    filtered.append(tool)
+                continue
 
             if operation == "image_to_video":
                 if supports.get("image_to_video") or "image_url" in props or "reference_image_url" in props:
@@ -670,6 +700,28 @@ class VideoSelector(BaseTool):
         )
 
     @staticmethod
+    def _requires_final_frame(inputs: dict[str, object]) -> bool:
+        operation = inputs.get("target_operation") if inputs.get("operation") == "rank" else inputs.get("operation")
+        return operation == "first_last_frame" or any(
+            key in inputs for key in ("last_image_url", "last_image_path")
+        )
+
+    @staticmethod
+    def _final_frame_eligible(tool: BaseTool, inputs: dict[str, object]) -> bool:
+        supports = getattr(tool, "supports", {})
+        props = getattr(tool, "input_schema", {}).get("properties", {})
+        if supports.get("first_last_frame") is False:
+            return False
+        models = getattr(tool, "first_last_frame_models", None)
+        if models is not None and inputs.get("model") not in models:
+            return False
+        # Do not let a provider silently discard a final-frame constraint.
+        for key in ("last_image_url", "last_image_path"):
+            if key in inputs and not props.get(key):
+                return False
+        return bool(supports.get("first_last_frame") or props.get("last_image_url") or props.get("last_image_path"))
+
+    @staticmethod
     def _rank_operation_eligible(tool: BaseTool, inputs: dict[str, object]) -> bool:
         """Honor a provider's explicit operation denial during rank preflight."""
         operation = str(inputs.get("operation", "text_to_video"))
@@ -677,6 +729,7 @@ class VideoSelector(BaseTool):
         return (
             supports.get(operation) is not False
             and VideoSelector._operation_ready(tool, operation)
+            and (not VideoSelector._requires_final_frame(inputs) or VideoSelector._final_frame_eligible(tool, inputs))
         )
 
     @staticmethod

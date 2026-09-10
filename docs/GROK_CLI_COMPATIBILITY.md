@@ -5,10 +5,33 @@
 **Installed version:** `1.0.13` stable
 **Route:** cached Grok OAuth/subscription session, separate from `XAI_API_KEY`
 
+## Current follow-up
+
+See the [2026-09-10 Imagine and timeout audit](GROK_IMAGINE_CAPABILITIES_2026-09-10.md)
+for CLI 1.0.18 / separately inspected 1.0.27, REST first/last frames, Image 2.0,
+and C36 timeout diagnostics. The original 2026-09-02 evidence below is historical.
+
+## Current installation policy
+
+Use the system `grok` on PATH. An optional `GROK_CLI_PATH` supports custom
+installations; OpenMontage does not install or retain its own CLI binary.
+Minimum version: **1.0.18**. Numeric release comparison permits newer patch,
+minor, and major releases. A prerelease of the minimum release is too old.
+The adapter checks every option it dispatches plus `streaming-json` and
+`dontAsk` under their respective help entries before generating anything.
+Missing options, old/unparseable versions, and failed/timed-out help checks
+stop before media dispatch. Help establishes interface presence, not a live
+entitlement check or a guarantee of unchanged behavior.
+
+Results record the observed `cli_version`; offline dry runs and failures before
+version discovery report null instead of a fictitious installed version.
+Installed 1.0.25 passed the read-only compatibility check on 2026-09-10.
+No live generation was performed for this compatibility-policy update.
+
 ## Decision
 
 The installed Grok CLI has a workable, automatable Imagine tool surface for a
-**version-pinned, explicit-only provider adapter**. It must remain separate from
+**minimum-version, explicit-only provider adapter**. It must remain separate from
 the existing xAI REST providers and must never be selected as an automatic or
 silent fallback.
 
@@ -49,7 +72,8 @@ Historical failures provide exact negative contracts:
 
 These observations qualify this installed version and account. They are not a
 promise that a future CLI version will preserve the same wire contract, so the
-adapter must fail closed on an unqualified version.
+adapter must validate the required interface before dispatch and the actual
+media result afterward. Newer versions are accepted when those checks pass.
 
 ## Capability boundary
 

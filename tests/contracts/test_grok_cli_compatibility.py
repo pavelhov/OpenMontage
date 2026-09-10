@@ -57,7 +57,7 @@ def test_compatibility_doc_records_qualified_explicit_only_contract():
     for required_text in (
         "2026-09-02",
         "1.0.13",
-        "version-pinned, explicit-only provider adapter",
+        "minimum-version, explicit-only provider adapter",
         "No new paid media generation was run",
         "Direct text to video",
         "Not exposed as a primitive",

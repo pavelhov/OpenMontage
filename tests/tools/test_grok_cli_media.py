@@ -15,11 +15,31 @@ from typing import Any
 import pytest
 
 from tools.base_tool import ToolRuntime, ToolStatus
-from tools._grok_cli_media import DEFAULT_GROK_PATH, PINNED_CLI_VERSION, grok_cli_is_qualified
+from tools._grok_cli_media import DEFAULT_GROK_PATH, MIN_CLI_VERSION, grok_cli_is_qualified
 from tools.graphics.grok_cli_image import GrokCLIImage
 from tools.graphics.image_selector import ImageSelector
 from tools.video.grok_cli_video import GrokCLIVideo
 from tools.video.video_selector import VideoSelector
+
+
+CLI_HELP = """
+Options:
+      --model <MODEL>
+      --prompt-file <PATH>
+      --output-format <FORMAT>
+          Possible values: plain, json, streaming-json
+      --max-turns <N>
+      --no-subagents
+      --disable-web-search
+      --tools <TOOLS>
+      --disallowed-tools <TOOLS>
+      --permission-mode <MODE>
+          Possible values: default, dontAsk
+      --verbatim
+      --cwd <CWD>
+  -s, --session-id <ID>
+      --deny <RULE>
+"""
 
 
 EXPECTED_NON_READ_DENIES = {
@@ -91,7 +111,8 @@ class FakeProcesses:
         self,
         *,
         media_stdout: str,
-        version: str = f"grok {PINNED_CLI_VERSION} (fixture) [stable]\n",
+        version: str = "grok 1.0.25 (fixture) [stable]\n",
+        help_output: str = CLI_HELP,
         media_returncode: int = 0,
         media_stderr: str = "",
         probe: dict[str, Any] | None = None,
@@ -99,6 +120,7 @@ class FakeProcesses:
     ) -> None:
         self.media_stdout = media_stdout
         self.version = version
+        self.help_output = help_output
         self.media_returncode = media_returncode
         self.media_stderr = media_stderr
         self.probe = probe or {
@@ -121,6 +143,8 @@ class FakeProcesses:
         self.calls.append((list(argv), dict(kwargs)))
         if argv[-1:] == ["--version"]:
             return subprocess.CompletedProcess(argv, 0, self.version, "")
+        if argv[-1:] == ["--help"]:
+            return subprocess.CompletedProcess(argv, 0, self.help_output, "")
         if "--prompt-file" in argv:
             prompt_path = Path(argv[argv.index("--prompt-file") + 1])
             self.prompt_payloads.append(prompt_path.read_text(encoding="utf-8"))
@@ -202,7 +226,7 @@ def test_provider_contract_is_explicit_paid_cli_not_xai_rest():
     assert GrokCLIVideo.supports["upscale"] is False
 
 
-def test_status_requires_pinned_version_and_ffprobe(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def test_status_requires_compatible_cli_and_ffprobe(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     executable = tmp_path / "grok"
     executable.write_text("fixture", encoding="utf-8")
     executable.chmod(0o700)
@@ -218,7 +242,7 @@ def test_status_requires_pinned_version_and_ffprobe(monkeypatch: pytest.MonkeyPa
     fake.version = "grok 1.0.14\n"
     assert grok_cli_is_qualified(str(executable)) is False
 
-    fake.version = f"grok {PINNED_CLI_VERSION}\n"
+    fake.version = f"grok {MIN_CLI_VERSION}\n"
     monkeypatch.setattr("tools._grok_cli_media.shutil.which", lambda name: None)
     assert grok_cli_is_qualified(str(executable)) is False
 
@@ -275,6 +299,7 @@ def test_image_success_shapes_and_exact_headless_boundary(
     assert result.data["media_cost_status"] == "unknown_subscription_media_cost"
     assert result.data["agent_cost_usd"] == pytest.approx(0.007)
     assert result.data["agent_cost_status"] == "exact_terminal_report"
+    assert result.data["cli_version"] == "1.0.25"
     assert len(fake.media_calls) == 1
     argv, kwargs = fake.media_calls[0]
     assert argv[0] == str(tmp_path / "fake-grok")
@@ -620,7 +645,7 @@ def test_version_mismatch_fails_before_media_call(monkeypatch: pytest.MonkeyPatc
     inputs = _common_inputs(tmp_path, tmp_path / "sessions", ".jpg")
     result = _execute_image(inputs)
     assert not result.success
-    assert "version" in result.error.lower() and PINNED_CLI_VERSION in result.error
+    assert "version" in result.error.lower() and MIN_CLI_VERSION in result.error
     assert fake.media_calls == []
 
 
@@ -1112,3 +1137,121 @@ def test_unknown_tool_keeps_read_denial(tmp_path):
     from tools._grok_cli_media import _generation_argv
     argv = _generation_argv("grok", tmp_path / "prompt.txt", "unknown", tmp_path)
     assert "Read(*)" in argv
+
+
+@pytest.mark.parametrize("version,expected", [
+    ("1.0.18", True), ("1.0.25", True), ("1.0.100", True),
+    ("1.1.0", True), ("2.0.0", True), ("1.0.27-alpha.1", True),
+    ("1.0.18+build.2", True), ("1.0.17", False),
+    ("1.0.18-rc.1", False), ("1.0", False), ("unknown", False),
+    ("1.0.18garbage", False),
+])
+def test_system_cli_version_policy(monkeypatch, tmp_path, version, expected):
+    executable = tmp_path / "grok"
+    executable.write_text("fixture")
+    executable.chmod(0o700)
+    _install_fake(monkeypatch, FakeProcesses(media_stdout="", version=f"grok {version} (build) [stable]"))
+    assert grok_cli_is_qualified(str(executable)) is expected
+
+
+@pytest.mark.parametrize("missing", ["--deny", "--tools", "--session-id", "streaming-json", "dontAsk"])
+def test_required_cli_interface_is_checked_before_generation(monkeypatch, tmp_path, missing):
+    fake = _install_fake(monkeypatch, FakeProcesses(
+        media_stdout="", version="grok 1.0.25", help_output=CLI_HELP.replace(missing, "REMOVED")))
+    inputs = _common_inputs(tmp_path, tmp_path / "sessions", ".jpg")
+    result = _execute_image(inputs)
+    assert not result.success
+    assert result.data["dispatch_status"] == "not_dispatched"
+    assert result.data["cli_version"] == "1.0.25"
+    assert missing in result.error
+    assert not fake.media_calls
+
+
+def test_cli_option_mentioned_in_prose_does_not_count(monkeypatch, tmp_path):
+    fake = _install_fake(monkeypatch, FakeProcesses(media_stdout="", version="grok 1.0.25",
+        help_output=CLI_HELP.replace("      --deny <RULE>", "          Previously supported --deny")))
+    result = _execute_image(_common_inputs(tmp_path, tmp_path / "sessions", ".jpg"))
+    assert not result.success and "--deny" in result.error
+    assert not fake.media_calls
+
+
+@pytest.mark.parametrize("option,value", [("--output-format", "streaming-json"), ("--permission-mode", "dontAsk")])
+def test_required_values_must_belong_to_their_option(monkeypatch, tmp_path, option, value):
+    help_output = CLI_HELP.replace(value, "REMOVED") + f"\n      --unrelated <VALUE>\n          {value}\n"
+    fake = _install_fake(monkeypatch, FakeProcesses(media_stdout="", help_output=help_output))
+    result = _execute_image(_common_inputs(tmp_path, tmp_path / "sessions", ".jpg"))
+    assert not result.success and f"{option}={value}" in result.error
+    assert not fake.media_calls
+
+
+@pytest.mark.parametrize("failure", ["timeout", "nonzero", "empty"])
+def test_help_failure_is_not_dispatched(monkeypatch, tmp_path, failure):
+    fake = FakeProcesses(media_stdout="")
+    def run(argv, **kwargs):
+        if "--help" in argv:
+            if failure == "timeout":
+                raise subprocess.TimeoutExpired(argv, 10, stderr=b"PRIVATE")
+            return subprocess.CompletedProcess(argv, 1 if failure == "nonzero" else 0, "", "PRIVATE")
+        return fake(argv, **kwargs)
+    monkeypatch.setattr("tools._grok_cli_media.subprocess.run", run)
+    result = _execute_image(_common_inputs(tmp_path, tmp_path / "sessions", ".jpg"))
+    assert not result.success
+    assert result.data["dispatch_status"] == "not_dispatched"
+    assert result.data["cli_version"] == "1.0.25"
+    assert result.cost_usd == 0.0
+    assert "PRIVATE" not in str(result)
+    assert not fake.media_calls
+
+
+def test_failed_media_result_reports_observed_version(monkeypatch, tmp_path):
+    fake = _install_fake(monkeypatch, FakeProcesses(media_stdout="", media_returncode=1))
+    result = _execute_image(_common_inputs(tmp_path, tmp_path / "sessions", ".jpg"))
+    assert not result.success and len(fake.media_calls) == 1
+    assert result.data["cli_version"] == "1.0.25"
+    assert result.data["dispatch_status"] == "failed"
+
+
+def test_version_discovery_failure_reports_unknown(monkeypatch, tmp_path):
+    _install_fake(monkeypatch, FakeProcesses(media_stdout="", version="unparseable"))
+    result = _execute_image(_common_inputs(tmp_path, tmp_path / "sessions", ".jpg"))
+    assert not result.success
+    assert result.data["cli_version"] is None
+    assert result.data["dispatch_status"] == "not_dispatched"
+
+
+@pytest.mark.parametrize("failure", ["protocol", "artifact", "probe", "copy_exception"])
+def test_post_dispatch_failures_never_report_free_or_not_dispatched(monkeypatch, tmp_path, failure):
+    sessions = tmp_path / "sessions"
+    inputs = _common_inputs(tmp_path, sessions, ".jpg")
+    artifact = _artifact(sessions, "images", ".jpg")
+    stdout = _stream("image_gen", "ImageGen", artifact, raw_input={"prompt": inputs["prompt"], "aspect_ratio": "auto"})
+    if failure == "protocol":
+        stdout = "malformed"
+    elif failure == "artifact":
+        artifact.unlink()
+    fake = _install_fake(monkeypatch, FakeProcesses(media_stdout=stdout))
+    if failure == "probe":
+        fake.probe = {"streams": []}
+    elif failure == "copy_exception":
+        def fail_copy(*args, **kwargs):
+            raise OSError("fixture copy failure")
+        monkeypatch.setattr("tools._grok_cli_media._copy_and_validate", fail_copy)
+    result = _execute_image(inputs)
+    assert not result.success and len(fake.media_calls) == 1
+    assert result.data["dispatch_status"] == "indeterminate"
+    assert result.cost_usd is None
+    assert result.data["cli_version"] == "1.0.25"
+    assert result.data["retry_attempted"] is False
+
+
+def test_media_launch_failure_remains_not_dispatched(monkeypatch, tmp_path):
+    fake = FakeProcesses(media_stdout="")
+    def run(argv, **kwargs):
+        if "--prompt-file" in argv:
+            raise FileNotFoundError("fixture binary disappeared")
+        return fake(argv, **kwargs)
+    monkeypatch.setattr("tools._grok_cli_media.subprocess.run", run)
+    result = _execute_image(_common_inputs(tmp_path, tmp_path / "sessions", ".jpg"))
+    assert not result.success
+    assert result.data["dispatch_status"] == "not_dispatched"
+    assert result.cost_usd == 0.0
