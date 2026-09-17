@@ -111,7 +111,49 @@
       },
       "minItems": 1
     },
-    "metadata": { "type": "object" }
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "visual_development": {
+          "type": "object",
+          "properties": {
+            "shot_cards": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "pinned_final_frame": {
+                    "type": "object",
+                    "required": [
+                      "required",
+                      "requirement_id",
+                      "end_state"
+                    ],
+                    "properties": {
+                      "required": {
+                        "const": true
+                      },
+                      "requirement_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "end_state": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "additionalProperties": false
+                  }
+                },
+                "additionalProperties": true
+              }
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
   },
   "additionalProperties": false
 }

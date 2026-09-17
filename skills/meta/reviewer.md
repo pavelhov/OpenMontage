@@ -407,3 +407,16 @@ The templated→atelier inversion (`AGENT_GUIDE.md` → "Composition Authoring M
 
 ### At publish stage (when composition_mode == "atelier"):
 1. All six atelier compose-stage checks above (existence of `atelier` block, stock_reuse, art_direction_declared, scene_distinctness, captions/text dedup, human distinctness review) must show `resolved` in the review record. Any unresolved: **CRITICAL** — "Cannot publish atelier piece with unresolved doctrine or distinctness findings."
+
+## Required Pinned Final-Frame Review
+
+For every `shot_cards[scene_id].pinned_final_frame` requirement, verify the
+matching approved image binding in `motion_handoffs[keyframe_asset_id]` and
+successful artifact-to-selector validation. Missing, unapproved, or mismatched
+bindings are critical: complete the reference review before dispatch.
+At assets review, compare `prompt_audits[output_asset_id].endpoint_conditioning`
+with the planned requirement, actual image assets, and approved provider/model.
+A missing endpoint, a prompt-only substitution, or unapproved CLI-to-REST switch
+is critical. Inspect sampled first/final frames and motion between them; a
+submitted endpoint is evidence of conditioning, not proof of visual success or
+correct physics. Record the outcome before the normal assets approval gate.

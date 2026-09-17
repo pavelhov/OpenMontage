@@ -182,6 +182,108 @@ Write motion instructions as **Change / Preserve / Constraints**, not as a
 second image prompt. This gives the motion provider a stable starting frame and
 prevents it from reinventing the scene.
 
+## Required Pinned Final Frames
+
+A described `end_state` is creative intent. When the ending image itself is a
+hard requirement, record a machine-readable requirement before asset work:
+
+```json
+{
+  "metadata": {
+    "visual_development": {
+      "shot_cards": {
+        "scene-03": {
+          "scene_id": "scene-03",
+          "pinned_final_frame": {
+            "required": true,
+            "requirement_id": "door-closed-ending",
+            "end_state": "The door is shut and the subject stands outside."
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+This is a `scene_plan` excerpt; `scene-03` must already exist in `scenes`.
+Describe the ending in canonical `required_assets` too. Do not invent a future
+image asset ID. Once first and ending images exist and are approved, inventory
+both in `asset_manifest.assets` as `type: image` with project-relative `path`,
+`source_tool`, and matching `scene_id`. Bind the ending in the existing handoff:
+
+```json
+{
+  "metadata": {
+    "reference_assets": {
+      "ending-image": {
+        "asset_id": "ending-image",
+        "scene_id": "scene-03",
+        "requirement_id": "door-closed-ending",
+        "roles": ["end_state"],
+        "temporal_use": "last_frame"
+      }
+    },
+    "motion_handoffs": {
+      "starting-image": {
+        "asset_id": "starting-image",
+        "scene_id": "scene-03",
+        "approved": true,
+        "pinned_final_frame": {
+          "requirement_id": "door-closed-ending",
+          "asset_id": "ending-image",
+          "approved": true
+        }
+      }
+    }
+  }
+}
+```
+
+Keep Change / Preserve / Constraints alongside this binding. `approved: false`
+can record an unfinished ending-image review; it blocks motion dispatch.
+Use `lib.pinned_final_frame.pinned_final_frame_params` to validate and translate
+the approved artifacts. It returns selector parameters; it does not generate
+media, authorize spending, or choose a replacement route:
+
+```python
+from lib.pinned_final_frame import pinned_final_frame_params
+
+params = pinned_final_frame_params(
+    scene_plan, asset_manifest,
+    scene_id="scene-03", keyframe_asset_id="starting-image",
+    provider="grok", model="grok-imagine-video-1.5",
+    project_dir="projects/door-scene",
+)
+# The explicit approved route and resolved image paths accompany:
+# operation="first_last_frame", endpoint_requirement_id="door-closed-ending"
+params.update(prompt="The subject exits and gently closes the door.",
+              duration=6, resolution="720p",
+              output_path="projects/door-scene/assets/video/scene-03.mp4")
+```
+
+Before dispatch, use the registry support envelope and selector rank preflight
+with `operation: rank`, `target_operation: first_last_frame`, and these exact
+endpoint/model/provider inputs. Use `provider_menu_summary().pinned_final_frame_routes` for the compact
+endpoint capability menu, and `provider_menu()` for route detail. Show credential
+availability and estimated cost for the approved route. A CLI route without endpoint support is a blocker;
+never omit the endpoint or silently switch to paid REST. Surface the supported
+alternative with its separate credentials and billing, then obtain approval for
+any route change. Read the selected provider skill before generation.
+
+On success, retain the returned `endpoint_conditioning` record in
+`asset_manifest.metadata.prompt_audits[output_asset_id]`, together with
+`endpoint_requirement_id`, first/last asset IDs, actual provider/model, and
+request ID. Keep failures in `prompt_attempts[attempt_id]`; do not fabricate an
+output asset. Do not copy credentials, authorization headers, base64 images, or
+signed URL query strings into provenance.
+
+Review the generated first and final frames against the approved references,
+and review the motion between them. Endpoint conditioning constrains the
+boundaries; it does not guarantee physical correctness, exact pixel matches,
+or a seamless loop. The same approved image can occupy both endpoint slots for
+a loop, but seam motion and audio still require inspection.
+
 ## Edit Contract
 
 For image or video edit operations, allocate a stable `edit_attempt_id` before

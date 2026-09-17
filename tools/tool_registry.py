@@ -296,6 +296,7 @@ class ToolRegistry:
                 "operation_statuses",
                 "resource_profiles",
                 "resource_profile_note",
+                "pinned_final_frame",
             ):
                 if extra_key in info:
                     entry[extra_key] = info[extra_key]
@@ -461,6 +462,20 @@ class ToolRegistry:
             "capabilities": capabilities,
             "setup_offers": setup_offers,
             "runtime_warnings": runtime_warnings,
+            # Keep endpoint support visible even when a provider's ordinary
+            # image-to-video route is available through another billing path.
+            "pinned_final_frame_routes": [
+                {
+                    "tool": entry["name"],
+                    "provider": entry["provider"],
+                    "status": entry["status"],
+                    "install_instructions": entry["install_instructions"],
+                    **entry["pinned_final_frame"],
+                }
+                for bucket in menu.values()
+                for entry in bucket["available"] + bucket["unavailable"]
+                if "pinned_final_frame" in entry
+            ],
         }
         # Normalize em-dashes and en-dashes to ASCII so preflight output prints
         # cleanly on Windows cp1252 stdout (the default on Git Bash / PowerShell

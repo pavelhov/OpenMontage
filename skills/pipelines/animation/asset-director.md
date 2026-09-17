@@ -193,6 +193,16 @@ Do not rely on stale knowledge. When in doubt, search first.
 
 ---
 
+### Required ending-frame contract
+
+Follow `skills/creative/visual-development.md` → Required Pinned Final Frames
+for every planned pinned ending. Bind the approved final image in the existing
+motion handoff, validate via `pinned_final_frame_params`, preflight the exact
+route, retain `endpoint_conditioning` provenance, and inspect the ending and
+intermediate motion. An unsupported CLI route blocks generation until the user
+approves a supported route; never replace the pin with prompt text.
+
+
 ## Gate Reminder (Binding)
 
 This stage gates on human approval (`human_approval_default: true`). After review passes:

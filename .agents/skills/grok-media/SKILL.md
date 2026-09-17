@@ -214,3 +214,14 @@ See the [official first/last-frame guide](https://docs.x.ai/developers/model-cap
 - If generation submission succeeds but polling expires, surface it as a provider/runtime issue
 - If a request fails, preserve the endpoint, mode, and prompt summary in the error
 - Do not silently substitute a different provider after xAI was selected without user approval
+
+## Production endpoint handoff
+
+For an approved pinned ending, use the machine-readable sidecars and artifact
+bridge in `skills/creative/visual-development.md` → Required Pinned Final
+Frames. Keep `endpoint_requirement_id` on the selector request and retain
+returned `endpoint_conditioning` in the output asset's prompt audit. Preflight
+must distinguish the existing CLI OAuth session from REST API credential
+availability and API charges. A working CLI session does not enable REST or
+prove final-frame support. Endpoint pins constrain boundaries, not intervening
+physics; inspect the generated ending and motion before accepting the asset.
