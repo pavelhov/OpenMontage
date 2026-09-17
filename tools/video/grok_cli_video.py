@@ -13,8 +13,9 @@ from typing import Any
 
 from tools._grok_cli_media import (
     DEFAULT_GROK_PATH,
-    PINNED_CLI_VERSION,
+    MIN_CLI_VERSION,
     PINNED_MODEL,
+    MODEL_PROVENANCE,
     GrokCLIContractError,
     execute_grok_cli_media,
     grok_cli_is_qualified,
@@ -51,7 +52,7 @@ class GrokCLIVideo(BaseTool):
 
     dependencies = ["cmd:grok", "cmd:ffprobe"]
     install_instructions = (
-        f"Install Grok CLI {PINNED_CLI_VERSION} on PATH (or set GROK_CLI_PATH), "
+        f"Install Grok CLI {MIN_CLI_VERSION} or newer on PATH (or set GROK_CLI_PATH), "
         "then sign in interactively with `grok login`. This adapter never initiates login."
     )
     agent_skills = ["grok-media", "ai-video-gen"]
@@ -67,6 +68,7 @@ class GrokCLIVideo(BaseTool):
         "reference_image": True,
         "multiple_reference_images": True,
         "native_audio": True,
+        "preset_voices": True,
         "explicit_selection_only": True,
         "oauth_session_auth": True,
         "api_key_required": False,
@@ -113,6 +115,11 @@ class GrokCLIVideo(BaseTool):
                 "items": {"type": "string"},
                 "minItems": 1,
                 "maxItems": 7,
+            },
+            "voices": {
+                "type": "array", "items": {"type": "string", "minLength": 1},
+                "maxItems": 3,
+                "description": "reference_to_video only: preset voice IDs, tagged <AUDIO_0> etc.; CLI >=1.0.25.",
             },
             "duration": {"type": "integer", "minimum": 1, "maximum": 15, "default": 6},
             "resolution": {"type": "string", "enum": ["480p", "720p"], "default": "480p"},
@@ -176,7 +183,9 @@ class GrokCLIVideo(BaseTool):
             "tool": self.name,
             "provider": self.provider,
             "model": PINNED_MODEL,
-            "cli_version": PINNED_CLI_VERSION,
+            **MODEL_PROVENANCE,
+            "cli_version": None,
+            "minimum_cli_version": MIN_CLI_VERSION,
             "operation": inputs.get("operation"),
             "status": "not_checked_offline",
             "would_execute": approved,
@@ -195,7 +204,8 @@ class GrokCLIVideo(BaseTool):
             data={
                 "provider": "grok_cli",
                 "model": PINNED_MODEL,
-                "cli_version": PINNED_CLI_VERSION,
+                **MODEL_PROVENANCE,
+                "cli_version": None,
                 "error_category": error.category,
                 "dispatch_status": error.dispatch_status,
                 "retry_attempted": False,
@@ -228,6 +238,20 @@ class GrokCLIVideo(BaseTool):
                     "Grok CLI video supports only image_to_video and reference_to_video; "
                     f"direct {operation}, video editing, and upscaling are unavailable",
                 )
+            unsupported_voice = {
+                key for key in inputs
+                if ("voice" in key or "audio" in key) and key != "voices"
+            }
+            if unsupported_voice:
+                raise GrokCLIContractError("capability", "Unsupported voice/audio parameters: " + ", ".join(sorted(unsupported_voice)))
+            voices = inputs.get("voices", [])
+            if not isinstance(voices, list) or len(voices) > 3 or any(
+                not isinstance(voice, str) or not voice.strip() or voice != voice.strip()
+                for voice in voices
+            ):
+                raise GrokCLIContractError("invalid_argument", "voices must be a list of at most 3 non-empty preset identifiers without surrounding whitespace")
+            if "voices" in inputs and operation != "reference_to_video":
+                raise GrokCLIContractError("capability", "voices is supported only for reference_to_video")
             resolution = str(inputs.get("resolution", "480p"))
             if resolution not in {"480p", "720p"}:
                 raise GrokCLIContractError("capability", "Grok CLI video supports only 480p and 720p")
@@ -265,12 +289,15 @@ class GrokCLIVideo(BaseTool):
                 aspect_ratio = str(inputs.get("aspect_ratio", "16:9"))
                 if aspect_ratio not in _REFERENCE_ASPECT_RATIOS:
                     raise GrokCLIContractError("invalid_argument", f"unsupported aspect_ratio: {aspect_ratio}")
-                arguments["images"] = validate_local_image_paths(
-                    inputs.get("reference_image_paths"),
-                    field="reference_to_video",
-                    minimum=1,
-                    maximum=7,
-                )
+                references = inputs.get("reference_image_paths")
+                if references is not None:
+                    arguments["images"] = validate_local_image_paths(
+                        references, field="reference_to_video", minimum=1, maximum=7,
+                    )
+                elif not voices:
+                    raise GrokCLIContractError("invalid_argument", "reference_to_video requires images and/or preset voices")
+                if voices:
+                    arguments["voices"] = voices
                 arguments["aspect_ratio"] = aspect_ratio
 
             output_path = str(inputs.get("output_path") or "")
