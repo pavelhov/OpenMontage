@@ -90,6 +90,14 @@ to the closed `scenes[]` item.
 
 ---
 
+### Required ending-frame contract
+
+When a generated shot must end on a particular approved image, follow
+`skills/creative/visual-development.md` → Required Pinned Final Frames. Record
+the stable requirement in `shot_cards[scene_id].pinned_final_frame` and describe
+the required image in canonical `required_assets`; bind actual asset IDs later.
+
+
 ## Gate Reminder (Binding)
 
 This stage gates on human approval (`human_approval_default: true`). After review passes:

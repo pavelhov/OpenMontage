@@ -8,12 +8,13 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import mimetypes
 import os
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from jsonschema import Draft7Validator
 
@@ -170,6 +171,7 @@ class GrokVideo(BaseTool):
                 "maxItems": 7,
                 "description": "Local reference image paths for reference_to_video",
             },
+            "endpoint_requirement_id": {"type": "string", "minLength": 1},
             "output_path": {"type": "string"},
             "poll_interval_seconds": {"type": "integer", "minimum": 2, "default": 5},
             "timeout_seconds": {"type": "integer", "minimum": 30, "default": 900},
@@ -212,6 +214,42 @@ class GrokVideo(BaseTool):
             return ToolStatus.AVAILABLE
         return ToolStatus.UNAVAILABLE
 
+    def get_info(self) -> dict[str, Any]:
+        info = super().get_info()
+        info["pinned_final_frame"] = {
+            "supported": True,
+            "models": sorted(self.first_last_frame_models),
+            "billing": "separate_api",
+            "credential_available": bool(os.environ.get("XAI_API_KEY")),
+            "requires_explicit_route_approval": True,
+        }
+        return info
+
+    @staticmethod
+    def _endpoint_provenance(inputs: dict[str, Any]) -> dict[str, Any]:
+        def source(url: str | None, path: str | None) -> dict[str, str] | None:
+            if path:
+                return {"path": path}
+            if url and url.startswith("data:"):
+                # Preserve reference identity without embedding image bytes in artifacts.
+                return {"data_uri_sha256": hashlib.sha256(url.encode()).hexdigest()}
+            if not url:
+                return None
+            parsed = urlsplit(url)
+            safe_url = urlunsplit((parsed.scheme, parsed.netloc.rsplit("@", 1)[-1], parsed.path, "", ""))
+            reference = {"url": safe_url}
+            if safe_url != url:
+                reference["url_sha256"] = hashlib.sha256(url.encode()).hexdigest()
+            return reference
+
+        return {
+            "requirement_id": inputs.get("endpoint_requirement_id"),
+            "first_frame": source(inputs.get("image_url") or inputs.get("reference_image_url"),
+                                  inputs.get("image_path") or inputs.get("reference_image_path")),
+            "last_frame": source(inputs.get("last_image_url"), inputs.get("last_image_path")),
+            "constraint": "endpoints_only",
+        }
+
     @staticmethod
     def _input_image_count(inputs: dict[str, Any]) -> int:
         count = 0
@@ -248,6 +286,8 @@ class GrokVideo(BaseTool):
         if error is not None:
             location = ".".join(str(part) for part in error.path) or "inputs"
             raise ValueError(f"Invalid {location}: {error.validator} constraint failed")
+        if inputs.get("endpoint_requirement_id") and not (inputs.get("last_image_url") or inputs.get("last_image_path")):
+            raise ValueError("endpoint_requirement_id requires an approved last_image_url or last_image_path")
         operation = inputs.get("operation", "text_to_video")
         model = inputs.get("model", "grok-imagine-video")
 
@@ -310,7 +350,8 @@ class GrokVideo(BaseTool):
         if not api_key:
             return ToolResult(
                 success=False,
-                error="XAI_API_KEY not set. " + self.install_instructions,
+                error="XAI_API_KEY is unavailable for the separately API-billed Grok REST route. CLI sign-in does not provide REST credentials. " + self.install_instructions,
+                data={"dispatch_status": "not_dispatched", "fallback_attempted": False, "fallback_tools": []},
             )
 
         import requests
@@ -377,6 +418,8 @@ class GrokVideo(BaseTool):
                 "model": payload["model"],
                 "prompt": inputs.get("prompt", ""),
                 "operation": inputs.get("operation", "text_to_video"),
+                "endpoint_conditioning": self._endpoint_provenance(inputs),
+                "billing": "separate_api",
                 "request_id": request_id,
                 "output": str(output_path),
                 "output_path": str(output_path),

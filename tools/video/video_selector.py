@@ -134,6 +134,7 @@ class VideoSelector(BaseTool):
                 "items": {"type": "string"},
                 "description": "Local reference audio paths for mixed-media generation.",
             },
+            "endpoint_requirement_id": {"type": "string", "minLength": 1},
             "last_image_url": {"type": "string", "description": "Optional final frame for first/last-frame generation."},
             "last_image_path": {"type": "string", "description": "Optional local final frame."},
             "video_url": {"type": "string", "description": "Source video URL for video editing."},
@@ -295,6 +296,12 @@ class VideoSelector(BaseTool):
 
     def estimate_cost(self, inputs: dict[str, object]) -> float:
         candidates = self._filter_candidates(inputs, self._providers())
+        if self._requires_final_frame(inputs) and not any(self._tool_selectable(tool, inputs) for tool in candidates):
+            raise ValueError(
+                "Cannot estimate pinned final frame cost: no eligible available route. "
+                "Check the selected provider's final-frame support, explicit model, and credentials; "
+                "an unavailable route is not free."
+            )
         if not candidates:
             return 0.0
         explicit = self._exact_explicit_candidate(inputs, candidates)
@@ -325,6 +332,12 @@ class VideoSelector(BaseTool):
                 success=False,
                 data={"fallback_tools": [], "fallback_attempted": False},
                 error="Use last_image_url or last_image_path for a pinned final frame; no loop switch or other ending-frame alias is supported.",
+            )
+        if inputs.get("endpoint_requirement_id") and not (inputs.get("last_image_url") or inputs.get("last_image_path")):
+            return ToolResult(
+                success=False,
+                data={"fallback_tools": [], "fallback_attempted": False, "dispatch_status": "not_dispatched"},
+                error="An endpoint_requirement_id requires the approved last_image_url or last_image_path; resolve the ending-frame asset before generation.",
             )
         candidates = self._providers()
 
@@ -384,11 +397,14 @@ class VideoSelector(BaseTool):
             return ToolResult(
                 success=False,
                 data=(
-                    {"alternatives_considered": [], "fallback_tools": []}
+                    {"alternatives_considered": [], "fallback_tools": [], "fallback_attempted": False, "dispatch_status": "not_dispatched"}
                     if explicit_route or self._requires_final_frame(inputs) else {}
                 ),
                 error=(
-                    "No available provider supports the requested pinned final frame/model; no fallback was attempted."
+                    "No available provider supports the requested pinned final frame/model on the requested route. "
+                    "Check the provider's pinned_final_frame capability, exact model, and credential availability. "
+                    "Grok CLI cannot pin final frames; Grok REST is separately API-billed and requires explicit "
+                    "route approval and REST credentials. No fallback was attempted."
                     if self._requires_final_frame(inputs) else "No video generation provider available."
                 ),
             )
@@ -594,6 +610,10 @@ class VideoSelector(BaseTool):
         *,
         rank_mode: bool = False,
     ) -> list[BaseTool]:
+        # An endpoint requirement makes an explicit provider choice a constraint:
+        # never turn a CLI request into an API-billed provider behind the caller.
+        if self._requires_final_frame(inputs) and inputs.get("preferred_provider", "auto") != "auto":
+            candidates = [tool for tool in candidates if tool.provider == inputs["preferred_provider"]]
         allowed = self._allowed_provider_set(inputs)
         if allowed:
             candidates = [tool for tool in candidates if tool.provider in allowed]
@@ -703,7 +723,7 @@ class VideoSelector(BaseTool):
     def _requires_final_frame(inputs: dict[str, object]) -> bool:
         operation = inputs.get("target_operation") if inputs.get("operation") == "rank" else inputs.get("operation")
         return operation == "first_last_frame" or any(
-            key in inputs for key in ("last_image_url", "last_image_path")
+            key in inputs for key in ("last_image_url", "last_image_path", "endpoint_requirement_id")
         )
 
     @staticmethod

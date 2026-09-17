@@ -311,7 +311,7 @@ def test_video_compose_render_engines_follow_hyperframes_runtime_check(monkeypat
 
 def test_provider_menu_summary_returns_expected_shape():
     """Regression: AGENT_GUIDE.md line 246 points agents at provider_menu_summary
-    for the capability menu. The shape must be stable and cover the four fields
+    for the capability menu. The shape must be stable and cover the fields
     the guide references."""
     from tools.tool_registry import registry
 
@@ -323,6 +323,7 @@ def test_provider_menu_summary_returns_expected_shape():
         "capabilities",
         "setup_offers",
         "runtime_warnings",
+        "pinned_final_frame_routes",
     }
     # Composition runtimes MUST include all three engines so the HARD RULE
     # presentation has the data it needs.

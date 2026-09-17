@@ -107,6 +107,8 @@ def test_http_submission_sends_verified_last_frame_once(monkeypatch, tmp_path):
     monkeypatch.setattr('tools.video._shared.probe_output', lambda path: {'duration': 6})
     result = GrokVideo().execute(request(output_path=str(tmp_path / 'clip.mp4')))
     assert result.success and result.model == MODEL
+    assert result.data['endpoint_conditioning']['last_frame'] == {'url': LAST}
+    assert result.data['billing'] == 'separate_api'
     assert post.call_count == 1 and get.call_count == 2
     assert post.call_args.kwargs['json']['last_frame'] == {'url': LAST}
     assert (tmp_path / 'clip.mp4').read_bytes() == b'fixture-video'
@@ -167,3 +169,86 @@ def test_selector_rejects_unsupported_controls_without_provider_discovery(monkey
     result = selector.execute({'prompt': 'Loop', field: LAST})
     assert not result.success and result.data['fallback_tools'] == []
     providers.assert_not_called()
+
+
+@pytest.mark.parametrize("allowed", [None, ["grok_cli", "grok"]])
+def test_cli_preference_cannot_silently_migrate_pinned_endpoint_to_rest(monkeypatch, allowed):
+    selector, cli, rest = VideoSelector(), GrokCLIVideo(), GrokVideo()
+    monkeypatch.setattr(selector, "_providers", lambda: [cli, rest])
+    monkeypatch.setattr(rest, "get_status", lambda: ToolStatus.AVAILABLE)
+    dispatch = Mock(side_effect=AssertionError("Do not migrate to REST"))
+    monkeypatch.setattr(rest, "execute", dispatch)
+    inputs = {**request(), "preferred_provider": "grok_cli"}
+    if allowed:
+        inputs["allowed_providers"] = allowed
+    result = selector.execute(inputs)
+    assert not result.success and "separately API-billed" in result.error
+    assert result.data["dispatch_status"] == "not_dispatched"
+    assert selector.fallback_tools_for(inputs) == []
+    assert selector.execute({**inputs, "operation": "rank", "target_operation": "first_last_frame"}).data["rankings"] == []
+    dispatch.assert_not_called()
+
+
+def test_rest_missing_credentials_and_capability_metadata(monkeypatch):
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    post = Mock(side_effect=AssertionError("No credentials"))
+    monkeypatch.setattr("requests.post", post)
+    tool = GrokVideo()
+    info = tool.get_info()["pinned_final_frame"]
+    assert info == {"supported": True, "models": [MODEL], "billing": "separate_api",
+                    "credential_available": False, "requires_explicit_route_approval": True}
+    result = tool.execute(request())
+    assert not result.success and result.data["dispatch_status"] == "not_dispatched"
+    assert "CLI sign-in does not provide REST credentials" in result.error
+    post.assert_not_called()
+    monkeypatch.setenv("XAI_API_KEY", "offline-secret-fixture")
+    info = tool.get_info()
+    assert info["pinned_final_frame"]["credential_available"] is True
+    assert "offline-secret-fixture" not in str(info)
+
+
+def test_endpoint_provenance_records_sources_without_image_bytes():
+    provenance = GrokVideo._endpoint_provenance({**request(), "endpoint_requirement_id": "ending-01"})
+    assert provenance == {"requirement_id": "ending-01", "first_frame": {"url": FIRST},
+                          "last_frame": {"url": LAST}, "constraint": "endpoints_only"}
+    data_ref = "data:image/png;base64,aW1hZ2U="
+    provenance = GrokVideo._endpoint_provenance({"last_image_url": data_ref})
+    assert len(provenance["last_frame"]["data_uri_sha256"]) == 64
+    assert data_ref not in str(provenance)
+
+
+@pytest.mark.parametrize("tool", [GrokVideo, GrokCLIVideo, VideoSelector])
+def test_endpoint_requirement_without_reference_cannot_be_ignored(tool):
+    result = tool().execute({"prompt": "Finish the action", "endpoint_requirement_id": "ending-01"})
+    assert not result.success
+    assert result.data["dispatch_status"] == "not_dispatched"
+
+
+@pytest.mark.parametrize("url", [
+    "https://user:password@example.com:443/frame.png?signature=secret#private",
+    "https://example.com/frame.png?token=secret",
+    "https://example.com/frame.png#private",
+])
+def test_endpoint_provenance_redacts_url_credentials(url):
+    reference = GrokVideo._endpoint_provenance({"last_image_url": url})["last_frame"]
+    assert reference["url"] in {"https://example.com/frame.png", "https://example.com:443/frame.png"}
+    assert len(reference["url_sha256"]) == 64
+    assert all(secret not in str(reference) for secret in ("password", "secret", "private", "user:"))
+    changed = GrokVideo._endpoint_provenance({"last_image_url": url + "changed"})["last_frame"]
+    assert changed["url_sha256"] != reference["url_sha256"]
+
+
+@pytest.mark.parametrize("route", ["unsupported_cli", "unavailable_rest", "no_providers"])
+def test_endpoint_cost_estimate_never_reports_unavailable_route_as_free(monkeypatch, route):
+    selector, rest = VideoSelector(), GrokVideo()
+    monkeypatch.setattr(rest, "get_status", lambda: ToolStatus.UNAVAILABLE)
+    providers = {"unsupported_cli": [GrokCLIVideo()], "unavailable_rest": [rest], "no_providers": []}
+    monkeypatch.setattr(selector, "_providers", lambda: providers[route])
+    with pytest.raises(ValueError, match="an unavailable route is not free"):
+        selector.estimate_cost(request())
+
+
+def test_ordinary_unavailable_cost_estimate_preserves_existing_behavior(monkeypatch):
+    selector = VideoSelector()
+    monkeypatch.setattr(selector, "_providers", lambda: [])
+    assert selector.estimate_cost({"prompt": "Clouds"}) == 0.0

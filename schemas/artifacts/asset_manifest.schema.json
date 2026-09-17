@@ -56,7 +56,43 @@
       }
     },
     "total_cost_usd": { "type": "number", "minimum": 0 },
-    "metadata": { "type": "object" }
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "motion_handoffs": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "pinned_final_frame": {
+                "type": "object",
+                "required": [
+                  "requirement_id",
+                  "asset_id",
+                  "approved"
+                ],
+                "properties": {
+                  "requirement_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "asset_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "approved": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    }
   },
   "additionalProperties": false
 }

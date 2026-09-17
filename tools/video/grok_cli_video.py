@@ -151,6 +151,16 @@ class GrokCLIVideo(BaseTool):
         configured = self._grok_path or os.environ.get("GROK_CLI_PATH", DEFAULT_GROK_PATH)
         return ToolStatus.AVAILABLE if grok_cli_is_qualified(configured) else ToolStatus.UNAVAILABLE
 
+    def get_info(self) -> dict[str, Any]:
+        info = super().get_info()
+        info["pinned_final_frame"] = {
+            "supported": False,
+            "models": [],
+            "billing": "subscription_or_usage_unknown",
+            "requires_explicit_route_approval": True,
+        }
+        return info
+
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
         raise ValueError(
             "Grok CLI OAuth/subscription media cost is unknown before generation; "
@@ -200,13 +210,14 @@ class GrokCLIVideo(BaseTool):
         try:
             frame_controls = {
                 "last_image_url", "last_image_path", "last_frame", "last_frame_url", "last_frame_path",
-                "end_frame", "end_frame_url", "end_frame_path", "loop", "seamless_loop",
+                "end_frame", "end_frame_url", "end_frame_path", "loop", "seamless_loop", "endpoint_requirement_id",
             }
             if frame_controls.intersection(inputs) or inputs.get("operation") == "first_last_frame":
                 raise GrokCLIContractError(
                     "capability",
                     "The Grok CLI adapter does not expose pinned last frames or a seamless-loop control; "
-                    "REST grok_video with explicit model=grok-imagine-video-1.5 is a separate route",
+                    "REST grok_video with explicit model=grok-imagine-video-1.5 is a separately API-billed route "
+                    "requiring REST credentials and explicit approval before switching",
                 )
             if any(key in inputs for key in ("model", "model_name")):
                 raise GrokCLIContractError("capability", "Grok CLI video does not expose Imagine model selection")

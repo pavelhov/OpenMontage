@@ -273,12 +273,13 @@ print(json.dumps(registry.provider_menu_summary(), indent=2))
 "
 ```
 
-The summary returns four fields the agent should translate into plain language:
+The summary returns these fields the agent should translate into plain language:
 
 - `composition_runtimes` — booleans for `ffmpeg`, `remotion`, `hyperframes`. This is the source of truth for the "Present Both Composition Runtimes (HARD RULE)" check.
 - `capabilities[]` — one entry per capability family with `configured / total` counts and provider lists. Ready-made for the "N of M configured" menu.
 - `setup_offers[]` — unavailable tools whose install is a 1-minute env-var fix. Lead with these when offering upgrades.
 - `runtime_warnings[]` — specific signals like "hyperframes: npm package not resolvable". Surface these to the user verbatim — they're the kind of silent-failure bugs that break the governance contract.
+- `pinned_final_frame_routes[]` — per-route ending-frame support, exact supported models, credential availability, and billing separation. For a required ending image, use the binding workflow in `skills/creative/visual-development.md`; an available CLI route does not imply endpoint support or authorize a paid API route.
 
 Then, for deeper inspection (only when the summary isn't enough):
 
