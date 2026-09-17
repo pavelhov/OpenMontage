@@ -1255,3 +1255,65 @@ def test_media_launch_failure_remains_not_dispatched(monkeypatch, tmp_path):
     assert not result.success
     assert result.data["dispatch_status"] == "not_dispatched"
     assert result.cost_usd == 0.0
+
+@pytest.mark.parametrize("with_images", [False, True])
+@pytest.mark.parametrize("through_selector", [False, True])
+def test_reference_preset_voices_exact_dispatch(monkeypatch, tmp_path, with_images, through_selector):
+    sessions = tmp_path / "sessions"
+    artifact = _artifact(sessions, "videos", ".mp4")
+    inputs = _common_inputs(tmp_path, sessions, ".mp4")
+    inputs.update(operation="reference_to_video", voices=["eve", "ara"])
+    expected = dict(prompt=inputs["prompt"], voices=["eve", "ara"], duration=6,
+                    resolution_name="480p", aspect_ratio="16:9")
+    if with_images:
+        source = tmp_path / "source.png"
+        source.write_bytes(b"image")
+        inputs["reference_image_paths"] = [str(source)]
+        expected["images"] = [str(source)]
+    fake = FakeProcesses(media_stdout=_stream("reference_to_video", "ReferenceToVideo", artifact, raw_input=expected))
+    _install_fake(monkeypatch, fake)
+    if through_selector:
+        provider = GrokCLIVideo(grok_path=inputs["grok_path"], sessions_root=str(sessions))
+        monkeypatch.setattr(provider, "get_status", lambda: ToolStatus.AVAILABLE)
+        selector = VideoSelector()
+        selector._providers = lambda: [provider]
+        inputs.update(preferred_provider="grok_cli", allowed_providers=["grok_cli"])
+        result = selector.execute(inputs)
+        assert result.data.get("selected_provider") == "grok_cli", result.error
+        assert result.data["fallback_tools"] == []
+    else:
+        result = _execute_video(inputs)
+    assert result.success, result.error
+    assert json.loads(fake.prompt_payloads[0].splitlines()[1]) == expected
+    assert result.data["agent_model"] == "grok-4.6"
+    assert result.data["model_role"] == "agent"
+    assert result.data["media_model"] is None
+    assert result.data["media_model_status"] == "unreported"
+    assert result.data["retry_attempted"] is False
+    assert result.data["fallback_attempted"] is False
+
+@pytest.mark.parametrize("extra", [
+    {"voices": "eve"}, {"voices": [""]}, {"voices": [" eve"]},
+    {"voices": [1]}, {"voices": ["a", "b", "c", "d"]},
+    {"audio_url": "https://example.com/audio"}, {"voice_id": "eve"}, {"reference_audio_paths": ["voice.wav"]},
+    {"operation": "image_to_video", "voices": ["eve"]},
+])
+def test_invalid_voice_controls_never_dispatch(monkeypatch, tmp_path, extra):
+    monkeypatch.setattr("tools._grok_cli_media.subprocess.run", lambda *a, **k: pytest.fail("must not dispatch"))
+    inputs = _common_inputs(tmp_path, tmp_path / "sessions", ".mp4")
+    inputs.update(operation="reference_to_video")
+    inputs.update(extra)
+    result = _execute_video(inputs)
+    assert not result.success
+    assert result.data["media_model_status"] == "unreported"
+
+@pytest.mark.parametrize("version", ["1.0.24", "1.0.25-alpha"])
+def test_preset_voices_fail_before_dispatch_on_unqualified_cli(monkeypatch, tmp_path, version):
+    inputs = _common_inputs(tmp_path, tmp_path / "sessions", ".mp4")
+    inputs.update(operation="reference_to_video", voices=["eve"])
+    fake = FakeProcesses(media_stdout="", version=f"grok {version}")
+    _install_fake(monkeypatch, fake)
+    result = _execute_video(inputs)
+    assert not result.success
+    assert "1.0.25" in result.error
+    assert not fake.media_calls

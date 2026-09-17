@@ -26,7 +26,10 @@ OpenMontage uses `grok` from PATH (or an explicit `GROK_CLI_PATH`) with model
 `grok-4.6`. It requires CLI `1.0.18` or newer and verifies required command
 options and values with `--help` before dispatch. Compatible updates need no
 separate binary or version-pin change. These checks establish advertised CLI
-compatibility, not media entitlement. Results record the observed CLI version.
+compatibility, not media entitlement. Results record the observed CLI version. `agent_model` (and legacy `model`)
+identifies the coding agent; `media_model=null` / `media_model_status=unreported`
+means the native receipt did not report the Imagine backend. Do not describe
+`grok-4.6` as the video model or infer a server-resolved model from it.
 The adapter runs
 one sealed native media-tool call through streaming JSON, disables web search
 and subagents, denies shell/project-file/MCP access, validates the returned
@@ -46,13 +49,22 @@ Supported native operations:
 - `image_gen`: prompt plus aspect ratio.
 - `image_edit`: prompt plus 1-5 local image paths.
 - `image_to_video`: one local first-frame image, 6 or 10 seconds, 480p/720p.
-  Geometry is photo-true from the source frame — there is no `aspect_ratio`
+  The source conditions frame one, not guaranteed geometry throughout motion. There is no `aspect_ratio`
   argument. Near-9:16 drifts such as `720x1264` are common and must be
   normalized at compose/stitch to exact TikTok-safe `720x1280` (or
   `1080x1920`) before shipping.
-- `reference_to_video`: 1-7 local reference images, 1-15 seconds,
-  480p/720p, and an explicit aspect ratio. Prefer this when exact `9:16`
-  pixels are required at generation time.
+- `reference_to_video`: 1-7 local reference images and/or 1-3 preset `voices`,
+  1-15 seconds, 480p/720p, and an explicit aspect ratio. References guide subjects
+  and style; they do not pin frame one. Requested aspect ratio is not a guarantee
+  of exact output pixels: inspect and normalize delivery geometry before shipping.
+  Preset voices were qualified from native tool descriptions in installed stable
+  CLI 1.0.25 (f7e67d6988e2), with offline dispatch tests; no live voice generation
+  was performed for qualification. The adapter requires 1.0.25 or newer.
+  Pass preset identifiers in `voices`
+  and tag them as `<AUDIO_0>`, `<AUDIO_1>`, etc. in the prompt; tag image references
+  as `<IMAGE_0>`, etc. No uploaded audio or voice cloning is exposed. Voice-only
+  reference generation is supported; it is not a pinned-first-frame operation.
+  Presets do not guarantee speaker attribution or lip sync; review both.
 
 The CLI adapter does not expose direct text-to-video, video edit, extend, or
 upscale. Do not emulate those operations with a hidden multi-step workflow.

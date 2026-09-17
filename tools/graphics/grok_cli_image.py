@@ -14,6 +14,7 @@ from tools._grok_cli_media import (
     DEFAULT_GROK_PATH,
     MIN_CLI_VERSION,
     PINNED_MODEL,
+    MODEL_PROVENANCE,
     GrokCLIContractError,
     execute_grok_cli_media,
     grok_cli_is_qualified,
@@ -161,6 +162,7 @@ class GrokCLIImage(BaseTool):
             "tool": self.name,
             "provider": self.provider,
             "model": PINNED_MODEL,
+            **MODEL_PROVENANCE,
             "cli_version": None,
             "minimum_cli_version": MIN_CLI_VERSION,
             "operation": inputs.get("operation", "image_gen"),
@@ -181,6 +183,7 @@ class GrokCLIImage(BaseTool):
             data={
                 "provider": "grok_cli",
                 "model": PINNED_MODEL,
+                **MODEL_PROVENANCE,
                 "cli_version": None,
                 "error_category": error.category,
                 "dispatch_status": error.dispatch_status,

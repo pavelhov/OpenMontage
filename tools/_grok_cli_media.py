@@ -27,6 +27,13 @@ from tools.base_tool import ToolResult
 
 MIN_CLI_VERSION = "1.0.18"
 PINNED_MODEL = "grok-4.6"
+# Compatibility field `model` identifies the CLI agent, never the media backend.
+MODEL_PROVENANCE = {
+    "agent_model": PINNED_MODEL,
+    "model_role": "agent",
+    "media_model": None,
+    "media_model_status": "unreported",
+}
 MAX_MEDIA_PROMPT_CHARS = 4096
 DEFAULT_GROK_PATH = "grok"
 
@@ -103,6 +110,7 @@ def _failure(error: GrokCLIContractError, *, started: float, cli_version: str | 
         data={
             "provider": "grok_cli",
             "model": PINNED_MODEL,
+            **MODEL_PROVENANCE,
             "cli_version": cli_version or error.diagnostics.get("cli_version"),
             "error_category": error.category,
             "dispatch_status": error.dispatch_status,
@@ -775,6 +783,12 @@ def execute_grok_cli_media(
         if resolved:
             grok_path = str(Path(resolved).absolute())
         cli_version = _verify_compatibility(grok_path, cwd=working_directory)
+        if arguments.get("voices"):
+            release = tuple(int(part) for part in cli_version.split("-")[0].split("+")[0].split("."))
+            if release < (1, 0, 25) or (release == (1, 0, 25) and "-" in cli_version):
+                raise GrokCLIContractError(
+                    "capability", "Preset voices require qualified Grok CLI 1.0.25 or newer"
+                )
         instruction = _build_instruction(tool_name, arguments)
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", prefix="openmontage-grok-cli-", suffix=".md", delete=False
@@ -818,6 +832,7 @@ def execute_grok_cli_media(
             data={
                 "provider": "grok_cli",
                 "model": PINNED_MODEL,
+                **MODEL_PROVENANCE,
                 "cli_version": cli_version,
                 "operation": tool_name,
                 "output": str(target.expanduser().resolve(strict=False)),
