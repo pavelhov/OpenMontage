@@ -72,10 +72,29 @@ image to a specific role in plain language. Keep the full prompt at or below
 
 The remaining sections describe the REST API route only.
 
+## Pinned video endpoints (REST Video 1.5)
+
+REST video supports pinned endpoints on `model="grok-imagine-video-1.5"`.
+Use `operation="first_last_frame"`, `last_image_url` or `last_image_path`, and
+optionally `image_url`/`image_path` (selector aliases: `reference_image_url` or
+`reference_image_path`). The adapter sends REST `last_frame` and `image`.
+Use the same image for both endpoints to author a loop. There is no native
+`loop` switch; review motion and audio at the seam. Duration: 1–15 seconds;
+frame pairs/reference guidance: 480p or 720p. Prompts and first frames are
+optional in last-frame requests. Reference images can accompany the frame pins.
+
+Classic `grok-imagine-video` cannot accept a last frame. Never silently change
+the model, omit the last frame, or replace endpoint control with a prompt.
+The CLI contract exposes neither ending-frame pins nor Imagine model selection.
+CLI coding model `grok-4.6` is not an Imagine media model identifier.
+
+See the [official first/last-frame guide](https://docs.x.ai/developers/model-capabilities/video/reference-to-video).
+
 ## REST API models
 
 - `grok-imagine-image` for image generation and image editing
-- `grok-imagine-video` for text-to-video, image-to-video, and reference-image video
+- `grok-imagine-video` for classic text-to-video, image-to-video, and reference-image video
+- `grok-imagine-video-1.5` for video including pinned first/last frames
 
 ## REST API authentication
 
@@ -135,7 +154,7 @@ The remaining sections describe the REST API route only.
 ### Video constraints
 
 - Grok video is best treated as short-form generation
-- Current output resolutions are `480p` and `720p`
+- Classic/frame-pair/reference output is `480p` or `720p`; 1.5 text/image-to-video also supports `1080p`
 - Reference-image video supports multiple images and is useful for product placement, wardrobe transfer, and identity consistency
 - Download outputs promptly; provider URLs may be temporary
 
@@ -147,6 +166,11 @@ The remaining sections describe the REST API route only.
   - `480p`: `$0.05` per second
   - `720p`: `$0.07` per second
 - `grok-imagine-video` image-conditioned requests: add `$0.002` per input image
+
+- `grok-imagine-video-1.5`: $0.08/s at 480p, $0.14/s at 720p, $0.25/s at
+  1080p, plus $0.01 per input image (including each endpoint slot).
+  These are REST estimates, not CLI media charges. Verify
+  [current pricing](https://docs.x.ai/developers/pricing) before production.
 
 ## Grok-Specific Prompt Guidance
 
