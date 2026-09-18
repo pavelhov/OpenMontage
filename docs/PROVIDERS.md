@@ -140,6 +140,11 @@ Current xAI docs pricing for the Grok media models:
 | `grok-imagine-video` at 480p | $0.05/sec |
 | `grok-imagine-video` at 720p | $0.07/sec |
 | `grok-imagine-video` input images | $0.002 per input image |
+OpenMontage REST defaults:
+- stills: `grok-imagine-image-2.0`
+- video: `grok-imagine-video-1.5` (supports first/last frames)
+- classic `grok-imagine-image` / `grok-imagine-video` remain available only as explicit downgrades
+
 
 OpenMontage now uses those published rates in the Grok tool estimators.
 
@@ -153,8 +158,10 @@ OpenMontage now uses those published rates in the Grok tool estimators.
 
 The CLI route is a separate `grok_cli` provider. It exposes the proven native
 Imagine primitives `image_gen`, `image_edit`, `image_to_video`, and
-`reference_to_video`. It does not expose direct text-to-video, video editing,
-or post-generation upscaling as provider primitives.
+`reference_to_video` (including `first_frame`/`last_frame`/`keyframes` on CLI
+>=1.0.34 via `reference_to_video`). It does not expose direct text-to-video,
+video editing, post-generation upscaling, or Imagine model selection as provider
+primitives.
 
 This route is **explicit-only**: callers must set both
 `preferred_provider: grok_cli` and `allowed_providers: [grok_cli]`. It never

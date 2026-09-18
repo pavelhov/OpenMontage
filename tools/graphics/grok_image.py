@@ -99,7 +99,7 @@ class GrokImage(BaseTool):
             "model": {
                 "type": "string",
                 "enum": ["grok-imagine-image", "grok-imagine-image-2.0"],
-                "default": "grok-imagine-image",
+                "default": "grok-imagine-image-2.0",
             },
             "aspect_ratio": {"type": "string", "description": "Examples: 1:1, 3:2, 16:9, 9:16"},
             "resolution": {
@@ -187,7 +187,7 @@ class GrokImage(BaseTool):
             raise ValueError("Provide image_url or image_path, not both")
         mode = inputs.get("generation_mode", "generate")
         payload: dict[str, Any] = {
-            "model": inputs.get("model", "grok-imagine-image"),
+            "model": inputs.get("model", "grok-imagine-image-2.0"),
             "prompt": inputs["prompt"],
         }
         if inputs.get("aspect_ratio"):

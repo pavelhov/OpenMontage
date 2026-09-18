@@ -121,7 +121,7 @@ class GrokVideo(BaseTool):
             "model": {
                 "type": "string",
                 "enum": ["grok-imagine-video", "grok-imagine-video-1.5"],
-                "default": "grok-imagine-video",
+                "default": "grok-imagine-video-1.5",
             },
             "duration": {
                 "type": "integer",
@@ -264,7 +264,7 @@ class GrokVideo(BaseTool):
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
         duration = int(inputs.get("duration", 5))
         resolution = inputs.get("resolution", "720p")
-        model = inputs.get("model", "grok-imagine-video")
+        model = inputs.get("model", "grok-imagine-video-1.5")
         rates = {
             "grok-imagine-video": ({"480p": 0.05, "720p": 0.07}, 0.002),
             "grok-imagine-video-1.5": ({"480p": 0.08, "720p": 0.14, "1080p": 0.25}, 0.01),
@@ -289,7 +289,7 @@ class GrokVideo(BaseTool):
         if inputs.get("endpoint_requirement_id") and not (inputs.get("last_image_url") or inputs.get("last_image_path")):
             raise ValueError("endpoint_requirement_id requires an approved last_image_url or last_image_path")
         operation = inputs.get("operation", "text_to_video")
-        model = inputs.get("model", "grok-imagine-video")
+        model = inputs.get("model", "grok-imagine-video-1.5")
 
         def alias(primary: str, alternate: str) -> str | None:
             if primary in inputs and alternate in inputs and inputs[primary] != inputs[alternate]:

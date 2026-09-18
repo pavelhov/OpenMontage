@@ -26,6 +26,7 @@ from tools.base_tool import ToolResult
 
 
 MIN_CLI_VERSION = "1.0.18"
+FRAME_PIN_MIN_CLI_VERSION = "1.0.34"
 PINNED_MODEL = "grok-4.6"
 # Compatibility field `model` identifies the CLI agent, never the media backend.
 MODEL_PROVENANCE = {
@@ -89,6 +90,12 @@ _READ_CLASSIFIED_MEDIA_TOOLS = {
     "image_to_video",
     "reference_to_video",
 }
+
+
+
+def _release_tuple(version: str) -> tuple[int, ...]:
+    """Parse a numeric CLI release, stripping build metadata and prerelease tags."""
+    return tuple(int(part) for part in version.split("-")[0].split("+")[0].split("."))
 
 
 class GrokCLIContractError(Exception):
@@ -784,10 +791,18 @@ def execute_grok_cli_media(
             grok_path = str(Path(resolved).absolute())
         cli_version = _verify_compatibility(grok_path, cwd=working_directory)
         if arguments.get("voices"):
-            release = tuple(int(part) for part in cli_version.split("-")[0].split("+")[0].split("."))
+            release = _release_tuple(cli_version)
             if release < (1, 0, 25) or (release == (1, 0, 25) and "-" in cli_version):
                 raise GrokCLIContractError(
                     "capability", "Preset voices require qualified Grok CLI 1.0.25 or newer"
+                )
+        if any(arguments.get(key) for key in ("first_frame", "last_frame", "keyframes")):
+            release = _release_tuple(cli_version)
+            minimum = _release_tuple(FRAME_PIN_MIN_CLI_VERSION)
+            if release < minimum or (release == minimum and "-" in cli_version):
+                raise GrokCLIContractError(
+                    "capability",
+                    f"Pinned first/last frames and keyframes require Grok CLI {FRAME_PIN_MIN_CLI_VERSION} or newer",
                 )
         instruction = _build_instruction(tool_name, arguments)
         with tempfile.NamedTemporaryFile(

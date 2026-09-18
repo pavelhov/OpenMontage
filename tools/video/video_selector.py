@@ -403,8 +403,9 @@ class VideoSelector(BaseTool):
                 error=(
                     "No available provider supports the requested pinned final frame/model on the requested route. "
                     "Check the provider's pinned_final_frame capability, exact model, and credential availability. "
-                    "Grok CLI cannot pin final frames; Grok REST is separately API-billed and requires explicit "
-                    "route approval and REST credentials. No fallback was attempted."
+                    "Grok CLI pins require local last_image_path on CLI >=1.0.34; HTTPS last_image_url needs "
+                    "Grok REST (separately API-billed) with explicit route approval and credentials. "
+                    "No fallback was attempted."
                     if self._requires_final_frame(inputs) else "No video generation provider available."
                 ),
             )
