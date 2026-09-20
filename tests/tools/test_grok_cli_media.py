@@ -164,6 +164,7 @@ class FakeProcesses:
 
 
 def _install_fake(monkeypatch: pytest.MonkeyPatch, fake: FakeProcesses) -> FakeProcesses:
+    monkeypatch.setattr("tools._grok_cli_media.uuid4", lambda: "session-1")
     monkeypatch.setattr("tools._grok_cli_media.subprocess.run", fake)
     monkeypatch.setattr("tools._grok_cli_media.shutil.which", lambda name: "/usr/bin/ffprobe")
     return fake
@@ -200,7 +201,7 @@ def _execute_video(inputs: dict[str, Any]):
         grok_path=str(inputs["grok_path"]),
         sessions_root=str(inputs["grok_sessions_root"]),
     )
-    return tool.execute(inputs)
+    return tool.execute({key: value for key, value in inputs.items() if key not in {"grok_path", "grok_sessions_root"}})
 
 
 def test_provider_contract_is_explicit_paid_cli_not_xai_rest():
@@ -1278,7 +1279,7 @@ def test_reference_preset_voices_exact_dispatch(monkeypatch, tmp_path, with_imag
         selector = VideoSelector()
         selector._providers = lambda: [provider]
         inputs.update(preferred_provider="grok_cli", allowed_providers=["grok_cli"])
-        result = selector.execute(inputs)
+        result = selector.execute({key: value for key, value in inputs.items() if key not in {"grok_path", "grok_sessions_root"}})
         assert result.data.get("selected_provider") == "grok_cli", result.error
         assert result.data["fallback_tools"] == []
     else:

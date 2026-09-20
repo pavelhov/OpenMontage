@@ -1,7 +1,7 @@
 """Validate canonical endpoint bindings and adapt them to video-selector inputs.
 
 This helper makes no provider choice and performs no generation. Callers supply
-an already approved provider/model and add creative parameters after validation.
+an already approved route and add creative parameters after validation.
 """
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def pinned_final_frame_params(
     scene_id: str,
     keyframe_asset_id: str,
     provider: str,
-    model: str,
+    model: str | None = None,
     project_dir: str | Path,
 ) -> dict[str, Any]:
     """Resolve an approved ending-frame handoff to explicit selector parameters.
@@ -50,11 +50,13 @@ def pinned_final_frame_params(
     Paths must be project-relative, contained within ``project_dir``, and refer
     to non-empty image files. Malformed, missing, ambiguous, or unapproved
     bindings raise ValueError before a provider can be called. Provider/model
-    capability and credential checks remain the selector's responsibility.
+    capability and credential checks remain the selector's responsibility. The
+    CLI route omits model because its native media model is not selectable.
     """
-    provider = _text(provider, "Explicit provider")
-    model = _text(model, "Explicit model")
-    if provider.strip().lower() == "auto" or model.strip().lower() == "auto":
+    provider = _text(provider, "Explicit provider").strip().lower()
+    if provider != "grok_cli" or model is not None:
+        model = _text(model, "Explicit model")
+    if provider.strip().lower() == "auto" or (model is not None and model.strip().lower() == "auto"):
         raise ValueError("Pinned final frames require an explicit provider and model")
     scene_id = _text(scene_id, "scene_id")
     keyframe_asset_id = _text(keyframe_asset_id, "keyframe_asset_id")
@@ -110,7 +112,7 @@ def pinned_final_frame_params(
         "operation": "first_last_frame",
         "preferred_provider": provider,
         "allowed_providers": [provider],
-        "model": model,
+        **({"model": model} if model is not None else {}),
         "reference_image_path": image_path(keyframe_asset_id),
         "last_image_path": image_path(ending_asset_id),
         "endpoint_requirement_id": requirement_id,

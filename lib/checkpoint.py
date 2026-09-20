@@ -234,6 +234,8 @@ def init_project(
     pipeline_type: str,
     pipeline_dir: Optional[Path] = None,
     style_playbook: Optional[str] = None,
+    governance: str | None = None,
+    story_revision: str | None = None,
 ) -> Path:
     """Initialize a project workspace with the canonical layout + marker file.
 
@@ -244,6 +246,10 @@ def init_project(
     Idempotent: re-running preserves the original created_at and merges fields.
     Returns the project directory.
     """
+    if governance not in (None, "strict"):
+        raise ValueError("governance must be strict or omitted")
+    if governance == "strict" and not story_revision:
+        raise ValueError("strict production enrollment requires story_revision")
     _validate_style_playbook(style_playbook)
     base = pipeline_dir or PROJECTS_DIR
     project_dir = base / project_id
@@ -274,10 +280,32 @@ def init_project(
     if style_playbook is not None:
         marker["style_playbook"] = style_playbook
 
+    if governance == "strict":
+        marker["governance"] = {"version": "1.0", "mode": "strict"}
+    if story_revision is not None:
+        marker["story_revision"] = story_revision
+
     with open(marker_path, "w", encoding="utf-8") as f:
         json.dump(marker, f, indent=2)
 
     return project_dir
+
+
+def enroll_production_project(project_dir: str | Path, *, story_revision: str) -> Path:
+    """Enroll a known project; caller records approvals separately before dispatch."""
+    if not story_revision or not isinstance(story_revision, str):
+        raise ValueError("strict production enrollment requires story_revision")
+    root = Path(project_dir).resolve()
+    marker_path = root / PROJECT_MARKER_FILENAME
+    with marker_path.open() as stream:
+        marker = json.load(stream)
+    if not marker.get("project_id"):
+        raise ValueError("Cannot enroll an unknown project")
+    marker["governance"] = {"version": "1.0", "mode": "strict"}
+    marker["story_revision"] = story_revision
+    with marker_path.open("w") as stream:
+        json.dump(marker, stream, indent=2)
+    return root
 
 
 def _stage_requires_approval(pipeline_type: Optional[str], stage: str) -> Optional[bool]:
@@ -532,6 +560,55 @@ def write_checkpoint(
         stage,
         status,
     )
+
+    # Completion of rendering is distinct from current final certification.
+    # Historical checkpoint reads remain structural; every new final claim and
+    # publish advancement goes through the same current-byte certification gate.
+    if stage in {"compose", "publish"}:
+        metadata = dict(metadata or {})
+        final_review = artifacts.get("final_review")
+        project_root = pipeline_dir / project_id
+        # Publishing legacy footage/tooling remains available without claiming
+        # current certification. Strict generated projects cannot omit a review
+        # to take that compatibility path.
+        try:
+            current_marker = json.loads((project_root / PROJECT_MARKER_FILENAME).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            current_marker = {}
+        if not isinstance(current_marker, dict):
+            current_marker = {"governance": {"mode": "invalid"}}
+        governed_project = (
+            bool(current_marker.get("governance"))
+            or (project_root / "artifacts" / "shot_contract.json").exists()
+            or (project_root / "shot_contract.json").exists()
+            or (project_root / "production_attempts").exists()
+            or (isinstance(final_review, dict) and final_review.get("version") == "2.0")
+        )
+        final_claim = (
+            metadata.get("release_status") == "final"
+            or (isinstance(final_review, dict) and final_review.get("release_status") == "final")
+            or (stage == "publish" and governed_project and status in {"awaiting_human", "completed"})
+        )
+        if final_claim:
+            from lib.production_review import assert_final_eligible, FinalCertificationError
+            if final_review is None and stage == "publish":
+                review_path = pipeline_dir / project_id / "artifacts" / "final_review.json"
+                try:
+                    final_review = json.loads(review_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    final_review = None
+            outputs = artifacts.get("render_report", {}).get("outputs")
+            output_paths = [item["path"] for item in outputs] if outputs else None
+            try:
+                assert_final_eligible(pipeline_dir / project_id, final_review, output_paths=output_paths)
+            except FinalCertificationError as exc:
+                raise CheckpointValidationError(str(exc)) from exc
+            metadata["release_status"] = "final"
+        else:
+            metadata["release_status"] = "uncertified_legacy" if stage == "publish" else "draft"
+            metadata["certification_note"] = (
+                "Render/diagnostic completion only; current full audiovisual final review required."
+            )
 
     checkpoint = {
         "version": "1.0",

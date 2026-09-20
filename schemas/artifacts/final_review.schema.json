@@ -2,20 +2,426 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "openmontage/artifacts/final_review",
   "title": "Final Review",
-  "description": "Structured self-review of the rendered output. The compose stage must produce this artifact to prove the agent inspected the actual rendered video before presenting it to the user. If status is 'revise' or 'fail', the agent must not present the video as complete.",
-  "type": "object",
-  "required": ["version", "output_path", "status", "checks"],
+  "description": "v1 is structurally readable legacy diagnostic evidence only. Current certification requires v2 and lib.production_review checks against current disk bytes, full synchronized audiovisual review, and selected scene coverage. Semantic judgments remain reviewer-authored.",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": [
+        "version",
+        "output_path",
+        "status",
+        "checks"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "const": "1.0"
+        },
+        "output_path": {
+          "type": "string",
+          "description": "Path to the rendered output file that was reviewed"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "pass",
+            "revise",
+            "fail"
+          ],
+          "description": "pass=ready to present, revise=fixable issues found, fail=critical problems"
+        },
+        "checks": {},
+        "issues_found": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "All issues found across all checks, summarized for the user"
+        },
+        "recommended_action": {
+          "type": "string",
+          "enum": [
+            "present_to_user",
+            "re_render",
+            "revise_edit",
+            "revise_assets",
+            "block",
+            "re_author"
+          ],
+          "description": "What the agent should do next based on the review findings"
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "version",
+        "project_id",
+        "story_revision",
+        "contract_sha256",
+        "output_path",
+        "output_sha256",
+        "duration_seconds",
+        "release_status",
+        "reviewer",
+        "dimensions",
+        "av_review",
+        "scenes",
+        "predicates"
+      ],
+      "properties": {
+        "version": {
+          "const": "2.0"
+        },
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "story_revision": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "contract_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "output_path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "output_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "duration_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "release_status": {
+          "enum": [
+            "draft",
+            "final"
+          ]
+        },
+        "reviewer": {
+          "type": "object",
+          "required": [
+            "id",
+            "kind",
+            "method",
+            "reviewed_at"
+          ],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "kind": {
+              "enum": [
+                "human",
+                "agent"
+              ]
+            },
+            "method": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "reviewed_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "additionalProperties": false
+        },
+        "dimensions": {
+          "type": "object",
+          "required": [
+            "transport",
+            "technical",
+            "visual",
+            "audio",
+            "story"
+          ],
+          "properties": {
+            "transport": {
+              "type": "object",
+              "required": [
+                "status",
+                "evidence"
+              ],
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "pass",
+                    "fail",
+                    "unknown",
+                    "unreviewed"
+                  ]
+                },
+                "evidence": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "additionalProperties": false
+            },
+            "technical": {
+              "type": "object",
+              "required": [
+                "status",
+                "evidence"
+              ],
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "pass",
+                    "fail",
+                    "unknown",
+                    "unreviewed"
+                  ]
+                },
+                "evidence": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "additionalProperties": false
+            },
+            "visual": {
+              "type": "object",
+              "required": [
+                "status",
+                "evidence"
+              ],
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "pass",
+                    "fail",
+                    "unknown",
+                    "unreviewed"
+                  ]
+                },
+                "evidence": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "additionalProperties": false
+            },
+            "audio": {
+              "type": "object",
+              "required": [
+                "status",
+                "evidence"
+              ],
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "pass",
+                    "fail",
+                    "unknown",
+                    "unreviewed"
+                  ]
+                },
+                "evidence": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "additionalProperties": false
+            },
+            "story": {
+              "type": "object",
+              "required": [
+                "status",
+                "evidence"
+              ],
+              "properties": {
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "pass",
+                    "fail",
+                    "unknown",
+                    "unreviewed"
+                  ]
+                },
+                "evidence": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "av_review": {
+          "type": "object",
+          "required": [
+            "status",
+            "mode",
+            "watched_full",
+            "listened_full",
+            "start_seconds",
+            "end_seconds",
+            "evidence"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "pass",
+                "fail",
+                "unknown",
+                "unreviewed"
+              ]
+            },
+            "mode": {
+              "enum": [
+                "synchronized_av",
+                "spotcheck",
+                "unknown"
+              ]
+            },
+            "watched_full": {
+              "type": "boolean"
+            },
+            "listened_full": {
+              "type": "boolean"
+            },
+            "start_seconds": {
+              "type": "number",
+              "minimum": 0
+            },
+            "end_seconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "evidence": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          },
+          "additionalProperties": false
+        },
+        "scenes": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "scene_id",
+              "attempt_id",
+              "output_sha256",
+              "selection_sha256",
+              "review_sha256",
+              "start_seconds",
+              "end_seconds"
+            ],
+            "properties": {
+              "scene_id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "attempt_id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "output_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "selection_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "review_sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "start_seconds": {
+                "type": "number",
+                "minimum": 0
+              },
+              "end_seconds": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "predicates": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "status",
+              "evidence"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "pass",
+                  "fail",
+                  "unknown",
+                  "unreviewed"
+                ]
+              },
+              "evidence": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "severity": {
+                "enum": [
+                  "critical",
+                  "cosmetic"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "metadata": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": false
+    }
+  ],
   "properties": {
-    "version": { "type": "string", "const": "1.0" },
-    "output_path": {
-      "type": "string",
-      "description": "Path to the rendered output file that was reviewed"
-    },
-    "status": {
-      "type": "string",
-      "enum": ["pass", "revise", "fail"],
-      "description": "pass=ready to present, revise=fixable issues found, fail=critical problems"
-    },
     "checks": {
       "type": "object",
       "required": [
@@ -30,16 +436,32 @@
           "type": "object",
           "description": "ffprobe validation of the output file",
           "properties": {
-            "valid_container": { "type": "boolean" },
-            "duration_seconds": { "type": "number" },
-            "resolution": { "type": "string" },
-            "fps": { "type": "number" },
-            "has_audio": { "type": "boolean" },
-            "codec": { "type": "string" },
-            "file_size_bytes": { "type": "integer" },
+            "valid_container": {
+              "type": "boolean"
+            },
+            "duration_seconds": {
+              "type": "number"
+            },
+            "resolution": {
+              "type": "string"
+            },
+            "fps": {
+              "type": "number"
+            },
+            "has_audio": {
+              "type": "boolean"
+            },
+            "codec": {
+              "type": "string"
+            },
+            "file_size_bytes": {
+              "type": "integer"
+            },
             "issues": {
               "type": "array",
-              "items": { "type": "string" }
+              "items": {
+                "type": "string"
+              }
             }
           }
         },
@@ -47,18 +469,33 @@
           "type": "object",
           "description": "Sample frames inspected from opening, middle, climax, ending",
           "properties": {
-            "frames_sampled": { "type": "integer", "minimum": 4 },
+            "frames_sampled": {
+              "type": "integer",
+              "minimum": 4
+            },
             "frame_paths": {
               "type": "array",
-              "items": { "type": "string" }
+              "items": {
+                "type": "string"
+              }
             },
-            "black_frames_detected": { "type": "boolean" },
-            "broken_overlays": { "type": "boolean" },
-            "missing_assets": { "type": "boolean" },
-            "unreadable_text": { "type": "boolean" },
+            "black_frames_detected": {
+              "type": "boolean"
+            },
+            "broken_overlays": {
+              "type": "boolean"
+            },
+            "missing_assets": {
+              "type": "boolean"
+            },
+            "unreadable_text": {
+              "type": "boolean"
+            },
             "issues": {
               "type": "array",
-              "items": { "type": "string" }
+              "items": {
+                "type": "string"
+              }
             }
           }
         },
@@ -66,14 +503,26 @@
           "type": "object",
           "description": "Audio quality verification",
           "properties": {
-            "narration_present": { "type": "boolean" },
-            "music_present": { "type": "boolean" },
-            "unexpected_silence": { "type": "boolean" },
-            "clipping_detected": { "type": "boolean" },
-            "mix_intelligible": { "type": "boolean" },
+            "narration_present": {
+              "type": "boolean"
+            },
+            "music_present": {
+              "type": "boolean"
+            },
+            "unexpected_silence": {
+              "type": "boolean"
+            },
+            "clipping_detected": {
+              "type": "boolean"
+            },
+            "mix_intelligible": {
+              "type": "boolean"
+            },
             "issues": {
               "type": "array",
-              "items": { "type": "string" }
+              "items": {
+                "type": "string"
+              }
             }
           }
         },
@@ -81,11 +530,20 @@
           "type": "object",
           "description": "Delivery promise and renderer governance checks",
           "properties": {
-            "delivery_promise_honored": { "type": "boolean" },
-            "renderer_family_used": { "type": "string", "description": "Creative grammar that actually ran" },
+            "delivery_promise_honored": {
+              "type": "boolean"
+            },
+            "renderer_family_used": {
+              "type": "string",
+              "description": "Creative grammar that actually ran"
+            },
             "render_runtime_used": {
               "type": "string",
-              "enum": ["remotion", "hyperframes", "ffmpeg"],
+              "enum": [
+                "remotion",
+                "hyperframes",
+                "ffmpeg"
+              ],
               "description": "Technical runtime that actually executed the render. Must match the runtime locked at proposal unless a logged decision overrode it."
             },
             "runtime_swap_detected": {
@@ -94,13 +552,19 @@
             },
             "runtime_swap_check": {
               "type": "string",
-              "description": "Human-readable status of the runtime-swap check: 'ok — …', 'detected — …', or 'skipped — …'. When the check was skipped, the reviewer skill is responsible for cross-artifact comparison."
+              "description": "Human-readable status of the runtime-swap check: 'ok \u2014 \u2026', 'detected \u2014 \u2026', or 'skipped \u2014 \u2026'. When the check was skipped, the reviewer skill is responsible for cross-artifact comparison."
             },
-            "motion_ratio_actual": { "type": "number" },
-            "silent_downgrade_detected": { "type": "boolean" },
+            "motion_ratio_actual": {
+              "type": "number"
+            },
+            "silent_downgrade_detected": {
+              "type": "boolean"
+            },
             "issues": {
               "type": "array",
-              "items": { "type": "string" }
+              "items": {
+                "type": "string"
+              }
             }
           }
         },
@@ -108,13 +572,25 @@
           "type": "object",
           "description": "Subtitle/caption verification against source script",
           "properties": {
-            "subtitles_expected": { "type": "boolean" },
-            "subtitles_present": { "type": "boolean" },
-            "coverage_ratio": { "type": "number", "minimum": 0, "maximum": 1 },
-            "timing_drift_detected": { "type": "boolean" },
+            "subtitles_expected": {
+              "type": "boolean"
+            },
+            "subtitles_present": {
+              "type": "boolean"
+            },
+            "coverage_ratio": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "timing_drift_detected": {
+              "type": "boolean"
+            },
             "issues": {
               "type": "array",
-              "items": { "type": "string" }
+              "items": {
+                "type": "string"
+              }
             }
           }
         },
@@ -122,49 +598,70 @@
           "type": "object",
           "description": "Optional: transcribe the output and compare to source script",
           "properties": {
-            "transcript_matches_script": { "type": ["boolean", "null"] },
-            "word_accuracy": { "type": ["number", "null"], "minimum": 0, "maximum": 1 },
+            "transcript_matches_script": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "word_accuracy": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            },
             "issues": {
               "type": "array",
-              "items": { "type": "string" }
+              "items": {
+                "type": "string"
+              }
             }
           }
         },
         "atelier": {
           "type": "object",
-          "description": "Atelier-only doctrine checks (populated when composition_mode='atelier'). Generated by tools/video/video_compose.py → _run_atelier_checks.",
+          "description": "Atelier-only doctrine checks (populated when composition_mode='atelier'). Generated by tools/video/video_compose.py \u2192 _run_atelier_checks.",
           "properties": {
-            "stock_reuse_detected": { "type": "boolean", "description": "TRUE if the bespoke project imports from the stock creative registry — fails the render." },
+            "stock_reuse_detected": {
+              "type": "boolean",
+              "description": "TRUE if the bespoke project imports from the stock creative registry \u2014 fails the render."
+            },
             "offending_imports": {
               "type": "array",
               "description": "Files + import paths that violated the doctrine.",
               "items": {
                 "type": "object",
                 "properties": {
-                  "file": { "type": "string" },
-                  "import": { "type": "string" }
+                  "file": {
+                    "type": "string"
+                  },
+                  "import": {
+                    "type": "string"
+                  }
                 }
               }
             },
-            "art_direction_declared": { "type": "boolean" },
-            "art_direction": { "type": ["string", "null"] },
-            "issues": { "type": "array", "items": { "type": "string" } }
+            "art_direction_declared": {
+              "type": "boolean"
+            },
+            "art_direction": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "issues": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
           }
         }
       },
       "additionalProperties": false
-    },
-    "issues_found": {
-      "type": "array",
-      "items": { "type": "string" },
-      "description": "All issues found across all checks, summarized for the user"
-    },
-    "recommended_action": {
-      "type": "string",
-      "enum": ["present_to_user", "re_render", "revise_edit", "revise_assets", "block", "re_author"],
-      "description": "What the agent should do next based on the review findings"
-    },
-    "metadata": { "type": "object" }
-  },
-  "additionalProperties": false
+    }
+  }
 }

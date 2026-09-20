@@ -224,6 +224,26 @@ def _instrument_execute(fn: Callable) -> Callable:
     return wrapper
 
 
+def _govern_execute(fn: Callable) -> Callable:
+    """Policy is outside optional event instrumentation and must fail closed."""
+    @functools.wraps(fn)
+    def wrapper(self, inputs, *args, **kwargs):
+        from lib.production_execution import execute_governed
+        return execute_governed(self, inputs, lambda clean: fn(self, clean, *args, **kwargs))
+    return wrapper
+
+
+def _govern_dry_run(fn: Callable) -> Callable:
+    @functools.wraps(fn)
+    def wrapper(self, inputs, *args, **kwargs):
+        from lib.production_execution import governed_dry_run, preflight
+        checked = preflight(self, inputs)
+        if checked["governed"]:
+            return governed_dry_run(self, inputs)
+        return fn(self, inputs, *args, **kwargs)
+    return wrapper
+
+
 class BaseTool(ABC):
     """Abstract base class for all OpenMontage tools."""
 
@@ -232,7 +252,10 @@ class BaseTool(ABC):
         super().__init_subclass__(**kwargs)
         impl = cls.__dict__.get("execute")
         if impl is not None and not getattr(impl, "__isabstractmethod__", False):
-            cls.execute = _instrument_execute(impl)
+            cls.execute = _govern_execute(_instrument_execute(impl))
+        dry_impl = cls.__dict__.get("dry_run")
+        if dry_impl is not None:
+            cls.dry_run = _govern_dry_run(dry_impl)
 
     # --- Identity (override in subclasses) ---
     name: str = ""
@@ -398,6 +421,9 @@ class BaseTool(ABC):
 
     def dry_run(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """Preflight check without side effects. Override for paid/publishing tools."""
+        from lib.production_execution import governed_dry_run, preflight
+        if preflight(self, inputs)["governed"]:
+            return governed_dry_run(self, inputs)
         return {
             "tool": self.name,
             "estimated_cost_usd": self.estimate_cost(inputs),

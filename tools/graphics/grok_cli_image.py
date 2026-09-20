@@ -6,10 +6,13 @@ which uses the xAI REST API and ``XAI_API_KEY``.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from pathlib import Path
 from typing import Any
 
+from lib.shot_contract import file_sha256
 from tools._grok_cli_media import (
     DEFAULT_GROK_PATH,
     MIN_CLI_VERSION,
@@ -20,6 +23,7 @@ from tools._grok_cli_media import (
     grok_cli_is_qualified,
     validate_local_image_paths,
     validate_prompt,
+    validate_session_id,
 )
 from tools.base_tool import (
     BaseTool,
@@ -55,7 +59,7 @@ _ASPECT_RATIOS = {
 
 class GrokCLIImage(BaseTool):
     name = "grok_cli_image"
-    version = "0.2.0"
+    version = "0.2.1"
     tier = ToolTier.GENERATE
     capability = "image_generation"
     provider = "grok_cli"
@@ -119,6 +123,7 @@ class GrokCLIImage(BaseTool):
             "image_paths": {"type": "array", "items": {"type": "string"}, "minItems": 1},
             "output_path": {"type": "string"},
             "cwd": {"type": "string"},
+            "cli_session_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
             "allow_unknown_cost": {
                 "type": "boolean",
                 "default": False,
@@ -177,7 +182,7 @@ class GrokCLIImage(BaseTool):
         }
 
     @staticmethod
-    def _error_result(error: GrokCLIContractError) -> ToolResult:
+    def _error_result(error: GrokCLIContractError, session_id: str | None = None) -> ToolResult:
         return ToolResult(
             success=False,
             data={
@@ -185,6 +190,8 @@ class GrokCLIImage(BaseTool):
                 "model": PINNED_MODEL,
                 **MODEL_PROVENANCE,
                 "cli_version": None,
+                "session_id": session_id,
+                "dispatch_session_id": session_id,
                 "error_category": error.category,
                 "dispatch_status": error.dispatch_status,
                 "retry_attempted": False,
@@ -195,7 +202,12 @@ class GrokCLIImage(BaseTool):
         )
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
+        session_id: str | None = None
         try:
+            if "cli_session_id" in inputs:
+                if inputs["cli_session_id"] is None:
+                    raise GrokCLIContractError("invalid_argument", "cli_session_id must be a safe token, not null")
+                session_id = validate_session_id(inputs["cli_session_id"])
             if any(key in inputs for key in ("model", "model_name", "quality")):
                 raise GrokCLIContractError(
                     "capability",
@@ -256,12 +268,23 @@ class GrokCLIImage(BaseTool):
                     "spending_approval",
                     "Grok CLI media pricing is unknown; set allow_unknown_cost=true only after explicit approval",
                 )
+            receipt = {
+                "version": "1.0", "provider": self.provider, "native_tool": operation,
+                "adapter_version": self.version, **MODEL_PROVENANCE,
+                "submitted_arguments": arguments,
+                "input_assets": [{"role": "reference", "index": index, "path": path,
+                    "sha256": file_sha256(path)}
+                    for index, path in enumerate(arguments.get("image", []))],
+            }
+            receipt["request_sha256"] = hashlib.sha256(
+                json.dumps(receipt, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+            ).hexdigest()
         except GrokCLIContractError as exc:
-            return self._error_result(exc)
+            return self._error_result(exc, session_id)
         except (TypeError, ValueError, OSError) as exc:
-            return self._error_result(GrokCLIContractError("invalid_argument", str(exc)))
+            return self._error_result(GrokCLIContractError("invalid_argument", str(exc)), session_id)
 
-        return execute_grok_cli_media(
+        result = execute_grok_cli_media(
             tool_name=operation,
             arguments=arguments,
             output_path=output_path,
@@ -270,4 +293,11 @@ class GrokCLIImage(BaseTool):
             sessions_root=sessions_root,
             timeout_seconds=timeout_seconds,
             media_kind="image",
+            session_id=session_id,
         )
+        receipt.update(cli_version=result.data.get("cli_version"),
+            session_id=result.data.get("session_id"),
+            dispatch_status=result.data.get("dispatch_status"),
+            submission_evidence="verified_native_call" if result.success else "unconfirmed")
+        result.data["conditioning_receipt"] = receipt
+        return result

@@ -1110,6 +1110,7 @@ class VideoCompose(BaseTool):
             "output": str(output_path),
             "final_review": final_review,
             "final_review_status": final_review.get("status"),
+            "release_status": "draft",
         }
 
         if final_review.get("status") == "fail":
@@ -1750,6 +1751,7 @@ class VideoCompose(BaseTool):
                 render_result.data = {}
             render_result.data["final_review"] = final_review
             render_result.data["final_review_status"] = final_review["status"]
+            render_result.data["release_status"] = "draft"
 
             # If the self-review says fail, downgrade the ToolResult
             if final_review["status"] == "fail":
@@ -1885,6 +1887,7 @@ class VideoCompose(BaseTool):
                 render_result.data = {}
             render_result.data["final_review"] = final_review
             render_result.data["final_review_status"] = final_review["status"]
+            render_result.data["release_status"] = "draft"
             if final_review["status"] == "fail":
                 return ToolResult(
                     success=False,
@@ -1946,6 +1949,7 @@ class VideoCompose(BaseTool):
                 render_result.data = {}
             render_result.data["final_review"] = final_review
             render_result.data["final_review_status"] = final_review["status"]
+            render_result.data["release_status"] = "draft"
             if final_review["status"] == "fail":
                 return ToolResult(
                     success=False,
@@ -2780,6 +2784,13 @@ class VideoCompose(BaseTool):
             },
             "issues_found": issues,
             "recommended_action": recommended_action,
+            "metadata": {
+                "release_status": "draft",
+                "certification_note": (
+                    "Automated diagnostics only; complete synchronized audiovisual "
+                    "review and current v2 final certification are required."
+                ),
+            },
         }
 
         log.info(

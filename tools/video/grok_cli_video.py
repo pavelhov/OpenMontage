@@ -10,10 +10,13 @@ They dispatch through native ``reference_to_video`` fields, not REST.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from pathlib import Path
 from typing import Any
 
+from lib.shot_contract import file_sha256
 from tools._grok_cli_media import (
     DEFAULT_GROK_PATH,
     FRAME_PIN_MIN_CLI_VERSION,
@@ -25,6 +28,7 @@ from tools._grok_cli_media import (
     grok_cli_is_qualified,
     validate_local_image_paths,
     validate_prompt,
+    validate_session_id,
 )
 from tools.base_tool import (
     BaseTool,
@@ -56,7 +60,7 @@ _URL_FINAL_FRAME_KEYS = frozenset({"last_image_url"})
 
 class GrokCLIVideo(BaseTool):
     name = "grok_cli_video"
-    version = "0.3.0"
+    version = "0.4.0"
     tier = ToolTier.GENERATE
     capability = "video_generation"
     provider = "grok_cli"
@@ -111,6 +115,7 @@ class GrokCLIVideo(BaseTool):
     input_schema = {
         "type": "object",
         "required": ["prompt", "operation", "output_path"],
+        "additionalProperties": False,
         "properties": {
             "prompt": {"type": "string", "maxLength": 4096},
             "operation": {
@@ -176,6 +181,7 @@ class GrokCLIVideo(BaseTool):
             },
             "output_path": {"type": "string"},
             "cwd": {"type": "string"},
+            "cli_session_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
             "allow_unknown_cost": {
                 "type": "boolean",
                 "default": False,
@@ -248,7 +254,7 @@ class GrokCLIVideo(BaseTool):
         }
 
     @staticmethod
-    def _error_result(error: GrokCLIContractError) -> ToolResult:
+    def _error_result(error: GrokCLIContractError, session_id: str | None = None) -> ToolResult:
         return ToolResult(
             success=False,
             data={
@@ -256,6 +262,8 @@ class GrokCLIVideo(BaseTool):
                 "model": PINNED_MODEL,
                 **MODEL_PROVENANCE,
                 "cli_version": None,
+                "session_id": session_id,
+                "dispatch_session_id": session_id,
                 "error_category": error.category,
                 "dispatch_status": error.dispatch_status,
                 "retry_attempted": False,
@@ -275,13 +283,15 @@ class GrokCLIVideo(BaseTool):
         present = [key for key in keys if key in inputs and inputs.get(key) is not None]
         if not present:
             return None
-        values = [str(inputs[key]) for key in present]
+        if any(not isinstance(inputs[key], (str, Path)) for key in present):
+            raise GrokCLIContractError("invalid_argument", f"{field} must be one local image path")
+        values = [validate_local_image_paths(inputs[key], field=key, minimum=1, maximum=1)[0] for key in present]
         if len(set(values)) > 1:
             raise GrokCLIContractError(
                 "invalid_argument",
                 f"{' and '.join(present)} identify different source images",
             )
-        return validate_local_image_paths(values[0], field=field, minimum=1, maximum=1)[0]
+        return values[0]
 
     @staticmethod
     def _normalize_keyframes(raw: Any, *, duration: int) -> list[dict[str, Any]]:
@@ -306,6 +316,8 @@ class GrokCLIVideo(BaseTool):
                     f"keyframes[{index}] requires image and timestamp_s",
                 )
             try:
+                if isinstance(item["timestamp_s"], bool) or not isinstance(item["timestamp_s"], (int, float)):
+                    raise ValueError("timestamp must be numeric")
                 timestamp = float(item["timestamp_s"])
             except (TypeError, ValueError) as exc:
                 raise GrokCLIContractError(
@@ -317,10 +329,10 @@ class GrokCLIVideo(BaseTool):
                     "invalid_argument",
                     f"keyframes[{index}].timestamp_s must be strictly inside 0..{duration}",
                 )
-            if previous_timestamp is not None and abs(timestamp - previous_timestamp) < (1.0 / 3.0):
+            if previous_timestamp is not None and timestamp - previous_timestamp < (1.0 / 3.0):
                 raise GrokCLIContractError(
                     "invalid_argument",
-                    "keyframes timestamps must be at least 1/3 second apart",
+                    "keyframes timestamps must increase and be at least 1/3 second apart",
                 )
             image = validate_local_image_paths(
                 item["image"],
@@ -333,7 +345,12 @@ class GrokCLIVideo(BaseTool):
         return normalized
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
+        session_id: str | None = None
         try:
+            if "cli_session_id" in inputs:
+                if inputs["cli_session_id"] is None:
+                    raise GrokCLIContractError("invalid_argument", "cli_session_id must be a safe token, not null")
+                session_id = validate_session_id(inputs["cli_session_id"])
             unsupported = _UNSUPPORTED_FRAME_ALIASES.intersection(inputs)
             if unsupported:
                 raise GrokCLIContractError(
@@ -351,6 +368,14 @@ class GrokCLIVideo(BaseTool):
                 )
             if any(key in inputs for key in ("model", "model_name")):
                 raise GrokCLIContractError("capability", "Grok CLI video does not expose Imagine model selection")
+
+            unexpected = set(inputs) - self.input_schema["properties"].keys()
+            if unexpected:
+                raise GrokCLIContractError("capability", "Unsupported Grok CLI video controls: " + ", ".join(sorted(unexpected)))
+            if "endpoint_requirement_id" in inputs and (
+                not isinstance(inputs["endpoint_requirement_id"], str) or not inputs["endpoint_requirement_id"].strip()
+            ):
+                raise GrokCLIContractError("invalid_argument", "endpoint_requirement_id must be non-empty")
 
             prompt = validate_prompt(inputs.get("prompt"))
             operation = str(inputs.get("operation") or "image_to_video")
@@ -388,7 +413,12 @@ class GrokCLIVideo(BaseTool):
             resolution = str(inputs.get("resolution", "480p"))
             if resolution not in {"480p", "720p"}:
                 raise GrokCLIContractError("capability", "Grok CLI video supports only 480p and 720p")
-            duration = int(inputs.get("duration", 6))
+            raw_duration = inputs.get("duration", 6)
+            if isinstance(raw_duration, str) and raw_duration.isdecimal():
+                raw_duration = int(raw_duration)
+            if isinstance(raw_duration, bool) or not isinstance(raw_duration, int):
+                raise GrokCLIContractError("invalid_argument", "duration must be integral seconds")
+            duration = raw_duration
 
             arguments: dict[str, Any] = {
                 "prompt": prompt,
@@ -405,6 +435,7 @@ class GrokCLIVideo(BaseTool):
                     "keyframes",
                     "reference_image_paths",
                     "endpoint_requirement_id",
+                    "aspect_ratio",
                 }.intersection(inputs)
                 if pin_keys:
                     raise GrokCLIContractError(
@@ -453,10 +484,10 @@ class GrokCLIVideo(BaseTool):
                     keys=("last_frame", "last_image_path"),
                     field="last_frame",
                 )
-                if operation == "first_last_frame" and last_frame is None:
+                if (operation == "first_last_frame" or "endpoint_requirement_id" in inputs) and last_frame is None:
                     raise GrokCLIContractError(
                         "invalid_argument",
-                        "first_last_frame requires last_image_path or last_frame",
+                        "first_last_frame / endpoint_requirement_id requires last_image_path or last_frame",
                     )
 
                 references = inputs.get("reference_image_paths")
@@ -499,7 +530,9 @@ class GrokCLIVideo(BaseTool):
                 or os.environ.get("GROK_SESSIONS_ROOT")
                 or (Path.home() / ".grok" / "sessions")
             )
-            timeout_seconds = int(inputs.get("timeout_seconds", 600))
+            timeout_seconds = inputs.get("timeout_seconds", 600)
+            if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int):
+                raise GrokCLIContractError("invalid_argument", "timeout_seconds must be an integer")
             if not 30 <= timeout_seconds <= 900:
                 raise GrokCLIContractError("invalid_argument", "timeout_seconds must be between 30 and 900")
             if inputs.get("allow_unknown_cost") is not True:
@@ -507,12 +540,34 @@ class GrokCLIVideo(BaseTool):
                     "spending_approval",
                     "Grok CLI media pricing is unknown; set allow_unknown_cost=true only after explicit approval",
                 )
-        except GrokCLIContractError as exc:
-            return self._error_result(exc)
-        except (TypeError, ValueError, OSError) as exc:
-            return self._error_result(GrokCLIContractError("invalid_argument", str(exc)))
+            input_assets: list[dict[str, Any]] = []
 
-        return execute_grok_cli_media(
+            def record(path: str, role: str, **extra: Any) -> None:
+                input_assets.append({"role": role, "path": path,
+                    "sha256": file_sha256(path), **extra})
+
+            for key in ("image", "first_frame", "last_frame"):
+                if key in arguments:
+                    record(arguments[key], "first_frame" if key == "image" else key)
+            for index, path in enumerate(arguments.get("images", [])):
+                record(path, "reference", index=index)
+            for index, frame in enumerate(arguments.get("keyframes", [])):
+                record(frame["image"], "keyframe", index=index, timestamp_s=frame["timestamp_s"])
+            receipt = {
+                "version": "1.0", "provider": self.provider, "native_tool": native_tool,
+                "adapter_version": self.version, **MODEL_PROVENANCE,
+                "requirement_id": inputs.get("endpoint_requirement_id"),
+                "submitted_arguments": arguments, "input_assets": input_assets,
+            }
+            receipt["request_sha256"] = hashlib.sha256(
+                json.dumps(receipt, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+            ).hexdigest()
+        except GrokCLIContractError as exc:
+            return self._error_result(exc, session_id)
+        except (TypeError, ValueError, OSError) as exc:
+            return self._error_result(GrokCLIContractError("invalid_argument", str(exc)), session_id)
+
+        result = execute_grok_cli_media(
             tool_name=native_tool,
             arguments=arguments,
             output_path=output_path,
@@ -521,4 +576,18 @@ class GrokCLIVideo(BaseTool):
             sessions_root=sessions_root,
             timeout_seconds=timeout_seconds,
             media_kind="video",
+            session_id=session_id,
         )
+        receipt.update(cli_version=result.data.get("cli_version"),
+            session_id=result.data.get("session_id"),
+            dispatch_status=result.data.get("dispatch_status"),
+            submission_evidence="verified_native_call" if result.success else "unconfirmed")
+        result.data["conditioning_receipt"] = receipt
+        endpoints = {item["role"]: {"path": item["path"], "sha256": item["sha256"]}
+                     for item in input_assets if item["role"] in {"first_frame", "last_frame"}}
+        result.data["endpoint_conditioning"] = {
+            "requirement_id": inputs.get("endpoint_requirement_id"),
+            "first_frame": endpoints.get("first_frame"), "last_frame": endpoints.get("last_frame"),
+            "constraint": "endpoints_only", "request_sha256": receipt["request_sha256"],
+        }
+        return result
