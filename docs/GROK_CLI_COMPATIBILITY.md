@@ -11,6 +11,20 @@ See the [2026-09-10 Imagine and timeout audit](GROK_IMAGINE_CAPABILITIES_2026-09
 for CLI 1.0.18 / separately inspected 1.0.27, REST first/last frames, Image 2.0,
 and C36 timeout diagnostics. The original 2026-09-02 evidence below is historical.
 
+## 2026-09-18 follow-up — CLI 1.0.34 frame pins
+
+Installed stable `grok 1.0.34` advertises native `reference_to_video` fields
+`first_frame`, `last_frame`, and mid-clip `keyframes` (up to 4). OpenMontage maps
+selector `operation: first_last_frame` plus local `last_image_path` /
+`reference_image_path` onto that native tool. Frame pins require CLI **>= 1.0.34**
+(minimum gate, not an exact pin). Older compatible CLIs remain usable for
+`image_to_video` / ordinary `reference_to_video`.
+
+CLI still does **not** expose Imagine Image 2.0 model selection. Stills remain
+`image_gen` / `image_edit` without a `grok-imagine-image-2.0` override. Remote URL
+ending frames, native `loop` / `seamless_loop` switches, and REST model ids remain
+unsupported on the CLI route.
+
 ## Current installation policy
 
 Use the system `grok` on PATH. An optional `GROK_CLI_PATH` supports custom
@@ -82,7 +96,8 @@ media result afterward. Newer versions are accepted when those checks pass.
 | Text to image | Proven | `image_gen` through a separate `grok_cli` image adapter |
 | Image editing / compositing | Proven | `image_edit` through the same image adapter |
 | Image to video | Proven | `image_to_video` through a separate `grok_cli` video adapter. No aspect_ratio control; package/normalize to exact 9:16 (`tiktok_720p` / 720x1280) before TikTok delivery. |
-| Reference to video | Proven | `reference_to_video`; reference images and preset voices are supported by the observed/current tool surface |
+| Reference to video | Proven | `reference_to_video`; reference images (up to 14 on 1.0.34) and preset voices are supported by the observed/current tool surface |
+| First/last frame pins | Proven on CLI >= 1.0.34 | `first_last_frame` maps to native `reference_to_video` with local `first_frame` / `last_frame` (optional `keyframes`). Local paths only. |
 | Direct text to video | Not exposed as a primitive | Do not advertise it. `/imagine-video` is an agent workflow that first makes an image and then animates it. |
 | Video editing or extension | No installed CLI primitive found | Fail explicitly; use no substitute automatically. |
 | 1080p or post-generation upscale | Not exposed by installed CLI tools | Fail explicitly. Installed video primitives expose 480p and 720p. |

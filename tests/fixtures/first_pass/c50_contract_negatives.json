@@ -1,0 +1,106 @@
+[
+  {
+    "label": "C50-derived: wrong payoff doctor",
+    "path": [
+      "project_review",
+      "predicates",
+      2,
+      "status"
+    ],
+    "value": "fail",
+    "error_contains": "cast_identity"
+  },
+  {
+    "label": "C50-derived: extra critical creature",
+    "path": [
+      "shots",
+      0,
+      "review",
+      "predicates",
+      1,
+      "status"
+    ],
+    "value": "fail",
+    "error_contains": "cast_count"
+  },
+  {
+    "label": "C50-derived: mid-entry endpoint",
+    "path": [
+      "shots",
+      0,
+      "endpoint_completion"
+    ],
+    "value": "partial",
+    "error_contains": "endpoint_completion"
+  },
+  {
+    "label": "C50-derived: missing payoff speaker",
+    "path": [
+      "assets",
+      3,
+      "cast_ids"
+    ],
+    "value": [
+      "patient"
+    ],
+    "error_contains": "payoff_speaker_ids"
+  },
+  {
+    "label": "C50-derived: unknown completed action",
+    "path": [
+      "shots",
+      0,
+      "review",
+      "predicates",
+      2,
+      "status"
+    ],
+    "value": "unknown",
+    "error_contains": "completed_action"
+  },
+  {
+    "label": "C50-derived: rejected late cast",
+    "path": [
+      "assets",
+      2,
+      "review",
+      "status"
+    ],
+    "value": "fail",
+    "error_contains": "doctor"
+  },
+  {
+    "label": "C50-derived: missing late-cast board review",
+    "path": [
+      "project_review",
+      "predicates",
+      1,
+      "status"
+    ],
+    "value": "unknown",
+    "error_contains": "late_cast"
+  },
+  {
+    "label": "C50-derived: unapproved transformation",
+    "path": [
+      "shots",
+      0,
+      "transition"
+    ],
+    "value": {
+      "type": "transformation",
+      "rationale": "Physical morph",
+      "transformation_id": "unapproved"
+    },
+    "error_contains": "transformation"
+  },
+  {
+    "label": "C50-derived: contradictory overall review",
+    "path": [
+      "project_review",
+      "status"
+    ],
+    "value": "fail",
+    "error_contains": "project_review"
+  }
+]

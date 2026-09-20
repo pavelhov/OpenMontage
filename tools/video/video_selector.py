@@ -8,6 +8,7 @@ the tool file in tools/video/; no changes to this selector are needed.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from tools.base_tool import BaseTool, ToolResult, ToolRuntime, ToolStability, ToolStatus, ToolTier
 
@@ -88,6 +89,15 @@ class VideoSelector(BaseTool):
                 "type": "string",
                 "description": "Duration hint (e.g., '5', '10'). Passed through to the selected provider.",
             },
+            "image_path": {"type": "string"},
+            "first_frame": {"type": "string"},
+            "last_frame": {"type": "string"},
+            "keyframes": {"type": "array", "items": {"type": "object"}},
+            "voices": {"type": "array", "items": {"type": "string"}},
+            "cli_session_id": {"type": "string"},
+            "allow_unknown_cost": {"type": "boolean"},
+            "cwd": {"type": "string"},
+            "timeout_seconds": {"type": "integer"},
             "reference_image_path": {
                 "type": "string",
                 "description": "Local path to a reference image for image_to_video. Auto-uploaded if the provider requires a URL.",
@@ -323,6 +333,20 @@ class VideoSelector(BaseTool):
     def execute(self, inputs: dict[str, object]) -> ToolResult:
         from lib.scoring import rank_providers
 
+        inputs = dict(inputs)
+        # Native aliases are accepted only on the explicitly locked CLI route.
+        if "last_frame" in inputs and self._is_exact_provider_pin(inputs, "grok_cli"):
+            if inputs.get("last_image_path") is not None and (
+                not isinstance(inputs["last_frame"], str)
+                or not isinstance(inputs["last_image_path"], str)
+                or Path(inputs["last_frame"]).expanduser().resolve() != Path(inputs["last_image_path"]).expanduser().resolve()
+            ):
+                return ToolResult(success=False, data={"fallback_tools": [], "dispatch_status": "not_dispatched"},
+                                  error="Conflicting last_frame and last_image_path")
+            inputs["last_image_path"] = inputs.pop("last_frame")
+        if self._is_exact_provider_pin(inputs, "grok_cli") and any(key in inputs for key in ("model", "model_name")):
+            return ToolResult(success=False, data={"fallback_tools": [], "dispatch_status": "not_dispatched"},
+                error="Grok CLI video does not expose Imagine model selection; omit model/model_name for the subscription CLI route.")
         unsupported_frame_controls = {
             "last_frame", "last_frame_url", "last_frame_path", "end_frame",
             "end_frame_url", "end_frame_path", "loop", "seamless_loop",
@@ -330,7 +354,7 @@ class VideoSelector(BaseTool):
         if unsupported_frame_controls.intersection(inputs):
             return ToolResult(
                 success=False,
-                data={"fallback_tools": [], "fallback_attempted": False},
+                data={"fallback_tools": [], "fallback_attempted": False, "dispatch_status": "not_dispatched"},
                 error="Use last_image_url or last_image_path for a pinned final frame; no loop switch or other ending-frame alias is supported.",
             )
         if inputs.get("endpoint_requirement_id") and not (inputs.get("last_image_url") or inputs.get("last_image_path")):
@@ -403,8 +427,9 @@ class VideoSelector(BaseTool):
                 error=(
                     "No available provider supports the requested pinned final frame/model on the requested route. "
                     "Check the provider's pinned_final_frame capability, exact model, and credential availability. "
-                    "Grok CLI cannot pin final frames; Grok REST is separately API-billed and requires explicit "
-                    "route approval and REST credentials. No fallback was attempted."
+                    "Grok CLI pins require local last_image_path on CLI >=1.0.34; HTTPS last_image_url needs "
+                    "Grok REST (separately API-billed) with explicit route approval and credentials. "
+                    "No fallback was attempted."
                     if self._requires_final_frame(inputs) else "No video generation provider available."
                 ),
             )
@@ -426,7 +451,11 @@ class VideoSelector(BaseTool):
             tool_props = getattr(tool, "input_schema", {}).get("properties", {})
             # If the provider uses image_url (not reference_image_path), upload and convert
             if "image_path" in tool_props:
-                if adapted.get("image_path") and adapted["image_path"] != adapted["reference_image_path"]:
+                if adapted.get("image_path") and (
+                    not isinstance(adapted["image_path"], str)
+                    or not isinstance(adapted["reference_image_path"], str)
+                    or Path(adapted["image_path"]).expanduser().resolve() != Path(adapted["reference_image_path"]).expanduser().resolve()
+                ):
                     return ToolResult(success=False, error="Conflicting image_path and reference_image_path")
                 adapted["image_path"] = adapted["reference_image_path"]
             elif "image_url" in tool_props and "image_url" not in adapted:
@@ -443,6 +472,9 @@ class VideoSelector(BaseTool):
                         error=f"Failed to upload reference image: {e}",
                     )
 
+        if tool.input_schema.get("additionalProperties") is False:
+            for key in ("preferred_provider", "preferred_provider_gap", "allowed_providers", "task_context", "target_operation"):
+                adapted.pop(key, None)
         result = tool.execute(adapted)
         if explicit_route:
             result.data["alternatives_considered"] = []
@@ -723,7 +755,7 @@ class VideoSelector(BaseTool):
     def _requires_final_frame(inputs: dict[str, object]) -> bool:
         operation = inputs.get("target_operation") if inputs.get("operation") == "rank" else inputs.get("operation")
         return operation == "first_last_frame" or any(
-            key in inputs for key in ("last_image_url", "last_image_path", "endpoint_requirement_id")
+            key in inputs for key in ("last_image_url", "last_image_path", "last_frame", "endpoint_requirement_id")
         )
 
     @staticmethod

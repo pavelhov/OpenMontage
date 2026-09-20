@@ -2,7 +2,7 @@
 
 ## When to Use
 
-After completing any pipeline stage's work — before checkpointing. You are the quality gate between "work done" and "work accepted." This skill replaces the Python reviewer class with an instruction-driven self-review protocol.
+After completing any pipeline stage's work — before checkpointing. You are the quality gate between "work done" and "work accepted." Agents judge semantics through this protocol; Python validates the declared evidence and current bindings at the production and final-selection boundaries.
 
 Every stage gets reviewed. No exceptions. The review quality determines whether the final video is worth watching.
 
@@ -14,7 +14,7 @@ Every stage gets reviewed. No exceptions. The review quality determines whether 
 >
 > **Complete.** A reviewer pass that catches one mistake while missing a second is worse than scoring "needs another pass" and continuing. If you find one critical issue, scan for the rest of the same class before returning. Pattern-match: where else in this artifact could the same mistake be hiding?
 >
-> **Constructive.** Every "critical" finding MUST propose a concrete fix, not just identify the problem. "Caption is wrong" → "Caption says 'man on the right'; the man is on the left of the frame. Replace with 'the man on the left of the frame.'" If you cannot propose a fix, label the finding as "investigation" not "critical."
+> **Constructive.** Every "critical" finding MUST propose a concrete fix, not just identify the problem. "Caption is wrong" → "Caption says 'man on the right'; the man is on the left of the frame. Replace with 'the man on the left of the frame.'" If you cannot propose a fix, record the unresolved investigation while preserving critical severity for required predicates. Unknown evidence cannot pass.
 >
 > Removing any of these three properties measurably hurts pipeline output. The reviewer is the choke point — be rigorous.
 
@@ -39,10 +39,10 @@ First, the non-negotiable check:
 For each `review_focus` item from the manifest:
 1. Evaluate the artifact against this specific criterion
 2. Assign a severity:
-   - **critical** — Must fix before proceeding. The artifact is broken, incomplete, or dangerously wrong. **Per CHAI rules, every critical finding MUST carry a `proposed_fix` (concrete replacement text, exact field value, or specific corrective action). A critical finding without a proposed fix is downgraded to `investigation`.**
+   - **critical** — Must fix before proceeding. The artifact is broken, incomplete, or dangerously wrong. **Per CHAI rules, every critical finding MUST carry a `proposed_fix` (concrete replacement text, exact field value, or specific corrective action). A critical finding without a known fix stays critical and requires investigation.**
    - **suggestion** — Should fix. Improves quality significantly but doesn't block progress. **Suggestions MUST carry a `proposed_change` describing how to improve.**
    - **nitpick** — Could fix. Minor polish that's nice-to-have. May stand alone without a proposed change.
-   - **investigation** — A real concern but you cannot pinpoint the fix. Surface it for the next round; do not block on it.
+   - **investigation** — A concern whose fix is not yet known. If it affects a required critical predicate, keep that predicate unknown/failed and block motion/final certification until resolved; cosmetic investigations may remain warnings.
 3. Write a specific, actionable finding (not vague)
 
 **Good finding:** "Section 3 narration is 180 words for a 10-second window — that's 1080 wpm, impossible to speak. Cut to 25 words."
@@ -83,8 +83,8 @@ Count findings by severity:
 | Scenario | Action |
 |----------|--------|
 | 0 critical, any suggestions/nitpicks | **Pass** — proceed to checkpoint. Note suggestions for the record. |
-| 1+ critical findings | **Revise** — fix all critical findings, then re-review (max 2 rounds). |
-| After 2 revision rounds, still critical | **Pass with warnings** — proceed anyway, note unresolved issues. Never block indefinitely. |
+| 1+ critical findings, or required evidence missing/unknown/unreviewed | **Revise or block** — diagnose, obtain applicable repair authorization, resolve required findings, then re-review matching media. |
+| Approved budget/attempt allowance exhausted with critical findings | **Draft/blocked** — report unresolved defects. Neither budget nor round count authorizes a pass or further paid generation. |
 
 ### Step 7: Record Review
 
@@ -93,7 +93,7 @@ Structure your review as:
 ```
 ## Review: [stage_name] — Round [N]
 
-**Decision:** PASS / REVISE / PASS_WITH_WARNINGS
+**Decision:** PASS / REVISE / BLOCKED (warnings are permitted only with all required predicates passing)
 
 ### Findings
 
@@ -176,7 +176,7 @@ schema-invalid and always **critical**.
 
 2. **Critical means critical.** Don't inflate severity. A missing schema field is critical. A slightly wordy paragraph is a suggestion. A comma splice is a nitpick.
 
-3. **Two rounds max.** The goal is shipping, not perfection. After two revision rounds, pass with warnings and move on. Perfectionism kills pipelines.
+3. **Critical evidence stays binding.** Any number of rounds, positive budget, or exhausted allowance leaves failed/unknown/missing critical predicates blocked. Keep an inspectable draft and diagnose the smallest authorized repair. Do not autonomously reroll.
 
 4. **Review the artifact, not the process.** You're checking the output, not how it was produced. If the brief is compelling, it doesn't matter if the agent used an unusual approach.
 
@@ -347,32 +347,56 @@ Run at **research** and **proposal** stages when user-supplied media files exist
 - Plan doesn't reflect quality risks: **SUGGESTION**
 - Plan assumes content not in source: **CRITICAL**
 
-## Final Self-Review Review
+## Final Self-Review and Certification
 
-Run at **compose** and **publish** stages. Ensures the agent reviewed the actual rendered output.
+Run at **compose** and **publish** stages. Automatic probes and sampled frames
+are diagnostic evidence. A legacy `final_review` v1 `status: pass` does not
+certify a final, even if every spot check passes. Keep it inspectable as a draft.
 
-### At compose stage:
-1. **Existence**: Does a `final_review` artifact exist alongside the `render_report`?
-   - If missing: **CRITICAL** — "Compose produced a render_report but no final_review. The agent must inspect the rendered output before presenting it."
-2. **Status check**: What is `final_review.status`?
-   - `pass` → OK, proceed
-   - `revise` → The agent should have fixed issues before presenting. If the pipeline continued anyway: **CRITICAL** — "Self-review found revise-worthy issues but the agent presented anyway."
-   - `fail` → The pipeline MUST NOT proceed. If it did: **CRITICAL**
-3. **Check completeness**: All 5 required checks must have data:
-   - `technical_probe` must show a valid container with plausible duration/resolution
-   - `visual_spotcheck` must have `frames_sampled >= 4`
-   - `audio_spotcheck` must report narration/music presence
-   - `promise_preservation` must confirm `delivery_promise_honored`
-   - `subtitle_check` must report presence/absence
-   - Any check with missing data: **SUGGESTION** — "Self-review check [X] has incomplete data"
-4. **Promise preservation**: If `promise_preservation.silent_downgrade_detected` is true: **CRITICAL** — "Self-review detected silent downgrade from motion-led to still-led."
+1. Load current `artifacts/shot_contract.json`, `artifacts/selected_attempts.json`,
+   and each selected attempt's `production_attempts/<attempt_id>/request.json`
+   and `result.json`. Review the selected bytes, never an earlier attempt or
+   filenames alone. Required cast, cast count, completed action, speaker/source,
+   possession, transformation, outgoing boundary, payoff, and late-cast evidence
+   are critical and cannot be downgraded to cosmetic.
+2. Watch **and listen to the complete composed master in synchronized playback**,
+   including the opening, every scene/transition, dialogue, and full ending.
+   Frame sampling, transcripts, duration probes, or audio-only listening cannot
+   substitute for this review. If the viewing/listening facility is unavailable,
+   record unknown and retain draft status. Never claim playback you did not do.
+3. Author a `final_review` **v2** against `schemas/artifacts/final_review.schema.json`.
+   Record `project_id`, `story_revision`, `contract_sha256`, `output_path`,
+   `output_sha256`, and actual `duration_seconds`; name the reviewer ID, kind,
+   method, and review timestamp. Keep transport, technical, visual, audio, and
+   story dimensions separate, each with status and evidence. Record AV mode,
+   viewing/listening completeness, actual playback bounds, and concrete evidence.
+   Set release status independently; technical success cannot imply final.
+4. Record exact scene order and continuous master timeline coverage in `scenes`,
+   repeating the current selected attempt ID, output hash, `selection_digest`,
+   and `review_digest`. Review project predicates for the complete story, and
+   preserve each selected shot's semantic review bound to `selection_digest`.
+   Resolve contradictions; missing or failed critical predicates always block.
+5. Call `lib.production_review.certify_final(project_dir, review)` to select the
+   canonical `artifacts/final_review.json`. It checks actual master bytes and
+   ffprobe duration, the current contract and all selected scene evidence.
+   `lib.checkpoint.write_checkpoint` uses the **same gate** for every final claim
+   and governed publish advancement. Unrelated legacy publication remains labelled
+   `uncertified_legacy`, never current final certification. Passing a helper alone is not permission to bypass
+   this boundary. An ordinary completed compose remains explicitly **draft**.
+6. If any master, story, contract, selected attempt, outgoing frame, or review
+   changes, re-evaluate and obtain fresh matching review before final status.
+   Existing footage and historical reviews remain preserved. Alternate output
+   masters require their own complete review. Certification never authorizes
+   publication, paid repair, or a provider change.
 
-### At publish stage:
-1. Verify that `final_review` was passed through as a required artifact
-2. If `final_review.status` is not `pass`: **CRITICAL** — "Cannot publish with a non-passing self-review"
-3. If `final_review.issues_found` is non-empty and `recommended_action` is not `present_to_user`: **SUGGESTION** — "Self-review found issues; verify they were resolved before publishing"
+Warnings about cosmetic polish may remain when all required checks pass. Round
+limits and budget limits never convert critical failure into final eligibility.
+At publish, revalidate the current final evidence and obtain the separate exact
+publication approval required by the project's policy.
 
 ## Composition Authoring Mode Review
+
+The `checks.atelier` references below describe the automated v1 diagnostic record. Retain that record with the render evidence; carry each required semantic doctrine outcome into the current v2 review as a named critical predicate with evidence. Upgrading the final review format does not waive these checks.
 
 The templated→atelier inversion (`AGENT_GUIDE.md` → "Composition Authoring Mode" + `skills/meta/bespoke-composition.md`) is governance, not a suggestion. The reviewer is the enforcement point: without these checks, the next agent quietly defaults back to the stock cut-schema and every video starts looking the same again.
 

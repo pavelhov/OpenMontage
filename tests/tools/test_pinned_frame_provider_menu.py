@@ -27,7 +27,7 @@ def test_preflight_exposes_endpoint_route_without_credentials(monkeypatch, crede
     menu = registry.provider_menu()["video_generation"]
     entries = {entry["name"]: entry for entry in menu["available"] + menu["unavailable"]}
     assert entries[rest.name]["pinned_final_frame"]["supported"] is True
-    assert entries[cli.name]["pinned_final_frame"]["supported"] is False
+    assert entries[cli.name]["pinned_final_frame"]["supported"] is True
 
     summary = registry.provider_menu_summary()
     routes = {entry["tool"]: entry for entry in summary["pinned_final_frame_routes"]}

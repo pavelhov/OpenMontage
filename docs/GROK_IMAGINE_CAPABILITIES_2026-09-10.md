@@ -187,3 +187,18 @@ checks remain active. CLI 1.0.25 passed the read-only compatibility probe.
 The temporary second installation and local path overrides from the update
 above are superseded by this policy and removed during delivery. The earlier
 audit/version observations remain historical evidence, not install requirements.
+
+## 2026-09-18 CLI 1.0.34 re-inspection
+
+Installed stable `grok 1.0.34 (3736acbc8658)` now advertises native
+`ReferenceToVideoInput` fields:
+
+- `first_frame` — literal opening frame
+- `last_frame` — literal ending frame
+- `keyframes` — up to 4 `{image, timestamp_s}` mid-clip anchors
+
+OpenMontage therefore enables CLI `first_last_frame` behind a **minimum** gate
+of `1.0.34` (any newer release that still advertises the required interface is
+accepted). The adapter still rejects URL ending frames, invents no `loop`
+switch, and does not expose Imagine Image 2.0 model selection on the CLI route.
+No live media generation was performed for this re-inspection.

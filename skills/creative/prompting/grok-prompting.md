@@ -67,18 +67,36 @@ the jacket from <IMAGE_2>. Soft studio lighting, premium fashion campaign, confi
 - Use image-to-video when the source image should act like the opening frame.
 - Use reference-to-video when the source images should influence the content but not freeze the composition.
 
-### Pinned endpoints and loops (REST Video 1.5)
+### Defaults and model choice
 
-Explicitly select `grok_video`, `model="grok-imagine-video-1.5"`, and
+Prefer the current Imagine models by default:
+
+- REST video: `grok-imagine-video-1.5`
+- REST stills: `grok-imagine-image-2.0`
+- CLI video (>=1.0.34): native `image_to_video` / `reference_to_video` (Video 1.5-class backend; no model override)
+- CLI stills: native `image_gen` / `image_edit` (no Image 2.0 override)
+
+Do not steer users toward classic `grok-imagine-video` or `grok-imagine-image` unless they explicitly ask for the older cheaper route.
+
+### Pinned endpoints and loops
+
+REST: use `grok_video` (defaults to `grok-imagine-video-1.5`) with
 `operation="first_last_frame"`. Provide `last_image_path`/`last_image_url` and
-optionally a first image using `image_path`/`image_url`. The same image at both
-ends is useful for a loop. Describe a cyclic action, a stable camera, and the
-return to the initial pose; inspect velocity and sound across repeated playback.
-Keep frame pairs at 480p/720p. Do not invent a `loop` parameter or send endpoint
-constraints through `grok_cli_video`, which cannot enforce them.
+optionally a first image using `image_path`/`image_url`.
 
-Use Image 2.0 (`grok-imagine-image-2.0`) to prepare stills; it is separate from
-the Video 1.5 model. Read `grok-media` for the verified route and pricing.
+CLI (>=1.0.34): explicitly select `grok_cli_video` with
+`operation="first_last_frame"` and local `last_image_path` (optional local first
+via `image_path`/`reference_image_path`). Native `reference_to_video` also accepts
+`first_frame`/`last_frame`/`keyframes`. URLs and a native `loop` switch are not
+supported on the CLI route.
+
+The same image at both ends is useful for a loop. Describe a cyclic action, a
+stable camera, and the return to the initial pose; inspect velocity and sound
+across repeated playback. Keep frame pairs at 480p/720p.
+
+Prepare stills with Image 2.0 on REST (`grok-imagine-image-2.0`). CLI `image_gen`
+does not expose an Image 2.0 model override. Read `grok-media` for the verified
+route and pricing.
 
 ## Common Mistakes
 

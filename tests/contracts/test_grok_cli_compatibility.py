@@ -47,6 +47,7 @@ def test_grok_cli_tools_are_separate_explicit_only_providers():
     assert GrokCLIVideo.supports["text_to_video"] is False
     assert GrokCLIVideo.supports["image_to_video"] is True
     assert GrokCLIVideo.supports["reference_to_video"] is True
+    assert GrokCLIVideo.supports["first_last_frame"] is True
 
 
 def test_compatibility_doc_records_qualified_explicit_only_contract():
