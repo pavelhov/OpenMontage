@@ -36,6 +36,13 @@ INPUT_PATH_KEYS = {'image', 'image_path', 'image_paths', 'reference_image_path',
                    'last_image_url', 'end_image_url', 'video_url', 'reference_video_url',
                    'reference_image_urls', 'reference_audio_urls', 'reference_video_urls',
                    'reference_images', 'reference_videos', 'reference_audios', 'url'}
+# Native media inputs exposed by the October provider refresh (SchemaMedia/FalMedia
+# contracts). They must be hashed/frozen like the canonical keys and URL forms must
+# fail closed. Boolean controls such as ``audio``/``generate_audio`` are not assets.
+INPUT_PATH_KEYS |= {'image_urls', 'image_input', 'image_uri', 'last_image', 'last_frame_uri',
+                    'start_image_url', 'middle_image_url', 'mask', 'mask_path', 'mask_url',
+                    'audio_uri', 'audio_url', 'target_audio_url', 'video_uri', 'file', 'file_url',
+                    'web_url'}
 _ACTIVE = contextvars.ContextVar('production_execution', default=None)
 
 
