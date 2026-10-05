@@ -339,7 +339,15 @@ class ImageSelector(BaseTool):
                 adapted["query"] = adapted.get("prompt", "")
             # Normalize the selector's shared reference-image inputs for
             # providers whose native contract accepts an ``images`` array.
-            if "images" in props and "images" not in adapted:
+            # Providers that also accept the canonical reference fields (e.g.
+            # SchemaMedia adapters) encode them themselves; copying them into
+            # ``images`` too would submit duplicate refs and raw local paths.
+            canonical_refs = ("image_path", "image_paths", "image_url", "image_urls")
+            if (
+                "images" in props
+                and "images" not in adapted
+                and not any(k in props for k in canonical_refs)
+            ):
                 refs = list(adapted.get("image_paths") or []) + list(
                     adapted.get("image_urls") or []
                 )
