@@ -444,3 +444,30 @@ A missing endpoint, a prompt-only substitution, or unapproved CLI-to-REST switch
 is critical. Inspect sampled first/final frames and motion between them; a
 submitted endpoint is evidence of conditioning, not proof of visual success or
 correct physics. Record the outcome before the normal assets approval gate.
+
+## OpenArt named preparation review (conditional)
+
+For an explicitly approved OpenArt video route, read the OpenArt preparation
+sequence in `skills/creative/visual-development.md`. Review the actual retained
+private native body and prompt, not a planner's summary or claimed coverage count.
+Check every dialogue occurrence's exact text, speaker and visible/offscreen
+source, including duplicates, alongside the initial state, dominant action,
+completed end state, endpoint completion, cast, reference roles, prop/body
+invariants, permitted transformations, transitions and mapped script context.
+The compiler checks literal spans and hashes; agents judge story coverage,
+reference suitability, continuity and credible performance. Neither substitutes
+for the other.
+
+Write a named v1 `preparation_review-<id>.json` with matching review ID and compiled
+subject hash. Require exactly `coverage`, `reference_suitability`,
+`native_compatibility`, `continuity`, and `feasibility`, all critical and passing,
+with concrete evidence. Missing, duplicate, unknown or cosmetic-downgraded
+predicates block dispatch. Examine measured audio approval and every speech
+interval, or the explicit language/rate/count/pause assumptions; inspect action
+and completion windows, margin and overlap rationale against native duration.
+Unsupported ending, audio or rich-reference controls block the route even when a
+prompt mentions the intended result. A start URL is not evidence of an ending pin.
+Changed preparation bindings require a new matching review before launch.
+Generated attempts retain their original private passing preparation; mutable
+later sidecars cannot retrospectively approve them. Fixture-only judgments never
+qualify live media or replace selection and complete audiovisual final review.

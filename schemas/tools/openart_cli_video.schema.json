@@ -80,6 +80,14 @@
     "native_dry_run_receipt_sha256": {
       "type": "string",
       "minLength": 1
+    },
+    "compiled_request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "preparation_review_id": {
+      "type": "string",
+      "minLength": 1
     }
   }
 }

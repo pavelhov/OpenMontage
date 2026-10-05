@@ -28,7 +28,7 @@ from typing import Any
 
 from lib.shot_contract import contract_digest, file_sha256, validate_shot_contract
 
-GOVERNANCE_KEYS = {'governance', 'project_dir', 'shot_id', 'scope_id', 'production_phase', 'shot_contract_path'}
+GOVERNANCE_KEYS = {'governance', 'project_dir', 'shot_id', 'scope_id', 'production_phase', 'shot_contract_path', 'compiled_request_id', 'preparation_review_id'}
 INPUT_PATH_KEYS = {'image', 'image_path', 'image_paths', 'reference_image_path', 'reference_image_paths',
                    'first_frame', 'last_frame', 'last_image_path', 'images', 'audio_path',
                    'reference_audio_path', 'reference_audio_paths', 'video_path', 'reference_video_path',
@@ -519,7 +519,16 @@ def _check_motion_inputs(contract, shot_id, inputs, root):
 
 
 # U3 installs a pure compiled-request validator; no transport/ledger work here.
-_OPENART_COMPILED_REQUEST_CHECK = None
+def _compiled_request_check(inputs, native, profile):
+    from lib.production_request import validate_preparation
+    from jsonschema.exceptions import ValidationError
+    try:
+        return validate_preparation(inputs, native, profile)
+    except (ValueError, OSError, KeyError, TypeError, ValidationError) as exc:
+        _fail('OpenArt preparation: ' + str(exc))
+
+
+_OPENART_COMPILED_REQUEST_CHECK = _compiled_request_check
 
 
 def _is_openart(tool):
@@ -536,7 +545,7 @@ def _openart_controls(inputs):
 
 def _openart_prepare(inputs):
     from lib import openart_jobs as jobs
-    profile = jobs.load_qualification(model=inputs.get('model'), mode=inputs.get('mode'))
+    profile = jobs.load_qualification(model=inputs.get('model'), mode=inputs.get('mode'), require='pre_submit')
     native = jobs.prepare_native_request(_openart_controls(inputs), profile)
     if _OPENART_COMPILED_REQUEST_CHECK is None:
         _fail('OpenArt compiled-request preparation validator is not installed (U3)')
@@ -631,8 +640,6 @@ def preflight(tool, inputs):
         if scope_used >= len(approved_request):
             _fail('approved request batch exhausted')
         approved_request = approved_request[scope_used]
-    if provider == 'openart_cli' and not isinstance(approved_request, str):
-        _fail('OpenArt U2 requires fixed exact request digest; compiled templates await U3')
     digest = planned_request_digest(inputs, project_dir=root)
     if _approved_request(approved_request, root) != digest:
         _fail('request differs from the exact approved request')
@@ -849,6 +856,10 @@ def execute_governed(tool, inputs, invoke):
         if _digest(snapshot_request) != checked['request_sha256']:
             _fail('input changed during reservation')
         submitted = _provider_inputs(tool, submitted, session_id)
+        if openart_binding:
+            for key in ('compiled_request_id', 'preparation_review_id'):
+                if key in inputs:
+                    submitted[key] = inputs[key]
         scope = checked['scope']
         request = {'version':'1.0', 'attempt_id':session_id, 'cli_session_id':session_id,
             'project_id':checked['marker']['project_id'], 'story_revision':checked['marker']['story_revision'],
@@ -862,17 +873,28 @@ def execute_governed(tool, inputs, invoke):
             native = jobs.native_request(_openart_controls(submitted), profile, dry_run=checked['openart'][1].get('dry_run'))
             if native != checked['openart'][1]:
                 _fail('OpenArt native request changed during snapshotting')
+            preparation_snapshot = None
+            if _OPENART_COMPILED_REQUEST_CHECK is _compiled_request_check:
+                from lib.production_request import freeze_preparation
+                preparation_snapshot = freeze_preparation(session_id, inputs, native, profile)
             frozen = jobs.freeze_request(session_id, submitted, native, profile)
             openart_binding['snapshot_sha256'] = frozen['snapshot_sha256']
-            request['openart'] = {'binding':openart_binding, 'snapshot':frozen}
+            from lib.production_request import freeze_approval, public_scope
+            approval_snapshot = freeze_approval(session_id, scope, _inside(scope['evidence']['path'], root).read_bytes())
+            request['openart'] = {'binding':openart_binding, 'snapshot':frozen, 'approval_snapshot':approval_snapshot}
+            if preparation_snapshot:
+                request['openart']['preparation_snapshot'] = preparation_snapshot
+            request['scope'] = public_scope(scope)
+            request['approval_evidence'] = {'snapshot_id':session_id, 'sha256':scope['evidence']['sha256']}
             request['submitted_inputs'] = _openart_public_inputs(submitted)
         _write_new(directory / 'request.json', request)
         evidence_path = _inside(scope['evidence']['path'], root)
         evidence_copy = directory / ('approval-evidence' + evidence_path.suffix)
-        evidence_copy.write_bytes(evidence_path.read_bytes())
-        evidence_copy.chmod(0o444)
-        if file_sha256(evidence_copy) != scope['evidence']['sha256']:
-            _fail('approval evidence changed during reservation')
+        if not openart_binding:
+            evidence_copy.write_bytes(evidence_path.read_bytes())
+            evidence_copy.chmod(0o444)
+            if file_sha256(evidence_copy) != scope['evidence']['sha256']:
+                _fail('approval evidence changed during reservation')
         if checked['contract']:
             _write_new(directory / 'shot_contract.json', checked['contract'])
         _write_new(directory / 'selected_attempts.json', load_selected_attempts(root))
@@ -1296,6 +1318,8 @@ def _openart_public_inputs(inputs):
 def load_openart_frozen(request):
     """Pure private snapshot replay; public journal never carries native secrets."""
     from lib import openart_jobs as jobs
+    from lib.production_request import load_private_approval
+    load_private_approval(request)
     frozen = jobs.load_frozen_request(request['attempt_id'])
     if frozen['snapshot_sha256'] != request['openart']['snapshot']['snapshot_sha256']:
         _fail('OpenArt private request snapshot changed')
@@ -1394,3 +1418,12 @@ def collect_openart_attempt(project_dir, attempt_id, *, request_sha256, timeout=
         record['result'] = asdict(result)
         _write_new(directory / 'reconciliation.json', record)
         return record
+
+
+def _approved_openart_upload(project_root, upload_id, source_sha256):
+    from lib.production_request import approved_upload_lookup
+    return approved_upload_lookup(project_root, upload_id, source_sha256)
+
+
+from lib import openart_jobs as _openart_jobs
+_openart_jobs.register_upload_approval_lookup(_approved_openart_upload)

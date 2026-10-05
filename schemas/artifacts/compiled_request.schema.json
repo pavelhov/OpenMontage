@@ -1,0 +1,557 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "request_sha256",
+    "source_binding",
+    "native_binding",
+    "coverage",
+    "timing"
+  ],
+  "properties": {
+    "version": {
+      "const": "1.0"
+    },
+    "request_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "source_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project_id",
+        "story_revision",
+        "shot_id",
+        "contract_sha256",
+        "approval_plan_sha256",
+        "references",
+        "upstream",
+        "script_sha256",
+        "scene_plan_sha256",
+        "asset_manifest_sha256",
+        "reviews_sha256"
+      ],
+      "properties": {
+        "project_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "story_revision": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "shot_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "contract_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "approval_plan_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "role",
+              "cast_ids",
+              "sha256",
+              "review_sha256"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "role": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "cast_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                }
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "review_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          }
+        },
+        "upstream": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "shot_id",
+              "selection_sha256",
+              "review_sha256"
+            ],
+            "properties": {
+              "shot_id": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              },
+              "selection_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "review_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          }
+        },
+        "script_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "scene_plan_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "asset_manifest_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "reviews_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "native_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "native_controls_sha256",
+        "native_argv_sha256",
+        "native_body_sha256",
+        "profile_sha256",
+        "form_sha256",
+        "form_defaults_sha256",
+        "account_id_sha256",
+        "cli_version",
+        "tier",
+        "model",
+        "mode",
+        "source"
+      ],
+      "properties": {
+        "native_controls_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "native_argv_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "native_body_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "profile_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "form_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "form_defaults_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "account_id_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "cli_version": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "tier": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "mode": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "source": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      }
+    },
+    "coverage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "occurrence_id",
+          "source_pointer",
+          "value_sha256",
+          "native_pointer",
+          "start",
+          "end",
+          "fragment_sha256"
+        ],
+        "properties": {
+          "occurrence_id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "source_pointer": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "value_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "native_pointer": {
+            "const": "/params/prompt"
+          },
+          "start": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "end": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "fragment_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    "timing": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "duration_seconds",
+            "language",
+            "margin_seconds",
+            "rationale",
+            "action_windows",
+            "overlap_policy",
+            "overlap_rationale",
+            "method",
+            "segments"
+          ],
+          "properties": {
+            "duration_seconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "language": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "margin_seconds": {
+              "type": "number",
+              "minimum": 0
+            },
+            "rationale": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "action_windows": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "source_pointer",
+                  "value_sha256",
+                  "start_seconds",
+                  "end_seconds",
+                  "rationale"
+                ],
+                "properties": {
+                  "source_pointer": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "value_sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "start_seconds": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "end_seconds": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "rationale": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  }
+                }
+              }
+            },
+            "overlap_policy": {
+              "enum": [
+                "serial",
+                "reviewed_parallel"
+              ]
+            },
+            "overlap_rationale": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "method": {
+              "const": "segmented_estimate"
+            },
+            "segments": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "dialogue_index",
+                  "text_sha256",
+                  "language",
+                  "word_count",
+                  "words_per_minute",
+                  "pause_seconds",
+                  "rationale"
+                ],
+                "properties": {
+                  "dialogue_index": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "text_sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "language": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "word_count": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "words_per_minute": {
+                    "type": "number",
+                    "exclusiveMinimum": 0
+                  },
+                  "pause_seconds": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "rationale": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "duration_seconds",
+            "language",
+            "margin_seconds",
+            "rationale",
+            "action_windows",
+            "overlap_policy",
+            "overlap_rationale",
+            "method",
+            "audio"
+          ],
+          "properties": {
+            "duration_seconds": {
+              "type": "number",
+              "exclusiveMinimum": 0
+            },
+            "language": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "margin_seconds": {
+              "type": "number",
+              "minimum": 0
+            },
+            "rationale": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "action_windows": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "source_pointer",
+                  "value_sha256",
+                  "start_seconds",
+                  "end_seconds",
+                  "rationale"
+                ],
+                "properties": {
+                  "source_pointer": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  },
+                  "value_sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "start_seconds": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "end_seconds": {
+                    "type": "number",
+                    "minimum": 0
+                  },
+                  "rationale": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "\\S"
+                  }
+                }
+              }
+            },
+            "overlap_policy": {
+              "enum": [
+                "serial",
+                "reviewed_parallel"
+              ]
+            },
+            "overlap_rationale": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "method": {
+              "const": "measured_audio"
+            },
+            "audio": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "sha256",
+                "approval_path",
+                "approval_sha256",
+                "measurement"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "approval_path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "\\S"
+                },
+                "approval_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "measurement": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "audio_sha256",
+                    "duration_seconds",
+                    "measurer",
+                    "method"
+                  ],
+                  "properties": {
+                    "audio_sha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "duration_seconds": {
+                      "type": "number",
+                      "exclusiveMinimum": 0
+                    },
+                    "measurer": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    },
+                    "method": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "\\S"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openmontage.local/artifacts/compiled_request"
+}

@@ -23,6 +23,7 @@ from schemas.artifacts import load_schema
 
 
 _ALLOW_OPENART_FIXTURE_PROVENANCE = False  # module test seam, never caller-authorized
+_ALLOW_OPENART_COMPONENT_PREPARATION = False  # isolated U2 component fixtures only
 
 def _validate_attempt_provenance(
     project_dir: str | Path, attempt_id: str, *, shot_id: str,
@@ -101,7 +102,14 @@ def _validate_attempt_provenance(
     if local_render:
         require(request.get('tool_name') == 'hyperframes_compose', 'local render tool identity differs')
     evidence = request['approval_evidence']
-    bound_file(evidence, directory, 'preserved approval')
+    if openart:
+        from lib.production_request import load_private_approval
+        private_approval = load_private_approval(request)
+        scope = private_approval['scope']
+        evidence = private_approval['approval_evidence']
+        bound_file(evidence, private_approval['private_parent'], 'preserved private approval')
+    else:
+        bound_file(evidence, directory, 'preserved approval')
     require(isinstance(scope.get('evidence'), dict) and evidence['sha256'] == scope['evidence'].get('sha256'), 'preserved approval hash differs from frozen scope')
     index = request['scope_attempt_index']
     allowance = scope.get('attempts_per_shot', {}).get(shot_id)
@@ -189,8 +197,7 @@ def _validate_attempt_provenance(
         require(request.get('tool_name') in {'openart_cli_video','video_selector'}, 'OpenArt tool identity differs')
         submitted = frozen_openart['inputs']
     bindings = request['input_assets']
-    zero_refs = openart and not shot['asset_ids'] and not any(key in submitted for key in execution.INPUT_PATH_KEYS)
-    require(isinstance(submitted, dict) and isinstance(bindings, list) and (bool(bindings) or zero_refs), 'immutable submitted inputs missing')
+    require(isinstance(submitted, dict) and isinstance(bindings, list) and bool(bindings), 'immutable submitted inputs missing')
     remaining = iter(bindings)
 
     def restore_binding(role, path):
@@ -201,7 +208,7 @@ def _validate_attempt_provenance(
         original = inside(record.get('original_path', ''), root)
         return {'path': str(original), 'sha256': record['sha256']}
 
-    clean_submitted = copy.deepcopy(submitted)
+    clean_submitted = execution._clean(submitted)
     session = clean_submitted.pop('cli_session_id', None)
     require(session is None or session == request['cli_session_id'], 'submitted session differs')
     try:
@@ -223,6 +230,11 @@ def _validate_attempt_provenance(
     expected_hashes = {assets[asset_id]['sha256'] for asset_id in shot['asset_ids']}
     require(all(item['sha256'] in expected_hashes or (local_render and item['role'] == 'workspace_path') for item in bindings), 'submitted input outside approved shot assets')
     if openart:
+        if 'preparation_snapshot' in request['openart']:
+            from lib.production_request import validate_frozen_preparation
+            validate_frozen_preparation(request, frozen_openart, root)
+        elif not _ALLOW_OPENART_COMPONENT_PREPARATION:
+            fail('OpenArt immutable preparation snapshot missing')
         return _validate_openart_result(root, directory, request, frozen_openart, expected_output, bound_file, read, require)
     if local_render:
         return _validate_local_render_result(root, directory, request, expected_output, bound_file, read, require)

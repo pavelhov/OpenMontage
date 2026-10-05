@@ -189,3 +189,18 @@ def test_openart_fixture_profile_never_certifies_without_explicit_test_seam(tmp_
     with pytest.raises(ProductionGovernanceError,match='cannot certify live'):
         validate_attempt_provenance(tmp_path,aid,shot_id='entry',story_revision='story-1',
                                    expected_output=collected['output'])
+
+
+def test_fixture_source_alone_cannot_skip_frozen_preparation(tmp_path, monkeypatch):
+    """Fixture source is data, not authority to bypass immutable preparation."""
+    from tests.tools.test_openart_cli_video import synthetic_openart_project
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    from lib import production_provenance
+    from lib.production_execution import collect_openart_attempt
+    inputs, _, _ = synthetic_openart_project(tmp_path, monkeypatch)
+    result = OpenArtCLIVideo().execute(inputs)
+    aid = result.data['production_attempt_id']
+    collected = collect_openart_attempt(tmp_path, aid, request_sha256=result.data['production_request_sha256'])
+    monkeypatch.setattr(production_provenance, '_ALLOW_OPENART_COMPONENT_PREPARATION', False)
+    with pytest.raises(ProductionGovernanceError, match='preparation snapshot missing'):
+        validate_attempt_provenance(tmp_path, aid, shot_id='entry', story_revision='story-1', expected_output=collected['output'])

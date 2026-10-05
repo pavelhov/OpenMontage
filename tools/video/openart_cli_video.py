@@ -33,6 +33,7 @@ class OpenArtCLIVideo(BaseTool):
         'output_path':{'type':'string'}, 'project_dir':{'type':'string'},
         'governance':{'type':'object'}, 'operation':{'type':'string'},
         'image_path':{'type':'string'}, 'image_upload_id':{'type':'string'},
+        'compiled_request_id':{'type':'string'}, 'preparation_review_id':{'type':'string'},
         'native_dry_run_receipt_id':{'type':'string'}, 'native_dry_run_receipt_sha256':{'type':'string'}}}
 
     def get_status(self):

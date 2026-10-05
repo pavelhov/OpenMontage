@@ -22,6 +22,7 @@ def synthetic_openart_project(tmp_path, monkeypatch):
     import json
     from lib import production_provenance
     monkeypatch.setattr(production_provenance,'_ALLOW_OPENART_FIXTURE_PROVENANCE',True)
+    monkeypatch.setattr(production_provenance,'_ALLOW_OPENART_COMPONENT_PREPARATION',True)
     from pathlib import Path
     from lib import openart_jobs as jobs, production_execution as execution
     from tests.lib.test_production_execution import project, write_scopes
@@ -178,18 +179,52 @@ def test_actual_jobs_api_dispatch_collect_compatibility(actual_jobs_env, monkeyp
     from lib.shot_contract import file_sha256
     root = actual_jobs_env['tmp']/'governed'
     root.mkdir()
-    inputs, scope, _ = project(root,motion=True)
+    inputs, scope, contract = project(root,motion=True)
+    from lib import production_request as preparation
+    from tests.lib.test_production_request import write
+    write(root/'artifacts/scene_plan.json',{'version':'1.0','scenes':[{'id':'entry','type':'generated',
+        'description':'Fixture entry','start_seconds':0,'end_seconds':8,'script_section_id':'entry-script'}]})
+    write(root/'artifacts/script.json',{'version':'1.0','title':'Fixture','total_duration_seconds':8,
+        'sections':[{'id':'entry-script','text':'Enter creature','start_seconds':0,'end_seconds':8}]})
+    authored = preparation.compile_prompt(root,'entry')
+    inputs['prompt'] = authored['prompt']
     inputs.pop('last_image_path')
     inputs.pop('reference_image_paths')
     inputs.update(operation='image_to_video',mode='image2video',model='m-turbo',image_upload_id='up-integration')
     profile = upload_profile(actual_jobs_env)
+    # Match the retained fixture contract with fresh fake account/version/form
+    # observations. These actual checks stay enabled; no real provider is used.
+    form = {'schema': {'type': 'object', 'properties': {'prompt': {'type': 'string'},
+            'duration': {'type': 'integer', 'default': 5}, 'image': {'type': 'string'}}}}
+    binary = actual_jobs_env['tmp']/'bin/openart'
+    fake = binary.read_text()
+    fake = fake.replace('if args[:1] == ["account"]:',
+        'if args[:1] == ["version"]:\n    print(json.dumps({"version": "0.1.1"}))\n'
+        'elif args[:2] == ["model", "form"]:\n    print(' + repr(json.dumps(form)) + ')\n'
+        'elif args[:1] == ["account"]:')
+    guarantee = {'nonspending': True, 'no_delayed_charge': True}
+    fake = fake.replace('{"user": {"id": os.environ.get("FAKE_ACCOUNT", "acct-1")}}',
+        '{"user": {"id": os.environ.get("FAKE_ACCOUNT", "acct-1"), "tier": "subscription"}, '
+        '"contract": ' + repr(guarantee) + '}')
+    fake = fake.replace('{"url": "https://up.openart.test/r.png"}',
+        '{"url": "https://up.openart.test/r.png", "contract": ' + repr(guarantee) + '}')
+    binary.write_text(fake)
+    profile.pop('profile_sha256', None)
+    profile['json_paths']['account_tier'] = 'user.tier'
+    profile['form_sha256'] = jobs.sha256_json(form)
+    jobs.profile_path_for(profile['model'], profile['mode']).write_text(json.dumps(profile))
+    profile = jobs.load_qualification(model=profile['model'], mode=profile['mode'], allow_fixture=True)
     original_load = jobs.load_qualification
     monkeypatch.setattr(jobs,'load_qualification',lambda *args,**kw: original_load(*args,**dict(kw,allow_fixture=True)))
     monkeypatch.setattr(jobs,'_ALLOW_FIXTURE_LAUNCH',True)
     monkeypatch.setattr(jobs,'_ALLOW_FIXTURE_UPLOAD',True)
     monkeypatch.setattr(production_provenance,'_ALLOW_OPENART_FIXTURE_PROVENANCE',True)
-    monkeypatch.setattr(execution,'_OPENART_COMPILED_REQUEST_CHECK',lambda *args: None)
-    jobs.register_upload_approval_lookup(approve(file_sha256(inputs['image_path'])))
+    monkeypatch.setattr(execution,'_OPENART_COMPILED_REQUEST_CHECK',execution._compiled_request_check)
+    write(root/'artifacts/upload_approval-up-integration.json',{'version':'1.0','upload_id':'up-integration',
+        'asset_id':'start','shot_id':'entry','source_sha256':file_sha256(inputs['image_path']),
+        'source_binding':preparation.source_packet(root,'entry')['binding'],'approved_by':'Fixture-only author',
+        'evidence_path':'approval.txt','evidence_sha256':file_sha256(root/'approval.txt')})
+    jobs.register_upload_approval_lookup(preparation.approved_upload_lookup)
     jobs.upload_reference(root,'up-integration',Path(inputs['image_path']),model='m-turbo',mode='image2video')
     url = jobs.upload_url_for('up-integration',profile=profile,source_sha256=file_sha256(inputs['image_path']))
     creative = cli.native_video_argv(inputs['prompt'],model=inputs['model'],mode=inputs['mode'],
@@ -198,6 +233,23 @@ def test_actual_jobs_api_dispatch_collect_compatibility(actual_jobs_env, monkeyp
             'params':{'prompt':inputs['prompt'],'duration':inputs['duration'],'image':url}}
     rid,sha = receipt({'endpoint':profile['dry_run_endpoint'],'body':body},creative+['--dry-run']+cli.GLOBAL_FLAGS)
     inputs.update(native_dry_run_receipt_id=rid,native_dry_run_receipt_sha256=sha)
+    inputs.update(compiled_request_id='actual-compiled',preparation_review_id='actual-review')
+    native=jobs.prepare_native_request(execution._openart_controls(inputs),profile)
+    shot=contract['shots'][0]
+    timing={'method':'segmented_estimate','duration_seconds':8,'language':'en','margin_seconds':0.5,
+        'rationale':'Fixture no dialogue; entry and completion windows','overlap_policy':'serial',
+        'overlap_rationale':'Sequential fixture action windows','segments':[],
+        'action_windows':[{'source_pointer':'/shot_contract/shots/0/dominant_action',
+            'value_sha256':preparation.digest(shot['dominant_action']),'start_seconds':0,'end_seconds':6,'rationale':'Entry'},
+            {'source_pointer':'/shot_contract/shots/0/completed_end_state',
+            'value_sha256':preparation.digest(shot['completed_end_state']),'start_seconds':6,'end_seconds':7,'rationale':'Completion'}]}
+    compiled=preparation.prepare_compiled_request(inputs,native,profile,coverage=authored['coverage'],timing=timing)
+    review={'version':'1.0','review_id':'actual-review','reviewer':'Fixture-only author','status':'pass',
+        'subject_sha256':preparation.digest(compiled),'evidence_kind':'fixture_only',
+        'predicates':[{'name':name,'status':'pass','severity':'critical','evidence':'Fixture-only judgment'}
+                      for name in sorted(preparation.PREDICATES)]}
+    write(root/'artifacts/compiled_request-actual-compiled.json',compiled)
+    write(root/'artifacts/preparation_review-actual-review.json',review)
     scope['provider']='openart_cli'
     scope['requests']['entry']=execution.planned_request_digest(inputs,project_dir=root)
     write_scopes(root,scope)
