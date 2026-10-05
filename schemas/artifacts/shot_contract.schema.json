@@ -105,7 +105,7 @@
   ],
   "additionalProperties": false,
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "openmontage/artifacts/shot_contract",
+  "$id": "https://openmontage.local/artifacts/shot_contract",
   "title": "Shot Contract",
   "description": "Current version 1.0. Authored semantic evidence; structural validation alone never authorizes motion. Legacy scene plans remain readable without this sidecar.",
   "$defs": {
@@ -169,7 +169,8 @@
           "enum": [
             "pass",
             "fail",
-            "unknown"
+            "unknown",
+            "provisional"
           ]
         },
         "predicates": {
@@ -179,6 +180,10 @@
           },
           "minItems": 1,
           "uniqueItems": true
+        },
+        "draft_policy_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
         }
       },
       "required": [
@@ -189,7 +194,30 @@
         "status",
         "predicates"
       ],
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "provisional"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "draft_policy_sha256"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "draft_policy_sha256"
+              ]
+            }
+          }
+        }
+      ]
     },
     "asset": {
       "type": "object",

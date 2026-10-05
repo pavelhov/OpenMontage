@@ -62,6 +62,46 @@ def selection_digest(selection: dict) -> str:
     return _digest({key: selection.get(key) for key in ("attempt_id", "output", "outgoing_frame")})
 
 
+def draft_audio_policy_digest(project_dir: str | Path) -> str:
+    """Validate explicit draft-only authorization bound to local evidence bytes.
+
+    This policy is separate from creative planning: changing review capability
+    must not rewrite historical attempts or expand their approved media scope.
+    """
+    root = Path(project_dir).resolve()
+    marker = json.loads((root / "project.json").read_text())
+    if marker.get("governance", {}).get("mode") != "strict":
+        raise ValueError("draft authorization requires strict governance")
+    policy = marker.get("governance", {}).get("draft_review")
+    if not isinstance(policy, dict) or set(policy) != {
+        "version", "mode", "project_id", "story_revision", "evidence"
+    }:
+        raise ValueError("explicit audio-unavailable draft policy required")
+    if (policy["version"] != "1.0" or policy["mode"] != "audio_unavailable_draft"
+            or policy["project_id"] != marker.get("project_id")
+            or policy["story_revision"] != marker.get("story_revision")):
+        raise ValueError("draft policy differs from current project/story")
+    evidence = policy["evidence"]
+    if not isinstance(evidence, dict) or set(evidence) != {"path", "sha256"}:
+        raise ValueError("draft policy requires hashed approval evidence")
+    path = (root / evidence["path"]).resolve()
+    if not path.is_relative_to(root) or file_sha256(path) != evidence["sha256"]:
+        raise ValueError("draft authorization evidence missing or changed")
+    return _digest(policy)
+
+
+def provisional_audio_review(review: dict, project_dir: str | Path) -> bool:
+    """Allow only unknown speaker-source evidence; callers check other evidence."""
+    if review.get("status") != "provisional":
+        return False
+    try:
+        bound = review.get("draft_policy_sha256") == draft_audio_policy_digest(project_dir)
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+    speakers = [p for p in review.get("predicates", []) if p.get("name") == "speaker_source"]
+    return bound and len(speakers) == 1 and speakers[0].get("status") == "unknown"
+
+
 def validate_shot_contract(
     contract: dict, *, project_dir: str | Path, shot_id: str,
     story_revision: str | None = None, selected_upstream: dict | None = None,
@@ -69,7 +109,8 @@ def validate_shot_contract(
     """Return ``eligible``, field-level ``errors`` and nonblocking ``warnings``.
 
     There is deliberately no budget, attempt-count, or review-round override.
-    Missing/unknown/failed critical evidence always blocks. ``selected_upstream``
+    Missing/failed critical evidence always blocks. Explicit draft authorization
+    may defer only unknown upstream speaker_source evidence. ``selected_upstream``
     maps shot IDs to fresh selected records containing attempt_id, output,
     outgoing_frame (both path/sha256), and review. It must not be reconstructed
     from the expected bindings stored in this contract.
@@ -101,7 +142,7 @@ def validate_shot_contract(
         except (KeyError, TypeError, ValueError, OSError) as exc:
             errors.append(f"{label}: unreadable bound asset ({exc})")
 
-    def check_review(review, subject, required, label):
+    def check_review(review, subject, required, label, *, allow_draft=False):
         # Upstream review records enter from outside the schema-validated plan.
         review_schema = {"$defs": schema["$defs"], "$ref": "#/$defs/review"}
         malformed = list(Draft202012Validator(review_schema).iter_errors(review))
@@ -110,7 +151,8 @@ def validate_shot_contract(
             return
         if review["story_revision"] != revision or review["subject_sha256"] != subject:
             errors.append(f"{label}: stale review binding (story revision or subject hash)")
-        if review["status"] != "pass":
+        provisional = allow_draft and provisional_audio_review(review, root)
+        if review["status"] != "pass" and not provisional:
             errors.append(f"{label}: review is {review['status']}")
         seen = set()
         for predicate in review["predicates"]:
@@ -121,8 +163,9 @@ def validate_shot_contract(
             critical = name in CRITICAL_PREDICATES or predicate.get("severity", "critical") == "critical"
             if name in CRITICAL_PREDICATES and predicate.get("severity") == "cosmetic":
                 errors.append(f"{label}.{name}: required critical predicate cannot be cosmetic")
+            deferred = provisional and name == "speaker_source" and predicate["status"] == "unknown"
             if predicate["status"] != "pass":
-                (errors if critical else warnings).append(f"{label}.{name}: {predicate['status']}: {predicate['evidence']}")
+                (errors if critical and not deferred else warnings).append(f"{label}.{name}: {predicate['status']}: {predicate['evidence']}")
         for name in sorted(required - seen):
             errors.append(f"{label}.{name}: missing critical review predicate")
 
@@ -241,5 +284,5 @@ def validate_shot_contract(
         review = selection.get("review")
         if not isinstance(review, dict) or review_digest(review) != binding["review_sha256"]:
             errors.append(f"{label}: selected review changed or missing")
-        check_review(review, selection_digest(selection), UPSTREAM_PREDICATES, f"{label}.review")
+        check_review(review, selection_digest(selection), UPSTREAM_PREDICATES, f"{label}.review", allow_draft=True)
     return result()

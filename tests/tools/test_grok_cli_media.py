@@ -34,7 +34,7 @@ Options:
       --tools <TOOLS>
       --disallowed-tools <TOOLS>
       --permission-mode <MODE>
-          Possible values: default, dontAsk
+          Possible values: default, bypassPermissions
       --verbatim
       --cwd <CWD>
   -s, --session-id <ID>
@@ -42,10 +42,18 @@ Options:
 """
 
 
-EXPECTED_NON_READ_DENIES = {
+EXPECTED_SEALED_MEDIA_DENIES = {
+    "Bash(*)",
+    "Grep(*)",
+    "WebFetch(*)",
+    "MCPTool(*)",
+}
+
+EXPECTED_FULL_DENIES = {
     "Bash(*)",
     "Edit(*)",
     "Write(*)",
+    "Read(*)",
     "Grep(*)",
     "WebFetch(*)",
     "MCPTool(*)",
@@ -309,10 +317,10 @@ def test_image_success_shapes_and_exact_headless_boundary(
     assert argv[argv.index("--max-turns") + 1] == "3"
     assert argv[argv.index("--tools") + 1] == operation
     assert argv[argv.index("--disallowed-tools") + 1] == "search_tool,use_tool"
-    assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
+    assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
     assert "--no-subagents" in argv and "--disable-web-search" in argv and "--verbatim" in argv
     deny_values = {argv[index + 1] for index, value in enumerate(argv) if value == "--deny"}
-    expected_denies = EXPECTED_NON_READ_DENIES
+    expected_denies = EXPECTED_SEALED_MEDIA_DENIES
     assert deny_values == expected_denies
     assert kwargs["cwd"] == str(tmp_path)
     assert kwargs["stdin"] is subprocess.DEVNULL
@@ -399,7 +407,7 @@ def test_video_success_shapes(
     assert len(fake.media_calls) == 1
     argv, _ = fake.media_calls[0]
     deny_values = {argv[index + 1] for index, value in enumerate(argv) if value == "--deny"}
-    assert deny_values == EXPECTED_NON_READ_DENIES
+    assert deny_values == EXPECTED_SEALED_MEDIA_DENIES
 
 
 def test_unknown_terminal_cost_is_not_reported_as_free(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -672,6 +680,7 @@ def test_prompt_4097_fails_before_any_subprocess(monkeypatch: pytest.MonkeyPatch
         ("native tool image_gen is unavailable", "capability"),
         ("cannot prompt because no TTY is available", "headless"),
         ("Denied by permission policy: deny rule on read", "permission_policy"),
+        ("Denied by permission policy: deny rule on edit", "permission_policy"),
     ],
 )
 def test_semantic_failures_are_classified(
@@ -1125,19 +1134,32 @@ def test_media_read_classification_does_not_expose_filesystem_tools(tmp_path, op
     from tools._grok_cli_media import _generation_argv
     argv = _generation_argv("grok", tmp_path / "prompt.txt", operation, tmp_path)
     assert "Read(*)" not in argv
+    assert "Write(*)" not in argv
+    assert "Edit(*)" not in argv
     assert argv[argv.index("--tools") + 1] == operation
-    assert argv[argv.index("--permission-mode") + 1] == "dontAsk"
+    assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
     assert "--always-approve" not in argv
     assert "--no-subagents" in argv
     assert "--disable-web-search" in argv
     denies = {argv[i + 1] for i, v in enumerate(argv) if v == "--deny"}
-    assert denies == EXPECTED_NON_READ_DENIES
+    assert denies == EXPECTED_SEALED_MEDIA_DENIES
+    deny_order = [argv[i + 1] for i, v in enumerate(argv) if v == "--deny"]
+    assert deny_order == [
+        "Bash(*)",
+        "Grep(*)",
+        "WebFetch(*)",
+        "MCPTool(*)",
+    ]
 
 
 def test_unknown_tool_keeps_read_denial(tmp_path):
     from tools._grok_cli_media import _generation_argv
     argv = _generation_argv("grok", tmp_path / "prompt.txt", "unknown", tmp_path)
-    assert "Read(*)" in argv
+    deny_values = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--deny"]
+    assert "Read(*)" in deny_values
+    assert "Edit(*)" in deny_values
+    assert "Write(*)" in deny_values
+    assert set(deny_values) == EXPECTED_FULL_DENIES
 
 
 @pytest.mark.parametrize("version,expected", [
@@ -1155,7 +1177,7 @@ def test_system_cli_version_policy(monkeypatch, tmp_path, version, expected):
     assert grok_cli_is_qualified(str(executable)) is expected
 
 
-@pytest.mark.parametrize("missing", ["--deny", "--tools", "--session-id", "streaming-json", "dontAsk"])
+@pytest.mark.parametrize("missing", ["--deny", "--tools", "--session-id", "streaming-json", "bypassPermissions"])
 def test_required_cli_interface_is_checked_before_generation(monkeypatch, tmp_path, missing):
     fake = _install_fake(monkeypatch, FakeProcesses(
         media_stdout="", version="grok 1.0.25", help_output=CLI_HELP.replace(missing, "REMOVED")))
@@ -1176,7 +1198,7 @@ def test_cli_option_mentioned_in_prose_does_not_count(monkeypatch, tmp_path):
     assert not fake.media_calls
 
 
-@pytest.mark.parametrize("option,value", [("--output-format", "streaming-json"), ("--permission-mode", "dontAsk")])
+@pytest.mark.parametrize("option,value", [("--output-format", "streaming-json"), ("--permission-mode", "bypassPermissions")])
 def test_required_values_must_belong_to_their_option(monkeypatch, tmp_path, option, value):
     help_output = CLI_HELP.replace(value, "REMOVED") + f"\n      --unrelated <VALUE>\n          {value}\n"
     fake = _install_fake(monkeypatch, FakeProcesses(media_stdout="", help_output=help_output))
@@ -1355,8 +1377,20 @@ def test_first_last_frame_exact_dispatch(monkeypatch, tmp_path):
     result = _execute_video(inputs)
     assert result.success, result.error
     assert json.loads(fake.prompt_payloads[0].splitlines()[1]) == expected
-    assert "--tools" in fake.media_calls[0][0]
-    assert fake.media_calls[0][0][fake.media_calls[0][0].index("--tools") + 1] == "reference_to_video"
+    argv = fake.media_calls[0][0]
+    assert "--tools" in argv
+    assert argv[argv.index("--tools") + 1] == "reference_to_video"
+    assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
+    deny_values = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--deny"]
+    assert deny_values == [
+        "Bash(*)",
+        "Grep(*)",
+        "WebFetch(*)",
+        "MCPTool(*)",
+    ]
+    assert "Write(*)" not in deny_values
+    assert "Edit(*)" not in deny_values
+    assert "Read(*)" not in deny_values
     assert result.data["cli_version"] == "1.0.34"
 
 
@@ -1432,3 +1466,34 @@ def test_image_to_video_rejects_last_frame_controls(monkeypatch, tmp_path):
     assert result.data["error_category"] == "capability"
     assert "first_last_frame" in result.error
 
+
+
+def test_media_tools_omit_write_edit_and_read_deny_for_sealed_media(tmp_path):
+    from tools._grok_cli_media import _generation_argv
+
+    for operation in ("image_gen", "image_edit", "image_to_video", "reference_to_video"):
+        argv = _generation_argv("grok", tmp_path / "prompt.txt", operation, tmp_path)
+        deny_values = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--deny"]
+        assert deny_values == [
+            "Bash(*)",
+            "Grep(*)",
+            "WebFetch(*)",
+            "MCPTool(*)",
+        ]
+        assert "Read(*)" not in deny_values
+        assert "Edit(*)" not in deny_values
+        assert "Write(*)" not in deny_values
+        assert argv[argv.index("--permission-mode") + 1] == "bypassPermissions"
+
+    argv_unknown = _generation_argv("grok", tmp_path / "prompt.txt", "unknown", tmp_path)
+    deny_values = [argv_unknown[i + 1] for i, arg in enumerate(argv_unknown) if arg == "--deny"]
+    assert deny_values == [
+        "Bash(*)",
+        "Edit(*)",
+        "Write(*)",
+        "Read(*)",
+        "Grep(*)",
+        "WebFetch(*)",
+        "MCPTool(*)",
+    ]
+    assert set(deny_values) == EXPECTED_FULL_DENIES

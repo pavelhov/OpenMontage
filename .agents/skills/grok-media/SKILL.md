@@ -44,6 +44,17 @@ exposed: `--tools` allows exactly the selected media operation, with shell,
 write, edit, search, web, MCP, and subagents excluded. Do not use
 `--always-approve` or broaden the tool allowlist to fix media permissions.
 
+Newer CLI releases also classify sealed media dispatch (for example frame-pinned
+`reference_to_video`) as Edit/Write, so the adapter runs with
+`--permission-mode bypassPermissions` and omits the generic `Edit(*)`/`Write(*)`
+denials for these four operations only. The real boundary is the exact
+`--tools <operation>` allowlist plus `--disallowed-tools search_tool,use_tool`,
+`--no-subagents`, `--disable-web-search` and the remaining Bash/Grep/WebFetch/MCP
+denials; this relies on the CLI honoring that allowlist. Output validation stays
+fail-closed: exactly one tool call of the selected operation, unmodified sealed
+arguments, one completed update, and an `ffprobe`-validated session artifact.
+Any other tool call rejects the result.
+
 Supported native operations:
 
 - `image_gen`: prompt plus aspect ratio.

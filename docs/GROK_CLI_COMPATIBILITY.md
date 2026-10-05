@@ -32,7 +32,7 @@ installations; OpenMontage does not install or retain its own CLI binary.
 Minimum version: **1.0.18**. Numeric release comparison permits newer patch,
 minor, and major releases. A prerelease of the minimum release is too old.
 The adapter checks every option it dispatches plus `streaming-json` and
-`dontAsk` under their respective help entries before generating anything.
+`bypassPermissions` under their respective help entries before generating anything.
 Missing options, old/unparseable versions, and failed/timed-out help checks
 stop before media dispatch. Help establishes interface presence, not a live
 entitlement check or a guarantee of unchanged behavior.

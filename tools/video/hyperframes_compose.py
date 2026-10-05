@@ -922,7 +922,7 @@ class HyperFramesCompose(BaseTool):
                     + "; ".join(runtime_ok["reasons"])
                     + ". Per governance, do not swap runtimes silently."
                 ),
-                data={"runtime_check": runtime_ok},
+                data={"runtime_check": runtime_ok, "dispatch_status":"not_dispatched"},
             )
 
         workspace = self._require_workspace(inputs)
@@ -931,8 +931,18 @@ class HyperFramesCompose(BaseTool):
             return ToolResult(
                 success=False,
                 error=f"No authored index.html in {workspace}.",
+                data={"dispatch_status":"not_dispatched"},
             )
         original_digest = self._file_digest(entry)
+        from lib.production_execution import _ACTIVE, workspace_manifest, _digest
+        governed_local = (_ACTIVE.get() or {}).get('submitted_inputs', {}).get('operation') == 'render_existing'
+        source_manifest = workspace_manifest(workspace) if governed_local else None
+        cli_version = None
+        if governed_local:
+            version_result = self._run_hf(["--version"], cwd=workspace, timeout=30, check=False)
+            cli_version = (version_result.stdout or "").strip()
+            if version_result.returncode != 0 or not re.fullmatch(r"v?\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?", cli_version):
+                return ToolResult(success=False, error="Cannot retain actual HyperFrames CLI version.", data={"dispatch_status":"not_dispatched"})
         output_path = Path(
             inputs.get("output_path") or (workspace / "renders" / "final.mp4")
         ).expanduser().resolve()
@@ -952,7 +962,7 @@ class HyperFramesCompose(BaseTool):
             return ToolResult(
                 success=False,
                 error=f"Quality check failed for authored workspace: {quality_check.error}",
-                data={"steps": steps},
+                data={"steps": steps,"dispatch_status":"not_dispatched"},
             )
 
         _, _, fps = self._resolve_dimensions(
@@ -976,24 +986,33 @@ class HyperFramesCompose(BaseTool):
             return ToolResult(
                 success=False,
                 error=f"hyperframes render exit {proc.returncode}",
-                data={"steps": steps},
+                data={"steps": steps,"dispatch_status":"indeterminate" if proc.returncode == 124 else "failed"},
             )
         if not output_path.is_file():
             return ToolResult(
                 success=False,
                 error=f"HyperFrames exited 0 but output is missing: {output_path}",
-                data={"steps": steps},
+                data={"steps": steps,"dispatch_status":"failed"},
             )
+        if governed_local and workspace_manifest(workspace) != source_manifest:
+            return ToolResult(success=False, error="Authored dependency bytes changed during render_existing.", data={"steps":steps,"dispatch_status":"failed"})
         if self._file_digest(entry) != original_digest:
             return ToolResult(
                 success=False,
                 error="Authored index.html changed during render_existing.",
-                data={"steps": steps},
+                data={"steps": steps,"dispatch_status":"failed"},
             )
 
         return ToolResult(
             success=True,
             data={
+                **({"local_render_receipt": {
+                    "version":"1.0", "tool":self.name, "provider":self.provider,
+                    "adapter_version":self.version, "operation":"render_existing",
+                    "source_manifest":source_manifest, "source_sha256":_digest(source_manifest),
+                    "output":{"path":str(output_path),"sha256":self._file_digest(output_path)},
+                    "render_argv":args, "cli_command":list(proc.args), "cli_version":cli_version,
+                }} if governed_local else {}),
                 "operation": "render_existing",
                 "output": str(output_path),
                 "workspace": str(workspace),

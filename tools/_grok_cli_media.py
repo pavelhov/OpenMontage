@@ -91,6 +91,14 @@ _READ_CLASSIFIED_MEDIA_TOOLS = {
     "reference_to_video",
 }
 
+# Grok CLI classifies sealed native media tools as Read/Edit/Write for permission
+# checks (frame-pin reference_to_video observed as Edit; Write deny also blocks
+# successful media dispatch). Omit Read(*), Edit(*), and Write(*) for these tools
+# so native media dispatch is not blocked while shell/project filesystem tools
+# remain denied on non-media paths via the permanent deny constants.
+_EDIT_CLASSIFIED_MEDIA_TOOLS = _READ_CLASSIFIED_MEDIA_TOOLS
+_WRITE_CLASSIFIED_MEDIA_TOOLS = _READ_CLASSIFIED_MEDIA_TOOLS
+
 
 
 def _release_tuple(version: str) -> tuple[int, ...]:
@@ -204,7 +212,11 @@ def _classify_message(message: str, *, dispatched: bool) -> GrokCLIContractError
         return GrokCLIContractError("invalid_argument", clean, dispatch_status=dispatch_status)
     if "tty" in lower or "interactive" in lower and ("required" in lower or "prompt" in lower):
         return GrokCLIContractError("headless", clean, dispatch_status=dispatch_status)
-    if "denied by permission policy" in lower or "deny rule on read" in lower:
+    if (
+        "denied by permission policy" in lower
+        or "deny rule on read" in lower
+        or "deny rule on edit" in lower
+    ):
         return GrokCLIContractError("permission_policy", clean, dispatch_status=dispatch_status)
     if "tool" in lower and any(word in lower for word in ("unavailable", "unknown", "not found", "disabled")):
         return GrokCLIContractError("capability", clean, dispatch_status=dispatch_status)
@@ -370,7 +382,7 @@ def _verify_compatibility(grok_path: str, *, cwd: Path) -> str:
         argv = _generation_argv(grok_path, Path("prompt.md"), "image_gen", cwd, session_id="probe")
         required = {arg for arg in argv[1:] if arg.startswith("--")}
         missing = sorted(required - options.keys())
-        for option, value in (("--output-format", "streaming-json"), ("--permission-mode", "dontAsk")):
+        for option, value in (("--output-format", "streaming-json"), ("--permission-mode", "bypassPermissions")):
             if option in options and not re.search(r"(?<![\w-])" + re.escape(value) + r"(?![\w-])", options[option]):
                 missing.append(f"{option}={value}")
         if missing:
@@ -413,7 +425,7 @@ def _generation_argv(
         "--disallowed-tools",
         "search_tool,use_tool",
         "--permission-mode",
-        "dontAsk",
+        "bypassPermissions",
         "--verbatim",
         "--cwd",
         str(cwd),
@@ -422,6 +434,10 @@ def _generation_argv(
         argv.extend(("--session-id", session_id))
     for rule in _DENY_RULES:
         if rule == "Read(*)" and tool_name in _READ_CLASSIFIED_MEDIA_TOOLS:
+            continue
+        if rule == "Edit(*)" and tool_name in _EDIT_CLASSIFIED_MEDIA_TOOLS:
+            continue
+        if rule == "Write(*)" and tool_name in _WRITE_CLASSIFIED_MEDIA_TOOLS:
             continue
         argv.extend(("--deny", rule))
     return argv

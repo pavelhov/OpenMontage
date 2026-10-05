@@ -35,7 +35,7 @@ INPUT_PATH_KEYS = {'image', 'image_path', 'image_paths', 'reference_image_path',
                    'reference_video_paths', 'end_image_path', 'image_url', 'reference_image_url',
                    'last_image_url', 'end_image_url', 'video_url', 'reference_video_url',
                    'reference_image_urls', 'reference_audio_urls', 'reference_video_urls',
-                   'reference_images', 'reference_videos', 'reference_audios', 'url'}
+                   'reference_images', 'reference_videos', 'reference_audios', 'url', 'workspace_path'}
 # Native media inputs exposed by the October provider refresh (SchemaMedia/FalMedia
 # contracts). They must be hashed/frozen like the canonical keys and URL forms must
 # fail closed. Boolean controls such as ``audio``/``generate_audio`` are not assets.
@@ -155,6 +155,8 @@ def _kind(tool, inputs):
     # Rank/inspection does not dispatch media. Caller phase never determines kind.
     if inputs.get('operation') == 'rank' and tool.provider == 'selector':
         return None
+    if tool.name == 'hyperframes_compose' and tool.provider == 'hyperframes' and inputs.get('operation') in {'render_existing', 'render'}:
+        return 'local_render'
     capability = getattr(tool, 'capability', '')
     if capability == 'video_generation':
         return 'motion'
@@ -191,7 +193,7 @@ def _paths(inputs, root, visitor, *, allow_upstream=False):
             if not isinstance(value, str) or '://' in value:
                 _fail(f'{key}: strict production needs a local immutable asset')
             path = _inside(value, root)
-            if not path.is_file():
+            if not (path.is_dir() if key == 'workspace_path' else path.is_file()):
                 _fail(f'{key}: missing input asset {path}')
             return visitor(key, path)
         if isinstance(value, dict):
@@ -202,6 +204,157 @@ def _paths(inputs, root, visitor, *, allow_upstream=False):
     return walk(inputs)
 
 
+def workspace_manifest(path):
+    """Closed authored tree: every regular dependency byte, no symlink aliases."""
+    path = Path(path)
+    if not path.is_dir() or not (path / 'index.html').is_file():
+        _fail('local render requires an authored workspace with index.html')
+    records = []
+    for child in sorted(path.rglob('*')):
+        if child.is_symlink():
+            _fail('authored workspace cannot contain symlinks')
+        if child.is_file():
+            records.append({'path':child.relative_to(path).as_posix(), 'sha256':file_sha256(child)})
+    return records
+
+
+def validate_workspace_dependencies(path):
+    """Bind normal static HTML/CSS/module resources; not a JavaScript sandbox."""
+    import re
+    from html.parser import HTMLParser
+    from urllib.parse import unquote, urlsplit
+    path = Path(path).resolve()
+    workspace_manifest(path)
+
+    def local_reference(ref, source):
+        ref = ref.strip()
+        if ref.startswith('#'):
+            return
+        parsed = urlsplit(ref)
+        if (not ref or parsed.scheme or parsed.netloc or ref.startswith(('/', '\\'))
+                or '\\' in ref or any(ord(char) < 32 for char in ref)):
+            _fail('authored workspace dependency must be a retained relative local file: ' + ref)
+        resolved = (source.parent / unquote(parsed.path)).resolve()
+        if not resolved.is_relative_to(path) or not resolved.is_file():
+            _fail('authored workspace dependency missing or escapes retained tree: ' + ref)
+
+    def css_references(text, source):
+        # Decode CSS escapes before recognizing url()/@import, including escaped
+        # identifiers and schemes. Comments cannot divide a CSS identifier.
+        text = re.sub(r'/\*.*?\*/', '', text, flags=re.S)
+        def unescape(match):
+            value = match.group(1)
+            if re.fullmatch(r'[0-9a-fA-F]{1,6}\s?', value):
+                code = int(value.strip(), 16)
+                return chr(code) if 0 < code <= 0x10ffff else '\ufffd'
+            return value
+        text = re.sub(r'\\([0-9a-fA-F]{1,6}\s?|[^\r\n])', unescape, text)
+        refs = re.findall(r'url\(\s*(?:"([^"\n]*)"|\'([^\'\n]*)\'|([^\s)]+))\s*\)', text, re.I)
+        refs += re.findall(r'@import\s+(?:"([^"\n]*)"|\'([^\'\n]*)\')', text, re.I)
+        for contents in re.findall(r'(?:-webkit-)?image-set\(([^)]*)\)', text, re.I):
+            refs += re.findall(r'"([^"\n]*)"|\'([^\'\n]*)\'', contents)
+        for match in refs:
+            local_reference(next(part for part in match if part), source)
+
+    def module_references(text, source):
+        for ref in re.findall(r'\b(?:import|from)\s*["\']([^"\']+)["\']', text):
+            local_reference(ref, source)
+
+    class Resources(HTMLParser):
+        def __init__(self, source):
+            super().__init__(convert_charrefs=True)
+            self.source = source
+            self.in_style = False
+            self.in_script = False
+
+        def handle_starttag(self, tag, attrs):
+            values = dict(attrs)
+            if tag == 'base' or (tag == 'meta' and values.get('http-equiv', '').lower() == 'refresh'):
+                _fail('authored workspace cannot change resource base or redirect')
+            if tag in {'animate','set'} and values.get('attributename','').lower() in {'href','xlink:href','src'}:
+                for name in ('to','from','values'):
+                    for ref in values.get(name,'').split(';'):
+                        if ref: local_reference(ref, self.source)
+            self.in_style = tag == 'style' or self.in_style
+            self.in_script = tag == 'script' or self.in_script
+            for name, value in attrs:
+                if value is None:
+                    continue
+                if name in {'src','href','xlink:href','poster','background','data','codebase','manifest'}:
+                    local_reference(value, self.source)
+                elif name in {'srcset','imagesrcset'}:
+                    for candidate in value.split(','):
+                        fields = candidate.strip().split()
+                        if not fields:
+                            _fail('empty authored srcset candidate')
+                        local_reference(fields[0], self.source)
+                elif name == 'srcdoc':
+                    Resources(self.source).feed(value)
+                elif name in {'style','filter','fill','stroke','mask','clip-path',
+                              'marker','marker-start','marker-mid','marker-end','cursor'}:
+                    css_references(value, self.source)
+
+        handle_startendtag = handle_starttag
+
+        def handle_endtag(self, tag):
+            if tag == 'style':
+                self.in_style = False
+            if tag == 'script':
+                self.in_script = False
+
+        def handle_data(self, text):
+            if self.in_style:
+                css_references(text, self.source)
+            if self.in_script:
+                module_references(text, self.source)
+
+    for child in path.rglob('*'):
+        if not child.is_file() or child.suffix.lower() not in {'.html','.htm','.css','.js','.mjs','.svg'}:
+            continue
+        text = child.read_text(encoding='utf-8')
+        if re.search(r'\b(?:fetch|XMLHttpRequest|WebSocket|importScripts)\s*\(|\bimport\s*\(', text):
+            _fail('authored workspace cannot load dynamic external dependencies')
+        if child.suffix.lower() in {'.html','.htm','.svg'}:
+            parser = Resources(child)
+            parser.feed(text)
+            parser.close()
+        elif child.suffix.lower() == '.css':
+            css_references(text, child)
+        else:
+            module_references(text, child)
+
+
+def _input_sha256(path):
+    return _digest(workspace_manifest(path)) if Path(path).is_dir() else file_sha256(path)
+
+
+def _check_provisioned_local_runtime():
+    from tools.video.hyperframes_compose import HyperFramesCompose
+    command = HyperFramesCompose._cli_command()
+    if (len(command) != 1 or Path(command[0]).name.lower() not in {'hyperframes','hyperframes.cmd'}
+            or not Path(command[0]).is_absolute() or not Path(command[0]).is_file()):
+        _fail('strict local render requires a provisioned HyperFrames executable; npx install is not authorized')
+
+
+def _check_local_render_inputs(contract, shot_id, inputs, root):
+    shot = next(item for item in contract['shots'] if item['id'] == shot_id)
+    if inputs.get('operation') != 'render_existing' or inputs.get('strict_check') is not True or inputs.get('skip_contrast'):
+        _fail('local render requires render_existing and complete strict checks')
+    if inputs.get('duration') != shot['duration_seconds']:
+        _fail('submitted duration differs from shot contract')
+    workspace = _inside(inputs.get('workspace_path', ''), root)
+    manifest = workspace_manifest(workspace)
+    validate_workspace_dependencies(workspace)
+    if set(inputs) - {'operation','workspace_path','output_path','duration','fps','quality','profile','strict_check','skip_contrast','snapshots'}:
+        _fail('unsupported local render controls')
+    if _inside(inputs['output_path'], root).is_relative_to(workspace):
+        _fail('local render output must be outside authored workspace')
+    hashes = {item['sha256'] for item in manifest}
+    assets = {item['id']:item for item in contract['assets']}
+    if any(assets[aid]['sha256'] not in hashes for aid in shot['asset_ids']):
+        _fail('authored workspace omits an approved shot asset')
+
+
 def planned_request_digest(inputs, *, project_dir):
     """Bind exact prompt, route controls, output and current input bytes for approval."""
     root = Path(project_dir).resolve()
@@ -210,7 +363,7 @@ def planned_request_digest(inputs, *, project_dir):
         _fail('cli_session_id is reserved by governance')
     if cleaned.get('output_path'):
         cleaned['output_path'] = str(_inside(cleaned['output_path'], root))
-    bound = _paths(cleaned, root, lambda key, path: {'path': str(path), 'sha256': file_sha256(path)})
+    bound = _paths(cleaned, root, lambda key, path: {'path': str(path), 'sha256': _input_sha256(path)})
     return _digest(bound)
 
 
@@ -247,7 +400,7 @@ def planned_request_template(inputs, *, project_dir):
         cleaned['output_path'] = str(_inside(cleaned['output_path'], root))
     assets = []
     def bind(key, path):
-        assets.append({'role':key, 'path':str(path), 'sha256':file_sha256(path)})
+        assets.append({'role':key, 'path':str(path), 'sha256':_input_sha256(path)})
         return str(path)
     cleaned = _paths(cleaned, root, bind, allow_upstream=True)
     return {'inputs':cleaned, 'static_input_assets':assets}
@@ -345,7 +498,7 @@ def _check_motion_inputs(contract, shot_id, inputs, root):
     shot = next(item for item in contract['shots'] if item['id'] == shot_id)
     assets = {item['id']: item for item in contract['assets']}
     actual = []
-    _paths(inputs, root, lambda key, path: actual.append((key, file_sha256(path))) or str(path))
+    _paths(inputs, root, lambda key, path: actual.append((key, _input_sha256(path))) or str(path))
     role_keys = {'start_frame': {'first_frame','image_path','reference_image_path'},
                  'end_frame': {'last_frame','last_image_path'},
                  'identity_reference': {'reference_image_paths','images'}}
@@ -434,7 +587,7 @@ def preflight(tool, inputs):
     if output.exists():
         _fail('output already exists; reconcile the original attempt instead of file-size reuse')
     contract = None
-    if kind == 'motion':
+    if kind in {'motion','local_render'}:
         contract = _read(_artifact_path(root, 'shot_contract.json'))
         if contract.get('project_id') != marker.get('project_id'):
             _fail('shot contract project mismatch')
@@ -444,7 +597,9 @@ def preflight(tool, inputs):
             _fail('; '.join(checked['errors']))
         if scope.get('approval_plan_sha256') != approval_plan_digest(contract):
             _fail('approval scope has a stale contract binding')
-        _check_motion_inputs(contract, shot_id, _clean(inputs), root)
+        if kind == 'local_render':
+            _check_provisioned_local_runtime()
+        (_check_local_render_inputs if kind == 'local_render' else _check_motion_inputs)(contract, shot_id, _clean(inputs), root)
     allowance = scope.get('attempts_per_shot', {}).get(shot_id)
     if isinstance(allowance, bool) or not isinstance(allowance, int) or allowance < 1:
         _fail('scope lacks a positive exact shot allowance')
@@ -583,19 +738,25 @@ def execute_governed(tool, inputs, invoke):
         (directory / 'inputs').mkdir(parents=True)
         asset_records = []
         def snapshot(key, path):
-            digest = file_sha256(path)
+            digest = _input_sha256(path)
             target = directory / 'inputs' / (digest + path.suffix)
             if not target.exists():
-                target.write_bytes(path.read_bytes())
-                target.chmod(0o444)
-            if file_sha256(target) != digest:
+                if path.is_dir():
+                    import shutil
+                    shutil.copytree(path, target)
+                    for child in target.rglob('*'):
+                        if child.is_file(): child.chmod(0o444)
+                else:
+                    target.write_bytes(path.read_bytes())
+                    target.chmod(0o444)
+            if _input_sha256(target) != digest:
                 _fail('input changed while snapshotting')
             asset_records.append({'role':key, 'original_path':str(path), 'path':str(target), 'sha256':digest})
             return str(target)
         submitted = _paths(_clean(inputs), root, snapshot)
         submitted['output_path'] = str(_inside(inputs['output_path'], root))
         if checked['contract']:
-            _check_motion_inputs(checked['contract'], checked['shot_id'], submitted, root)
+            (_check_local_render_inputs if checked['kind'] == 'local_render' else _check_motion_inputs)(checked['contract'], checked['shot_id'], submitted, root)
         # Rebind actual submitted snapshot bytes to ORIGINAL approved locations.
         # Rereading original files alone is insufficient if they changed then reverted.
         bindings = iter(asset_records)
@@ -603,7 +764,7 @@ def execute_governed(tool, inputs, invoke):
             record = next(bindings)
             if record['role'] != key or record['path'] != str(path):
                 _fail('snapshot occurrence differs from approved input layout')
-            return {'path':record['original_path'],'sha256':file_sha256(path)}
+            return {'path':record['original_path'],'sha256':_input_sha256(path)}
         snapshot_request = _paths(submitted, root, snapshot_binding)
         if _digest(snapshot_request) != checked['request_sha256']:
             _fail('input changed during reservation')
@@ -612,7 +773,7 @@ def execute_governed(tool, inputs, invoke):
         request = {'version':'1.0', 'attempt_id':session_id, 'cli_session_id':session_id,
             'project_id':checked['marker']['project_id'], 'story_revision':checked['marker']['story_revision'],
             'shot_id':checked['shot_id'], 'scope_id':scope['id'], 'phase':scope['phase'],
-            'media_kind':checked['kind'], 'scope_attempt_index':checked['scope_attempt_index'],
+            'media_kind':checked['kind'], 'tool_name':tool.name, 'scope_attempt_index':checked['scope_attempt_index'],
             'approval_evidence':{'path':str(directory / ('approval-evidence' + Path(scope['evidence']['path']).suffix)),
                                  'sha256':scope['evidence']['sha256']},
             'request_sha256':checked['request_sha256'], 'contract_sha256':contract_digest(checked['contract']) if checked['contract'] else None,
@@ -778,6 +939,83 @@ def reconcile_attempt(project_dir, attempt_id, result, *, request_sha256):
         return record
 
 
+def reconcile_veo_invalid_key_rejection(project_dir, attempt_id, *, request_sha256):
+    """Close a journaled Veo API-key rejection without reissuing the provider call.
+
+    This only recognizes the provider's explicit API_KEY_INVALID 400 response.
+    Other adapter errors remain uncertain and require their own evidence path.
+    """
+    root = Path(project_dir).resolve()
+    directory = _inside(Path('production_attempts') / attempt_id, root)
+    with _lock(root):
+        request = _read(directory / 'request.json')
+        if request['attempt_id'] != attempt_id or request['request_sha256'] != request_sha256:
+            _fail('invalid-key reconciliation does not match original attempt/request')
+        if request['scope']['provider'] != 'veo' or _state(root, request)['status'] != 'uncertain':
+            _fail('invalid-key reconciliation requires an uncertain Veo attempt')
+        recorded = _read(directory / 'result.json')
+        raw = _read(directory / 'raw_result.json')
+        result = recorded.get('result')
+        error = result.get('error', '') if isinstance(result, dict) else ''
+        if (result != raw or result.get('success') is not False
+                or result.get('data') != {} or result.get('artifacts') != []
+                or result.get('cost_usd') != 0.0 or result.get('duration_seconds') != 0.0
+                or recorded.get('output') is not None or recorded.get('preserved_output') is not None
+                or recorded.get('exception') is not None
+                or '400 INVALID_ARGUMENT' not in error or "'reason': 'API_KEY_INVALID'" not in error):
+            _fail('journal lacks an authoritative zero-output API_KEY_INVALID rejection')
+        output = Path(request['submitted_inputs']['output_path'])
+        if output.exists() or any(directory.glob('output.*')):
+            _fail('invalid-key rejection conflicts with an output artifact')
+        record = {'status':'failed','result':result,'output':None,'preserved_output':None,
+                  'reconciliation_evidence':{'kind':'veo_api_key_invalid_400',
+                     'original_request_sha256':request_sha256,
+                     'original_result_sha256':file_sha256(directory / 'result.json'),
+                     'original_raw_result_sha256':file_sha256(directory / 'raw_result.json')}}
+        _write_new(directory / 'reconciliation.json', record)
+        return record
+
+
+def reconcile_veo_unsupported_audio_flag_rejection(project_dir, attempt_id, *, request_sha256):
+    """Close a zero-output Developer API rejection of generate_audio=True.
+
+    The provider rejected the request before a media job existed. This is an
+    evidence-only journal correction; it never submits or retries generation.
+    """
+    root = Path(project_dir).resolve()
+    directory = _inside(Path('production_attempts') / attempt_id, root)
+    with _lock(root):
+        request = _read(directory / 'request.json')
+        if request['attempt_id'] != attempt_id or request['request_sha256'] != request_sha256:
+            _fail('unsupported-audio reconciliation does not match original attempt/request')
+        if request['scope']['provider'] != 'veo' or _state(root, request)['status'] != 'uncertain':
+            _fail('unsupported-audio reconciliation requires an uncertain Veo attempt')
+        if request['submitted_inputs'].get('generate_audio') is not True:
+            _fail('original Veo request did not submit generate_audio=True')
+        recorded = _read(directory / 'result.json')
+        raw = _read(directory / 'raw_result.json')
+        result = recorded.get('result')
+        error = result.get('error', '') if isinstance(result, dict) else ''
+        if (result != raw or result.get('success') is not False
+                or result.get('data') != {} or result.get('artifacts') != []
+                or result.get('cost_usd') != 0.0 or result.get('duration_seconds') != 0.0
+                or recorded.get('output') is not None or recorded.get('preserved_output') is not None
+                or recorded.get('exception') is not None
+                or 'generate_audio parameter is only supported in Gemini Enterprise Agent Platform mode' not in error
+                or 'not in Gemini Developer API mode' not in error):
+            _fail('journal lacks an authoritative zero-output unsupported-audio rejection')
+        output = Path(request['submitted_inputs']['output_path'])
+        if output.exists() or any(directory.glob('output.*')):
+            _fail('unsupported-audio rejection conflicts with an output artifact')
+        record = {'status':'failed','result':result,'output':None,'preserved_output':None,
+                  'reconciliation_evidence':{'kind':'veo_generate_audio_unsupported_developer_api',
+                     'original_request_sha256':request_sha256,
+                     'original_result_sha256':file_sha256(directory / 'result.json'),
+                     'original_raw_result_sha256':file_sha256(directory / 'raw_result.json')}}
+        _write_new(directory / 'reconciliation.json', record)
+        return record
+
+
 def load_shot_contract(project_dir):
     return _read(_artifact_path(Path(project_dir).resolve(), 'shot_contract.json'))
 
@@ -788,13 +1026,93 @@ def load_attempt_result(project_dir, attempt_id):
     return _state(root, _read(directory / 'request.json'))
 
 
+def record_derived_edit(project_dir, record):
+    """Retain an explicitly approved local edit without altering native journals.
+
+    The caller supplies exact recipe, execution and sampling receipts plus root
+    approval. This publishes provenance only, never a passing semantic review.
+    """
+    import shutil
+    from lib.production_provenance import validate_derived_edit
+    root = Path(project_dir).resolve()
+    with _lock(root):
+        digest = record.get('output', {}).get('sha256')
+        import re
+        if not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest):
+            _fail('derived edit requires exact output hash')
+        directory = root / 'production_derived_edits' / digest
+        path = directory / 'record.json'
+        source = _inside(record['output']['path'], root)
+        preserved = _inside(record['preserved_output']['path'], root)
+        if preserved != directory / 'output.mp4' or source == preserved or source.is_relative_to(root / 'production_attempts'):
+            _fail('derived edit needs separate preserved bytes outside native attempts')
+        if file_sha256(source) != digest or record['preserved_output']['sha256'] != digest:
+            _fail('derived edit bytes differ from exact binding')
+        directory.mkdir(parents=True, exist_ok=True)
+        if not preserved.exists():
+            with source.open('rb') as incoming, preserved.open('xb') as retained:
+                shutil.copyfileobj(incoming, retained)
+            preserved.chmod(0o444)
+        checked = validate_derived_edit(root, path, attempt_id=record['parent_attempt_id'],
+            shot_id=record['shot_id'], story_revision=record['story_revision'],
+            expected_output=record['output'], record=record)
+        if path.exists():
+            if _read(path) != record:
+                _fail('immutable derived record already exists with different evidence')
+        else:
+            _write_new(path, record)
+        return checked
+
+
+def sample_local_render_outgoing(project_dir, attempt_id):
+    """Run the registered sampler on the exact retained clip's final frame.
+
+    Writes one immutable actual invocation/result receipt; never supplies review.
+    """
+    from tools.tool_registry import registry
+    root = Path(project_dir).resolve()
+    directory = _inside(Path('production_attempts') / attempt_id, root)
+    with _lock(root):
+        request = _read(directory / 'request.json')
+        state = load_attempt_result(root, attempt_id)
+        if request.get('media_kind') != 'local_render' or state.get('status') != 'generated':
+            _fail('outgoing sampling requires a completed local render')
+        output = state['output']
+        if file_sha256(_inside(output['path'],root)) != output['sha256']:
+            _fail('local render bytes changed before outgoing sampling')
+        receipt_path = directory / 'outgoing_sampling.json'
+        if receipt_path.exists():
+            _fail('outgoing sampling already recorded')
+        data = state['result']['data']
+        duration = request['submitted_inputs']['duration']
+        timestamp = duration - 1 / data['fps']
+        inputs = {'input_path':output['path'],'strategy':'timestamps','timestamps':[timestamp],
+                  'format':'png','output_dir':str(directory / 'outgoing_frames')}
+        registry.discover()
+        sampler = registry.get('frame_sampler')
+        if sampler is None or sampler.provider != 'ffmpeg':
+            _fail('registered frame sampler unavailable')
+        result = sampler.execute(inputs)
+        frame = None
+        if result.success and len(result.data.get('frames', [])) == 1:
+            path = _inside(result.data['frames'][0]['path'],root)
+            frame = {'path':str(path),'sha256':file_sha256(path)}
+        receipt = {'version':'1.0','tool':sampler.name,'provider':sampler.provider,
+                   'input':output,'submitted_inputs':inputs,'tool_result':asdict(result),'outgoing_frame':frame}
+        _write_new(receipt_path,receipt)
+        if frame is None:
+            _fail('actual outgoing sampler failed; retained receipt requires investigation')
+        Path(frame['path']).chmod(0o444)
+        return frame
+
+
 def record_selection(project_dir, shot_id, selection):
     """Publish a reviewer-authored selection after factual provenance checks.
 
     The passed review supplies semantic judgment; this helper only validates its
     binding and current evidence. Each superseding selection remains in history.
     """
-    from lib.shot_contract import selection_digest, UPSTREAM_PREDICATES
+    from lib.shot_contract import selection_digest, UPSTREAM_PREDICATES, provisional_audio_review
     from schemas.artifacts import load_schema
     from jsonschema import Draft202012Validator
     import os
@@ -812,8 +1130,15 @@ def record_selection(project_dir, shot_id, selection):
         request, result = validated['request'], validated['result']
         if request['shot_id'] != shot_id or request['project_id'] != marker['project_id'] or request['story_revision'] != marker['story_revision']:
             _fail('selection does not match current project/story/shot')
-        if result['status'] != 'generated' or selection.get('output') != result.get('output'):
+        selected_output = validated.get('selected_output', result.get('output'))
+        if result['status'] != 'generated' or selection.get('output') != selected_output:
             _fail('selection lacks exact generated output provenance')
+        if request.get('media_kind') == 'local_render' and not validated.get('local_render_outgoing'):
+            _fail('local render selection requires actual outgoing sampling')
+        if validated.get('local_render_outgoing') and selection.get('outgoing_frame') != validated['local_render_outgoing']:
+            _fail('selection outgoing frame differs from actual local render sampling')
+        if validated.get('derived_edit') and selection.get('outgoing_frame') != validated['selected_outgoing_frame']:
+            _fail('selection outgoing frame differs from approved derived edit')
         for role in ('output','outgoing_frame'):
             record = selection.get(role, {})
             if not record.get('path') or file_sha256(_inside(record['path'],root)) != record.get('sha256'):
@@ -823,10 +1148,14 @@ def record_selection(project_dir, shot_id, selection):
         failures = list(Draft202012Validator({'$defs':schema['$defs'],'$ref':'#/$defs/review'}).iter_errors(review))
         if failures:
             _fail('selection requires a valid named review: ' + failures[0].message)
-        if review['status'] != 'pass' or review['subject_sha256'] != selection_digest(selection) or review['story_revision'] != marker['story_revision']:
+        provisional = provisional_audio_review(review, root)
+        if (review['status'] != 'pass' and not provisional) or review['subject_sha256'] != selection_digest(selection) or review['story_revision'] != marker['story_revision']:
             _fail('selection review is failed or stale')
         predicates = {item['name']:item for item in review['predicates']}
-        if not UPSTREAM_PREDICATES.issubset(predicates) or any(item['status'] != 'pass' for item in predicates.values() if item.get('severity','critical') == 'critical' or item['name'] in UPSTREAM_PREDICATES):
+        if (len(predicates) != len(review['predicates']) or not UPSTREAM_PREDICATES.issubset(predicates)
+                or any(item.get('severity') == 'cosmetic' for name, item in predicates.items() if name in UPSTREAM_PREDICATES)
+                or any(item['status'] != 'pass' and not (provisional and name == 'speaker_source' and item['status'] == 'unknown')
+                       for name, item in predicates.items() if item.get('severity','critical') == 'critical' or name in UPSTREAM_PREDICATES)):
             _fail('selection has missing/failed critical predicates')
         selected = load_selected_attempts(root)
         selected[shot_id] = copy.deepcopy(selection)
