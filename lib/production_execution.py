@@ -518,9 +518,60 @@ def _check_motion_inputs(contract, shot_id, inputs, root):
         _fail('submitted duration differs from shot contract')
 
 
+# U3 installs a pure compiled-request validator; no transport/ledger work here.
+_OPENART_COMPILED_REQUEST_CHECK = None
+
+
+def _is_openart(tool):
+    return getattr(tool, 'provider', None) == 'openart_cli'
+
+
+def _openart_controls(inputs):
+    controls = _clean(inputs)
+    for key in ('preferred_tool','hosting_provider','preferred_provider','preferred_provider_gap',
+                'allowed_providers','task_context','target_operation'):
+        controls.pop(key, None)
+    return controls
+
+
+def _openart_prepare(inputs):
+    from lib import openart_jobs as jobs
+    profile = jobs.load_qualification(model=inputs.get('model'), mode=inputs.get('mode'))
+    native = jobs.prepare_native_request(_openart_controls(inputs), profile)
+    if _OPENART_COMPILED_REQUEST_CHECK is None:
+        _fail('OpenArt compiled-request preparation validator is not installed (U3)')
+    _OPENART_COMPILED_REQUEST_CHECK(inputs, native, profile)
+    return profile, native
+
+
+def active_openart_dispatch(inputs):
+    """Adapter entry cannot accept caller-supplied reservation/context authority."""
+    from lib import openart_jobs as jobs
+    active = _ACTIVE.get()
+    if not active or active['provider'] != 'openart_cli' or not active.get('openart_binding'):
+        _fail('OpenArt requires strict active governed dispatch and ledger reservation')
+    native = jobs.native_request(_openart_controls(inputs), active['openart_profile'],
+                                 dry_run=active['openart_native'].get('dry_run'))
+    if native != active['openart_native'] or _openart_controls(inputs) != _openart_controls(active['submitted_inputs']):
+        _fail('OpenArt native request differs from frozen approved dispatch')
+    reservation = jobs.get_active_reservation(active['root'], active['session_id'],
+                                              active['openart_binding']['request_sha256'])
+    if reservation['reservation_id'] != active['openart_binding']['reservation_id']:
+        _fail('OpenArt reservation changed')
+    return active
+
+
 def preflight(tool, inputs):
     """Perform the same factual checks used by dispatch, without writing or calling."""
     kind = _kind(tool, inputs)
+    if _is_openart(tool) or (tool.provider == 'selector' and inputs.get('preferred_provider') == 'openart_cli'):
+        root = discover_project(inputs)
+        if root is None or _read(root / 'project.json').get('governance', {}).get('mode') != 'strict':
+            _fail('OpenArt requires strict enrollment and a governed attempt')
+        if kind != 'motion':
+            _fail('OpenArt requires strict video-generation dispatch')
+        if tool.name not in {'openart_cli_video', 'video_selector'}:
+            _fail('OpenArt requires canonical video adapter')
     if kind is None:
         return {'governed': False, 'label': 'ungoverned_diagnostic'}
     root = discover_project(inputs)
@@ -571,6 +622,8 @@ def preflight(tool, inputs):
         _fail('provider differs from approved locked route')
     if tool.provider == 'selector' and inputs.get('preferred_provider') != provider:
         _fail('selector requires the exact approved preferred_provider')
+    if provider == 'openart_cli' and tool.provider == 'selector' and inputs.get('allowed_providers') != ['openart_cli']:
+        _fail('OpenArt selector requires singleton exact allowed_providers')
     attempts = _attempts(root)
     scope_used = sum(item['scope_id'] == scope_id and item['shot_id'] == shot_id for item in attempts)
     approved_request = scope.get('requests', {}).get(shot_id)
@@ -578,6 +631,8 @@ def preflight(tool, inputs):
         if scope_used >= len(approved_request):
             _fail('approved request batch exhausted')
         approved_request = approved_request[scope_used]
+    if provider == 'openart_cli' and not isinstance(approved_request, str):
+        _fail('OpenArt U2 requires fixed exact request digest; compiled templates await U3')
     digest = planned_request_digest(inputs, project_dir=root)
     if _approved_request(approved_request, root) != digest:
         _fail('request differs from the exact approved request')
@@ -619,7 +674,8 @@ def preflight(tool, inputs):
         _fail('approved attempt allowance exhausted')
     if any(_inside(item.get('submitted_inputs', {}).get('output_path', ''), root) == output for item in attempts):
         _fail('output path already reserved; reconcile the original attempt')
-    return {'governed': True, 'root': root, 'marker': marker, 'scope': scope,
+    openart = _openart_prepare(inputs) if _is_openart(tool) or provider == 'openart_cli' else None
+    return {'openart':openart, 'governed': True, 'root': root, 'marker': marker, 'scope': scope,
             'shot_id': shot_id, 'kind': kind, 'contract': contract, 'request_sha256': digest,
             'scope_attempt_index':scope_used}
 
@@ -693,15 +749,22 @@ def _save_result(directory, result=None, error=None):
         target = directory / ('output' + output_path.suffix)
         _preserve_output(output_path, target, output['sha256'])
         preserved = {'path':str(target),'sha256':output['sha256']}
+    public_error = repr(error) if error is not None else None
+    if request.get('openart') and error is not None:
+        public_error = 'OpenArt execution error: ' + str(getattr(error, 'kind', type(error).__name__))
     record = {'preserved_output':preserved,'status': status, 'result': asdict(result) if result is not None else None,
-              'output': output, 'exception': repr(error) if error is not None else None}
+              'output': output, 'exception': public_error}
     _write_new(directory / 'result.json', record)
     return record
 
 
 def execute_governed(tool, inputs, invoke):
     """Invoke exactly once after durable reservation; nesting cannot reserve/fallback."""
-    if not isinstance(inputs, dict) or _kind(tool, inputs) is None:
+    if not isinstance(inputs, dict):
+        if _is_openart(tool): _fail('OpenArt requires strict request object')
+        return invoke(inputs)
+    if _kind(tool, inputs) is None:
+        if _is_openart(tool): preflight(tool, inputs)
         return invoke(inputs)
     active = _ACTIVE.get()
     if active:
@@ -723,7 +786,15 @@ def execute_governed(tool, inputs, invoke):
                 expected = int(expected)
             if expected is not None and actual != expected:
                 _fail('nested dispatch changed approved control: ' + key)
-        _write_new(active['directory'] / 'provider_request.json', cleaned)
+        if active['provider'] == 'openart_cli':
+            from lib import openart_jobs as jobs
+            if jobs.native_request(_openart_controls(cleaned), active['openart_profile'],
+                                   dry_run=active['openart_native'].get('dry_run')) != active['openart_native']:
+                _fail('nested OpenArt dispatch changed frozen native request')
+            if _openart_controls(cleaned) != _openart_controls(active['submitted_inputs']):
+                _fail('nested OpenArt dispatch changed frozen provider inputs')
+        else:
+            _write_new(active['directory'] / 'provider_request.json', cleaned)
         result = invoke(cleaned)
         _write_new(active['directory'] / 'provider_result.json', asdict(result))
         return result
@@ -734,6 +805,15 @@ def execute_governed(tool, inputs, invoke):
     with _lock(root):
         checked = preflight(tool, inputs)  # allowance and source hashes rechecked under lock
         session_id = str(uuid.uuid4())
+        openart_binding = None
+        if checked.get('openart'):
+            from lib import openart_jobs as jobs
+            profile, native = checked['openart']
+            reservation = jobs.get_active_reservation(root, session_id, checked['request_sha256'])
+            openart_binding = {'attempt_id':session_id, 'request_sha256':checked['request_sha256'],
+                               'reservation_id':reservation['reservation_id'],
+                               **{key:native[key] for key in ('native_controls_sha256', 'native_argv_sha256',
+                                  'profile_sha256', 'account_id_sha256', 'native_body_sha256')}}
         directory = root / 'production_attempts' / session_id
         (directory / 'inputs').mkdir(parents=True)
         asset_records = []
@@ -778,6 +858,14 @@ def execute_governed(tool, inputs, invoke):
                                  'sha256':scope['evidence']['sha256']},
             'request_sha256':checked['request_sha256'], 'contract_sha256':contract_digest(checked['contract']) if checked['contract'] else None,
             'scope':scope, 'submitted_inputs':submitted, 'input_assets':asset_records}
+        if openart_binding:
+            native = jobs.native_request(_openart_controls(submitted), profile, dry_run=checked['openart'][1].get('dry_run'))
+            if native != checked['openart'][1]:
+                _fail('OpenArt native request changed during snapshotting')
+            frozen = jobs.freeze_request(session_id, submitted, native, profile)
+            openart_binding['snapshot_sha256'] = frozen['snapshot_sha256']
+            request['openart'] = {'binding':openart_binding, 'snapshot':frozen}
+            request['submitted_inputs'] = _openart_public_inputs(submitted)
         _write_new(directory / 'request.json', request)
         evidence_path = _inside(scope['evidence']['path'], root)
         evidence_copy = directory / ('approval-evidence' + evidence_path.suffix)
@@ -791,6 +879,8 @@ def execute_governed(tool, inputs, invoke):
     active = {'provider':scope['provider'], 'provider_called':tool.provider != 'selector',
         'session_id':session_id,'root':root,'directory':directory,'submitted_inputs':submitted,
         'snapshot_paths':{item['path'] for item in asset_records}, 'contract':checked['contract'],'shot_id':checked['shot_id']}
+    if openart_binding:
+        active.update(openart_binding=openart_binding, openart_profile=profile, openart_native=native)
     token = _ACTIVE.set(active)
     try:
         result = invoke(submitted)
@@ -881,6 +971,8 @@ def reconcile_attempt(project_dir, attempt_id, result, *, request_sha256):
     directory = _inside(Path('production_attempts') / attempt_id, root)
     with _lock(root):
         request = _read(directory / 'request.json')
+        if request['scope']['provider'] == 'openart_cli':
+            _fail('OpenArt reconciliation requires collect_openart_attempt on the original attempt')
         if _state(root, request)['status'] != 'uncertain':
             _fail('only an uncertain original attempt can be reconciled')
         if request_sha256 != request['request_sha256'] or result.data.get('session_id') != request['cli_session_id']:
@@ -1192,3 +1284,113 @@ def record_rejection(project_dir, attempt_id, review):
         reviews.mkdir(exist_ok=True)
         _write_new(reviews / (str(uuid.uuid4()) + '.json'), review)
         return copy.deepcopy(review)
+
+
+def _openart_public_inputs(inputs):
+    from tools._openart_cli import redact
+    public = redact(copy.deepcopy(inputs))
+    public['prompt'] = '<private OpenArt prompt>'
+    return public
+
+
+def load_openart_frozen(request):
+    """Pure private snapshot replay; public journal never carries native secrets."""
+    from lib import openart_jobs as jobs
+    frozen = jobs.load_frozen_request(request['attempt_id'])
+    if frozen['snapshot_sha256'] != request['openart']['snapshot']['snapshot_sha256']:
+        _fail('OpenArt private request snapshot changed')
+    if _openart_public_inputs(frozen['inputs']) != request['submitted_inputs']:
+        _fail('OpenArt public/private input binding differs')
+    native = jobs.native_request(_openart_controls(frozen['inputs']), frozen['profile'],
+                                 dry_run=frozen['native'].get('dry_run'))
+    if native != frozen['native']:
+        _fail('OpenArt frozen native request differs')
+    binding = request['openart']['binding']
+    if binding['attempt_id'] != request['attempt_id'] or binding['request_sha256'] != request['request_sha256']:
+        _fail('OpenArt original attempt/request binding differs')
+    for key in ('native_controls_sha256','native_argv_sha256','profile_sha256','account_id_sha256','native_body_sha256'):
+        if binding[key] != native[key]:
+            _fail('OpenArt original native/profile/account binding differs')
+    return frozen
+
+
+def collect_openart_attempt(project_dir, attempt_id, *, request_sha256, timeout=30):
+    """Recover/collect only the original launch; all CLI work is outside project locks."""
+    from lib import openart_jobs as jobs
+    from tools.base_tool import ToolResult
+    root = Path(project_dir).resolve()
+    directory = _inside(Path('production_attempts') / attempt_id, root)
+    with _lock(root):
+        request = _read(directory / 'request.json')
+        if request.get('attempt_id') != attempt_id or request.get('request_sha256') != request_sha256:
+            _fail('OpenArt collection original request/attempt differs')
+        if request['scope']['provider'] != 'openart_cli':
+            _fail('OpenArt collection requires original OpenArt attempt')
+        frozen = load_openart_frozen(request)
+        if (directory / 'reconciliation.json').exists():
+            retained = _read(directory / 'reconciliation.json')
+            stable = (jobs.verify_collection_receipt(attempt_id, frozen['profile'])
+                      if retained.get('status') == 'generated' else
+                      jobs.verify_terminal_failure(attempt_id, frozen['profile']))
+            if retained.get('result',{}).get('data',{}).get('openart_evidence') != stable:
+                _fail('OpenArt retained reconciliation differs from terminal receipt')
+            return retained
+        launch = jobs.launch_record(attempt_id)
+        if not launch or launch.get('binding') != request['openart']['binding']:
+            _fail('OpenArt private original launch binding differs')
+        output = _inside(frozen['inputs']['output_path'], root)
+    jobs.recover_launch(attempt_id)
+    collected = jobs.collect_job(attempt_id, output_path=output, output_root=root,
+                                 profile=frozen['profile'], timeout=timeout)
+    evidence = jobs.reconcile_job(attempt_id)
+    with _lock(root):
+        if _read(directory / 'request.json') != request:
+            _fail('OpenArt request changed during collection')
+        if (directory / 'reconciliation.json').exists():
+            return _read(directory / 'reconciliation.json')
+        events = directory / 'collection_events'
+        events.mkdir(exist_ok=True)
+        public_event = {key:collected.get(key) for key in ('status','billing','release_authorized')}
+        public_event['events_sha256'] = evidence.get('events_sha256')
+        _write_new(events / (str(uuid.uuid4()) + '.json'), public_event)
+        if collected.get('status') not in {'collected','failed_terminal'}:
+            return public_event
+        if evidence.get('binding') != request['openart']['binding'] or evidence.get('state') != collected['status']:
+            _fail('OpenArt terminal job evidence differs')
+        stable = (jobs.verify_collection_receipt(attempt_id, frozen['profile'])
+                  if collected['status']=='collected' else
+                  jobs.verify_terminal_failure(attempt_id, frozen['profile']))
+        proof_snapshot = (stable.get('evidence',{}).get('snapshot_sha256')
+                          if collected['status']=='collected' else stable.get('binding',{}).get('snapshot_sha256'))
+        if (stable.get('attempt_id') != attempt_id or stable.get('binding') != request['openart']['binding']
+                or proof_snapshot != request['openart']['snapshot']['snapshot_sha256']
+                or not stable.get('job_id_sha256')):
+            _fail('OpenArt terminal collection snapshot/profile/account differs')
+        if collected['status']=='failed_terminal' and (not stable.get('terminal_failure_sha256')
+                or stable.get('account_id_sha256') != request['openart']['binding']['account_id_sha256']
+                or stable.get('process_state') not in {'exited','dead'}):
+            _fail('OpenArt terminal failure lacks original account/job/process evidence')
+        data = {'provider':'openart_cli','attempt_id':attempt_id,
+                'dispatch_status':'completed' if collected['status']=='collected' else 'failed',
+                'openart_evidence':stable,
+                'billing':'unknown', 'release_authorized':False}
+        result = ToolResult(success=collected['status']=='collected', data=data, cost_usd=None,
+                            model=frozen['inputs'].get('model'))
+        record = {'status':'failed','result':None,'output':None,'preserved_output':None}
+        if result.success:
+            got = collected.get('output')
+            if not isinstance(got,dict) or stable.get('output') != got:
+                _fail('OpenArt collected output differs from original-job terminal receipt')
+            output = _inside(got['path'], root)
+            digest = file_sha256(output)
+            if digest != got['sha256']:
+                _fail('OpenArt collected output bytes changed')
+            preserved = directory / ('output' + output.suffix)
+            if not preserved.exists(): _preserve_output(output, preserved, digest)
+            if file_sha256(preserved) != digest: _fail('OpenArt preserved output differs')
+            record.update(status='generated',output={'path':str(output),'sha256':digest},
+                          preserved_output={'path':str(preserved),'sha256':digest})
+            result.artifacts = [str(output)]
+        record['result'] = asdict(result)
+        _write_new(directory / 'reconciliation.json', record)
+        return record

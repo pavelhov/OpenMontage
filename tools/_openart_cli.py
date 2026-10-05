@@ -6,6 +6,7 @@ this module never reads it. Importing this module has no side effects.
 """
 from __future__ import annotations
 
+import contextvars
 import datetime as _dt
 import fcntl
 import hashlib
@@ -17,6 +18,7 @@ import shutil
 import stat
 import subprocess
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -181,6 +183,7 @@ def private_dir(*parts: str) -> Path:
         current = current / _safe_part(part)
         if not current.exists() and not current.is_symlink():
             current.mkdir(mode=0o700)
+            fsync_dir(current.parent)  # durable directory entry before any child write
         _check_private(current, True)
     return current
 
@@ -208,25 +211,84 @@ def write_private(path: Path, data: bytes) -> Path:
         os.fsync(fd)
     finally:
         os.close(fd)
+    fsync_dir(target.parent)  # publication durable (e.g. launch.json submit-once marker)
     return target
 
 
+def fsync_dir(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+_LOCK_DEPTH = threading.local()
+LOCK_WAIT = 360.0  # seconds to wait for another CLI process (incl. orphaned children)
+_LOCK_POLL = 0.05
+
+
+def held_lock_fd() -> Optional[int]:
+    """fd of the flock held by this thread (pass to CLI children via pass_fds)."""
+    return getattr(_LOCK_DEPTH, "fd", None) if getattr(_LOCK_DEPTH, "depth", 0) > 0 else None
+
+
 @contextmanager
-def transport_lock():
-    """One CLI process at a time per user state (OAuth refresh may rewrite creds)."""
-    with _THREAD_LOCK:
+def transport_lock(wait_timeout: Optional[float] = None):
+    """One CLI process at a time per user state (OAuth refresh may rewrite creds).
+
+    The flock lives on one open file description that every CLI child inherits through
+    ``pass_fds``. The parent never calls LOCK_UN; it only closes its descriptor, so the
+    claim lasts until the parent *and* every spawned CLI child (even an orphan surviving a
+    parent timeout or death) have closed it. Reentrant within a thread: nested use reuses
+    the held descriptor instead of opening a second one (which would self-deadlock).
+    Waiting is bounded by LOCK_WAIT -> ``transport_busy``.
+    """
+    if getattr(_LOCK_DEPTH, "depth", 0) > 0:
+        _LOCK_DEPTH.depth += 1
+        try:
+            yield _LOCK_DEPTH.root
+        finally:
+            _LOCK_DEPTH.depth -= 1
+        return
+    wait = LOCK_WAIT if wait_timeout is None else float(wait_timeout)
+    if not (wait >= 0) or wait == float("inf"):
+        raise OpenArtCLIError("invalid_argument", "lock wait must be finite and non-negative")
+    deadline = time.monotonic() + wait
+    if not _THREAD_LOCK.acquire(timeout=max(0.0, deadline - time.monotonic())):
+        raise OpenArtCLIError("transport_busy", "another in-process OpenArt CLI call holds the transport")
+    try:
         root = verify_private_state()
         lock_path = root / "transport.lock"
         fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
             os.fchmod(fd, 0o600)
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise OpenArtCLIError("transport_busy",
+                                              "another OpenArt CLI process still holds the transport")
+                    time.sleep(_LOCK_POLL)
+            _LOCK_DEPTH.depth, _LOCK_DEPTH.root, _LOCK_DEPTH.fd = 1, root, fd
             try:
                 yield root
             finally:
-                fcntl.flock(fd, fcntl.LOCK_UN)
+                _LOCK_DEPTH.depth, _LOCK_DEPTH.root, _LOCK_DEPTH.fd = 0, None, None
         finally:
-            os.close(fd)
+            os.close(fd)  # no LOCK_UN: a live inheriting child keeps the claim
+    finally:
+        _THREAD_LOCK.release()
+
+
+def lock_remaining(deadline: float) -> float:
+    """Remaining operation budget after lock wait; ``timeout`` if exhausted."""
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise OpenArtCLIError("timeout", "operation budget exhausted while waiting for transport")
+    return left
 
 
 # --- offline preparation ---------------------------------------------------
@@ -241,6 +303,9 @@ def is_offline() -> bool:
 # `--dry-run=false`, `--`, short flags, extra positionals - is refused before launch.
 _DRY_RUN_VALUE_FLAGS = {"--model": _ID_RE, "--duration": re.compile(r"^[1-9][0-9]{0,2}$"),
                         "--aspect-ratio": _RATIO_RE, "--resolution": _RES_RE}
+# Retained, already-uploaded HTTPS reference only (never a local path: the CLI would
+# auto-upload local files, and upload billing is unqualified). Profile gating lives in U2.
+_IMAGE_URL_RE = re.compile(r"^https://[A-Za-z0-9.-]{1,253}(?::443)?/[^\s]{1,2000}$")
 
 
 def _refuse(why: str, argv: list[str]) -> None:
@@ -276,7 +341,8 @@ def _check_read_only(argv: list[str]) -> None:
             _refuse("generate video flags must be --flag value pairs", argv)
         seen = set()
         for flag, value in zip(pairs[::2], pairs[1::2]):
-            pattern = _DRY_RUN_VALUE_FLAGS.get(flag)
+            pattern = _DRY_RUN_VALUE_FLAGS.get(flag) or (
+                _IMAGE_URL_RE if flag == "--image" and _IMAGE_FLAG_ALLOWED.get() else None)
             if pattern is None or flag in seen or not pattern.match(value):
                 _refuse(f"flag not allowed on read-only dry-run: {flag[:32]}", argv)
             seen.add(flag)
@@ -284,6 +350,9 @@ def _check_read_only(argv: list[str]) -> None:
             _refuse("generate video dry-run requires --model", argv)
         return
     _refuse("command is not on the read-only allowlist", argv)
+
+
+_IMAGE_FLAG_ALLOWED = contextvars.ContextVar("openart_image_flag_allowed", default=False)
 
 
 def _child_env() -> dict:
@@ -319,22 +388,58 @@ def run_readonly(argv: list[str], timeout: float = DEFAULT_TIMEOUT) -> dict:
     argv = list(argv)
     timeout = validate_timeout(timeout)
     _check_read_only(argv)
+    return _run_checked(argv, timeout)
+
+
+_UPLOAD_ALLOWED = contextvars.ContextVar("openart_upload_allowed", default=False)
+
+
+@contextmanager
+def allow_upload_reference():
+    """Scope for exactly one guarded `upload add`. Only lib.openart_jobs.upload_reference
+    enters it, after verifying a qualified nonspending upload contract and source binding."""
+    token = _UPLOAD_ALLOWED.set(True)
+    try:
+        yield
+    finally:
+        _UPLOAD_ALLOWED.reset(token)
+
+
+def run_upload_reference(source: Path, timeout: float = DEFAULT_TIMEOUT) -> dict:
+    """Exact `upload add <abs-file>`; refused outside allow_upload_reference()."""
+    if not _UPLOAD_ALLOWED.get():
+        raise OpenArtCLIError("upload_unqualified", "upload requires a qualified nonspending upload contract")
+    source = Path(source)
+    if not source.is_absolute() or str(source).startswith("-") or "\x00" in str(source):
+        raise OpenArtCLIError("invalid_argument", "upload source must be an absolute path")
+    return _run_checked(["upload", "add", str(source)], validate_timeout(timeout))
+
+
+def _run_checked(argv: list[str], timeout: float) -> dict:
     if is_offline():
         raise OpenArtCLIError("offline_only", "OpenArt CLI invocation refused during offline preparation")
     binary = resolve_binary()
     full = argv + GLOBAL_FLAGS
-    with transport_lock() as root:
+    op_deadline = time.monotonic() + timeout
+    with transport_lock(wait_timeout=timeout) as root:
+        timeout = lock_remaining(op_deadline)
         started = _dt.datetime.now(_dt.timezone.utc).isoformat()
         stem = f"{started[:19].replace(':', '')}-{uuid.uuid4().hex[:8]}"
         streams = private_dir("streams")
         out_path, err_path = streams / f"{stem}.stdout", streams / f"{stem}.stderr"
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-        out_fd, err_fd = os.open(out_path, flags, 0o600), os.open(err_path, flags, 0o600)
+        out_fd = os.open(out_path, flags, 0o600)
+        try:
+            err_fd = os.open(err_path, flags, 0o600)
+        except BaseException:
+            os.close(out_fd)
+            raise
         try:
             try:
                 proc = subprocess.run([binary, *full], shell=False, stdin=subprocess.DEVNULL,
                                       stdout=out_fd, stderr=err_fd, timeout=timeout,
-                                      cwd=str(root), env=_child_env())
+                                      cwd=str(root), env=_child_env(),
+                                      pass_fds=(held_lock_fd(),))
                 returncode = proc.returncode
             except FileNotFoundError:
                 raise OpenArtCLIError("missing_binary", "openart CLI disappeared before invocation")
@@ -394,7 +499,7 @@ def model_form_argv(model: str, mode: str) -> list[str]:
 
 def native_video_argv(prompt: str, *, model: str, mode: str, duration: Any = None,
                       aspect_ratio: Optional[str] = None, resolution: Optional[str] = None,
-                      image: Optional[str] = None) -> list[str]:
+                      image: Optional[str] = None, image_url: Optional[str] = None) -> list[str]:
     """Creative argv shared by native dry-run (U1) and any future frozen submit (U2).
 
     U1 only appends --dry-run. A later submit must append its own frozen flags to this
@@ -405,10 +510,15 @@ def native_video_argv(prompt: str, *, model: str, mode: str, duration: Any = Non
     _ident(mode, "mode")
     if mode not in {"text2video", "image2video"}:
         raise OpenArtCLIError("invalid_argument", "mode must be text2video or image2video (v0.1.1 help)")
-    if image is not None or mode == "image2video":
-        # The CLI infers image2video from --image; local files auto-upload and upload
-        # billing is unqualified, so image2video cannot be represented truthfully in U1.
-        raise OpenArtCLIError("unsupported_gate", "image2video/--image is gated on upload_billing qualification")
+    if image is not None:
+        # Local files auto-upload inside the CLI; upload billing is unqualified.
+        raise OpenArtCLIError("unsupported_gate", "local --image is gated on upload_billing qualification")
+    if (mode == "image2video") != (image_url is not None):
+        # The CLI infers image2video from --image; only a retained HTTPS upload URL
+        # (U2 profile-gated) may represent it truthfully.
+        raise OpenArtCLIError("unsupported_gate", "image2video requires a qualified retained upload URL")
+    if image_url is not None and (not isinstance(image_url, str) or not _IMAGE_URL_RE.match(image_url)):
+        raise OpenArtCLIError("unsupported_gate", "image reference must be a retained https URL")
     argv = ["generate", "video", prompt, "--model", _ident(model, "model")]
     if duration is not None:
         if isinstance(duration, bool) or not isinstance(duration, int) or not 1 <= duration <= 120:
@@ -422,11 +532,54 @@ def native_video_argv(prompt: str, *, model: str, mode: str, duration: Any = Non
         if not isinstance(resolution, str) or not _RES_RE.match(resolution):
             raise OpenArtCLIError("invalid_argument", "resolution must look like 720p")
         argv += ["--resolution", resolution]
+    if image_url is not None:
+        argv += ["--image", image_url]
     return argv
+
+
+@contextmanager
+def allow_image_reference(enabled: bool = True):
+    """Scope in which a retained https --image may pass the dry-run grammar.
+
+    Only lib.openart_jobs enters this, after verifying a profile-qualified upload record.
+    """
+    token = _IMAGE_FLAG_ALLOWED.set(bool(enabled))
+    try:
+        yield
+    finally:
+        _IMAGE_FLAG_ALLOWED.reset(token)
 
 
 def native_dry_run_argv(prompt: str, **kwargs: Any) -> list[str]:
     return native_video_argv(prompt, **kwargs) + ["--dry-run"]
+
+
+def native_submit_argv(prompt: str, **kwargs: Any) -> list[str]:
+    """U2 frozen async submit: the exact creative argv plus a single trailing --async.
+
+    Never combined with --output (async+output is forbidden) and never with --dry-run.
+    Only lib.openart_jobs.launch_submit may execute this; run_readonly refuses it.
+    """
+    return native_video_argv(prompt, **kwargs) + ["--async"]
+
+
+def check_submit_argv(argv: list[str], *, allow_image: bool = False) -> list[str]:
+    """Validate a frozen submit argv: creative dry-run grammar + one trailing --async."""
+    argv = list(argv)
+    if not argv or argv[-1] != "--async" or argv.count("--async") != 1:
+        raise OpenArtCLIError("not_submit", "submit argv must end with exactly one --async")
+    if any(a in ("--output", "--dry-run") for a in argv):
+        raise OpenArtCLIError("not_submit", "submit argv cannot carry --output/--dry-run")
+    if argv.count("--image") > 1 or (not allow_image and "--image" in argv):
+        raise OpenArtCLIError("not_submit", "--image requires a profile-qualified upload reference")
+    try:
+        with allow_image_reference(allow_image):
+            _check_read_only(argv[:-1] + ["--dry-run"])
+    except OpenArtCLIError as exc:
+        raise OpenArtCLIError("not_submit", exc.message)
+    if argv[:2] != ["generate", "video"]:
+        raise OpenArtCLIError("not_submit", "only generate video may be submitted")
+    return argv
 
 
 def dry_run_request(parsed: Any) -> dict:

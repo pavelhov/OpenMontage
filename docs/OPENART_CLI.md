@@ -1,10 +1,10 @@
-# OpenArt subscription CLI (U1: transport and account inspection)
+# OpenArt subscription CLI (U1–U2: transport, account and job recovery)
 
-OpenMontage drives the official OpenArt CLI (`openart`, see
+OpenMontage drives the official OpenArt CLI (`openart`, installed version 0.1.1, see
 https://github.com/OpenArt-AI/cli) as a sibling of the Grok CLI route: one
-subscription account, authenticated by the CLI's own OAuth flow. U1 adds only a
-read-only transport (`tools/_openart_cli.py`) and a nonspending inspector tool
-(`tools/openart_account.py`). **No generation surface is enabled.**
+subscription account, authenticated by the CLI's own OAuth flow. OpenMontage adds
+a read-only transport (`tools/_openart_cli.py`) and a nonspending account and
+recovery tool (`tools/openart_account.py`). **No generation submission surface is enabled.**
 
 ## Binary and credentials
 
@@ -30,7 +30,8 @@ human step run outside OpenMontage.
 
 Anything else is refused with `not_read_only` before any process starts. That
 includes unknown, duplicate or `--flag=value` forms (`--dry-run=false`), `--async`,
-`-o/--output`, `--image`, `--`, `upload`, `creation wait` and auth commands.
+`-o/--output`, caller-supplied `--image`, `--`, `upload`, `creation wait` and auth commands.
+Only `native_dry_run` can add `--image` internally after resolving a qualified `image_upload_id`.
 IDs must match `^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$`, and prompts must not start with `-`.
 
 ## Private state
@@ -70,10 +71,23 @@ strings and all URL query strings, which covers signed URLs.
   properties are absent from `required`). Any other shape is `form_shape: unqualified`.
 - `native_dry_run`: `generate video ... --dry-run`, returning `{endpoint, body_sha256, body}`.
 - `readiness`: gate table, plus an optional `version` probe.
+- `status`: reconcile one original attempt from its durable OpenArt event/job receipt.
+- `collect`: call only `collect_openart_attempt(project_dir, attempt_id, request_sha256, timeout)`;
+  it writes the original project's result and never submits or reserves again.
+- `verify`: verify the retained collection receipt against the original frozen profile. Pure.
+- `qualifications`: list qualification summaries without provider calls.
+- `upload`: use the registered approval lookup and jobs helper for one approved reference.
+  Upload proceeds only with a real nonspending upload contract and matching approved source;
+  absent evidence fails closed. It does not reserve generation credits.
+- `native_dry_run` accepts `image_upload_id` for a profile-bound retained upload. It resolves
+  the private URL internally, uses the guarded `--image` dry-run path, and redacts URL query
+  credentials from published argv and request bodies. Local paths are never passed as `--image`.
 
-`status`, `collect`, `resolve_attempt`, `submit` and `upload` always return
-`success: false` and are delegated to later units. Results carry `cost_usd: 0`,
-`reservations: 0` and `paid_submission: false`.
+`resolve_attempt` and `submit` remain unavailable. All actions return
+`cost_usd: 0`, `reservations: 0` and `paid_submission: false`. Auth identity, model IDs,
+settings quotes, upload billing, async results, exhaustive history and generation controls
+remain unqualified until backed by captured account evidence. Status, collection and
+verification do not authorize retries or release account-credit holds.
 
 ## Offline preparation hook
 
@@ -90,9 +104,10 @@ helper a hook uses: it returns `retained` only for matching evidence with
 
 `account_identity`, `model_ids`, `form_schema`, `settings_exact_quote`,
 `async_result_contract`, `upload_billing`, `exhaustive_history`, `native_audio`,
-`end_frame_pin`, `reference_images`. The v0.1.1 help shows no end-frame, audio,
+`end_frame_pin`, `reference_images`. The v0.1.1 video command exposes prompt, model,
+duration, aspect ratio, resolution and a single `--image`; it shows no end-frame, audio,
 rich-reference or prompt-expansion flags. `--image` auto-uploads local files, so
-`image2video` stays refused until upload billing is qualified nonspending.
+image-to-video is permitted only through the separately qualified retained-upload path.
 
 ## Live discovery process (root-owned)
 

@@ -1,26 +1,24 @@
-"""OpenArt subscription CLI account/control inspector (U1: nonspending only).
-
-Explicit read-only actions: ``inspect`` (version + account), ``quote``
-(``model cost --model --mode``), ``form`` (``model form``), ``native_dry_run``
-(``generate video ... --dry-run``). No generation, upload, wait, status,
-collect or attempt resolution is exposed here; those belong to later units.
-"""
+"""OpenArt account inspection and original-attempt recovery controls."""
 from __future__ import annotations
 
+import re
+from pathlib import Path
 from typing import Any
 
 from tools import _openart_cli as cli
 from tools.base_tool import (BaseTool, Determinism, DependencyError, ExecutionMode,
                              ToolResult, ToolRuntime, ToolStability, ToolTier)
 
-READ_ONLY_ACTIONS = ("inspect", "quote", "form", "native_dry_run", "readiness")
-DELEGATED_ACTIONS = ("status", "collect", "resolve_attempt", "submit", "upload")
+READ_ONLY_ACTIONS = ("inspect", "quote", "form", "native_dry_run", "readiness",
+                     "status", "collect", "verify", "upload", "qualifications")
+DISABLED_ACTIONS = ("resolve_attempt", "submit")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class OpenArtAccount(BaseTool):
     name = "openart_account"
     version = "0.1.0"
-    tier = ToolTier.ANALYZE  # inspection; never governed as generation
+    tier = ToolTier.ANALYZE
     capability = "provider_account"
     provider = "openart"
     stability = ToolStability.EXPERIMENTAL
@@ -30,18 +28,28 @@ class OpenArtAccount(BaseTool):
     dependencies = ["cmd:openart"]
     install_instructions = ("Install the official OpenArt CLI (github.com/OpenArt-AI/cli) to PATH or "
                             "~/.local/bin/openart, or set OPENART_CLI_PATH; authenticate with `openart` OAuth.")
-    side_effects = ["runs read-only openart CLI commands", "writes private receipts outside the checkout"]
-    best_for = ["inspecting OpenArt subscription CLI account, model forms and nonspending quotes"]
-    not_good_for = ["generating media (not enabled in U1)"]
+    side_effects = ["runs nonspending OpenArt inspection and dry-run commands",
+                    "collects outputs into the original project",
+                    "uploads approved references only when a nonspending contract is qualified",
+                    "writes private receipts outside the checkout"]
+    best_for = ["inspecting OpenArt account controls, original jobs and nonspending quotes"]
+    not_good_for = ["submitting video generation"]
     input_schema = {
         "type": "object", "required": ["action", "read_only"],
         "properties": {
-            "action": {"type": "string", "enum": [*READ_ONLY_ACTIONS, *DELEGATED_ACTIONS]},
-            "read_only": {"const": True},
-            "model": {"type": "string"}, "mode": {"type": "string"},
+            "action": {"type": "string", "enum": [*READ_ONLY_ACTIONS, *DISABLED_ACTIONS]},
+            "read_only": {"const": True}, "model": {"type": "string"}, "mode": {"type": "string"},
             "prompt": {"type": "string"}, "duration": {"type": "integer"},
             "aspect_ratio": {"type": "string"}, "resolution": {"type": "string"},
-            "probe": {"type": "boolean"}, "timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 300},
+            "probe": {"type": "boolean"},
+            "timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 300},
+            "attempt_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"},
+            "project_dir": {"type": "string", "minLength": 1},
+            "project_root": {"type": "string", "minLength": 1},
+            "request_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            "upload_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"},
+            "source_path": {"type": "string", "minLength": 1},
+            "image_upload_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"},
         },
     }
 
@@ -54,31 +62,42 @@ class OpenArtAccount(BaseTool):
     def estimate_cost(self, inputs: dict[str, Any]) -> float:
         return 0.0
 
-    def _ok(self, action: str, evidence: dict) -> ToolResult:
+    def _ok(self, action: str, evidence: Any) -> ToolResult:
         return ToolResult(success=True, cost_usd=0.0, data={
-            "action": action, "provider": "openart", "reservations": 0, "paid_submission": False,
-            "generation_enabled": False, "evidence": evidence})
+            "action": action, "provider": "openart", "reservations": 0,
+            "paid_submission": False, "generation_enabled": False,
+            "evidence": cli.redact(evidence)})
 
     @staticmethod
     def _call(argv: list[str], inputs: dict) -> dict:
         out = cli.run_readonly(argv, timeout=cli.validate_timeout(inputs.get("timeout_seconds")))
-        return {"argv": out["argv"], "public": out["public"], "receipt_id": out["receipt_id"],
-                "receipt_sha256": out["receipt_sha256"], "stdout_sha256": out["stdout_sha256"],
-                "_parsed": out["parsed"]}
+        return {"argv": cli.redact(out["argv"]), "public": cli.redact(out["public"]),
+                "receipt_id": out["receipt_id"], "receipt_sha256": out["receipt_sha256"],
+                "stdout_sha256": out["stdout_sha256"], "_parsed": out["parsed"]}
 
     def execute(self, inputs: dict[str, Any]) -> ToolResult:
         action = inputs.get("action")
-        if action in DELEGATED_ACTIONS:
-            return ToolResult(success=False, error=f"openart_account action {action!r} is not available in U1")
+        if action in DISABLED_ACTIONS:
+            return self._error("unavailable", f"openart_account action {action!r} is not available")
         if action not in READ_ONLY_ACTIONS:
-            return ToolResult(success=False, error=f"unknown openart_account action {action!r}")
+            return self._error("invalid_action", f"unknown openart_account action {action!r}")
         if inputs.get("read_only") is not True:
-            return ToolResult(success=False, error="openart_account requires explicit read_only: true")
+            return self._error("read_only_required", "openart_account requires explicit read_only: true")
         try:
             return self._dispatch(action, inputs)
         except cli.OpenArtCLIError as exc:
-            return ToolResult(success=False, error=f"{exc.kind}: {cli.redact_text(exc.message)}",
-                              data={"error": exc.public(), "reservations": 0, "paid_submission": False})
+            return self._error(exc.kind, exc.message, exc.public())
+        except Exception as exc:
+            # Keep unexpected helper diagnostics useful without publishing credentials,
+            # signed URL queries, or any unredacted nested value.
+            public_error = cli.redact({"kind": type(exc).__name__, "message": str(exc)})
+            return self._error(public_error["kind"], public_error["message"], public_error)
+
+    @staticmethod
+    def _error(kind: Any, message: Any, details: Any = None) -> ToolResult:
+        public = cli.redact({"kind": kind, "message": message, "details": details or {}})
+        return ToolResult(success=False, error=f"{public['kind']}: {public['message']}",
+                          data={"error": public, "reservations": 0, "paid_submission": False})
 
     def _dispatch(self, action: str, inputs: dict) -> ToolResult:
         if action == "readiness":
@@ -105,11 +124,59 @@ class OpenArtAccount(BaseTool):
                 controls, shape = None, "unqualified"
             return self._ok(action, {**call, "controls": controls, "form_shape": shape,
                                      "qualification": "unqualified_for_dispatch"})
-        # native_dry_run
+        if action == "status":
+            from lib import openart_jobs as jobs
+            return self._ok(action, jobs.reconcile_job(self._attempt_id(inputs)))
+        if action == "collect":
+            from lib import production_execution
+            aid = self._attempt_id(inputs)
+            project_dir = self._existing_directory(inputs.get("project_dir"), "project_dir")
+            digest = inputs.get("request_sha256")
+            if not isinstance(digest, str) or not _SHA256_RE.fullmatch(digest):
+                raise cli.OpenArtCLIError("invalid_argument", "request_sha256 must be a lowercase SHA-256 digest")
+            result = production_execution.collect_openart_attempt(
+                project_dir, aid, request_sha256=digest,
+                timeout=cli.validate_timeout(inputs.get("timeout_seconds")))
+            return self._ok(action, result)
+        if action == "verify":
+            from lib import openart_jobs as jobs
+            aid = self._attempt_id(inputs)
+            frozen = jobs.load_frozen_request(aid)
+            return self._ok(action, jobs.verify_collection_receipt(aid, frozen["profile"]))
+        if action == "qualifications":
+            from lib import openart_jobs as jobs
+            return self._ok(action, jobs.list_qualifications())
+        if action == "upload":
+            from lib import openart_jobs as jobs
+            upload_id = cli._ident(inputs.get("upload_id"), "upload_id")
+            project_root = self._existing_directory(inputs.get("project_root"), "project_root")
+            source_path = Path(inputs.get("source_path", "")).expanduser().resolve()
+            if not source_path.is_file():
+                raise cli.OpenArtCLIError("invalid_argument", "source_path must name an existing file")
+            model, mode = cli._ident(inputs.get("model"), "model"), cli._ident(inputs.get("mode"), "mode")
+            result = jobs.upload_reference(project_root, upload_id, source_path,
+                                           model=model, mode=mode,
+                                           timeout=cli.validate_timeout(inputs.get("timeout_seconds")))
+            return self._ok(action, result)
+
+        image_url = None
+        upload_id = inputs.get("image_upload_id")
+        if upload_id is not None:
+            from lib import openart_jobs as jobs
+            model = cli._ident(inputs.get("model"), "model")
+            mode = cli._ident(inputs.get("mode"), "mode")
+            profile = jobs.load_qualification(model=model, mode=mode)
+            image_url = jobs.upload_url_for(
+                cli._ident(upload_id, "image_upload_id"), profile=profile,
+                account_id_sha256=profile["account_id_sha256"])
         argv = cli.native_dry_run_argv(inputs.get("prompt"), model=inputs.get("model"), mode=inputs.get("mode"),
                                        duration=inputs.get("duration"), aspect_ratio=inputs.get("aspect_ratio"),
-                                       resolution=inputs.get("resolution"))
-        call = self._call(argv, inputs)
+                                       resolution=inputs.get("resolution"), image_url=image_url)
+        if image_url is None:
+            call = self._call(argv, inputs)
+        else:
+            with cli.allow_image_reference():
+                call = self._call(argv, inputs)
         parsed = call.pop("_parsed")
         try:
             request = cli.dry_run_request(parsed)
@@ -118,3 +185,16 @@ class OpenArtAccount(BaseTool):
         except cli.OpenArtCLIError as exc:
             request = {"error": exc.public()}
         return self._ok(action, {**call, "request": request, "qualification": "unqualified_for_dispatch"})
+
+    @staticmethod
+    def _attempt_id(inputs: dict) -> str:
+        return cli._ident(inputs.get("attempt_id"), "attempt_id")
+
+    @staticmethod
+    def _existing_directory(value: Any, field: str) -> Path:
+        if not isinstance(value, str) or not value:
+            raise cli.OpenArtCLIError("invalid_argument", f"{field} must name an existing directory")
+        path = Path(value).expanduser().resolve()
+        if not path.is_dir():
+            raise cli.OpenArtCLIError("invalid_argument", f"{field} must name an existing directory")
+        return path

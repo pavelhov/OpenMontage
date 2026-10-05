@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Strict qualified OpenArt CLI video inputs",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "prompt",
+    "model",
+    "mode",
+    "duration",
+    "aspect_ratio",
+    "resolution",
+    "output_path",
+    "governance"
+  ],
+  "properties": {
+    "prompt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "type": "string",
+      "minLength": 1
+    },
+    "duration": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "aspect_ratio": {
+      "type": "string",
+      "minLength": 1
+    },
+    "resolution": {
+      "type": "string",
+      "minLength": 1
+    },
+    "output_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "project_dir": {
+      "type": "string"
+    },
+    "governance": {
+      "type": "object",
+      "required": [
+        "scope_id",
+        "shot_id"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "scope_id": {
+          "type": "string"
+        },
+        "shot_id": {
+          "type": "string"
+        }
+      }
+    },
+    "operation": {
+      "type": "string",
+      "minLength": 1
+    },
+    "image_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "image_upload_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "native_dry_run_receipt_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "native_dry_run_receipt_sha256": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

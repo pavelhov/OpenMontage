@@ -22,6 +22,8 @@ from lib.shot_contract import (
 from schemas.artifacts import load_schema
 
 
+_ALLOW_OPENART_FIXTURE_PROVENANCE = False  # module test seam, never caller-authorized
+
 def _validate_attempt_provenance(
     project_dir: str | Path, attempt_id: str, *, shot_id: str,
     story_revision: str, expected_output: dict[str, str],
@@ -94,7 +96,8 @@ def _validate_attempt_provenance(
             and scope.get('story_revision') == story_revision and scope.get('phase') == request['phase'], 'scope identity/phase differs')
     local_render = request['media_kind'] == 'local_render'
     require(scope.get('phase') in ({'local_render'} if local_render else {'first_pass', 'repair'}), 'scope does not approve motion kind')
-    require(scope.get('provider') == ('hyperframes' if local_render else 'grok_cli'), 'provider has no qualified strict motion provenance adapter')
+    openart = scope.get('provider') == 'openart_cli' and not local_render
+    require(scope.get('provider') in ({'hyperframes'} if local_render else {'grok_cli','openart_cli'}), 'provider has no qualified strict motion provenance adapter')
     if local_render:
         require(request.get('tool_name') == 'hyperframes_compose', 'local render tool identity differs')
     evidence = request['approval_evidence']
@@ -181,8 +184,13 @@ def _validate_attempt_provenance(
                 'upstream selection changed since this attempt')
 
     submitted = request['submitted_inputs']
+    frozen_openart = execution.load_openart_frozen(request) if openart else None
+    if openart:
+        require(request.get('tool_name') in {'openart_cli_video','video_selector'}, 'OpenArt tool identity differs')
+        submitted = frozen_openart['inputs']
     bindings = request['input_assets']
-    require(isinstance(submitted, dict) and isinstance(bindings, list) and bool(bindings), 'immutable submitted inputs missing')
+    zero_refs = openart and not shot['asset_ids'] and not any(key in submitted for key in execution.INPUT_PATH_KEYS)
+    require(isinstance(submitted, dict) and isinstance(bindings, list) and (bool(bindings) or zero_refs), 'immutable submitted inputs missing')
     remaining = iter(bindings)
 
     def restore_binding(role, path):
@@ -214,6 +222,8 @@ def _validate_attempt_provenance(
     (execution._check_local_render_inputs if local_render else execution._check_motion_inputs)(contract, shot_id, submitted, root)
     expected_hashes = {assets[asset_id]['sha256'] for asset_id in shot['asset_ids']}
     require(all(item['sha256'] in expected_hashes or (local_render and item['role'] == 'workspace_path') for item in bindings), 'submitted input outside approved shot assets')
+    if openart:
+        return _validate_openart_result(root, directory, request, frozen_openart, expected_output, bound_file, read, require)
     if local_render:
         return _validate_local_render_result(root, directory, request, expected_output, bound_file, read, require)
 
@@ -308,6 +318,52 @@ def _validate_attempt_provenance(
                     require({key: value for key, value in original_receipt.items() if key not in runtime_fields} == stable_receipt,
                             'reconciliation changed retained original controls')
     return {'request': request, 'result': result}
+
+
+def _validate_openart_result(root, directory, request, frozen, expected_output, bound_file, read, require):
+    """Pure local original-job proof; never calls CLI or rechecks live account."""
+    from lib import openart_jobs as jobs, production_execution as execution
+    attempt_id = request['attempt_id']
+    require(frozen['profile'].get('source') == 'real' or _ALLOW_OPENART_FIXTURE_PROVENANCE,
+            'OpenArt fixture qualification cannot certify live footage')
+    launch = jobs.launch_record(attempt_id)
+    binding = request['openart']['binding']
+    require(isinstance(launch, dict) and launch.get('binding') == binding,
+            'OpenArt original private launch binding differs')
+    native = frozen['native']
+    require(launch.get('argv') == native['argv'] + jobs.cli.GLOBAL_FLAGS,
+            'OpenArt original argv differs')
+    require(launch.get('cli_version') == native['cli_version'] and launch.get('tier') == native['tier']
+            and launch.get('form_sha256') == native['form_sha256'], 'OpenArt launch qualification differs')
+    stable = jobs.verify_collection_receipt(attempt_id, frozen['profile'])
+    require(stable.get('attempt_id') == attempt_id
+            and stable.get('binding') == binding
+            and stable.get('evidence',{}).get('snapshot_sha256') == request['openart']['snapshot']['snapshot_sha256']
+            and stable.get('job_id_sha256') and stable.get('job_record_sha256'),
+            'OpenArt stable original collection binding differs')
+    result = execution.load_attempt_result(root, attempt_id)
+    require(result.get('status') == 'generated' and (directory / 'reconciliation.json').is_file(),
+            'OpenArt original collection reconciliation missing')
+    payload = result.get('result')
+    require(isinstance(payload, dict) and payload.get('success') is True,
+            'OpenArt collection result incomplete')
+    data = payload.get('data', {})
+    expected_evidence = stable
+    require(data.get('provider') == 'openart_cli' and data.get('attempt_id') == attempt_id
+            and data.get('dispatch_status') == 'completed' and data.get('openart_evidence') == expected_evidence,
+            'OpenArt result original job/request/account evidence differs')
+    require(payload.get('cost_usd') is None and data.get('release_authorized') is False,
+            'OpenArt unresolved billing misrepresented')
+    output = result.get('output')
+    actual = bound_file(output, root, 'OpenArt collected output')
+    require(output == expected_output, 'OpenArt selected output differs')
+    require(stable.get('output', {}).get('path') == str(actual)
+            and stable.get('output', {}).get('sha256') == output['sha256'], 'OpenArt original-job output binding differs')
+    preserved = result.get('preserved_output')
+    bound_file(preserved, directory, 'OpenArt preserved output')
+    require(preserved['sha256'] == output['sha256'] and str(actual) in payload.get('artifacts', []),
+            'OpenArt preserved output/artifact differs')
+    return {'request':request, 'result':result}
 
 
 def _validate_local_render_result(root, directory, request, expected_output, bound_file, read, require):

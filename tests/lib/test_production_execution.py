@@ -873,3 +873,99 @@ def test_offline_hook_blocks_openart_transport(tmp_path, monkeypatch):
             except cli.OpenArtCLIError as exc: return {'blocked': exc.kind}
             return {'blocked': None}
     assert HookTool().dry_run(inputs)['offline_preparation'] == {'blocked': 'offline_only'}
+
+# Synthetic OpenArt component seams; no account authentication or native provider.
+def test_openart_legacy_project_never_invokes(tmp_path):
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    (tmp_path/'project.json').write_text(json.dumps({'project_id':'synthetic-legacy'}))
+    with pytest.raises(ProductionGovernanceError, match='OpenArt requires strict'):
+        OpenArtCLIVideo().execute({'project_dir':str(tmp_path),'prompt':'synthetic',
+                                 'output_path':str(tmp_path/'output.mp4')})
+    assert not (tmp_path/'production_attempts').exists()
+
+@pytest.mark.parametrize('change', ['extra_control','profile'])
+def test_openart_nested_frozen_mismatch_zero_launch(tmp_path, monkeypatch, change):
+    from lib import openart_jobs as jobs
+    from tests.tools.test_openart_cli_video import synthetic_openart_project
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    inputs, scope, state = synthetic_openart_project(tmp_path, monkeypatch)
+    inputs.update(preferred_provider='openart_cli', allowed_providers=['openart_cli'])
+    scope['requests']['entry'] = planned_request_digest(inputs,project_dir=tmp_path)
+    write_scopes(tmp_path,scope)
+    class SyntheticSelector(BaseTool):
+        name='video_selector'
+        provider='selector'
+        capability='video_generation'
+        tier=ToolTier.GENERATE
+        def execute(self, submitted):
+            nested = dict(submitted)
+            nested.pop('preferred_provider')
+            nested.pop('allowed_providers')
+            if change == 'extra_control': nested['seed'] = 901
+            else:
+                from lib.production_execution import _ACTIVE
+                _ACTIVE.get()['openart_profile']['account_id_sha256'] = 'x'*64
+            return OpenArtCLIVideo().execute(nested)
+    with pytest.raises(ProductionGovernanceError, match='OpenArt'):
+        SyntheticSelector().execute(inputs)
+    assert state['submits'] == 0
+    assert len(list((tmp_path/'production_attempts').glob('*/request.json'))) == 1
+
+def test_openart_wrong_original_request_cannot_collect(tmp_path, monkeypatch):
+    from tests.tools.test_openart_cli_video import synthetic_openart_project
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    from lib.production_execution import collect_openart_attempt
+    inputs, _, state = synthetic_openart_project(tmp_path,monkeypatch)
+    result = OpenArtCLIVideo().execute(inputs)
+    with pytest.raises(ProductionGovernanceError, match='request/attempt'):
+        collect_openart_attempt(tmp_path,result.data['production_attempt_id'],request_sha256='bad')
+    assert state['collections'] == 0 and state['submits'] == 1
+    with pytest.raises(ProductionGovernanceError, match='collect_openart_attempt'):
+        reconcile_attempt(tmp_path,result.data['production_attempt_id'],result,
+                          request_sha256=result.data['production_request_sha256'])
+    assert state['submits'] == 1
+
+def test_openart_empty_reference_intent_does_not_remove_required_boards(tmp_path, monkeypatch):
+    from tests.tools.test_openart_cli_video import synthetic_openart_project
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    inputs, scope, state = synthetic_openart_project(tmp_path,monkeypatch)
+    contract = json.loads((tmp_path/'shot_contract.json').read_text())
+    contract['shots'][0]['asset_ids'] = []
+    digest = contract_digest(contract)
+    contract['project_review']['subject_sha256'] = digest
+    for shot in contract['shots']: shot['review']['subject_sha256'] = digest
+    (tmp_path/'shot_contract.json').write_text(json.dumps(contract))
+    inputs.pop('image_path')
+    inputs.update(mode='text2video',operation='text_to_video')
+    scope['requests']['entry'] = planned_request_digest(inputs,project_dir=tmp_path)
+    scope['approval_plan_sha256'] = approval_plan_digest(contract)
+    write_scopes(tmp_path,scope)
+    with pytest.raises(ProductionGovernanceError, match='asset_ids'):
+        OpenArtCLIVideo().execute(inputs)
+    assert state['submits'] == 0
+
+@pytest.mark.parametrize('change',['request','snapshot','account','process'])
+def test_openart_component_terminal_failure_binding_rejected(tmp_path,monkeypatch,change):
+    """Synthetic component failure proof must match the original frozen attempt."""
+    from tests.tools.test_openart_cli_video import synthetic_openart_project
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    from lib import openart_jobs as jobs, production_execution as execution
+    inputs,_,state=synthetic_openart_project(tmp_path,monkeypatch)
+    result=OpenArtCLIVideo().execute(inputs)
+    aid=result.data['production_attempt_id']
+    binding=copy.deepcopy(state['launch'][aid]['binding'])
+    proof={'attempt_id':aid,'binding':binding,'job_id_sha256':'synthetic-job',
+           'terminal_failure_sha256':'f'*64,'account_id_sha256':binding['account_id_sha256'],
+           'process_state':'exited','billing':'unknown','release_authorized':False}
+    if change=='request': binding['request_sha256']='wrong-request'
+    elif change=='snapshot': binding['snapshot_sha256']='wrong-snapshot'
+    elif change=='account': proof['account_id_sha256']='wrong-account'
+    else: proof['process_state']='alive'
+    monkeypatch.setattr(jobs,'collect_job',lambda *a,**kw:{'status':'failed_terminal','output':None})
+    monkeypatch.setattr(jobs,'reconcile_job',lambda *a:{'state':'failed_terminal',
+                        'binding':state['launch'][aid]['binding'],'events_sha256':'d'*64})
+    monkeypatch.setattr(jobs,'verify_terminal_failure',lambda *a:proof)
+    with pytest.raises(ProductionGovernanceError,match='OpenArt terminal'):
+        execution.collect_openart_attempt(tmp_path,aid,request_sha256=result.data['production_request_sha256'])
+    assert not (tmp_path/'production_attempts'/aid/'reconciliation.json').exists()
+    assert state['submits']==1

@@ -139,3 +139,53 @@ def test_recovery_can_use_full_return_retained_in_uncertain_record(production):
     save(directory / 'result.json', {'status': 'uncertain', 'result': retained['result']})
     save(directory / 'reconciliation.json', retained)
     assert check(production, aid, output)['result']['status'] == 'generated'
+
+@pytest.mark.parametrize('change', ['account','job','native_request','profile','output_bytes','receipt'])
+def test_openart_original_evidence_negatives(tmp_path, monkeypatch, change):
+    from tests.tools.test_openart_cli_video import synthetic_openart_project
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    from lib import openart_jobs as jobs
+    from lib.production_execution import collect_openart_attempt
+    inputs, _, state = synthetic_openart_project(tmp_path,monkeypatch)
+    result = OpenArtCLIVideo().execute(inputs)
+    aid = result.data['production_attempt_id']
+    collected = collect_openart_attempt(tmp_path,aid,request_sha256=result.data['production_request_sha256'])
+    if change == 'account': state['launch'][aid]['binding']['account_id_sha256'] = 'x'*64
+    elif change == 'job': state['events'][aid][0]['job_id_sha256'] = 'wrong-job'
+    elif change == 'native_request': state['launch'][aid]['argv'] = ['altered-native-call']
+    elif change == 'profile': state['frozen'][aid]['profile']['account_id_sha256'] = 'x'*64
+    elif change == 'output_bytes': Path(inputs['output_path']).write_bytes(b'changed footage')
+    else: state['events'][aid][-1].pop('receipt_sha256')
+    with pytest.raises(ProductionGovernanceError):
+        validate_attempt_provenance(tmp_path,aid,shot_id='entry',story_revision='story-1',
+                                   expected_output=collected['output'])
+
+def test_openart_public_attempt_omits_prompt_and_private_native(tmp_path, monkeypatch):
+    from tests.tools.test_openart_cli_video import synthetic_openart_project
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    from lib.production_execution import planned_request_digest
+    from tests.lib.test_production_execution import write_scopes
+    inputs, scope, state = synthetic_openart_project(tmp_path,monkeypatch)
+    inputs['prompt'] = 'Synthetic https://media.example/clip?token=private-secret'
+    scope['requests']['entry'] = planned_request_digest(inputs,project_dir=tmp_path)
+    write_scopes(tmp_path,scope)
+    result = OpenArtCLIVideo().execute(inputs)
+    directory = tmp_path/'production_attempts'/result.data['production_attempt_id']
+    public = '\n'.join(path.read_text() for path in directory.glob('*.json'))
+    assert 'private-secret' not in public
+    assert 'https://media.example' not in public
+    assert state['submits'] == 1
+
+def test_openart_fixture_profile_never_certifies_without_explicit_test_seam(tmp_path,monkeypatch):
+    from tests.tools.test_openart_cli_video import synthetic_openart_project
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    from lib import production_provenance
+    from lib.production_execution import collect_openart_attempt
+    inputs, _, _ = synthetic_openart_project(tmp_path,monkeypatch)
+    result = OpenArtCLIVideo().execute(inputs)
+    aid = result.data['production_attempt_id']
+    collected = collect_openart_attempt(tmp_path,aid,request_sha256=result.data['production_request_sha256'])
+    monkeypatch.setattr(production_provenance,'_ALLOW_OPENART_FIXTURE_PROVENANCE',False)
+    with pytest.raises(ProductionGovernanceError,match='cannot certify live'):
+        validate_attempt_provenance(tmp_path,aid,shot_id='entry',story_revision='story-1',
+                                   expected_output=collected['output'])
