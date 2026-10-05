@@ -18,11 +18,13 @@ deepened: 2026-10-05
 
 **Means:** One official subscription-backed OpenArt CLI account integrated into OpenMontage, with reviewed request compilation and account credit control (KTD1–KTD6).
 
-**Authority:** The user's automation requirement, clarified provider-choice experience and R1–R14 govern the product; KTDs govern implementation. On 2026-10-05, the user explicitly approved LFG end to end, including implementation after this plan phase completes. Readiness describes the plan's completeness and does not extend that authorization to separately gated paid activity.
+**Authority:** The user's automation requirement, clarified provider-choice experience and R1–R18 govern the product; KTDs govern implementation. On 2026-10-05, the user explicitly approved LFG end to end, including implementation after this plan phase completes. The accepted [Auto-continue amendment](2026-10-05-1833-openart-auto-continue-amendment.md) adds an optional upfront approval envelope and unit U5P. Readiness describes the plan's completeness and does not extend that authorization to separately gated paid activity.
 
 **Execution status (2026-10-05):** LFG end-to-end approval is recorded; implementation may start once the plan phase completes. Begin with local development and offline validation. A subscription purchase and any paid benchmark dispatch still require the exact account/settings/count/cost qualification and authorization described below. Push and PR creation also remain separately gated.
 
 **Stop conditions:** Unsupported required controls, unclear account ownership, missing cost evidence, ambiguous submission, or unavailable audiovisual review stop the affected operation with retained evidence. Resolve routine implementation details locally; surface changes to scope or approved production choices.
+
+**Approval modes:** Strict remains the default. A valid, explicitly approved Auto-continue policy authorizes only its listed routes, flex dimensions, attempt caps, credit ceiling and checkpoint stages. Choices inside that envelope are announced and logged before use; anything outside it stops for a decision. Root accepts R18's narrow additional Strict guard: a pending, running or uncertain video attempt blocks another video attempt for that same shot across providers, including an unpublished ledger reservation. Other shots and non-video phases remain independent.
 
 **Tail ownership:** The implementation orchestrator owns integration and independent code review. The user authorizes the live benchmark and any shipping action.
 
@@ -55,6 +57,7 @@ The user continues working in Social Studio: choose a concept, refine the joke/s
 4. After applicable approvals, Codex prepares provider-specific requests, uploads approved references, submits, checks jobs, downloads and assembles. The user manages creative choices and the allowance rather than CLI commands, job IDs or download files.
 5. Existing production gates review cast, action completion, dialogue/speakers, audiovisual quality and the complete story. Using both providers is permitted only through an explicit approved mapping and reviewed continuity; an assembled file is not automatically certified.
 6. A blocked or failed route produces a concrete diagnosis and proposed next action. Switching provider/model or generating a corrective attempt requires matching authorization; collection of a known original job continues without generating again.
+7. The user can optionally approve Auto-continue up front: exact eligible providers/models, locked cast/dialogue/story, permitted duration/resolution/reference flex, OpenArt credits, attempt caps and named checkpoint stages. Codex may continue within that envelope, logging compromises and reporting actual choices, costs and remaining quality findings. Without a valid policy, Strict applies. Unknown paid acceptance still blocks a duplicate video attempt.
 
 Prefer continuity within a sequence when it matters. Provider mixing is an available tool, not a requirement to use every model. Benchmark reports inform the agent's recommendations without adding an automatic learned router.
 
@@ -80,7 +83,7 @@ This planning turn has not run OpenArt jobs or measured OpenArt credit waste; th
 **Automated route and truthful capabilities**
 
 - R1. After one-time official authentication, Codex/OpenMontage must automate OpenArt reference uploads, quoting, generation and job inspection through the subscription CLI, then collect outputs and assemble/deliver through qualified engine paths.
-- R2. Register an explicit OpenArt video provider with exact model/mode/settings selection; a missing required control blocks generation without website, API, model or provider substitution.
+- R2. Register an explicit OpenArt video provider with exact model/mode/settings selection; a missing required control blocks generation without website or API substitution. Strict requires approval for model/provider changes; Auto-continue permits only independently validated choices inside R15–R18, never selector fallback.
 - R3. Preserve each submission's original account, governed attempt, request, native arguments, reference bindings and job evidence across process interruption; uncertainty never authorizes a second submission.
 - R4. Expose inspect, quote, dry-run, status, collection, original-attempt recovery and evidence-backed attempt resolution as agent-accessible operations that do not consume generation attempts or create additional credit reservations.
 
@@ -103,6 +106,15 @@ This planning turn has not run OpenArt jobs or measured OpenArt credit waste; th
 - R13. Retain durable account affinity and an eligibility seam for later pooling, without implementing rotation, multiple logins or a pool in this release.
 - R14. Present qualified Grok CLI and OpenArt CLI options through the existing production conversation/menu, with exact models/controls, readiness, limitations, separate cost units and evidence for recommendations. Support an explicitly approved route per sequence or shot, preserving that mapping through dispatch, collection, assembly and review without scoring overrides or hidden fallback.
 
+**Optional Auto-continue**
+
+- R15. Bind an optional upfront policy to immutable per-shot baselines, exact eligible routes, locked must-haves, explicit flex, an OpenArt credit ceiling, attempt caps and named checkpoint stages. Missing, revoked, stale or invalid policy means Strict.
+- R16. Derive and revalidate exact scopes, compiled requests, preparation reviews and OpenArt credit terms from that policy before every dispatch; choices inside it need no new question.
+- R17. Prove preserved cast, dialogue, source, story and locked native controls from actual bindings. Missing quality evidence remains visible; exhausted caps produce an uncertified draft.
+- R18. Block another strict motion/video attempt for the same shot across providers while an original is pending, running or uncertain, reading private ledger outbox reservations before journals. No TTL or unsupported attestation releases the block. Other shots and non-video phases remain independent.
+
+The [accepted amendment](2026-10-05-1833-openart-auto-continue-amendment.md) is normative for R15–R18, policy/checkpoint schemas, derivation and AE9–AE22. It authorizes no purchase, paid benchmark, publication or shipping.
+
 ### Key Flows
 
 - F1. **Prepare and dispatch.** Per R2, R5–R9: discover eligible controls → resolve the approved shot and references → compile → inspect feasibility → review the pack/request → approve exact scope → reserve one account slot and credits → submit once.
@@ -121,9 +133,11 @@ This planning turn has not run OpenArt jobs or measured OpenArt credit waste; th
 - AE7. **Covers R2, R9, R14.** A shot requires an ending-frame pin that OpenArt has not qualified; the menu reports OpenArt ineligible and can recommend a qualified Grok route for approval. It never silently changes an approved OpenArt dispatch, drops the pin or displays unknown cost as zero.
 - AE8. **Covers R2, R10, R14.** A production explicitly approves a Grok shot and an OpenArt shot through separate matching scopes. Each dispatch uses its approved provider/model, preserves its own provenance and billing, and enters the same reviewed assembly path. A crossed scope, model substitution or unapproved provider fails before generation.
 
+AE9–AE22 are defined in the [accepted Auto-continue amendment](2026-10-05-1833-openart-auto-continue-amendment.md#acceptance-examples), including bounded provider choice, immutable baseline locks, duplicate blocking, exact caps, truthful checkpoint preauthorization, Grok-native preparation and Strict regressions.
+
 ### Success Criteria
 
-The release candidate passes offline proofs for AE1–AE8 and exposes the full automated control path, including provider choice alongside Grok and an explicitly approved mixed-provider fixture.
+The release candidate passes offline proofs for AE1–AE22 and exposes the full automated control path, including provider choice alongside Grok, an explicitly approved mixed-provider fixture and optional Auto-continue within a retained approval envelope.
 Live qualification requires account-side evidence and the authorized benchmark; offline success alone is not live compatibility or creative success.
 The benchmark establishes an initial acceptance/economics baseline and compares Turbo with Max; it does not independently prove that preparation improved acceptance over an earlier workflow.
 
@@ -287,7 +301,7 @@ The initial eligibility seam reports verified identity/capabilities, available b
 
 ## Implementation Units
 
-Build U1 → U2 → U3 → U4 → U5 → U6. U2 component proofs use a fake reservation interface; U4 owns real ledger/slot invariants and U5 owns integrated sign-off. Assign shared dispatcher edits sequentially to one integration owner rather than parallel writers.
+Build U1 → U2 → U3 → U4 → U5 → U5P → U6. U2 component proofs use a fake reservation interface; U4 owns real ledger/slot invariants and U5 owns integrated sign-off. Assign shared dispatcher edits sequentially to one integration owner rather than parallel writers.
 
 ### U1. Official CLI discovery and transport
 
@@ -395,11 +409,19 @@ Build U1 → U2 → U3 → U4 → U5 → U6. U2 component proofs use a fake rese
 
 **Verification:** Offline integration and repository checks pass; independent review accepts the substantive diff before any paid qualification.
 
+### U5P. Optional Auto-continue approval policy
+
+**Goal:** Continue approved video work within an explicit envelope while preserving exact requests, budget guards and honest quality gates.
+**Requirements:** R15–R18, R2, R9, R14; AE9–AE22 and AE1/AE6–AE8 regressions.
+**Dependencies:** Accepted U4 allowance/outbox integration and U5 qualified menu metadata.
+**Files and approach:** Follow the [amendment's U5P contract](2026-10-05-1833-openart-auto-continue-amendment.md#u5p-auto-continue-policy-new-unit): new pure policy helper and closed schema; sequential narrow edits to production request/preflight, Grok-native preparation and checkpoint authority; guidance on Strict default and upfront Auto-continue setup. U4-owned ledger and credit modules remain unchanged.
+**Verification:** Offline schema, immutable baseline/delta, native lock, retiming, caps, cross-provider duplicate, checkpoint-hash and mixed-report tests. Use executable fake CLIs and current-byte media evidence; no real generation. A model other than the implementer reviews baseline authority, locks, duplicate prevention and checkpoints.
+
 ### U6. Fixed live benchmark and operational qualification
 
 **Goal:** Measure usable-footage economics and demonstrate the real automated route.
 **Requirements:** R1, R3, R9–R11; F1–F3; AE6.
-**Dependencies:** U5 plus the exact separate benchmark approval, qualified account capabilities and demonstrated complete AV review on existing media without new paid generation.
+**Dependencies:** U5 and U5P plus the exact separate benchmark approval, qualified account capabilities and demonstrated complete AV review on existing media without new paid generation. Benchmark projects remain Strict and reject an Auto-continue policy.
 **Files:** New `schemas/artifacts/provider_benchmark.schema.json`, `tests/lib/test_provider_benchmark.py`, `lib/provider_benchmark.py`, `docs/OPENART_BENCHMARK.md`; runtime manifests, receipts, footage and reviews under the benchmark project.
 **Approach:** Implement KTD9 and the Benchmark Proposal. Compile/review the fixed paired cases and quote the final manifest before dispatch. Automate collection and existing qualified assembly, then report failures and measured debit honestly.
 **Test scenarios:**
@@ -426,6 +448,7 @@ Use the repository's configured interpreter and network-disabled/fake-provider f
 | U3 | Compiled-request tests plus `tests/lib/test_shot_contract.py` and strict preflight tests |
 | U4 | Multiprocess credit-ledger tests and dispatch crash-recovery integration tests |
 | U5 | OpenArt contract/integration tests plus `tests/integration/test_first_pass_workflow.py`, production execution/provenance/review, draft-audio and video-selector regressions |
+| U5P | Amendment policy/delta/lock/cap, cross-provider duplicate and checkpoint authority tests; existing Strict OpenArt/Grok regressions |
 | U6 | Offline benchmark metric/approval tests, then only the separately approved live manifest |
 | Repository | `make lint`, `make test-contracts`, `make test`, and `git diff --check` using the configured environment |
 | Independent review | Review brief, substantive diff and check results; give auth/credit/provenance boundaries focused review by a model other than their implementer |
@@ -438,10 +461,10 @@ Source research and inherited past passing tests do not count as checks of the n
 
 ## Definition of Done
 
-- U1–U5 produce a reviewed release candidate with the specified offline proofs and documented account discovery results.
+- U1–U5P produce a reviewed release candidate with the specified offline proofs and documented account discovery results.
 - Paid enablement requires exact capability/quote contracts, all required preparation gates and the separate benchmark allowance.
 - U6 qualifies the operational route through observed results; unresolved account capabilities, billing or AV review are reported honestly and are never described as production certification.
-- Each unit satisfies its Verification and applicable Acceptance Examples; R1–R14 remain traceable through the final diff.
+- Each unit satisfies its Verification and applicable Acceptance Examples; R1–R18 remain traceable through the final diff.
 - Social Studio can present qualified Grok/OpenArt choices, explain separate billing and operate an approved provider mapping through existing production and review surfaces.
 - No credentials or private runtime state enter Git, no abandoned experimental code remains, and no extra identity or pooling feature is introduced.
 - The handoff states what is implemented, what was tested offline/live, what footage was accepted and what remains unresolved.
