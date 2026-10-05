@@ -57,7 +57,7 @@ The user continues working in Social Studio: choose a concept, refine the joke/s
 4. After applicable approvals, Codex prepares provider-specific requests, uploads approved references, submits, checks jobs, downloads and assembles. The user manages creative choices and the allowance rather than CLI commands, job IDs or download files.
 5. Existing production gates review cast, action completion, dialogue/speakers, audiovisual quality and the complete story. Using both providers is permitted only through an explicit approved mapping and reviewed continuity; an assembled file is not automatically certified.
 6. A blocked or failed route produces a concrete diagnosis and proposed next action. Switching provider/model or generating a corrective attempt requires matching authorization; collection of a known original job continues without generating again.
-7. The user can optionally approve Auto-continue up front: exact eligible providers/models, locked cast/dialogue/story, permitted duration/resolution/reference flex, OpenArt credits, attempt caps and named checkpoint stages. Codex may continue within that envelope, logging compromises and reporting actual choices, costs and remaining quality findings. Without a valid policy, Strict applies. Unknown paid acceptance still blocks a duplicate video attempt.
+7. The user can optionally approve Auto-continue up front: exact OpenArt providers/models or the existing Grok CLI route with its unreported media backend, locked cast/dialogue/story, permitted duration/resolution/reference flex, OpenArt credits, attempt caps and named checkpoint stages. Codex may continue within that envelope, logging compromises and reporting actual choices, costs and remaining quality findings. Without a valid policy, Strict applies. Unknown paid acceptance still blocks a duplicate video attempt.
 
 Prefer continuity within a sequence when it matters. Provider mixing is an available tool, not a requirement to use every model. Benchmark reports inform the agent's recommendations without adding an automatic learned router.
 
@@ -108,7 +108,7 @@ This planning turn has not run OpenArt jobs or measured OpenArt credit waste; th
 
 **Optional Auto-continue**
 
-- R15. Bind an optional upfront policy to immutable per-shot baselines, exact eligible routes, locked must-haves, explicit flex, an OpenArt credit ceiling, attempt caps and named checkpoint stages. Missing, revoked, stale or invalid policy means Strict.
+- R15. Bind an optional upfront policy to immutable per-shot baselines, exact eligible OpenArt models or the explicitly accepted Grok CLI-managed unreported media route, locked must-haves, explicit flex, an OpenArt credit ceiling, attempt caps and named checkpoint stages. Grok's agent model never substitutes for a media-model lock. Missing, revoked, stale or invalid policy means Strict.
 - R16. Derive and revalidate exact scopes, compiled requests, preparation reviews and OpenArt credit terms from that policy before every dispatch; choices inside it need no new question.
 - R17. Prove preserved cast, dialogue, source, story and locked native controls from actual bindings. Missing quality evidence remains visible; exhausted caps produce an uncertified draft.
 - R18. Block another strict motion/video attempt for the same shot across providers while an original is pending, running or uncertain, reading private ledger outbox reservations before journals. No TTL or unsupported attestation releases the block. Other shots and non-video phases remain independent.
