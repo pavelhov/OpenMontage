@@ -225,6 +225,9 @@ class FalMedia(BaseTool):
                 )
             ):
                 raise ValueError(f"{endpoint} does not accept {key}")
+        from tools.schema_media import validate_native_media_references
+
+        validate_native_media_references(payload)
         Draft202012Validator(schema).validate(payload)
         if payload.get("mask_url") and len(payload.get("reference_image_urls", [])) > 3:
             raise ValueError(

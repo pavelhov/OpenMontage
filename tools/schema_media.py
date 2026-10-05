@@ -34,6 +34,47 @@ def local_image(path):
     )
 
 
+# Native provider fields that carry media references. Providers fetch these as
+# remote URLs or decode them as data URIs; they never read a local filesystem
+# path. Boolean controls such as ``audio``/``generate_audio`` are not listed.
+NATIVE_MEDIA_REFERENCE_FIELDS = frozenset({
+    "images", "image", "image_input", "image_uri", "image_url", "image_urls",
+    "last_image", "last_frame_uri", "start_image_url", "middle_image_url",
+    "end_image_url", "mask", "mask_url", "audio_uri", "audio_url",
+    "target_audio_url", "video_uri", "video_url", "file", "file_url", "web_url",
+    "link", "refers", "reference_image_urls", "reference_video_urls",
+    "reference_audio_urls",
+})
+
+
+def validate_native_media_references(payload):
+    """Reject native media strings that are not HTTPS URLs or data URIs.
+
+    A raw filesystem path (including a strict-production snapshot path) would
+    otherwise reach a paid route verbatim. Local files must use the canonical
+    ``image_path``/``image_paths``/``mask_path`` inputs, which are encoded.
+    """
+
+    def check(field, value):
+        if isinstance(value, str):
+            if not value.startswith(("https://", "data:")):
+                raise ValueError(
+                    f"{field} must be an https:// URL or data: URI; pass local files "
+                    "through image_path/image_paths/mask_path instead"
+                )
+        elif isinstance(value, list):
+            for item in value:
+                check(field, item)
+        elif isinstance(value, dict):
+            for key in ("url", "uri"):
+                if key in value:
+                    check(f"{field}.{key}", value[key])
+
+    for field, value in payload.items():
+        if field in NATIVE_MEDIA_REFERENCE_FIELDS and value is not None:
+            check(field, value)
+
+
 class SchemaMedia(BaseTool):
     tier = ToolTier.GENERATE
     runtime = ToolRuntime.API
@@ -248,6 +289,7 @@ class SchemaMedia(BaseTool):
             raise ValueError("Use image_to_video with a source image")
         if self.provider == "ltx":
             self.validate_ltx(payload, operation)
+        validate_native_media_references(payload)
         Draft202012Validator(schema).validate(payload)
         return model, operation, endpoint, payload
 

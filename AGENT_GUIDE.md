@@ -582,6 +582,8 @@ Store the contract at `artifacts/shot_contract.json`. The common dispatcher requ
 
 Use canonical registry tools and their normal `execute`/`dry_run` paths; Studio's entry defaults to a zero-call dry run. Preserve attempts, original-session reconciliation and reviewed selections through `lib.production_execution`. Selection and final certification require complete matching attempt provenance. Failures and uncertain results are evidence, never a retry allowance. See `tests/integration/test_first_pass_workflow.py` for an offline example of the entire control path, including a deliberate serial handoff.
 
+Current strict limits for the refreshed schema/fal/HeyGen adapters, all of which fail closed before any provider call or attempt reservation: native remote or unencoded media fields (`image_uri`, `image_input`, `last_frame_uri`, `audio_uri`, `mask`, `web_url`, `link` and similar) are refused, so pass local inputs through canonical `image_path`/`image_paths`/`last_image_path`/`mask_path`, which are snapshotted and encoded. SchemaMedia/FalMedia also reject raw filesystem paths in any native media field in every mode. Provider-job `resume_job` cannot be reconciled as a strict attempt yet, and avatar generation/resume is not governed yet; both are denied in strict projects rather than treated as new approved attempts. Avatar `list_looks`/`inspect_look` stay read-only and ungoverned.
+
 ## Reviewer Protocol
 
 The reviewer is a meta skill (`skills/meta/reviewer.md`). Agents supply semantic judgments; the engine enforces required evidence and current bindings. Critical prerequisites block motion and final certification.

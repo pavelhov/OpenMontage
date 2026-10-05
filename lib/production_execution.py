@@ -42,7 +42,16 @@ INPUT_PATH_KEYS = {'image', 'image_path', 'image_paths', 'reference_image_path',
 INPUT_PATH_KEYS |= {'image_urls', 'image_input', 'image_uri', 'last_image', 'last_frame_uri',
                     'start_image_url', 'middle_image_url', 'mask', 'mask_path', 'mask_url',
                     'audio_uri', 'audio_url', 'target_audio_url', 'video_uri', 'file', 'file_url',
-                    'web_url'}
+                    'web_url', 'link'}
+# Of those, only ``mask_path`` is encoded from local bytes by the adapters
+# (SchemaMedia/FalMedia ``local_image``). The rest are forwarded verbatim, so a
+# strict snapshot path would reach a paid route as a raw filesystem string and a
+# URL is mutable. Strict production fails closed on them; callers use canonical
+# image_path/image_paths/last_image_path/mask_path fields instead.
+STRICT_UNENCODED_NATIVE_KEYS = {'image_urls', 'image_input', 'image_uri', 'last_image',
+                                'last_frame_uri', 'start_image_url', 'middle_image_url', 'mask',
+                                'mask_url', 'audio_uri', 'audio_url', 'target_audio_url',
+                                'video_uri', 'file', 'file_url', 'web_url', 'link'}
 _ACTIVE = contextvars.ContextVar('production_execution', default=None)
 
 
@@ -153,6 +162,11 @@ def _kind(tool, inputs):
         return 'image'
     if capability in {'music_generation', 'tts', 'voice_generation', 'audio_generation'}:
         return 'audio'
+    if capability == 'avatar':
+        # Read-only catalog lookups never dispatch paid media.
+        if inputs.get('operation') in {'list_looks', 'inspect_look'}:
+            return None
+        return 'avatar'
     return None
 
 
@@ -165,6 +179,9 @@ def _paths(inputs, root, visitor, *, allow_upstream=False):
     def walk(value, key=None):
         if key in {'workflow_path', 'workflow_json'}:
             _fail('strict production cannot bind opaque workflow media dependencies')
+        if key in STRICT_UNENCODED_NATIVE_KEYS:
+            _fail(f'{key}: strict production cannot bind native provider media fields that are '
+                  'sent unencoded; use canonical image_path/image_paths/last_image_path/mask_path')
         if key in INPUT_PATH_KEYS:
             if allow_upstream and isinstance(value, dict) and '$upstream' in value:
                 _upstream_binding(value)
@@ -363,9 +380,21 @@ def preflight(tool, inputs):
         return {'governed': False, 'label': 'ungoverned_legacy'}
     if marker['governance'].get('version') != '1.0':
         _fail('unsupported governance version')
+    if kind == 'avatar':
+        # Avatar generation/resume has no shot-contract, scope phase or attempt
+        # provenance binding yet. Fail closed in strict projects rather than
+        # issuing an ungoverned paid generation; legacy projects are unchanged.
+        _fail('strict governance does not support avatar generation or resume yet')
     context = inputs.get('governance')
     if not isinstance(context, dict) or not context.get('scope_id') or not context.get('shot_id'):
         _fail('strict generation requires governance scope_id and shot_id')
+    if inputs.get('resume_job'):
+        # Provider-job resume (SchemaMedia/FalMedia/HeyGen/fal TTS) polls an
+        # already-paid submission. It is not a new approved attempt, and
+        # reconcile_attempt has no qualified binding for generic providers yet, so
+        # fail closed rather than reserve/count it as a fresh paid dispatch.
+        _fail('strict governance cannot resume provider jobs as new attempts; '
+              'reconcile the original attempt (unsupported for this provider)')
     scope_id, shot_id = context['scope_id'], context['shot_id']
     scopes = _read(root / 'production_scopes.json')
     if scopes.get('version') != '1.0':

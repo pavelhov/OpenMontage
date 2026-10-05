@@ -399,6 +399,165 @@ def test_strict_unsupported_media_fails_before_dispatch(tmp_path,field,value):
     assert tool.calls == 0
 
 
+NATIVE_UNENCODED=['image_urls','image_input','image_uri','last_image','last_frame_uri','start_image_url',
+                  'middle_image_url','mask','mask_url','audio_uri','audio_url','target_audio_url','video_uri',
+                  'file','file_url','web_url','link']
+
+
+@pytest.mark.parametrize('field',NATIVE_UNENCODED)
+@pytest.mark.parametrize('form',['url','local','nested_url','nested_local'])
+def test_strict_native_media_fields_fail_closed_before_dispatch(tmp_path,field,form):
+    inputs,scope,_=project(tmp_path)
+    value='https://example.test/mutable.bin' if form.endswith('url') else str(tmp_path/'assets'/'reference.png')
+    if form.startswith('nested'):
+        inputs['provider_params']={field:value}
+    else:
+        inputs[field]=value
+    with pytest.raises(ProductionGovernanceError,match=field):
+        planned_request_digest(inputs,project_dir=tmp_path)
+    write_scopes(tmp_path,scope)
+    tool=ImageTool()
+    with pytest.raises(ProductionGovernanceError):
+        tool.execute(inputs)
+    assert tool.calls == 0
+    assert not (tmp_path/'production_attempts').exists()
+
+
+def test_strict_canonical_mask_path_is_hashed(tmp_path):
+    inputs,_,_=project(tmp_path)
+    mask=tmp_path/'assets'/'mask.png'
+    mask.write_bytes(b'approved mask')
+    inputs['mask_path']=str(mask)
+    digest=planned_request_digest(inputs,project_dir=tmp_path)
+    mask.write_bytes(b'changed mask')
+    assert planned_request_digest(inputs,project_dir=tmp_path) != digest
+
+
+def test_boolean_audio_controls_are_not_media_inputs(tmp_path):
+    inputs,_,_=project(tmp_path)
+    inputs['provider_params']={'audio':True,'generate_audio':False}
+    inputs['generate_audio']=True
+    planned_request_digest(inputs,project_dir=tmp_path)
+
+
+def test_strict_provider_job_resume_fails_closed_without_new_attempt(tmp_path):
+    inputs,scope,_=project(tmp_path)
+    # Even an approval digest covering the otherwise-identical request must not
+    # authorize polling/resuming an earlier paid provider job as a new attempt.
+    scope['requests']['entry']=planned_request_digest(inputs,project_dir=tmp_path)
+    write_scopes(tmp_path,scope)
+    resumed=dict(inputs,resume_job={'request_id':'paid-job','status_url':'https://example.test/status'})
+    tool=ImageTool()
+    with pytest.raises(ProductionGovernanceError,match='resume provider jobs'):
+        tool.execute(resumed)
+    assert tool.calls == 0
+    assert not (tmp_path/'production_attempts').exists()
+
+
+@pytest.mark.parametrize('nested',[False,True])
+def test_strict_schema_media_native_mask_denied_before_post(tmp_path,monkeypatch,nested):
+    """Real SchemaMedia adapter: a strict native local path never reaches the POST body raw."""
+    import tools.schema_media as schema_media
+    from tools.graphics.atlas_refresh_image import AtlasRefreshImage
+    inputs,scope,_=project(tmp_path)
+    tool=AtlasRefreshImage()
+    scope['provider']=tool.provider
+    posts=[]
+    monkeypatch.setattr(schema_media,'request_json',lambda method,url,**kw: posts.append((method,url,kw)) or {})
+    monkeypatch.setenv(tool.credential,'offline-test-key')
+    native=dict(inputs)
+    if nested:
+        native['provider_params']={'mask':inputs['image_path']}
+    else:
+        native['mask']=inputs['image_path']
+    write_scopes(tmp_path,scope)
+    with pytest.raises(ProductionGovernanceError,match='mask'):
+        tool.execute(native)
+    assert posts == []
+    assert not (tmp_path/'production_attempts').exists()
+
+
+@pytest.mark.parametrize('via_selector',[False,True])
+@pytest.mark.parametrize('field',['images','image'])
+def test_strict_schema_media_native_image_local_path_never_posted(tmp_path,monkeypatch,via_selector,field):
+    """Native ``images``/``image`` are frozen to snapshot paths in strict mode; the
+    real SchemaMedia adapter must refuse to send that raw path to the paid route,
+    whether called directly or nested under a governed selector."""
+    import tools.schema_media as schema_media
+    from tools.graphics.atlas_refresh_image import AtlasRefreshImage
+    from tools.graphics.image_selector import ImageSelector
+    from tools.base_tool import ToolStatus
+    inputs,scope,_=project(tmp_path)
+    tool=AtlasRefreshImage()
+    posts=[]
+    monkeypatch.setattr(schema_media,'request_json',lambda method,url,**kw: posts.append((method,url,kw)) or {})
+    monkeypatch.setenv(tool.credential,'offline-test-key')
+    native={k:v for k,v in inputs.items() if k!='image_path'}
+    native[field]=[inputs['image_path']] if field=='images' else inputs['image_path']
+    native['model']='gpt-image-2.5-flare'
+    runner=tool
+    if via_selector:
+        monkeypatch.setattr(tool,'get_status',lambda: ToolStatus.AVAILABLE)
+        runner=ImageSelector()
+        monkeypatch.setattr(runner,'_providers',lambda: [tool])
+        native.update(preferred_provider=tool.provider,preferred_tool=tool.name)
+    scope['provider']=tool.provider
+    scope['requests']['entry']=planned_request_digest(native,project_dir=tmp_path)
+    write_scopes(tmp_path,scope)
+    try:
+        result=runner.execute(native)
+    except (ProductionGovernanceError,ValueError):
+        result=None
+    assert result is None or not result.success
+    assert posts == [], 'raw filesystem path must never reach the paid POST body'
+
+
+def test_schema_media_native_local_path_rejected_outside_strict(tmp_path,monkeypatch):
+    import tools.schema_media as schema_media
+    from tools.graphics.atlas_refresh_image import AtlasRefreshImage
+    source=tmp_path/'source.png'
+    source.write_bytes(b'x')
+    posts=[]
+    monkeypatch.setattr(schema_media,'request_json',lambda method,url,**kw: posts.append(kw) or {})
+    monkeypatch.setenv('ATLASCLOUD_API_KEY','offline-test-key')
+    result=AtlasRefreshImage().execute({'prompt':'p','images':[str(source)],'output_path':str(tmp_path/'o.png')})
+    assert not result.success and 'image_path' in result.error
+    assert posts == []
+
+
+@pytest.mark.parametrize('extra',[{},{'operation':'generate'},{'operation':'resume','resume_job':{'video_id':'paid'}}])
+def test_strict_avatar_generation_and_resume_fail_closed(tmp_path,monkeypatch,extra):
+    import tools.avatar.heygen_avatar as heygen
+    from lib.production_execution import governed_dry_run
+    inputs,scope,_=project(tmp_path)
+    calls=[]
+    monkeypatch.setattr(heygen,'request_json',lambda *a,**kw: calls.append(a) or {})
+    monkeypatch.setenv('HEYGEN_API_KEY','offline-test-key')
+    tool=heygen.HeyGenAvatar()
+    scope['provider']=tool.provider
+    write_scopes(tmp_path,scope)
+    request=dict(inputs,avatar_id='look',script='hello',**extra)
+    with pytest.raises(ProductionGovernanceError,match='avatar'):
+        tool.execute(request)
+    with pytest.raises(ProductionGovernanceError,match='avatar'):
+        governed_dry_run(tool,request)
+    assert calls == []
+    assert not (tmp_path/'production_attempts').exists()
+
+
+@pytest.mark.parametrize('operation',['list_looks','inspect_look'])
+def test_avatar_catalog_lookups_stay_ungoverned(tmp_path,operation):
+    from tools.avatar.heygen_avatar import HeyGenAvatar
+    inputs,_,_=project(tmp_path)
+    assert preflight(HeyGenAvatar(),dict(inputs,operation=operation,avatar_id='look'))['governed'] is False
+
+
+def test_legacy_project_avatar_not_blocked(tmp_path):
+    from tools.avatar.heygen_avatar import HeyGenAvatar
+    (tmp_path/'project.json').write_text(json.dumps({'project_id':'legacy'}))
+    assert preflight(HeyGenAvatar(),{'project_dir':str(tmp_path),'avatar_id':'look'})['label'] == 'ungoverned_legacy'
+
+
 def test_motion_omitted_duration_rejected_before_reservation(tmp_path):
     inputs,scope,_=project(tmp_path,motion=True)
     del inputs['duration']
