@@ -830,3 +830,46 @@ def test_atlas_supported_plural_aliases_freeze_before_real_media_resolution(tmp_
     remote=copy.deepcopy(inputs);remote[field]=['https://synthetic.invalid/unfrozen-media']
     with pytest.raises(ProductionGovernanceError,match='local immutable asset'):
         planned_request_digest(remote,project_dir=tmp_path)
+
+
+def test_strict_dry_run_without_hook_is_unchanged(tmp_path):
+    from lib.production_execution import governed_dry_run
+    inputs,_,_ = project(tmp_path)
+    tool = ImageTool()
+    assert not hasattr(tool, 'prepare_offline')
+    assert tool.dry_run(inputs) == governed_dry_run(tool, inputs)
+    assert 'offline_preparation' not in tool.dry_run(inputs)
+    assert tool.calls == 0 and not (tmp_path/'production_attempts').exists()
+
+
+def test_strict_dry_run_offline_hook_is_pure_and_cannot_override_gate(tmp_path):
+    from tools.base_tool import in_offline_preparation
+    inputs,_,_ = project(tmp_path)
+    seen = []
+    class HookTool(ImageTool):
+        def prepare_offline(self, inputs, governed):
+            seen.append((in_offline_preparation(), governed['reservations']))
+            return {'quote': 'quote_required', 'provider_calls': 99}
+        def dry_run(self, inputs): raise AssertionError('would call network')
+    tool = HookTool()
+    result = tool.dry_run(inputs)
+    assert seen == [(True, 0)] and not in_offline_preparation()
+    assert result['provider_calls'] == 0 and result['reservations'] == 0 and result['paid_submission'] is False
+    assert result['offline_preparation'] == {'quote': 'quote_required', 'provider_calls': 99}
+    assert tool.calls == 0 and not (tmp_path/'production_attempts').exists()
+    inputs['prompt'] = 'Unapproved'
+    with pytest.raises(ProductionGovernanceError): tool.dry_run(inputs)
+    assert len(seen) == 1
+
+
+def test_offline_hook_blocks_openart_transport(tmp_path, monkeypatch):
+    from tools import _openart_cli as cli
+    inputs,_,_ = project(tmp_path)
+    monkeypatch.setenv('OPENART_CLI_PATH', '/bin/echo')
+    monkeypatch.setenv('OPENMONTAGE_OPENART_STATE_DIR', str(tmp_path.parent / (tmp_path.name + '-oa')))
+    class HookTool(ImageTool):
+        def prepare_offline(self, inputs, governed):
+            try: cli.run_readonly(['version'])
+            except cli.OpenArtCLIError as exc: return {'blocked': exc.kind}
+            return {'blocked': None}
+    assert HookTool().dry_run(inputs)['offline_preparation'] == {'blocked': 'offline_only'}

@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openmontage/tools/openart_account",
+  "title": "OpenArt Account Inspector",
+  "description": "Nonspending, explicitly read-only inspection of the official OpenArt subscription CLI. Generation, upload, status, collect and attempt resolution are not available in this tool.",
+  "type": "object",
+  "required": ["action", "read_only"],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": ["inspect", "quote", "form", "native_dry_run", "readiness",
+               "status", "collect", "resolve_attempt", "submit", "upload"],
+      "description": "Read-only: inspect, quote, form, native_dry_run, readiness. The rest always return success=false (delegated to later units)."
+    },
+    "read_only": {"const": true, "description": "Must be explicitly true."},
+    "model": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"},
+    "mode": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"},
+    "prompt": {"type": "string", "minLength": 1, "maxLength": 8000},
+    "duration": {"type": "integer", "minimum": 1, "maximum": 120},
+    "aspect_ratio": {"type": "string", "pattern": "^[0-9]{1,2}:[0-9]{1,2}$"},
+    "resolution": {"type": "string"},
+    "probe": {"type": "boolean", "description": "readiness only: run `openart version`."},
+    "timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 300}
+  },
+  "additionalProperties": false
+}
