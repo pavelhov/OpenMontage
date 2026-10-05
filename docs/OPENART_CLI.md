@@ -137,3 +137,51 @@ Server creative defaults absent from `params` are not represented, so bind
 - `run_readonly` is read-only by construction. Spending transport must be a separate,
   separately reviewed entry point that reuses the lock, environment filter, stream
   files and redaction.
+
+
+## First-account staged qualification
+
+Setup uses `lib/openart_setup.py` and additive `openart_account` actions. All
+require `read_only: true`, return opaque profile identifiers/hashes and levels,
+and create no generation credit reservations. Captured raw receipts remain
+private. Caller declarations identify JSON paths; they do not establish observed
+provider success, billing guarantees or result eligibility.
+
+1. `qualify_inspection` takes `model`, `mode`, and `json_paths`. It executes actual
+   `version`, `account`, and `model form` commands and saves an `inspected` profile.
+   Paths include `account_id`, `account_tier`, `submit_job_id`, `result_job_id`,
+   `status`, `urls`, distinct `status_terminal_ok`/`status_terminal_fail` strings,
+   and exact `url_hosts`. Future result paths remain unqualified declarations.
+2. For image-to-video, `qualify_upload` takes `model`, `mode`, `json_paths` with
+   `upload_url`, exact `url_hosts`, and `guarantee`. The guarantee declares an
+   allowed readonly `argv` plus `nonspending` and `no_delayed_charge` assertions,
+   each `{path, expected}`. Nonspending requires native `true` or integer `0`;
+   no delayed charge requires native `true`. Both must match the actual captured
+   provider response. Missing, false or absent provider evidence refuses upload.
+   An unchanged balance, a label, or a caller assertion is insufficient.
+3. `upload` executes the first approved reference upload through the jobs helper.
+   Its immutable private source snapshot and raw receipt must preserve the exact
+   source hash, account, host, URL and upload argv. The stable inspected contract
+   also binds version, tier, form/defaults and the captured guarantee receipt.
+4. `qualify_preview` takes `model`, `mode`, `prompt`, optional creative controls,
+   and the retained `image_upload_id` for image-to-video. It rechecks the current
+   version/account/tier/form/defaults, validates the retained upload, executes the
+   real native readonly preview, and saves a `pre_submit` creative profile. Its
+   image URL must equal the exact retained upload URL. No manual profile edits
+   or fabricated submit/result receipts are needed.
+5. `qualify_result` targets `attempt_id` plus declared result `json_paths`. Only
+   the original separately credit-authorized benchmark attempt may establish a
+   result proof through `promote_result_contract`. This proof is immutable and
+   bound to the original `pre_submit` profile SHA; it never rewrites that creative
+   profile to bless older artifacts. Ordinary paid production still requires full
+   qualification and the later ledger/approval gates.
+
+The helpers are `inspect_qualification(model, mode, *, json_paths, timeout)`,
+`qualify_upload_guarantee(model, mode, *, guarantee, json_paths, url_hosts, timeout)`,
+`promote_upload_contract(model, mode, *, image_upload_id)` (pure retained upload
+promotion), and `qualify_preview(model, mode, *, prompt, duration, aspect_ratio,
+resolution, image_upload_id, timeout)`. `validate_upload_guarantee(profile)` is
+pure and raises `OpenArtCLIError` on unsupported or altered evidence.
+
+Offline executable fake-CLI tests prove this staging and private transport
+behavior. Their synthetic field names and guarantees are not provider evidence.

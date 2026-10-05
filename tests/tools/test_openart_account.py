@@ -122,7 +122,7 @@ def test_native_image_dry_run_resolves_private_url_inside_guard_and_redacts(monk
     observed = {}
     profile = {"source": "fixture", "model": "synthetic-model", "mode": "image2video",
                "account_id_sha256": "c" * 64}
-    monkeypatch.setattr(jobs, "load_qualification", lambda *, model, mode:
+    monkeypatch.setattr(jobs, "load_qualification", lambda *, model, mode, require:
                         profile if (model, mode) == ("synthetic-model", "image2video") else None,
                         raising=False)
 
@@ -163,7 +163,7 @@ def test_native_image_dry_run_missing_upload_record_makes_zero_cli_calls(monkeyp
 
     profile = {"source": "fixture", "model": "synthetic-model", "mode": "image2video",
                "account_id_sha256": "c" * 64}
-    monkeypatch.setattr(jobs, "load_qualification", lambda *, model, mode: profile, raising=False)
+    monkeypatch.setattr(jobs, "load_qualification", lambda *, model, mode, require: profile, raising=False)
 
     def missing(upload_id, *, profile, account_id_sha256):
         raise cli.OpenArtCLIError("upload_unqualified", "synthetic retained upload absent")
@@ -183,7 +183,7 @@ def test_native_image_dry_run_rejects_wrong_profile_before_upload_lookup_or_cli(
 
     calls = []
 
-    def wrong_profile(*, model, mode):
+    def wrong_profile(*, model, mode, require):
         assert (model, mode) == ("requested-model", "image2video")
         raise cli.OpenArtCLIError("generation_unqualified", "synthetic model profile mismatch")
 
@@ -196,3 +196,25 @@ def test_native_image_dry_run_rejects_wrong_profile_before_upload_lookup_or_cli(
     assert not result.success
     assert result.data["reservations"] == 0
     assert calls == []
+
+
+def test_setup_actions_dispatch_and_schema_match(monkeypatch):
+    from lib import openart_setup as setup, openart_jobs as jobs
+    from pathlib import Path
+    import jsonschema
+    schema=json.loads((Path(__file__).resolve().parents[2]/'schemas/tools/openart_account.schema.json').read_text())
+    assert OpenArtAccount.input_schema['properties']==schema['properties']
+    calls=[]
+    for action, helper, extra in [
+        ('qualify_inspection','inspect_qualification',{'json_paths':{}}),
+        ('qualify_upload','qualify_upload_guarantee',{'json_paths':{},'guarantee':{},'url_hosts':[]}),
+        ('qualify_preview','qualify_preview',{'prompt':'private prompt'}),
+    ]:
+        monkeypatch.setattr(setup,helper,lambda *args,**kwargs:calls.append((args,kwargs)) or {'profile_sha256':'a'*64,'level':'inspected'})
+        inputs={'action':action,'read_only':True,'model':'m1','mode':'image2video',**extra}
+        jsonschema.validate(inputs,schema)
+        assert OpenArtAccount().execute(inputs).success
+        assert calls[-1][0]==('m1','image2video')
+    monkeypatch.setattr(jobs,'promote_result_contract',lambda aid,**kwargs:calls.append((aid,kwargs)) or {'result_proof_id':'opaque'},raising=False)
+    assert _execute('qualify_result',attempt_id='attempt-1',json_paths={}).success
+    assert calls[-1][0]=='attempt-1'

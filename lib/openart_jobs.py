@@ -108,13 +108,237 @@ def _validate_upload_contract(profile: dict) -> None:
     _delegate(lambda q: q.validate_upload_contract, profile)
 
 
-def validate_profile(profile: Any, *, allow_fixture: bool = False) -> dict:
-    """Delegates to lib.openart_qualification (real captured-proof / upload-guarantee checks)."""
-    return _delegate(lambda q: q.validate_profile, profile, allow_fixture=allow_fixture)
+def validate_profile(profile: Any, *, allow_fixture: bool = False, require: str = "full") -> dict:
+    """Delegates to lib.openart_qualification (real captured-proof / upload-guarantee checks).
+
+    For staged profiles (result_contract unqualified) `require='full'` is satisfied only by
+    load_qualification, which checks the separate result proof bound to the unchanged SHA.
+    """
+    return _delegate(lambda q: q.validate_profile, profile, allow_fixture=allow_fixture, require=require)
+
+
+def _is_staged(profile: dict) -> bool:
+    return isinstance(profile, dict) and "result_contract" in profile
+
+
+def result_proof_path(model: str, mode: str, origin_sha: str) -> Path:
+    if not isinstance(origin_sha, str) or len(origin_sha) != 64:
+        raise OpenArtCLIError("result_contract_unqualified", "invalid origin profile digest")
+    return (cli.state_dir() / "qualification" / cli._safe_part(model) / cli._safe_part(mode)
+            / "results" / (cli._safe_part(origin_sha) + ".json"))
+
+
+def load_result_proof(profile: dict) -> dict:
+    """Pure: verify the immutable private result proof bound to this exact origin profile SHA.
+
+    Returns {result_contract_sha256, result_proof_id, json_paths, evidence}. Never rewrites
+    the profile or launch. Missing/tampered -> result_contract_unqualified.
+    """
+    origin = profile.get("profile_sha256") or sha256_json(
+        {k: v for k, v in profile.items() if k != "profile_sha256"})
+    if not _is_staged(profile):
+        return {"result_contract_sha256": None, "result_proof_id": None,
+                "json_paths": profile["json_paths"], "evidence": None, "legacy_full": True}
+    try:
+        target = result_proof_path(profile["model"], profile["mode"], origin)
+        cli._check_private(target, False)
+        with open(target, "rb") as fh:
+            raw = fh.read(cli.MAX_STDOUT + 1)
+        if len(raw) > cli.MAX_STDOUT:
+            raise ValueError
+        proof = json.loads(raw)
+    except (OSError, ValueError, OpenArtCLIError):
+        raise OpenArtCLIError("result_contract_unqualified", "no verified result proof for this profile")
+    if not isinstance(proof, dict) or proof.get("origin_profile_sha256") != origin \
+            or proof.get("model") != profile["model"] or proof.get("mode") != profile["mode"] \
+            or proof.get("account_id_sha256") != profile["account_id_sha256"] \
+            or not isinstance(proof.get("json_paths"), dict) or not isinstance(proof.get("evidence"), dict):
+        raise OpenArtCLIError("result_contract_unqualified", "result proof does not bind this profile")
+    _verify_result_evidence(profile, proof)
+    return {"result_contract_sha256": hashlib.sha256(raw).hexdigest(),
+            "result_proof_id": origin, "json_paths": proof["json_paths"],
+            "evidence": proof["evidence"], "legacy_full": False}
+
+
+def _verify_result_evidence(profile: dict, proof: dict) -> None:
+    """Pure full re-verification on every proof load (no CLI/lock; uses the proof's own paths).
+
+    Original governed qualification launch (sha + frozen origin profile + purpose), original raw
+    submit stdout re-parsed with the proof's submit path == recorded job and the single parsed
+    event, actual account receipt == profile account, and creation_get receipt for that exact
+    job with qualified terminal-ok status and exactly one qualified-host URL.
+    """
+    bad = "result_contract_unqualified"
+    ev = proof["evidence"]
+    paths = proof["json_paths"]
+    try:
+        aid = cli._safe_part(ev["attempt_id"])
+        launch = launch_record(aid)
+        if launch is None or _launch_sha256(aid) != ev["launch_sha256"]:
+            raise OpenArtCLIError(bad, "result proof launch differs")
+        lprof = launch.get("profile") or {}
+        origin = proof["origin_profile_sha256"]
+        if launch.get("purpose") != QUALIFICATION_PURPOSE or lprof.get("profile_sha256") != origin \
+                or sha256_json({k: v for k, v in lprof.items() if k != "profile_sha256"}) != origin \
+                or lprof.get("source") != "real" or launch["binding"].get("profile_sha256") != origin \
+                or launch["binding"].get("account_id_sha256") != profile["account_id_sha256"]:
+            raise OpenArtCLIError(bad, "result proof launch is not the origin qualification attempt")
+        _verify_origin_frozen(aid, launch, bad)
+        if set(paths) != {"submit_job_id", "result_job_id", "status", "urls", "status_terminal_ok",
+                          "status_terminal_fail", "url_hosts"}:
+            raise OpenArtCLIError(bad, "result proof paths incomplete")
+        _validate_result_paths(paths, bad)
+        job_id = original_job_id(aid)
+        if job_id is None or _sha(job_id) != ev["job_id_sha256"]:
+            raise OpenArtCLIError(bad, "result proof job differs")
+        merged = dict(launch, profile=dict(lprof, json_paths=dict(lprof["json_paths"], **paths)))
+        submit = _verify_raw_submit(aid, merged, job_id, bad, proven=False)
+        if submit["submit_stdout_sha256"] != ev["submit_stdout_sha256"] \
+                or submit["submit_parse_sha256"] != ev["submit_parse_sha256"]:
+            raise OpenArtCLIError(bad, "result proof raw submit differs")
+        arec = _qual_record(ev["account_receipt"], "result_account", bad)
+        if _load_receipt(ev["account_receipt"]["receipt_id"], ev["account_receipt"]["receipt_sha256"],
+                         bad).get("parsed") != arec.get("parsed"):
+            raise OpenArtCLIError(bad, "result proof account receipt differs")
+        if arec.get("argv") != ["account"] + cli.GLOBAL_FLAGS:
+            raise OpenArtCLIError(bad, "result proof account argv differs")
+        acct = lookup_path(arec.get("parsed"), profile["json_paths"]["account_id"])
+        if not isinstance(acct, str) or _sha(acct) != profile["account_id_sha256"]:
+            raise OpenArtCLIError(bad, "result proof account differs")
+        crec = _qual_record(ev["creation_get_receipt"], "result_creation_get", bad)
+        _proof_status(crec, job_id, paths, bad)
+    except OpenArtCLIError as exc:
+        raise OpenArtCLIError(bad, exc.message if hasattr(exc, "message") else str(exc))
+    except (KeyError, TypeError, AttributeError, ValueError):
+        raise OpenArtCLIError(bad, "result proof evidence malformed")
+
+
+def _verify_origin_frozen(aid: str, launch: dict, kind: str) -> dict:
+    """Original frozen snapshot/native/profile still bind exactly to the launch marker (pure)."""
+    try:
+        frozen = load_frozen_request(aid)
+    except OpenArtCLIError:
+        raise OpenArtCLIError(kind, "original frozen request missing or tampered")
+    native, b = frozen["native"], launch.get("binding") or {}
+    gflags = list(cli.GLOBAL_FLAGS)
+    largv = launch.get("argv")
+    if frozen["snapshot_sha256"] != b.get("snapshot_sha256") or frozen["profile"] != launch.get("profile") \
+            or not isinstance(largv, list) or len(largv) < len(gflags) \
+            or largv[len(largv) - len(gflags):] != gflags \
+            or sha256_json(largv[:len(largv) - len(gflags)]) != b.get("native_argv_sha256") \
+            or any(native.get(k) != b.get(k) for k in (
+                "native_controls_sha256", "native_argv_sha256", "profile_sha256",
+                "account_id_sha256", "native_body_sha256")) \
+            or native.get("account_id_sha256") != frozen["profile"].get("account_id_sha256"):
+        raise OpenArtCLIError(kind, "original frozen request differs from launch binding")
+    return frozen
+
+
+def _validate_result_paths(paths: dict, kind: str) -> None:
+    """Reuse qualification validators: dotted paths, control-free terminal values, DNS-only hosts."""
+    from lib import openart_qualification as qual
+    for key in ("submit_job_id", "result_job_id", "status", "urls"):
+        if not qual._path(paths.get(key)):
+            raise OpenArtCLIError(kind, f"result path {key} is not a qualified json path")
+    for key in ("status_terminal_ok", "status_terminal_fail"):
+        if not qual._text(paths.get(key)):
+            raise OpenArtCLIError(kind, f"terminal value {key} is not qualified text")
+    if paths["status_terminal_ok"] == paths["status_terminal_fail"]:
+        raise OpenArtCLIError(kind, "terminal ok/fail values must differ")
+    try:
+        qual._hosts(paths.get("url_hosts"), kind)
+    except qual.OpenArtQualificationError as exc:
+        raise OpenArtCLIError(kind, str(exc))
+
+
+def _qual_record(entry: dict, name: str, kind: str) -> dict:
+    """Transport receipt + retained private stdout stream integrity via qual._record."""
+    from lib import openart_qualification as qual
+    try:
+        return qual._record({"kind": name, "receipt_id": entry["receipt_id"],
+                             "receipt_sha256": entry["receipt_sha256"]}, kind)
+    except qual.OpenArtQualificationError as exc:
+        raise OpenArtCLIError(kind, str(exc))
+
+
+def _proof_status(rec: dict, job_id: str, paths: dict, kind: str) -> str:
+    """creation_get receipt for job_id with qualified ok status and exactly one qualified URL."""
+    if rec.get("argv") != ["creation", "get", job_id] + cli.GLOBAL_FLAGS:
+        raise OpenArtCLIError(kind, "creation_get argv differs from original job")
+    parsed = rec.get("parsed")
+    if lookup_path(parsed, paths["result_job_id"]) != job_id:
+        raise OpenArtCLIError(kind, "creation_get does not correlate to original job")
+    if lookup_path(parsed, paths["status"]) != paths["status_terminal_ok"]:
+        raise OpenArtCLIError(kind, "creation_get status is not the qualified terminal success")
+    urls = lookup_path(parsed, paths["urls"])
+    urls = [urls] if isinstance(urls, str) else urls
+    if not isinstance(urls, list) or len(urls) != 1:
+        raise OpenArtCLIError(kind, "creation_get lacks exactly one qualified-host URL")
+    from lib import openart_qualification as qual
+    try:
+        qual._url(urls[0], list(paths["url_hosts"]), kind)
+    except qual.OpenArtQualificationError:
+        raise OpenArtCLIError(kind, "creation_get lacks exactly one qualified-host URL")
+    return urls[0]
+
+
+def _effective_paths(profile: dict) -> dict:
+    """json_paths in force for status/collection: profile paths + result-proof paths (staged)."""
+    if not _is_staged(profile):
+        return profile["json_paths"]
+    proof = load_result_proof(profile)
+    return dict(profile["json_paths"], **proof["json_paths"])
+
+
+def qualification_status(model: str, mode: str) -> dict:
+    """Pure readiness: level in {none, inspected, pre_submit, full}; never raises, no CLI."""
+    row = {"level": "none", "profile_sha256": None, "result_contract_sha256": None,
+           "result_proof_id": None, "error": None}
+    for level in ("inspected", "pre_submit", "full"):
+        try:
+            prof = load_qualification(model=model, mode=mode, require=level)
+        except OpenArtCLIError as exc:
+            if row["error"] is None or level == "inspected":
+                row["error"] = exc.kind
+            break
+        row.update(level=level, profile_sha256=prof["profile_sha256"], error=None)
+        if level == "full" and _is_staged(prof):
+            proof = load_result_proof(prof)
+            row.update(result_contract_sha256=proof["result_contract_sha256"],
+                       result_proof_id=proof["result_proof_id"])
+    return row
+
+
+def save_profile(profile: dict, *, require: str = "inspected") -> dict:
+    """Validate (real only) then atomically publish private profile.<sha>.json + profile.json.
+
+    Returns {profile_id, profile_sha256, level}; never a private path.
+    """
+    body = {k: v for k, v in profile.items() if k != "profile_sha256"}
+    if body.get("source") != "real":
+        raise OpenArtCLIError("generation_unqualified", "only real captured profiles may be saved")
+    body = validate_profile(body, require=require)
+    sha = sha256_json(body)
+    folder = cli.private_dir("qualification", body["model"], body["mode"])
+    data = _canon(body)
+    snap = folder / f"profile.{sha}.json"
+    if not snap.exists():
+        cli.write_private(snap, data)
+    tmp = folder / f".profile.{sha}.{os.getpid()}.tmp"
+    cli.write_private(tmp, data)
+    os.replace(tmp, folder / "profile.json")
+    dfd = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
+    level = _qual().profile_level(body)
+    return {"profile_id": sha, "profile_sha256": sha, "level": level}
 
 
 def load_qualification(path: Optional[Path] = None, *, model: Optional[str] = None,
-                       mode: Optional[str] = None, allow_fixture: bool = False) -> dict:
+                       mode: Optional[str] = None, allow_fixture: bool = False,
+                       require: str = "full") -> dict:
     """Load the private captured profile. Missing/non-real/unproven -> generation_unqualified.
 
     `allow_fixture` is a test seam only; fixture profiles keep source='fixture' and can
@@ -145,10 +369,15 @@ def load_qualification(path: Optional[Path] = None, *, model: Optional[str] = No
         raise OpenArtCLIError("generation_unqualified", "qualification profile is not private")
     except (OSError, ValueError):
         raise OpenArtCLIError("generation_unqualified", "qualification profile unreadable")
-    profile = validate_profile(profile, allow_fixture=allow_fixture)
+    staged_full = require == "full" and _is_staged(profile)
+    profile = validate_profile(profile, allow_fixture=allow_fixture,
+                               require="pre_submit" if staged_full else require)
     if (model is not None and profile["model"] != model) or (mode is not None and profile["mode"] != mode):
         raise OpenArtCLIError("generation_unqualified", "profile model/mode differs from catalog path")
-    return dict(profile, profile_sha256=sha256_json(profile))
+    out = dict(profile, profile_sha256=sha256_json(profile))
+    if staged_full:
+        load_result_proof(out)  # raises result_contract_unqualified; returned profile is unchanged
+    return out
 
 
 def list_qualifications() -> list[dict]:
@@ -163,17 +392,30 @@ def list_qualifications() -> list[dict]:
         return out
     for target in candidates:
         row = {"model": None, "mode": None, "source": None, "profile_sha256": None, "cli_version": None,
-               "tier": None, "image2video_qualified": False, "valid": False, "error": None}
+               "tier": None, "image2video_qualified": False, "valid": False, "error": None,
+               "level": "none", "result_contract_sha256": None, "result_proof_id": None}
         try:
             raw = json.loads(target.read_text())
             if isinstance(raw, dict):
                 row.update(model=raw.get("model"), mode=raw.get("mode"), source=raw.get("source"),
                            cli_version=raw.get("cli_version"), tier=raw.get("tier"))
-            prof = load_qualification(target, allow_fixture=True)
-            row.update(profile_sha256=prof["profile_sha256"], valid=prof["source"] == "real",
-                       image2video_qualified=prof["mode"] == "image2video" and prof["source"] == "real")
+            # Validate at the lowest stage so staged rows report truthful levels.
+            prof = load_qualification(target, allow_fixture=True, require="inspected")
+            row["profile_sha256"] = prof["profile_sha256"]
             if prof["source"] != "real":
                 row["error"] = "fixture_profile"
+            else:
+                status = qualification_status(prof["model"], prof["mode"])
+                if status["profile_sha256"] == prof["profile_sha256"]:
+                    row.update(level=status["level"],
+                               result_contract_sha256=status["result_contract_sha256"],
+                               result_proof_id=status["result_proof_id"])
+                    if status["level"] != "full":
+                        row["error"] = status["error"] or "result_contract_unqualified"
+                else:
+                    row["error"] = status["error"] or "profile_not_current"
+                full = row["level"] == "full"
+                row.update(valid=full, image2video_qualified=full and prof["mode"] == "image2video")
         except OpenArtCLIError as exc:
             row["error"] = exc.kind
         except Exception:
@@ -434,20 +676,88 @@ def _snapshot_source(source: Path, dest: Path, max_bytes: int = 64 * 1024 * 1024
     return digest.hexdigest(), size
 
 
+def _validate_guarantee(profile: dict) -> None:
+    """Pre-upload raw provider guarantee (owned by lib.openart_setup); lazy import, fail closed."""
+    try:
+        from lib.openart_setup import validate_upload_guarantee
+    except ImportError:
+        raise OpenArtCLIError("upload_unqualified", "upload guarantee validator unavailable")
+    try:
+        validate_upload_guarantee(profile)
+    except OpenArtCLIError:
+        raise
+    except Exception:
+        raise OpenArtCLIError("upload_unqualified", "upload guarantee validation failed")
+
+
+def _verify_current(profile: dict, timeout: float) -> None:
+    """Fresh version/account/tier/form/defaults recheck (lib.openart_setup.verify_current); fail closed."""
+    try:
+        from lib.openart_setup import verify_current
+    except ImportError:
+        raise OpenArtCLIError("upload_unqualified", "current-contract verifier unavailable")
+    verify_current(profile, timeout=timeout)
+
+
+def upload_binding(profile: dict) -> dict:
+    """Stable upload binding that survives staged promotion (upload/dry_run receipts added).
+
+    Binds source/model/mode/account/version/tier/form/defaults + the declared guarantee and its
+    captured raw receipt identity/integrity + URL path/hosts. Excludes the exact profile SHA.
+    Caller must already have validated the guarantee.
+    """
+    upload = profile.get("upload") if isinstance(profile, dict) else None
+    if not isinstance(upload, dict):
+        raise OpenArtCLIError("upload_unqualified", "profile declares no upload contract")
+    entries = [e for e in upload.get("receipts") or []
+               if isinstance(e, dict) and e.get("kind") == "nonspending_guarantee"]
+    if len(entries) != 1:
+        raise OpenArtCLIError("upload_unqualified", "exactly one captured guarantee receipt required")
+    return {"source": profile.get("source"), "model": profile.get("model"), "mode": profile.get("mode"),
+            "account_id_sha256": profile.get("account_id_sha256"),
+            "cli_version": profile.get("cli_version"), "tier": profile.get("tier"),
+            "form_sha256": profile.get("form_sha256"),
+            "form_defaults_sha256": sha256_json(profile.get("form_defaults")),
+            "guarantee_sha256": sha256_json(upload.get("guarantee")),
+            "guarantee_receipt_id": entries[0].get("receipt_id"),
+            "guarantee_receipt_sha256": entries[0].get("receipt_sha256"),
+            "url_path": (upload.get("json_paths") or {}).get("upload_url"),
+            "url_hosts": list(upload.get("url_hosts") or [])}
+
+
+def _upload_receipt_guaranteed(receipt: dict, profile: dict, kind: str) -> None:
+    """The raw upload response itself must carry both provider guarantee assertions."""
+    guarantee = profile["upload"]["guarantee"]
+    for name in ("nonspending", "no_delayed_charge"):
+        assertion = guarantee[name]
+        value = lookup_path(receipt.get("parsed"), assertion["path"])
+        if type(value) is not type(assertion["expected"]) or value != assertion["expected"]:
+            raise OpenArtCLIError(kind, "raw upload receipt does not prove both upload guarantees")
+
+
+def _upload_profile(model: Any, mode: Any, kind: str) -> dict:
+    try:
+        profile = load_qualification(model=model, mode=mode, allow_fixture=_ALLOW_FIXTURE_UPLOAD,
+                                     require="inspected")
+        _validate_guarantee(profile)
+        return profile
+    except (OpenArtCLIError, TypeError) as exc:
+        raise OpenArtCLIError(kind, f"no qualified nonspending upload contract ({getattr(exc, 'kind', 'invalid')})")
+
+
 def upload_reference(project_root: Path, upload_id: str, source_path: Path, *, model: str, mode: str,
                      timeout: float = cli.DEFAULT_TIMEOUT) -> dict:
-    """Run exact official `upload add` ONLY under a qualified nonspending upload contract.
+    """Run exact official `upload add` ONLY under a qualified nonspending upload guarantee.
 
-    Order: profile contract (else upload_unqualified, zero CLI calls) -> private 0400 snapshot of
-    the source -> snapshot hash must equal approved source hash -> approval seam -> transport
-    lock: account check -> `upload add <snapshot>` -> exact receipt argv + URL host -> record.
-    The CLI only ever reads the immutable private snapshot, never the mutable original.
+    Order: inspected real profile + captured raw provider guarantee (else upload_unqualified, zero
+    CLI calls) -> private 0400 snapshot -> snapshot hash == approved source hash -> approval seam ->
+    transport lock: account check -> `upload add <snapshot>` -> exact receipt argv, raw guarantee
+    assertions in the upload response, qualified URL host -> record bound by upload_binding().
     """
-    try:
-        profile = load_qualification(model=model, mode=mode, allow_fixture=_ALLOW_FIXTURE_UPLOAD)
-        _validate_upload_contract(profile)
-    except OpenArtCLIError as exc:
-        raise OpenArtCLIError("upload_unqualified", f"no qualified nonspending upload contract ({exc.kind})")
+    profile = _upload_profile(model, mode, "upload_unqualified")
+    if profile["mode"] != "image2video":
+        raise OpenArtCLIError("upload_unqualified", "uploads are only qualified for image2video")
+    binding = upload_binding(profile)
     upload_id = cli._safe_part(upload_id)
     source = Path(source_path)
     if source.is_symlink() or not source.is_file():
@@ -470,6 +780,7 @@ def upload_reference(project_root: Path, upload_id: str, source_path: Path, *, m
         raise OpenArtCLIError("upload_mismatch", "source changed after approval; snapshot not uploaded")
     deadline = time.monotonic() + cli.validate_timeout(timeout)
     with cli.transport_lock(wait_timeout=timeout):
+        _verify_current(profile, cli.lock_remaining(deadline))  # full inspected contract, same lock
         account = _current_account(profile, timeout=cli.lock_remaining(deadline))
         if account != profile["account_id_sha256"]:
             raise OpenArtCLIError("account_mismatch", "current account differs from qualified account")
@@ -479,20 +790,22 @@ def upload_reference(project_root: Path, upload_id: str, source_path: Path, *, m
     expected_argv = ["upload", "add", str(snapshot)] + cli.GLOBAL_FLAGS
     if got.get("argv") != expected_argv:
         raise OpenArtCLIError("upload_mismatch", "upload receipt argv differs from snapshot upload")
-    url = lookup_path(got["parsed"], profile["upload"]["json_paths"]["upload_url"])
-    if not _url_host_ok(url, profile["upload"]["url_hosts"]):
+    _upload_receipt_guaranteed(got, profile, "upload_mismatch")
+    url = lookup_path(got["parsed"], binding["url_path"])
+    if not _url_host_ok(url, binding["url_hosts"]):
         raise OpenArtCLIError("upload_url_unqualified", "upload URL absent or host not qualified")
-    record = {"version": "1", "upload_id": upload_id, "source_sha256": snap_sha,
+    record = {"version": "2", "upload_id": upload_id, "source_sha256": snap_sha,
               "source_size": snap_size, "snapshot_name": snapshot.name, "url": url, "url_sha256": _sha(url),
               "receipt_id": got["receipt_id"], "receipt_sha256": got["receipt_sha256"],
               "account_id_sha256": account, "approval_sha256": approval["approval_sha256"],
               "model": profile["model"], "mode": profile["mode"], "profile_source": profile["source"],
-              "profile_sha256": profile["profile_sha256"],
-              "url_path": profile["upload"]["json_paths"]["upload_url"]}
+              "binding": binding, "binding_sha256": sha256_json(binding),
+              "url_path": binding["url_path"]}
     cli.write_private(_upload_record_path(upload_id), _canon(record))
+    _fsync_dir(_upload_record_path(upload_id).parent)
     return {k: record[k] for k in ("upload_id", "source_sha256", "source_size", "url_sha256", "receipt_id",
                                    "receipt_sha256", "account_id_sha256", "approval_sha256",
-                                   "model", "mode", "profile_sha256")}
+                                   "model", "mode", "binding_sha256")}
 
 
 def _url_host_ok(url: Any, hosts: list) -> bool:
@@ -507,63 +820,82 @@ def _url_host_ok(url: Any, hosts: list) -> bool:
         and not parts.password and parts.port in (None, 443)
 
 
-def upload_url_for(upload_id: str, *, source_sha256: Optional[str] = None,
-                   account_id_sha256: Optional[str] = None, profile: Optional[dict] = None) -> str:
-    """Return the retained HTTPS URL after revalidating record, snapshot, receipt and profile.
-
-    Pure: no CLI/lock. Without `profile`, the record's model/mode real profile is reloaded and
-    revalidated (fixture records therefore need an explicit fixture profile). Always enforces
-    exact profile digest/model/mode/account, upload qualification, qualified host, exact snapshot
-    receipt argv and current snapshot bytes. Any failure -> upload_mismatch.
-    """
+def _verified_upload(upload_id: str, profile: Optional[dict]) -> tuple[dict, dict]:
+    """Pure: (record, upload receipt) after full stable-binding revalidation, else upload_mismatch."""
+    bad = "upload_mismatch"
     try:
         path = _upload_record_path(upload_id)
         cli._check_private(path, False)
         record = json.loads(path.read_bytes())
     except (OSError, ValueError, OpenArtCLIError):
-        raise OpenArtCLIError("upload_mismatch", "no private retained upload record")
-    if not isinstance(record, dict) or record.get("upload_id") != cli._safe_part(upload_id):
-        raise OpenArtCLIError("upload_mismatch", "upload record id differs")
+        raise OpenArtCLIError(bad, "no private retained upload record")
+    if not isinstance(record, dict) or record.get("upload_id") != cli._safe_part(upload_id) \
+            or not isinstance(record.get("binding"), dict):
+        raise OpenArtCLIError(bad, "upload record id/binding invalid")
     if profile is None:
+        # Re-derive the retained real profile (never fixture) and revalidate its guarantee.
+        if record.get("profile_source") != "real":
+            raise OpenArtCLIError(bad, "fixture upload records need an explicit profile")
+        profile = _upload_profile(record.get("model"), record.get("mode"), bad)
+    else:
         try:
-            profile = load_qualification(model=record.get("model"), mode=record.get("mode"))
-        except (OpenArtCLIError, TypeError) as exc:
-            raise OpenArtCLIError("upload_mismatch", f"retained upload profile not qualified")
+            _validate_guarantee(profile)
+        except OpenArtCLIError:
+            raise OpenArtCLIError(bad, "profile has no qualified upload guarantee")
     try:
-        _validate_upload_contract(profile)
+        binding = upload_binding(profile)
     except OpenArtCLIError:
-        raise OpenArtCLIError("upload_mismatch", "profile has no qualified upload contract")
-    profile_digest = profile.get("profile_sha256")
-    if not profile_digest or record.get("profile_sha256") != profile_digest \
-            or record.get("model") != profile.get("model") or record.get("mode") != profile.get("mode") \
-            or record.get("account_id_sha256") != profile.get("account_id_sha256") \
-            or record.get("url_path") != profile["upload"]["json_paths"]["upload_url"]:
-        raise OpenArtCLIError("upload_mismatch", "upload record not bound to this exact profile/account")
-    receipt = _load_receipt(record.get("receipt_id"), record.get("receipt_sha256"), "upload_mismatch")
+        raise OpenArtCLIError(bad, "profile has no upload binding")
+    if binding != record["binding"] or record.get("binding_sha256") != sha256_json(binding) \
+            or record.get("model") != binding["model"] or record.get("mode") != binding["mode"] \
+            or record.get("profile_source") != binding["source"] \
+            or record.get("account_id_sha256") != binding["account_id_sha256"] \
+            or record.get("url_path") != binding["url_path"]:
+        raise OpenArtCLIError(bad, "upload record not bound to this account/form/version/guarantee")
+    receipt = _load_receipt(record.get("receipt_id"), record.get("receipt_sha256"), bad)
     try:
         snapshot = _upload_snapshot_path(upload_id, Path(record.get("snapshot_name") or "").suffix)
     except OpenArtCLIError:
-        raise OpenArtCLIError("upload_mismatch", "upload snapshot name invalid")
+        raise OpenArtCLIError(bad, "upload snapshot name invalid")
     if snapshot.name != record.get("snapshot_name") \
             or receipt.get("argv") != ["upload", "add", str(snapshot)] + cli.GLOBAL_FLAGS:
-        raise OpenArtCLIError("upload_mismatch", "receipt is not the exact snapshot upload")
+        raise OpenArtCLIError(bad, "receipt is not the exact snapshot upload")
+    _upload_receipt_guaranteed(receipt, profile, bad)
     try:
         if snapshot.is_symlink():
             raise OSError("symlink")
         snap_sha, snap_size = _file_sha256(snapshot)
     except OSError:
-        raise OpenArtCLIError("upload_mismatch", "upload snapshot missing")
+        raise OpenArtCLIError(bad, "upload snapshot missing")
     if snap_sha != record.get("source_sha256") or snap_size != record.get("source_size"):
-        raise OpenArtCLIError("upload_mismatch", "upload snapshot bytes changed")
-    url = lookup_path(receipt.get("parsed"), record["url_path"])
+        raise OpenArtCLIError(bad, "upload snapshot bytes changed")
+    url = lookup_path(receipt.get("parsed"), binding["url_path"])
     if url != record.get("url") or _sha(url) != record.get("url_sha256") \
-            or not _url_host_ok(url, profile["upload"]["url_hosts"]):
-        raise OpenArtCLIError("upload_mismatch", "retained URL differs from receipt or host unqualified")
+            or not _url_host_ok(url, binding["url_hosts"]):
+        raise OpenArtCLIError(bad, "retained URL differs from receipt or host unqualified")
+    return record, receipt
+
+
+def upload_url_for(upload_id: str, *, source_sha256: Optional[str] = None,
+                   account_id_sha256: Optional[str] = None, profile: Optional[dict] = None) -> str:
+    """Return the retained HTTPS URL after revalidating record, snapshot, receipt and binding.
+
+    Pure: no CLI/lock. Binding is upload_binding(profile) (stable across staged promotion), not the
+    exact profile SHA. Without `profile`, the record's real model/mode profile is reloaded at
+    inspected level and its guarantee revalidated. Any failure -> upload_mismatch.
+    """
+    record, _ = _verified_upload(upload_id, profile)
     if source_sha256 is not None and record.get("source_sha256") != source_sha256:
         raise OpenArtCLIError("upload_mismatch", "source bytes differ from uploaded reference")
     if account_id_sha256 is not None and record.get("account_id_sha256") != account_id_sha256:
         raise OpenArtCLIError("upload_mismatch", "upload account differs")
-    return url
+    return record["url"]
+
+
+def retained_upload_evidence(upload_id: str, *, profile: dict) -> dict:
+    """Pure: {kind:'upload', receipt_id, receipt_sha256} for promoting the profile upload contract."""
+    record, _ = _verified_upload(upload_id, profile)
+    return {"kind": "upload", "receipt_id": record["receipt_id"], "receipt_sha256": record["receipt_sha256"]}
 
 
 # ---------------------------------------------------------------- frozen request snapshots
@@ -775,13 +1107,17 @@ def lookup_path(data: Any, dotted: str) -> Any:
     return cur
 
 
-def parse_submit(stdout_text: str, profile: dict) -> Optional[str]:
-    """Job id via the qualified json path only; None -> hold_unknown_job."""
+def parse_submit(stdout_text: str, profile: dict, paths: Optional[dict] = None) -> Optional[str]:
+    """Job id via the qualified json path only; None -> hold_unknown_job.
+
+    `paths` defaults to the profile's declared paths (tentative for staged profiles; a
+    tentative parse is never proof until promote_result_contract binds it).
+    """
     try:
         parsed = json.loads(stdout_text)
     except ValueError:
         return None
-    job_id = lookup_path(parsed, profile["json_paths"]["submit_job_id"])
+    job_id = lookup_path(parsed, (paths or profile["json_paths"])["submit_job_id"])
     if isinstance(job_id, str) and cli._ID_RE.match(job_id):
         return job_id
     return None
@@ -846,6 +1182,7 @@ def launch_submit(project_root: Path, binding: dict, native: dict, profile: dict
     reservation = get_active_reservation(project_root, attempt_id, binding["request_sha256"])
     if reservation["reservation_id"] != binding["reservation_id"]:
         raise OpenArtCLIError("no_active_reservation", "reservation differs from binding")
+    qualification_attempt = _launch_purpose(profile, reservation)
     argv = cli.check_submit_argv(native["argv"], allow_image=native.get("mode") == "image2video")
     if sha256_json(argv) != native["native_argv_sha256"]:
         raise OpenArtCLIError("binding_mismatch", "submit argv differs from frozen digest")
@@ -864,13 +1201,16 @@ def launch_submit(project_root: Path, binding: dict, native: dict, profile: dict
             append_event(attempt_id, {"type": "quarantined", "reason": "account_mismatch_prelaunch"})
             raise OpenArtCLIError("account_mismatch", "current account differs; attempt quarantined, not launched")
         cli.lock_remaining(deadline)  # never spawn a paid submit after the budget is exhausted
+        if qualification_attempt:
+            _consume_qualification_marker(profile, reservation, attempt_id, account)
         jdir = job_dir(attempt_id)
         launch = {"attempt_id": attempt_id, "binding": {k: binding[k] for k in _BINDING_KEYS},
                   "project_root": str(_abs(project_root)),
                   "argv": full, "cli_version": native["cli_version"], "tier": native["tier"],
                   "form_sha256": native["form_sha256"], "profile_source": profile.get("source"),
                   "profile": {k: v for k, v in profile.items()},
-                  "json_paths": profile["json_paths"]}
+                  "json_paths": profile["json_paths"],
+                  "purpose": "result_contract_qualification" if qualification_attempt else "ordinary"}
         try:
             cli.write_private(jdir / "launch.json", _canon(launch))  # exclusive: submit-once marker
         except FileExistsError:
@@ -883,14 +1223,14 @@ def launch_submit(project_root: Path, binding: dict, native: dict, profile: dict
             os.close(out_fd)
             raise
         try:
-            _fsync_dir(jdir)  # raw stream entries durable before the child exists
-        except BaseException:
-            os.close(out_fd)
-            os.close(err_fd)
-            raise
-        append_event(attempt_id, {"type": "intent", "launch_sha256": _launch_sha256(attempt_id),
-                                  "account_check_sha256": account})
-        try:
+            try:
+                _fsync_dir(jdir)  # raw stream entries durable before the child exists
+                append_event(attempt_id, {"type": "intent", "launch_sha256": _launch_sha256(attempt_id),
+                                          "account_check_sha256": account})
+                cli.lock_remaining(deadline)  # re-check after persistence, immediately before Popen
+            except OpenArtCLIError:
+                append_event(attempt_id, {"type": "spawn_skipped", "reason": "budget_exhausted"})
+                raise
             try:
                 proc = _popen([binary, *full], shell=False, stdin=_devnull(),
                               stdout=out_fd, stderr=err_fd, cwd=str(root), env=cli._child_env(),
@@ -915,9 +1255,156 @@ def launch_submit(project_root: Path, binding: dict, native: dict, profile: dict
         return _finish_parse(attempt_id, rc, launch["profile"])
 
 
+QUALIFICATION_PURPOSE = "result_contract_qualification"
+
+
+def _launch_purpose(profile: dict, reservation: dict) -> bool:
+    """True when this launch is the single result-contract qualification attempt.
+
+    Purpose comes ONLY from the trusted registered ledger lookup result. Staged profiles
+    without a verified result proof can launch only for that purpose; ordinary launches
+    need full qualification.
+    """
+    if not _is_staged(profile):
+        return False
+    try:
+        load_result_proof(profile)
+        return False
+    except OpenArtCLIError:
+        pass
+    if reservation.get("purpose") != QUALIFICATION_PURPOSE:
+        raise OpenArtCLIError("result_contract_unqualified",
+                              "pre-submit profile needs an approved result_contract_qualification reservation")
+    return True
+
+
+def _marker_key(profile: dict, reservation: dict, account: str) -> str:
+    occurrence = reservation.get("authorization_occurrence_id")
+    if not isinstance(occurrence, str) or not occurrence:
+        raise OpenArtCLIError("result_contract_unqualified",
+                              "trusted reservation lacks an authorization_occurrence_id")
+    return sha256_json({"authorization_occurrence_id": occurrence, "account_id_sha256": account,
+                        "model": profile["model"], "mode": profile["mode"],
+                        "origin_profile_sha256": profile["profile_sha256"]})
+
+
+def _marker_path(profile: dict, key: str) -> Path:
+    return (cli.private_dir("qualification", profile["model"], profile["mode"], "attempts")
+            / (cli._safe_part(key) + ".json"))
+
+
+def _consume_qualification_marker(profile: dict, reservation: dict, attempt_id: str, account: str) -> None:
+    """Exclusive durable once-marker keyed by the trusted authorization occurrence + account/model/
+    mode/origin profile; never expires. A new reservation under the same occurrence is refused; a
+    genuinely new occurrence (new exact authorization) may qualify, still gated by U4 slots/holds."""
+    key = _marker_key(profile, reservation, account)
+    target = _marker_path(profile, key)
+    record = {"marker_key": key, "authorization_occurrence_id": reservation["authorization_occurrence_id"],
+              "reservation_id": reservation["reservation_id"], "attempt_id": attempt_id,
+              "account_id_sha256": account, "model": profile["model"], "mode": profile["mode"],
+              "origin_profile_sha256": profile["profile_sha256"]}
+    try:
+        cli.write_private(target, _canon(record))
+    except FileExistsError:
+        raise OpenArtCLIError("qualification_authorization_consumed",
+                              "this qualification authorization was already used; never retry under it")
+    _fsync_dir(target.parent)
+
+
 def _devnull():
     import subprocess
     return subprocess.DEVNULL
+
+
+# ---------------------------------------------------------------- result-contract promotion
+
+def promote_result_contract(attempt_id: str, *, json_paths: Optional[dict] = None,
+                            timeout: float = cli.DEFAULT_TIMEOUT) -> dict:
+    """Promote a staged pre_submit profile to full using the ORIGINAL qualification launch.
+
+    Consumes the governed launch.json, original raw submit stdout + single parsed event, a fresh
+    read-only `account` receipt and a read-only `creation get <original job>` receipt. Writes an
+    immutable private result proof keyed by the origin profile SHA; never rewrites launch/profile.
+    `json_paths` may only add/declare result keys (result_job_id/status/urls/status_terminal_*/
+    url_hosts); they stay unqualified until this observed original-job correlation succeeds.
+    Returns {result_contract_sha256, result_proof_id, profile_sha256, level:'full'} (no paths).
+    """
+    bad = "result_contract_unqualified"
+    aid = cli._safe_part(attempt_id)
+    launch = launch_record(aid)
+    if launch is None:
+        raise OpenArtCLIError(bad, "attempt was never launched")
+    lprof = launch.get("profile") or {}
+    origin = lprof.get("profile_sha256")
+    if launch.get("purpose") != QUALIFICATION_PURPOSE or lprof.get("source") != "real" \
+            or not _is_staged(lprof) or not isinstance(origin, str) \
+            or sha256_json({k: v for k, v in lprof.items() if k != "profile_sha256"}) != origin \
+            or launch["binding"].get("profile_sha256") != origin:
+        raise OpenArtCLIError(bad, "only an original real result_contract_qualification launch can promote")
+    _verify_origin_frozen(aid, launch, bad)
+    allowed = {"result_job_id", "status", "urls", "status_terminal_ok", "status_terminal_fail", "url_hosts"}
+    extra = dict(json_paths or {})
+    if set(extra) - allowed:
+        raise OpenArtCLIError(bad, "promotion may only declare result-contract json paths")
+    paths = dict(lprof["json_paths"], **extra)
+    proof_paths = {k: paths.get(k) for k in ("submit_job_id",) + tuple(sorted(allowed))}
+    _validate_result_paths(proof_paths, bad)
+    job_id = original_job_id(aid)
+    if job_id is None:
+        raise OpenArtCLIError(bad, "original job id is unknown; keep holding")
+    target = result_proof_path(lprof["model"], lprof["mode"], origin)
+    if os.path.lexists(target):
+        raise OpenArtCLIError("result_contract_exists", "a result proof already exists for this origin profile")
+    merged = dict(launch, profile=dict(lprof, json_paths=paths))
+    submit = _verify_raw_submit(aid, merged, job_id, bad, proven=False)
+    if cli.is_offline():
+        raise OpenArtCLIError("offline_only", "OpenArt status read refused during offline preparation")
+    deadline = time.monotonic() + cli.validate_timeout(timeout)
+    with cli.transport_lock(wait_timeout=cli.lock_remaining(deadline)):
+        acct = _account_receipt(lprof, cli.lock_remaining(deadline))
+        if acct["account_id_sha256"] != lprof["account_id_sha256"]:
+            raise OpenArtCLIError("account_mismatch", "current account differs from qualification account")
+        got = cli.run_readonly(["creation", "get", job_id], timeout=cli.lock_remaining(deadline))
+    _qual_record(acct, "result_account", bad)
+    crec = _qual_record(got, "result_creation_get", bad)
+    _proof_status(crec, job_id, proof_paths, bad)
+    proof = {"version": "1", "origin_profile_sha256": origin, "model": lprof["model"],
+             "mode": lprof["mode"], "account_id_sha256": lprof["account_id_sha256"],
+             "json_paths": proof_paths,
+             "evidence": {"attempt_id": aid, "launch_sha256": _launch_sha256(aid),
+                          "job_id_sha256": _sha(job_id), **submit,
+                          "account_receipt": {"receipt_id": acct["receipt_id"],
+                                              "receipt_sha256": acct["receipt_sha256"]},
+                          "creation_get_receipt": {"receipt_id": got["receipt_id"],
+                                                   "receipt_sha256": got["receipt_sha256"]}}}
+    cli.private_dir("qualification", lprof["model"], lprof["mode"], "results")
+    try:
+        cli.write_private(target, _canon(proof))
+    except FileExistsError:
+        raise OpenArtCLIError("result_contract_exists", "a result proof already exists for this origin profile")
+    append_event(aid, {"type": "result_contract_promoted", "origin_profile_sha256": origin,
+                       "creation_get_receipt_sha256": got["receipt_sha256"]})
+    loaded = load_result_proof(lprof)
+    return {"result_contract_sha256": loaded["result_contract_sha256"],
+            "result_proof_id": loaded["result_proof_id"], "profile_sha256": origin, "level": "full"}
+
+
+def effective_result_contract(attempt_id: str) -> dict:
+    """Pure: the result contract in force for an attempt's frozen launch profile.
+
+    Independent of later catalog/profile updates. Legacy full profiles return
+    result_contract_sha256=None. Raises result_contract_unqualified when staged and unproven.
+    """
+    aid = cli._safe_part(attempt_id)
+    launch = launch_record(aid)
+    if launch is None:
+        raise OpenArtCLIError("result_contract_unqualified", "attempt was never launched")
+    prof = launch["profile"]
+    proof = load_result_proof(prof)
+    return {"profile_sha256": prof.get("profile_sha256"),
+            "result_contract_sha256": proof["result_contract_sha256"],
+            "result_proof_id": proof["result_proof_id"],
+            "json_paths": dict(prof["json_paths"], **proof["json_paths"])}
 
 
 def _finish_parse(attempt_id: str, rc: Optional[int], profile: dict) -> dict:
@@ -944,7 +1431,8 @@ def _parse_sha256(raw: bytes, job_id: str) -> str:
     return sha256_json({"stdout_sha256": hashlib.sha256(raw).hexdigest(), "job_id": job_id})
 
 
-def _verify_raw_submit(attempt_id: str, launch: dict, job_id: str, kind: str) -> dict:
+def _verify_raw_submit(attempt_id: str, launch: dict, job_id: str, kind: str,
+                       proven: bool = True) -> dict:
     """Pure: re-read bounded private submit.stdout, re-parse with the launch-bound profile."""
     path = job_dir(attempt_id, create=False) / "submit.stdout"
     try:
@@ -956,7 +1444,11 @@ def _verify_raw_submit(attempt_id: str, launch: dict, job_id: str, kind: str) ->
         raise OpenArtCLIError(kind, "original raw submit stdout missing or not private")
     if len(raw) > cli.MAX_STDOUT:
         raise OpenArtCLIError(kind, "original raw submit stdout exceeds bound")
-    parsed = parse_submit(raw.decode("utf-8", "replace"), launch["profile"])
+    try:
+        paths = _effective_paths(launch["profile"]) if proven else launch["profile"]["json_paths"]
+    except OpenArtCLIError:
+        raise OpenArtCLIError(kind, "result contract unqualified for this launch profile")
+    parsed = parse_submit(raw.decode("utf-8", "replace"), launch["profile"], paths)
     if parsed is None or parsed != job_id:
         raise OpenArtCLIError(kind, "original raw submit does not name the bound job")
     sha, psha = hashlib.sha256(raw).hexdigest(), _parse_sha256(raw, job_id)
@@ -1157,7 +1649,7 @@ def _check_status_receipt(rec: dict, job_id: str, profile: dict) -> tuple[Any, O
     """Return (status, single url) from a raw `creation get` receipt bound to job_id."""
     if rec.get("argv") != ["creation", "get", job_id] + cli.GLOBAL_FLAGS:
         raise OpenArtCLIError("collection_receipt_invalid", "status receipt argv differs from original job")
-    paths = profile["json_paths"]
+    paths = _effective_paths(profile)
     parsed = rec.get("parsed")
     if lookup_path(parsed, paths["result_job_id"]) != job_id:
         raise OpenArtCLIError("collection_receipt_invalid", "status receipt does not correlate to original job")
@@ -1266,13 +1758,14 @@ def collect_job(attempt_id: str, *, output_path: Path, output_root: Path, profil
             append_event(aid, {"type": "hold_wrong_job"})
             return _collect_status(aid, "hold", reason="result_job_mismatch")
         return _collect_status(aid, "pending", reason=exc.kind)
-    paths = profile["json_paths"]
+    paths = _effective_paths(profile)
     append_event(aid, {"type": "status", "receipt_id": got["receipt_id"],
                        "receipt_sha256": got["receipt_sha256"], "status_sha256": _sha(str(status))})
     if status == paths["status_terminal_fail"]:
         record = {"version": "1", "attempt_id": aid, "binding": binding,
                   "launch_sha256": _launch_sha256(aid), "profile_sha256": profile.get("profile_sha256"),
                   "job_id_sha256": _sha(job_id), **submit,
+                  "result_contract_sha256": load_result_proof(profile)["result_contract_sha256"],
                   "account_id_sha256": acct["account_id_sha256"],
                   "status_receipt_id": got["receipt_id"],
                   "status_receipt_sha256": got["receipt_sha256"],
@@ -1340,6 +1833,7 @@ def collect_job(attempt_id: str, *, output_path: Path, output_root: Path, profil
                 "account_receipt_id": acct["receipt_id"], "account_receipt_sha256": acct["receipt_sha256"],
                 "status_receipt_id": got["receipt_id"], "status_receipt_sha256": got["receipt_sha256"],
                 "result_job_id_sha256": _sha(job_id), "url_sha256": _sha(url), **submit,
+                "result_contract_sha256": load_result_proof(profile)["result_contract_sha256"],
                 "project_root": launch["project_root"],
                 "source_host": meta.get("source_host"), "output_root": str(out_root),
                 "intent_id": intent["intent_id"], "recovered": recovered,
@@ -1395,9 +1889,15 @@ def verify_collection_receipt(attempt_id: str, profile: dict) -> dict:
     if _check_account_receipt(arec, profile) != ev.get("account_id_sha256") \
             or ev["account_id_sha256"] != ev["binding"].get("account_id_sha256"):
         raise OpenArtCLIError(bad, "account receipt differs from bound account")
+    try:
+        contract = load_result_proof(profile)["result_contract_sha256"]
+    except OpenArtCLIError:
+        raise OpenArtCLIError(bad, "result contract for the origin profile is not verified")
+    if "result_contract_sha256" not in ev or ev["result_contract_sha256"] != contract:
+        raise OpenArtCLIError(bad, "collection evidence result contract differs")
     srec = _load_receipt(ev.get("status_receipt_id"), ev.get("status_receipt_sha256"), bad)
     status, url = _check_status_receipt(srec, job_id, profile)
-    paths = profile["json_paths"]
+    paths = _effective_paths(profile)
     if status != paths["status_terminal_ok"] or url is None or _sha(url) != ev.get("url_sha256") \
             or not _url_host_ok(url, list(paths["url_hosts"])) \
             or ev.get("source_host") not in list(paths["url_hosts"]) \
@@ -1431,6 +1931,7 @@ def verify_collection_receipt(attempt_id: str, profile: dict) -> dict:
             "job_record_sha256": hashlib.sha256(raw).hexdigest(), "output": current,
             "evidence": ev, "snapshot_sha256": ev["snapshot_sha256"],
             "profile_sha256": ev["profile_sha256"], "account_id_sha256": ev["account_id_sha256"],
+            "result_contract_sha256": contract,
             "collection_evidence_sha256": hashlib.sha256(raw).hexdigest(),
             "billing": "unknown", "release_authorized": False}
 
@@ -1482,6 +1983,12 @@ def verify_terminal_failure(attempt_id: str, profile: dict) -> dict:
     if any(rec.get(k) != v for k, v in submit.items()):
         raise OpenArtCLIError(bad, "terminal failure differs from original raw submit")
     try:
+        contract = load_result_proof(profile)["result_contract_sha256"]
+    except OpenArtCLIError:
+        raise OpenArtCLIError(bad, "terminal semantics unqualified for the origin profile")
+    if "result_contract_sha256" not in rec or rec["result_contract_sha256"] != contract:
+        raise OpenArtCLIError(bad, "terminal failure result contract differs")
+    try:
         arec = _load_receipt(rec.get("account_receipt_id"), rec.get("account_receipt_sha256"), bad)
         account = _check_account_receipt(arec, profile)
         srec = _load_receipt(rec.get("status_receipt_id"), rec.get("status_receipt_sha256"), bad)
@@ -1490,7 +1997,7 @@ def verify_terminal_failure(attempt_id: str, profile: dict) -> dict:
         raise OpenArtCLIError(bad, exc.message if hasattr(exc, "message") else str(exc))
     if account != rec.get("account_id_sha256") or account != rec["binding"].get("account_id_sha256"):
         raise OpenArtCLIError(bad, "account receipt differs from bound account")
-    if status != profile["json_paths"]["status_terminal_fail"]:
+    if status != _effective_paths(profile)["status_terminal_fail"]:
         raise OpenArtCLIError(bad, "status receipt does not prove terminal failure")
     proc = original_process_state(aid)
     if proc["state"] not in ("exited", "dead"):
@@ -1499,6 +2006,7 @@ def verify_terminal_failure(attempt_id: str, profile: dict) -> dict:
             "terminal_failure_sha256": hashlib.sha256(raw).hexdigest(),
             "account_id_sha256": account, "status_receipt_id": rec["status_receipt_id"],
             "status_receipt_sha256": rec["status_receipt_sha256"], **submit,
+            "result_contract_sha256": contract,
             "process_state": proc["state"], "billing": "unknown", "release_authorized": False}
 
 

@@ -10,7 +10,8 @@ from tools.base_tool import (BaseTool, Determinism, DependencyError, ExecutionMo
                              ToolResult, ToolRuntime, ToolStability, ToolTier)
 
 READ_ONLY_ACTIONS = ("inspect", "quote", "form", "native_dry_run", "readiness",
-                     "status", "collect", "verify", "upload", "qualifications")
+                     "status", "collect", "verify", "upload", "qualifications",
+                     "qualify_inspection", "qualify_upload", "qualify_preview", "qualify_result")
 DISABLED_ACTIONS = ("resolve_attempt", "submit")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -34,24 +35,61 @@ class OpenArtAccount(BaseTool):
                     "writes private receipts outside the checkout"]
     best_for = ["inspecting OpenArt account controls, original jobs and nonspending quotes"]
     not_good_for = ["submitting video generation"]
-    input_schema = {
-        "type": "object", "required": ["action", "read_only"],
-        "properties": {
-            "action": {"type": "string", "enum": [*READ_ONLY_ACTIONS, *DISABLED_ACTIONS]},
-            "read_only": {"const": True}, "model": {"type": "string"}, "mode": {"type": "string"},
-            "prompt": {"type": "string"}, "duration": {"type": "integer"},
-            "aspect_ratio": {"type": "string"}, "resolution": {"type": "string"},
-            "probe": {"type": "boolean"},
-            "timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 300},
-            "attempt_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"},
-            "project_dir": {"type": "string", "minLength": 1},
-            "project_root": {"type": "string", "minLength": 1},
-            "request_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-            "upload_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"},
-            "source_path": {"type": "string", "minLength": 1},
-            "image_upload_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"},
-        },
-    }
+    input_schema = {'type': 'object',
+     'required': ['action', 'read_only'],
+     'properties': {'action': {'type': 'string',
+                               'enum': ['inspect',
+                                        'quote',
+                                        'form',
+                                        'native_dry_run',
+                                        'readiness',
+                                        'status',
+                                        'collect',
+                                        'verify',
+                                        'upload',
+                                        'qualifications',
+                                        'resolve_attempt',
+                                        'submit',
+                                        'qualify_inspection',
+                                        'qualify_upload',
+                                        'qualify_preview',
+                                        'qualify_result'],
+                               'description': 'No action submits generation or reserves credits. '
+                                              'collect requires the original attempt, project '
+                                              'directory and frozen request digest. upload is allowed '
+                                              'only after internal nonspending qualification and '
+                                              'approval lookup. resolve_attempt and submit remain '
+                                              'unavailable.'},
+                    'read_only': {'const': True, 'description': 'Must be explicitly true.'},
+                    'model': {'type': 'string', 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$'},
+                    'mode': {'type': 'string', 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$'},
+                    'prompt': {'type': 'string', 'minLength': 1, 'maxLength': 8000},
+                    'duration': {'type': 'integer', 'minimum': 1, 'maximum': 120},
+                    'aspect_ratio': {'type': 'string', 'pattern': '^[0-9]{1,2}:[0-9]{1,2}$'},
+                    'resolution': {'type': 'string'},
+                    'probe': {'type': 'boolean',
+                              'description': 'readiness only: run `openart version`.'},
+                    'timeout_seconds': {'type': 'number', 'exclusiveMinimum': 0, 'maximum': 300},
+                    'attempt_id': {'type': 'string', 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$'},
+                    'project_dir': {'type': 'string', 'minLength': 1},
+                    'project_root': {'type': 'string', 'minLength': 1},
+                    'request_sha256': {'type': 'string', 'pattern': '^[0-9a-f]{64}$'},
+                    'upload_id': {'type': 'string', 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$'},
+                    'source_path': {'type': 'string', 'minLength': 1},
+                    'image_upload_id': {'type': 'string',
+                                        'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$'},
+                    'json_paths': {'type': 'object'},
+                    'guarantee': {'type': 'object'},
+                    'url_hosts': {'type': 'array', 'items': {'type': 'string'}}},
+     'additionalProperties': False,
+     'allOf': [{'if': {'properties': {'action': {'const': 'qualify_inspection'}}},
+                'then': {'required': ['model', 'mode', 'json_paths']}},
+               {'if': {'properties': {'action': {'const': 'qualify_upload'}}},
+                'then': {'required': ['model', 'mode', 'json_paths', 'guarantee', 'url_hosts']}},
+               {'if': {'properties': {'action': {'const': 'qualify_preview'}}},
+                'then': {'required': ['model', 'mode', 'prompt']}},
+               {'if': {'properties': {'action': {'const': 'qualify_result'}}},
+                'then': {'required': ['attempt_id', 'json_paths']}}]}
 
     def check_dependencies(self) -> None:
         try:
@@ -100,6 +138,23 @@ class OpenArtAccount(BaseTool):
                           data={"error": public, "reservations": 0, "paid_submission": False})
 
     def _dispatch(self, action: str, inputs: dict) -> ToolResult:
+        if action.startswith("qualify_"):
+            from lib import openart_setup as setup, openart_jobs as jobs
+            timeout = cli.validate_timeout(inputs.get("timeout_seconds"))
+            if action == "qualify_result":
+                return self._ok(action, jobs.promote_result_contract(
+                    self._attempt_id(inputs), json_paths=inputs.get("json_paths"), timeout=timeout))
+            model, mode = cli._ident(inputs.get("model"), "model"), cli._ident(inputs.get("mode"), "mode")
+            if action == "qualify_inspection":
+                result = setup.inspect_qualification(model, mode, json_paths=inputs.get("json_paths"), timeout=timeout)
+            elif action == "qualify_upload":
+                result = setup.qualify_upload_guarantee(model, mode, guarantee=inputs.get("guarantee"),
+                    json_paths=inputs.get("json_paths"), url_hosts=inputs.get("url_hosts"), timeout=timeout)
+            else:
+                result = setup.qualify_preview(model, mode, prompt=inputs.get("prompt"),
+                    duration=inputs.get("duration"), aspect_ratio=inputs.get("aspect_ratio"),
+                    resolution=inputs.get("resolution"), image_upload_id=inputs.get("image_upload_id"), timeout=timeout)
+            return self._ok(action, result)
         if action == "readiness":
             return self._ok(action, cli.readiness(probe=bool(inputs.get("probe"))))
         if action == "inspect":
@@ -165,7 +220,7 @@ class OpenArtAccount(BaseTool):
             from lib import openart_jobs as jobs
             model = cli._ident(inputs.get("model"), "model")
             mode = cli._ident(inputs.get("mode"), "mode")
-            profile = jobs.load_qualification(model=model, mode=mode)
+            profile = jobs.load_qualification(model=model, mode=mode, require="inspected")
             image_url = jobs.upload_url_for(
                 cli._ident(upload_id, "image_upload_id"), profile=profile,
                 account_id_sha256=profile["account_id_sha256"])

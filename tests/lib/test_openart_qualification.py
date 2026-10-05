@@ -292,3 +292,12 @@ def test_image_preview_binds_exact_retained_upload_url(synthetic_contract, diffe
             qualification.validate_profile(profile)
     else:
         assert qualification.validate_profile(profile)["mode"] == "image2video"
+
+
+def test_oversized_retained_receipt_refused_without_unbounded_read(synthetic_contract, monkeypatch):
+    profile, *_ = synthetic_contract
+    entry = profile["captured_receipts"][0]
+    raw = cli.receipt_path(entry["receipt_id"]).read_bytes()
+    monkeypatch.setattr(cli, "MAX_STDOUT", len(raw) - 1)
+    with pytest.raises(Error):
+        qualification.validate_profile(profile)

@@ -4,30 +4,178 @@
   "title": "OpenArt Account and Recovery Controls",
   "description": "Nonspending account inspection, original-attempt status/verification/collection, and profile-qualified reference upload for the official OpenArt subscription CLI. No generation submission is exposed.",
   "type": "object",
-  "required": ["action", "read_only"],
+  "required": [
+    "action",
+    "read_only"
+  ],
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["inspect", "quote", "form", "native_dry_run", "readiness",
-               "status", "collect", "verify", "upload", "qualifications", "resolve_attempt", "submit"],
+      "enum": [
+        "inspect",
+        "quote",
+        "form",
+        "native_dry_run",
+        "readiness",
+        "status",
+        "collect",
+        "verify",
+        "upload",
+        "qualifications",
+        "resolve_attempt",
+        "submit",
+        "qualify_inspection",
+        "qualify_upload",
+        "qualify_preview",
+        "qualify_result"
+      ],
       "description": "No action submits generation or reserves credits. collect requires the original attempt, project directory and frozen request digest. upload is allowed only after internal nonspending qualification and approval lookup. resolve_attempt and submit remain unavailable."
     },
-    "read_only": {"const": true, "description": "Must be explicitly true."},
-    "model": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"},
-    "mode": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"},
-    "prompt": {"type": "string", "minLength": 1, "maxLength": 8000},
-    "duration": {"type": "integer", "minimum": 1, "maximum": 120},
-    "aspect_ratio": {"type": "string", "pattern": "^[0-9]{1,2}:[0-9]{1,2}$"},
-    "resolution": {"type": "string"},
-    "probe": {"type": "boolean", "description": "readiness only: run `openart version`."},
-    "timeout_seconds": {"type": "number", "exclusiveMinimum": 0, "maximum": 300},
-    "attempt_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"},
-    "project_dir": {"type": "string", "minLength": 1},
-    "project_root": {"type": "string", "minLength": 1},
-    "request_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-    "upload_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"},
-    "source_path": {"type": "string", "minLength": 1},
-    "image_upload_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"}
+    "read_only": {
+      "const": true,
+      "description": "Must be explicitly true."
+    },
+    "model": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+    },
+    "mode": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+    },
+    "prompt": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000
+    },
+    "duration": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 120
+    },
+    "aspect_ratio": {
+      "type": "string",
+      "pattern": "^[0-9]{1,2}:[0-9]{1,2}$"
+    },
+    "resolution": {
+      "type": "string"
+    },
+    "probe": {
+      "type": "boolean",
+      "description": "readiness only: run `openart version`."
+    },
+    "timeout_seconds": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 300
+    },
+    "attempt_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+    },
+    "project_dir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "project_root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "upload_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+    },
+    "source_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "image_upload_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+    },
+    "json_paths": {
+      "type": "object"
+    },
+    "guarantee": {
+      "type": "object"
+    },
+    "url_hosts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "qualify_inspection"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "model",
+          "mode",
+          "json_paths"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "qualify_upload"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "model",
+          "mode",
+          "json_paths",
+          "guarantee",
+          "url_hosts"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "qualify_preview"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "model",
+          "mode",
+          "prompt"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "qualify_result"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "attempt_id",
+          "json_paths"
+        ]
+      }
+    }
+  ]
 }

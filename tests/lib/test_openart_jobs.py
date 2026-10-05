@@ -26,7 +26,8 @@ elif args[:2] == ["creation", "get"]:
         "status": os.environ.get("FAKE_STATUS", "done"),
         "urls": ["https://cdn.openart.test/v.mp4?sig=1"]}}}}))
 elif args[:2] == ["upload", "add"]:
-    print(json.dumps({{"url": "https://up.openart.test/r.png"}}))
+    print(json.dumps({{"contract": {{"nonspending": True, "no_delayed_charge": True}},
+                      "url": "https://up.openart.test/r.png"}}))
 elif "--async" in args:
     if mode == "nojob":
         print("{{}}")
@@ -854,6 +855,14 @@ def upload_profile(env, model="m-turbo"):
     return store_profile(prof)
 
 
+@pytest.fixture(autouse=False)
+def current_ok(monkeypatch):
+    """Unit seam: fixture profiles have no real inspection to recheck (real chain test covers it)."""
+    seen = []
+    monkeypatch.setattr(jobs, "_verify_current", lambda profile, timeout: seen.append(timeout))
+    return seen
+
+
 def approve(src_sha):
     def lookup(project_root, upload_id, source_sha256):
         if source_sha256 != src_sha:
@@ -863,7 +872,7 @@ def approve(src_sha):
     return lookup
 
 
-def test_qualified_fixture_upload_uses_private_snapshot(env, monkeypatch, tmp_path):
+def test_qualified_fixture_upload_uses_private_snapshot(env, monkeypatch, tmp_path, current_ok):
     profile = upload_profile(env)
     monkeypatch.setattr(jobs, "_ALLOW_FIXTURE_UPLOAD", True)
     src = tmp_path / "ref.png"
@@ -876,6 +885,11 @@ def test_qualified_fixture_upload_uses_private_snapshot(env, monkeypatch, tmp_pa
     src.write_bytes(b"changed-later")  # mutable original no longer matters
     url = jobs.upload_url_for("up-1", profile=profile, source_sha256=out["source_sha256"])
     assert url == "https://up.openart.test/r.png"
+    # staged promotion (added dry_run receipt -> new profile SHA) keeps the stable upload binding valid
+    promoted = dict(profile, receipts=list(profile.get("receipts") or []) + [{"kind": "dry_run"}],
+                    profile_sha256="f" * 64)
+    assert jobs.upload_url_for("up-1", profile=promoted) == url
+    assert out["binding_sha256"] == jobs.sha256_json(jobs.upload_binding(promoted))
 
 
 def test_upload_unapproved_source_makes_no_upload(env, monkeypatch, tmp_path):
@@ -908,8 +922,8 @@ def test_source_changed_after_approval_is_not_uploaded(env, monkeypatch, tmp_pat
     assert not [c for c in calls(env) if c[:1] == ["upload"]]
 
 
-@pytest.mark.parametrize("tamper", ["snapshot", "profile", "no_profile", "receipt_argv"])
-def test_upload_url_for_rejects_tampering(env, monkeypatch, tmp_path, tamper):
+@pytest.mark.parametrize("tamper", ["snapshot", "profile", "guarantee_receipt", "no_profile", "receipt_argv"])
+def test_upload_url_for_rejects_tampering(env, monkeypatch, tmp_path, tamper, current_ok):
     profile = upload_profile(env)
     monkeypatch.setattr(jobs, "_ALLOW_FIXTURE_UPLOAD", True)
     src = tmp_path / "ref.png"
@@ -922,7 +936,12 @@ def test_upload_url_for_rejects_tampering(env, monkeypatch, tmp_path, tamper):
         snap.chmod(0o600)
         snap.write_bytes(b"other")
     elif tamper == "profile":
-        kwargs["profile"] = dict(profile, profile_sha256="0" * 64)
+        kwargs["profile"] = dict(profile, tier="other-tier")  # stable binding field, not profile SHA
+    elif tamper == "guarantee_receipt":
+        up = dict(profile["upload"])
+        up["receipts"] = [dict(e, receipt_sha256="0" * 64) if e["kind"] == "nonspending_guarantee" else e
+                          for e in up["receipts"]]
+        kwargs["profile"] = dict(profile, upload=up)
     elif tamper == "no_profile":
         kwargs = {}
     else:
@@ -942,6 +961,22 @@ def test_upload_url_for_rejects_tampering(env, monkeypatch, tmp_path, tamper):
     assert exc.value.kind == "upload_mismatch"
 
 
+def test_upload_current_contract_change_makes_zero_uploads(env, monkeypatch, tmp_path):
+    upload_profile(env)
+    monkeypatch.setattr(jobs, "_ALLOW_FIXTURE_UPLOAD", True)
+
+    def changed(profile, timeout):
+        raise OpenArtCLIError("qualification_changed", "tier differs")
+    monkeypatch.setattr(jobs, "_verify_current", changed)
+    src = tmp_path / "ref.png"
+    src.write_bytes(b"png-bytes")
+    jobs.register_upload_approval_lookup(approve(hashlib.sha256(b"png-bytes").hexdigest()))
+    with pytest.raises(OpenArtCLIError) as exc:
+        jobs.upload_reference(tmp_path, "up-1", src, model="m-turbo", mode="image2video")
+    assert exc.value.kind == "qualification_changed"
+    assert not [c for c in calls(env) if c[:1] == ["upload"]]
+
+
 def test_real_unqualified_upload_makes_zero_calls(env, tmp_path):
     src = tmp_path / "ref.png"
     src.write_bytes(b"png")
@@ -949,3 +984,322 @@ def test_real_unqualified_upload_makes_zero_calls(env, tmp_path):
         jobs.upload_reference(tmp_path, "up-1", src, model="m-turbo", mode="image2video")
     assert exc.value.kind == "upload_unqualified"
     assert calls(env) == []
+
+
+# ------------------------------------------------- staged first-account chain (actual fake CLI)
+# Red evidence (2026-10-05, before qual._url/_hosts/_record reuse in promotion and full replay):
+# numeric/localhost hosts and fragment/control result URLs promoted to `full`, and a modified
+# retained creation_get/account stdout stream with unchanged receipt JSON still loaded `full`.
+
+STAGED_PATHS = {"account_id": "id", "account_tier": "tier", "submit_job_id": "job", "result_job_id": "job",
+                "status": "status", "urls": "urls", "status_terminal_ok": "done",
+                "status_terminal_fail": "failed", "url_hosts": ["cdn.example.test"]}
+STAGED_GUARANTEE = {"argv": ["account"], "nonspending": {"path": "upload.free", "expected": True},
+                    "no_delayed_charge": {"path": "upload.noDelayed", "expected": True}}
+STAGED_FAKE = r'''#!PYTHON
+import json, os, sys
+args = sys.argv[1:-2]
+with open(os.environ["FAKE_LOG"], "a") as f: f.write(json.dumps(args) + "\n")
+url = "https://cdn.example.test/ref.png?X-Amz-Signature=private"
+g = {"free": True, "noDelayed": True}
+if args == ["version"]: out = {"version": "1"}
+elif args == ["account"]: out = {"id": os.environ.get("ACCOUNT", "private-account"), "tier": "turbo", "upload": g}
+elif args[:2] == ["model", "form"]:
+    out = {"properties": {"prompt": {"type": "string"}, "image": {"type": "string"},
+           "duration": {"type": "integer", "default": 5}}, "required": ["prompt"]}
+elif args[:2] == ["upload", "add"]: out = {"url": url, "upload": g}
+elif args[:2] == ["creation", "get"]:
+    out = {"job": os.environ.get("RESULT_JOB", args[2]), "status": os.environ.get("STATUS", "done"),
+           "urls": [os.environ.get("RESULT_URL", "https://cdn.example.test/out.mp4?sig=1")]}
+elif args[:2] == ["generate", "video"] and "--async" in args: out = {"job": "job-1"}
+elif args[:2] == ["generate", "video"]:
+    params = {"prompt": args[2]}
+    if "--image" in args: params["image"] = url
+    out = {"endpoint": "POST /api/cli/v1/generate", "body": {"model": "m1", "media": "video",
+           "mode": "image2video" if "--image" in args else "text2video", "params": params}}
+else: raise SystemExit(7)
+print(json.dumps(out))
+'''
+
+
+@pytest.fixture
+def staged(tmp_path, monkeypatch):
+    binary = tmp_path / "fake-openart"
+    binary.write_text(STAGED_FAKE.replace("PYTHON", sys.executable))
+    binary.chmod(0o755)
+    monkeypatch.setenv("OPENART_CLI_PATH", str(binary))
+    monkeypatch.setenv("OPENMONTAGE_OPENART_STATE_DIR", str(tmp_path / "state"))
+    log = tmp_path / "calls"
+    monkeypatch.setenv("FAKE_LOG", str(log))
+    monkeypatch.delenv("OPENMONTAGE_OPENART_OFFLINE", raising=False)
+    monkeypatch.setattr(jobs, "_ALLOW_FIXTURE_LAUNCH", False)
+    jobs.register_upload_approval_lookup(
+        lambda root, uid, sha: {"state": "approved", "upload_id": uid, "source_sha256": sha,
+                                "approval_sha256": "a" * 64})
+    jobs.register_account_check(None)
+    jobs.register_reservation_lookup(None)
+    yield {"tmp": tmp_path, "log": log}
+    jobs.register_upload_approval_lookup(None)
+    jobs.register_reservation_lookup(None)
+
+
+def staged_calls(st):
+    return [json.loads(x) for x in st["log"].read_text().splitlines()] if st["log"].exists() else []
+
+
+def staged_pre_submit(st):
+    from lib import openart_setup as setup
+    setup.inspect_qualification("m1", "image2video", json_paths=STAGED_PATHS)
+    setup.qualify_upload_guarantee("m1", "image2video", guarantee=STAGED_GUARANTEE,
+                                   json_paths={"upload_url": "url"}, url_hosts=["cdn.example.test"])
+    src = st["tmp"] / "project" / "ref.png"
+    src.parent.mkdir(exist_ok=True)
+    src.write_bytes(b"approved image")
+    jobs.upload_reference(st["tmp"] / "project", "ref1", src, model="m1", mode="image2video")
+    setup.qualify_preview("m1", "image2video", prompt="a fox", image_upload_id="ref1")
+    profile = jobs.load_qualification(model="m1", mode="image2video", require="pre_submit")
+    return profile, src
+
+
+def staged_launch(st, attempt="qa-1", occurrence="occ-1", reservation="res-q", purpose=jobs.QUALIFICATION_PURPOSE):
+    profile, src = staged_pre_submit(st) if "profile" not in st else (st["profile"], st["src"])
+    st["profile"], st["src"] = profile, src
+    dry = next(e for e in profile["captured_receipts"] if e["kind"] == "dry_run")
+    project = st["tmp"] / "project"
+    inputs = {"prompt": "a fox", "model": "m1", "operation": "image_to_video", "image_path": str(src),
+              "image_upload_id": "ref1", "output_path": str(project / f"{attempt}.mp4"),
+              "native_dry_run_receipt_id": dry["receipt_id"], "native_dry_run_receipt_sha256": dry["receipt_sha256"]}
+    native = jobs.prepare_native_request(inputs, profile)
+    snap = jobs.freeze_request(attempt, inputs, native, profile)
+    binding = {"attempt_id": attempt, "request_sha256": "r" * 64, "reservation_id": reservation,
+               "snapshot_sha256": snap["snapshot_sha256"],
+               **{k: native[k] for k in ("native_controls_sha256", "native_argv_sha256", "profile_sha256",
+                                         "account_id_sha256", "native_body_sha256")}}
+    trusted = {"state": "active", "attempt_id": attempt, "request_sha256": "r" * 64,
+               "reservation_id": reservation, "purpose": purpose, "authorization_occurrence_id": occurrence}
+    jobs.register_reservation_lookup(lambda root, aid, req: dict(trusted) if aid == attempt else None)
+    out = jobs.launch_submit(project, binding, native, profile, wait_timeout=20)
+    return profile, out, project
+
+
+def _fake_download(monkeypatch):
+    from lib import openart_download as dl
+
+    def fake(url, output_path, *, allowed_hosts, output_root, **kw):
+        data = b"generated video bytes"
+        Path(output_path).write_bytes(data)
+        return {"path": str(output_path), "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
+                "source_url": url, "source_host": "cdn.example.test"}
+    monkeypatch.setattr(dl, "collect_output", fake)
+
+
+def test_staged_first_account_full_chain(staged, monkeypatch):
+    profile, out, project = staged_launch(staged)
+    assert out["status"] == "submitted"
+    assert sum("--async" in c for c in staged_calls(staged)) == 1
+    with pytest.raises(OpenArtCLIError):
+        jobs.load_qualification(model="m1", mode="image2video", require="full")
+    promoted = jobs.promote_result_contract("qa-1", timeout=20)
+    assert promoted["level"] == "full" and promoted["profile_sha256"] == profile["profile_sha256"]
+    full = jobs.load_qualification(model="m1", mode="image2video", require="full")
+    assert full == profile  # creative profile identity unchanged by result promotion
+    eff = jobs.effective_result_contract("qa-1")
+    assert eff["result_contract_sha256"] == promoted["result_contract_sha256"]
+    status = jobs.qualification_status("m1", "image2video")
+    assert status["level"] == "full" and status["result_contract_sha256"] == promoted["result_contract_sha256"]
+    _fake_download(monkeypatch)
+    got = jobs.collect_job("qa-1", output_path=project / "qa-1.mp4", output_root=project, profile=profile,
+                           timeout=20)
+    assert got["status"] == "collected", got
+    stable = jobs.verify_collection_receipt("qa-1", profile)
+    assert stable["output"]["sha256"] == hashlib.sha256(b"generated video bytes").hexdigest()
+    with pytest.raises(OpenArtCLIError) as exc:
+        jobs.promote_result_contract("qa-1", timeout=20)
+    assert exc.value.kind == "result_contract_exists"
+
+
+def test_staged_ordinary_purpose_and_missing_occurrence_never_spawn(staged):
+    for kw in ({"purpose": "ordinary"}, {"occurrence": None}):
+        attempt = "o-" + str(len(staged_calls(staged)))
+        with pytest.raises(OpenArtCLIError):
+            staged_launch(staged, attempt=attempt, **kw)
+    assert not any("--async" in c for c in staged_calls(staged))
+
+
+def test_staged_same_occurrence_cannot_qualify_twice(staged):
+    staged_launch(staged)
+    with pytest.raises(OpenArtCLIError) as exc:
+        staged_launch(staged, attempt="qa-2", reservation="res-other")
+    assert exc.value.kind == "qualification_authorization_consumed"
+    assert sum("--async" in c for c in staged_calls(staged)) == 1
+
+
+@pytest.mark.parametrize("env_key,value", [("RESULT_JOB", "job-other"), ("ACCOUNT", "other"),
+                                           ("RESULT_URL", "https://evil.example.test/out.mp4"),
+                                           ("STATUS", "failed")])
+def test_staged_promotion_rejects_mismatch(staged, monkeypatch, env_key, value):
+    staged_launch(staged)
+    monkeypatch.setenv(env_key, value)
+    with pytest.raises(OpenArtCLIError):
+        jobs.promote_result_contract("qa-1", timeout=20)
+    assert jobs.qualification_status("m1", "image2video")["level"] == "pre_submit"
+
+
+@pytest.mark.parametrize("paths,url", [
+    ({"url_hosts": ["127.0.0.1"]}, "https://127.0.0.1/out.mp4"),
+    ({"url_hosts": ["localhost"]}, "https://localhost/out.mp4"),
+    ({"url_hosts": ["cdn.example.test.local"]}, "https://cdn.example.test.local/out.mp4"),
+    ({}, "https://cdn.example.test/out.mp4#frag"),
+    ({}, "https://cdn.example.test/out%0a.mp4"),
+    ({"status_terminal_ok": "do\x01ne"}, None),
+    ({"urls": "urls..0"}, None),
+])
+def test_staged_promotion_reuses_qualified_path_host_url_validation(staged, monkeypatch, paths, url):
+    staged_launch(staged)
+    if url:
+        monkeypatch.setenv("RESULT_URL", url)
+    with pytest.raises(OpenArtCLIError):
+        jobs.promote_result_contract("qa-1", json_paths=paths or None, timeout=20)
+    assert jobs.qualification_status("m1", "image2video")["level"] == "pre_submit"
+
+
+def _proof(profile):
+    target = jobs.result_proof_path(profile["model"], profile["mode"], profile["profile_sha256"])
+    return target, json.loads(target.read_bytes())
+
+
+def _rewrite(target, data):
+    target.unlink()
+    cli.write_private(target, json.dumps(data, sort_keys=True).encode())
+
+
+def _row(model="m1", mode="image2video"):
+    rows = [r for r in jobs.list_qualifications() if r["model"] == model and r["mode"] == mode]
+    assert len(rows) == 1
+    return rows[0]
+
+
+def test_list_qualifications_reports_truthful_staged_levels(staged, monkeypatch):
+    from lib import openart_setup as setup
+    setup.inspect_qualification("m1", "image2video", json_paths=STAGED_PATHS)
+    before = len(staged_calls(staged))
+    row = _row()
+    assert row["level"] == "inspected" and row["valid"] is False and row["error"]
+    assert row["image2video_qualified"] is False
+    profile, _, _ = staged_launch(staged)
+    row = _row()
+    assert row["level"] == "pre_submit" and row["valid"] is False
+    assert row["profile_sha256"] == profile["profile_sha256"]
+    assert row["result_contract_sha256"] is None
+    promoted = jobs.promote_result_contract("qa-1", timeout=20)
+    count = len(staged_calls(staged))
+    row = _row()
+    assert row["level"] == "full" and row["valid"] is True and row["error"] is None
+    assert row["image2video_qualified"] is True
+    assert row["profile_sha256"] == profile["profile_sha256"]
+    assert row["result_contract_sha256"] == promoted["result_contract_sha256"]
+    assert len(staged_calls(staged)) == count  # listing is pure: no CLI calls
+    assert len(staged_calls(staged)) > before
+    target, proof = _proof(profile)
+    proof["json_paths"]["url_hosts"] = ["localhost"]
+    _rewrite(target, proof)
+    row = _row()
+    assert row["level"] == "pre_submit" and row["valid"] is False and row["error"]
+    assert row["result_contract_sha256"] is None
+    assert len(staged_calls(staged)) == count
+
+
+@pytest.mark.parametrize("which", ["account_receipt", "creation_get_receipt"])
+def test_full_load_fails_when_retained_stdout_stream_modified(staged, which):
+    profile, _, _ = staged_launch(staged)
+    jobs.promote_result_contract("qa-1", timeout=20)
+    _, proof = _proof(profile)
+    entry = proof["evidence"][which]
+    rec = json.loads(cli.receipt_path(entry["receipt_id"]).read_bytes())
+    stream = cli.state_dir() / "streams" / rec["streams"]["stdout"]
+    stream.write_bytes(stream.read_bytes().replace(b"}", b',"x":1}', 1))
+    with pytest.raises(OpenArtCLIError) as exc:
+        jobs.load_qualification(model="m1", mode="image2video", require="full")
+    assert jobs.qualification_status("m1", "image2video")["level"] == "pre_submit"
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda p: p["json_paths"].update(url_hosts=["127.0.0.1"]),
+    lambda p: p["json_paths"].update(url_hosts=["localhost"]),
+    lambda p: p["json_paths"].update(status_terminal_ok="do\nne"),
+    lambda p: p["json_paths"].update(urls="urls..x"),
+])
+def test_full_replay_revalidates_proof_paths_and_hosts(staged, mutate):
+    profile, _, _ = staged_launch(staged)
+    jobs.promote_result_contract("qa-1", timeout=20)
+    target, proof = _proof(profile)
+    mutate(proof)
+    _rewrite(target, proof)
+    with pytest.raises(OpenArtCLIError):
+        jobs.load_qualification(model="m1", mode="image2video", require="full")
+
+
+def test_full_replay_rejects_tampered_raw_submit(staged):
+    profile, _, _ = staged_launch(staged)
+    jobs.promote_result_contract("qa-1", timeout=20)
+    raw = jobs.job_dir("qa-1", create=False) / "submit.stdout"
+    raw.write_bytes(b'{"job":"job-2"}\n')
+    with pytest.raises(OpenArtCLIError):
+        jobs.load_qualification(model="m1", mode="image2video", require="full")
+
+
+def test_exhausted_budget_never_spawns_staged(staged, monkeypatch):
+    staged_pre_submit(staged)
+    real = cli.lock_remaining
+    state = {"n": 0}
+
+    def exhausted(deadline):
+        state["n"] += 1
+        if state["n"] >= 2:
+            raise OpenArtCLIError("timeout", "budget exhausted")
+        return real(deadline)
+    monkeypatch.setattr(cli, "lock_remaining", exhausted)
+    with pytest.raises(OpenArtCLIError):
+        staged_launch(staged)
+    assert not any("--async" in c for c in staged_calls(staged))
+
+
+def _rewrite_frozen(aid, mutate):
+    path = jobs.job_dir(aid, create=False) / "frozen_request.json"
+    snap = json.loads(path.read_bytes())
+    mutate(snap)
+    if snap["profile"].get("profile_sha256"):
+        snap["profile"]["profile_sha256"] = jobs.sha256_json(
+            {k: v for k, v in snap["profile"].items() if k != "profile_sha256"})
+    snap["native"]["native_argv_sha256"] = jobs.sha256_json(snap["native"]["argv"])
+    path.chmod(0o600)
+    path.write_bytes(jobs._canon(snap))
+
+
+_FROZEN_TAMPERS = {
+    "native_body": lambda s: s["native"].__setitem__("native_body_sha256", "1" * 64),
+    "native_argv": lambda s: s["native"].__setitem__("argv", s["native"]["argv"] + ["--duration", "9"]),
+    "native_controls": lambda s: s["native"].__setitem__("native_controls_sha256", "2" * 64),
+    "inputs_snapshot": lambda s: s["inputs"].__setitem__("prompt", "changed after approval"),
+    "profile": lambda s: s["profile"].__setitem__("tier", "other"),
+}
+
+
+@pytest.mark.parametrize("tamper", sorted(_FROZEN_TAMPERS))
+def test_full_proof_requires_untampered_origin_frozen_request(staged, tamper):
+    staged_launch(staged)
+    jobs.promote_result_contract("qa-1", timeout=20)
+    jobs.load_qualification(model="m1", mode="image2video", require="full")
+    _rewrite_frozen("qa-1", _FROZEN_TAMPERS[tamper])
+    with pytest.raises(OpenArtCLIError):
+        jobs.load_qualification(model="m1", mode="image2video", require="full")
+
+
+@pytest.mark.parametrize("tamper", ["native_body", "inputs_snapshot"])
+def test_promotion_refuses_tampered_origin_frozen_request(staged, tamper):
+    staged_launch(staged)
+    _rewrite_frozen("qa-1", _FROZEN_TAMPERS[tamper])
+    calls = len(staged_calls(staged))
+    with pytest.raises(OpenArtCLIError):
+        jobs.promote_result_contract("qa-1", timeout=20)
+    assert len(staged_calls(staged)) == calls

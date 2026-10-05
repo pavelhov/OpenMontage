@@ -99,8 +99,9 @@ def _record(entry: dict, kind: str = "generation_unqualified") -> dict:
         path = cli.receipt_path(entry["receipt_id"])
         if stat.S_IMODE(path.stat().st_mode) != 0o600:
             raise ValueError
-        raw = path.read_bytes()
-        if hashlib.sha256(raw).hexdigest() != entry["receipt_sha256"]:
+        with open(path, "rb") as fh:
+            raw = fh.read(cli.MAX_STDOUT + 1)
+        if len(raw) > cli.MAX_STDOUT or hashlib.sha256(raw).hexdigest() != entry["receipt_sha256"]:
             raise ValueError
         record = json.loads(raw)
         if not isinstance(record, dict) or type(record.get("returncode")) is not int or record["returncode"] != 0 \
@@ -115,7 +116,8 @@ def _record(entry: dict, kind: str = "generation_unqualified") -> dict:
             cli._check_private(stream_path, False)
             if stat.S_IMODE(stream_path.stat().st_mode) != 0o600:
                 raise ValueError
-        stdout = (cli.state_dir() / "streams" / streams["stdout"]).read_bytes()
+        with open(cli.state_dir() / "streams" / streams["stdout"], "rb") as fh:
+            stdout = fh.read(cli.MAX_STDOUT + 1)
         if len(stdout) > cli.MAX_STDOUT or hashlib.sha256(stdout).hexdigest() != record["stdout_sha256"] \
                 or _hash(json.loads(stdout)) != _hash(record.get("parsed")):
             raise ValueError
@@ -141,15 +143,39 @@ def _argv(record: dict, expected: list) -> None:
         _fail("captured command does not bind the qualified contract")
 
 
-def verify_captured(profile: dict) -> None:
+LEVELS = ("inspected", "pre_submit", "full")
+_STAGE_KINDS = {"inspected": {"version", "account", "form"},
+                "pre_submit": {"version", "account", "form", "dry_run"}}
+
+
+def profile_level(profile: dict) -> str:
+    """Declared evidence level; validation still proves it. Never self-promotes.
+
+    Legacy profiles without `result_contract` carry the full six-receipt proof.
+    Staged profiles carry `result_contract: {"state": "unqualified"}`; their
+    full eligibility is a separate result proof bound to this exact profile SHA
+    (verified by lib.openart_jobs), so the creative profile SHA stays stable.
+    """
+    contract = profile.get("result_contract") if isinstance(profile, dict) else None
+    if contract is None:
+        return "full"
+    if not isinstance(contract, dict) or contract != {"state": "unqualified"}:
+        _fail("staged result contract must be explicitly unqualified")
+    if profile.get("source") == "fixture":
+        return "pre_submit"
+    kinds = {e.get("kind") for e in profile.get("captured_receipts") or [] if isinstance(e, dict)}
+    return "pre_submit" if "dry_run" in kinds else "inspected"
+
+
+def verify_captured(profile: dict, level: str = "full") -> None:
     try:
-        _verify_captured(profile)
+        _verify_captured(profile, level)
     except (KeyError, TypeError, ValueError, AttributeError):
         _fail("captured profile contract malformed")
 
 
-def _verify_captured(profile: dict) -> None:
-    records = _records(profile.get("captured_receipts"), _KINDS)
+def _verify_captured(profile: dict, level: str = "full") -> None:
+    records = _records(profile.get("captured_receipts"), _STAGE_KINDS.get(level, _KINDS))
     paths = profile["json_paths"]
     _argv(records["version"], ["version"])
     if lookup_path(records["version"]["parsed"], "version") != profile["cli_version"]:
@@ -174,6 +200,8 @@ def _verify_captured(profile: dict) -> None:
         _fail("observed form defaults differ from profile")
     if "prompt" not in controls:
         _fail("video form lacks prompt control", "unsupported_gate")
+    if level == "inspected":
+        return
     dry = records["dry_run"]["parsed"]
     if not isinstance(dry, dict) or dry.get("endpoint") != profile["dry_run_endpoint"] \
             or profile["dry_run_endpoint"] != "POST /api/cli/v1/generate":
@@ -201,6 +229,12 @@ def _verify_captured(profile: dict) -> None:
     except cli.OpenArtCLIError:
         _fail("preview native controls invalid", "unsupported_gate")
     _argv(records["dry_run"], creative + ["--dry-run"])
+    if profile["mode"] == "image2video":
+        retained_url = _qualified_upload_url(profile)
+        if params.get("image") != retained_url:
+            _fail("native preview image differs from exact verified upload URL")
+    if level == "pre_submit":
+        return
     _argv(records["submit"], creative + ["--async"])
     job = lookup_path(records["submit"]["parsed"], paths["submit_job_id"])
     if not _text(job) or job.startswith("-"):
@@ -218,10 +252,6 @@ def _verify_captured(profile: dict) -> None:
             _fail("successful result lacks URL examples")
         for url in urls:
             _url(url, paths["url_hosts"])
-    if profile["mode"] == "image2video":
-        retained_url = _qualified_upload_url(profile)
-        if params.get("image") != retained_url:
-            _fail("native preview image differs from exact verified upload URL")
 
 
 def validate_upload_contract(profile: dict) -> None:
@@ -282,7 +312,15 @@ def _qualified_upload_url(profile: dict) -> str:
     return url
 
 
-def validate_profile(profile: dict, *, allow_fixture: bool = False) -> dict:
+def validate_profile(profile: dict, *, allow_fixture: bool = False, require: str = "full") -> dict:
+    """Validate at least `require` level. Staged (result_contract unqualified)
+    profiles satisfy at most pre_submit here; full eligibility for them needs the
+    separate result proof bound to the unchanged profile SHA (openart_jobs)."""
+    if require not in LEVELS:
+        _fail("unknown qualification level", "unsupported_gate")
+    level = profile_level(profile) if isinstance(profile, dict) else "full"
+    if LEVELS.index(level) < LEVELS.index(require):
+        _fail(f"qualification level {level} below required {require}")
     if not isinstance(profile, dict) or any(key not in profile for key in _REQUIRED):
         _fail("qualification profile missing required typed fields")
     if profile["version"] != "1" or profile["source"] not in ("real", "fixture") \
@@ -311,7 +349,7 @@ def validate_profile(profile: dict, *, allow_fixture: bool = False) -> dict:
     except (ValueError, TypeError):
         _fail("profile must contain finite JSON values")
     if profile["source"] == "real":
-        verify_captured(normalized)
-    if profile["mode"] == "image2video":
+        verify_captured(normalized, level)
+    if profile["mode"] == "image2video" and level != "inspected":
         validate_upload_contract(normalized)
     return normalized
