@@ -1,0 +1,577 @@
+{
+  "type": "object",
+  "properties": {
+    "version": {
+      "const": "1.0"
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "story_revision": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "story": {
+      "type": "object",
+      "properties": {
+        "desire": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "action": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "consequence": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "payoff": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "desire",
+        "action",
+        "consequence",
+        "payoff"
+      ],
+      "additionalProperties": false
+    },
+    "assets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/asset"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "project_review": {
+      "$ref": "#/$defs/review"
+    },
+    "late_cast_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "payoff_speaker_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "minItems": 0,
+      "uniqueItems": true
+    },
+    "payoff_asset_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "shots": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/shot"
+      },
+      "minItems": 1,
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "version",
+    "project_id",
+    "story_revision",
+    "story",
+    "assets",
+    "project_review",
+    "late_cast_ids",
+    "payoff_speaker_ids",
+    "payoff_asset_id",
+    "shots"
+  ],
+  "additionalProperties": false,
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openmontage.local/artifacts/shot_contract",
+  "title": "Shot Contract",
+  "description": "Current version 1.0. Authored semantic evidence; structural validation alone never authorizes motion. Legacy scene plans remain readable without this sidecar.",
+  "$defs": {
+    "predicate": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "unknown"
+          ]
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "severity": {
+          "enum": [
+            "critical",
+            "cosmetic"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "status",
+        "evidence"
+      ],
+      "additionalProperties": false
+    },
+    "review": {
+      "type": "object",
+      "properties": {
+        "review_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "story_revision": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "subject_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "unknown",
+            "provisional"
+          ]
+        },
+        "predicates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/predicate"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "draft_policy_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "review_id",
+        "reviewer",
+        "story_revision",
+        "subject_sha256",
+        "status",
+        "predicates"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "provisional"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "draft_policy_sha256"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "draft_policy_sha256"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "asset": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "role": {
+          "enum": [
+            "identity_reference",
+            "start_frame",
+            "end_frame",
+            "timed_keyframe",
+            "payoff_board",
+            "observed_outgoing_frame",
+            "voice_reference"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "cast_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "review": {
+          "$ref": "#/$defs/review"
+        },
+        "time_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "upstream_source": {
+          "type": "object",
+          "required": [
+            "shot_id",
+            "role"
+          ],
+          "properties": {
+            "shot_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "role": {
+              "const": "outgoing_frame"
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "id",
+        "role",
+        "cast_ids"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "upstream_source"
+            ]
+          },
+          "then": {},
+          "else": {
+            "required": [
+              "path",
+              "sha256",
+              "review"
+            ]
+          }
+        }
+      ]
+    },
+    "transition": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": [
+            "continuous",
+            "location_cut",
+            "time_cut",
+            "reaction_cut",
+            "insert_cut",
+            "transformation",
+            "hard_cut",
+            "match_cut"
+          ]
+        },
+        "rationale": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "transformation_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "type",
+        "rationale"
+      ],
+      "additionalProperties": false
+    },
+    "dialogue": {
+      "type": "object",
+      "properties": {
+        "speaker_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "source": {
+          "enum": [
+            "visible",
+            "offscreen"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "start_seconds": {
+          "type": "number",
+          "minimum": 0
+        },
+        "end_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      },
+      "required": [
+        "speaker_id",
+        "source",
+        "text",
+        "start_seconds",
+        "end_seconds"
+      ],
+      "additionalProperties": false
+    },
+    "transformation": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "preserved_invariants": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "description",
+        "preserved_invariants"
+      ],
+      "additionalProperties": false
+    },
+    "upstream": {
+      "type": "object",
+      "properties": {
+        "shot_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "attempt_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "output_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "outgoing_frame_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "review_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "shot_id"
+      ],
+      "additionalProperties": false,
+      "anyOf": [
+        {
+          "maxProperties": 1
+        },
+        {
+          "required": [
+            "attempt_id",
+            "output_sha256",
+            "outgoing_frame_sha256",
+            "review_sha256"
+          ]
+        }
+      ]
+    },
+    "shot": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "initial_state": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "dominant_action": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "completed_end_state": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "endpoint_completion": {
+          "enum": [
+            "completed",
+            "partial",
+            "unknown"
+          ]
+        },
+        "duration_seconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "cast_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "required_visible_speakers": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "dialogue": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dialogue"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "prop_body_invariants": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "allowed_transformations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/transformation"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "transition": {
+          "$ref": "#/$defs/transition"
+        },
+        "asset_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "review": {
+          "$ref": "#/$defs/review"
+        },
+        "upstream": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/upstream"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "id",
+        "initial_state",
+        "dominant_action",
+        "completed_end_state",
+        "endpoint_completion",
+        "duration_seconds",
+        "cast_ids",
+        "required_visible_speakers",
+        "dialogue",
+        "prop_body_invariants",
+        "allowed_transformations",
+        "transition",
+        "asset_ids",
+        "upstream"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
