@@ -92,7 +92,8 @@ supported on the CLI route.
 
 The same image at both ends is useful for a loop. Describe a cyclic action, a
 stable camera, and the return to the initial pose; inspect velocity and sound
-across repeated playback. Keep frame pairs at 480p/720p.
+across repeated playback. Keep frame pairs at 480p/720p. Do not invent a `loop`
+parameter; neither route has one.
 
 Prepare stills with Image 2.0 on REST (`grok-imagine-image-2.0`). CLI `image_gen`
 does not expose an Image 2.0 model override. Read `grok-media` for the verified

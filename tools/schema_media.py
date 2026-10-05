@@ -105,9 +105,10 @@ def reject_unsupported_final_pins(inputs, props, endpoint):
             if source.get(field) and field not in props:
                 raise ValueError(
                     f"{endpoint} does not support final-frame pin {field}; this "
-                    "adapter cannot pin a last frame. Use a route that documents "
-                    "first/last-frame support (see pinned_final_frame) outside "
-                    "strict production, or remove the pin"
+                    "adapter cannot honor the pin and will not drop it. Choose an "
+                    "explicitly approved route with documented first/last-frame "
+                    "support (see pinned_final_frame); refreshed adapter native "
+                    "frame routes are not yet strict-compatible"
                 )
 
 
