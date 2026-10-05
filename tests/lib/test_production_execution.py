@@ -525,6 +525,58 @@ def test_schema_media_native_local_path_rejected_outside_strict(tmp_path,monkeyp
     assert posts == []
 
 
+@pytest.mark.parametrize('adapter',['schema','fal'])
+@pytest.mark.parametrize('field,nested',[('last_image_path',False),('last_frame',False),('end_frame',True)])
+def test_new_adapters_reject_unsupported_final_pin_instead_of_dropping(tmp_path,monkeypatch,adapter,field,nested):
+    """SchemaMedia/FalMedia cannot pin a final frame; a requested pin must fail
+    closed rather than be filtered out while the paid job runs anyway."""
+    import tools.schema_media as schema_media
+    import tools.fal_media as fal_media
+    from tools.video.wan_atlas_video import WanAtlasVideo
+    from tools.video.wan_fal_video import WanFalVideo
+    start=tmp_path/'start.png'; start.write_bytes(b'x')
+    end=tmp_path/'end.png'; end.write_bytes(b'y')
+    posts=[]
+    monkeypatch.setattr(schema_media,'request_json',lambda *a,**kw: posts.append(kw) or {})
+    monkeypatch.setattr(fal_media,'request_json',lambda *a,**kw: posts.append(kw) or {})
+    tool=WanAtlasVideo() if adapter=='schema' else WanFalVideo()
+    monkeypatch.setenv(tool.credential if adapter=='schema' else 'FAL_KEY','offline-test-key')
+    value=str(end)
+    inputs={'prompt':'p','image_path':str(start),'output_path':str(tmp_path/'o.mp4')}
+    if nested:
+        inputs['provider_params']={field:value}
+    else:
+        inputs[field]=value
+    with pytest.raises(ValueError,match='final-frame pin'):
+        tool.build_request(inputs)
+    result=tool.execute(inputs)
+    assert not result.success and 'final-frame pin' in result.error
+    assert posts == []
+
+
+def test_strict_schema_media_last_image_path_not_silently_dropped(tmp_path,monkeypatch):
+    """Strict approval may freeze last_image_path, but the adapter must refuse it
+    rather than submit an unpinned paid job."""
+    import tools.schema_media as schema_media
+    from tools.video.wan_atlas_video import WanAtlasVideo
+    inputs,scope,_=project(tmp_path)
+    (tmp_path/'assets'/'end.png').write_bytes(b'end')
+    tool=WanAtlasVideo()
+    posts=[]
+    monkeypatch.setattr(schema_media,'request_json',lambda *a,**kw: posts.append(kw) or {})
+    monkeypatch.setenv(tool.credential,'offline-test-key')
+    native=dict(inputs,last_image_path=str(tmp_path/'assets'/'end.png'),duration=5)
+    scope['provider']=tool.provider
+    scope['requests']['entry']=planned_request_digest(native,project_dir=tmp_path)
+    write_scopes(tmp_path,scope)
+    try:
+        result=tool.execute(native)
+    except (ProductionGovernanceError,ValueError):
+        result=None
+    assert result is None or not result.success
+    assert posts == [], 'unpinned paid job must never be submitted'
+
+
 @pytest.mark.parametrize('extra',[{},{'operation':'generate'},{'operation':'resume','resume_job':{'video_id':'paid'}}])
 def test_strict_avatar_generation_and_resume_fail_closed(tmp_path,monkeypatch,extra):
     import tools.avatar.heygen_avatar as heygen

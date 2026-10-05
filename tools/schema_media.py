@@ -75,6 +75,42 @@ def validate_native_media_references(payload):
             check(field, value)
 
 
+# Canonical/alias final-frame pins that these adapters do not encode. When an
+# endpoint schema does not declare the field, a non-empty value would
+# otherwise be filtered out silently and the job would run without the
+# requested final frame.
+UNSUPPORTED_FINAL_PIN_FIELDS = (
+    "last_image_path",
+    "last_frame",
+    "last_frame_path",
+    "last_image_url",
+    "end_image_path",
+    "end_image_url",
+    "end_frame",
+    "end_frame_path",
+    "final_frame",
+    "final_frame_path",
+)
+
+
+def reject_unsupported_final_pins(inputs, props, endpoint):
+    """Fail closed when a final-frame pin would be silently dropped."""
+
+    sources = [inputs]
+    native = inputs.get("provider_params")
+    if isinstance(native, dict):
+        sources.append(native)
+    for source in sources:
+        for field in UNSUPPORTED_FINAL_PIN_FIELDS:
+            if source.get(field) and field not in props:
+                raise ValueError(
+                    f"{endpoint} does not support final-frame pin {field}; this "
+                    "adapter cannot pin a last frame. Use a route that documents "
+                    "first/last-frame support (see pinned_final_frame) outside "
+                    "strict production, or remove the pin"
+                )
+
+
 class SchemaMedia(BaseTool):
     tier = ToolTier.GENERATE
     runtime = ToolRuntime.API
@@ -204,6 +240,7 @@ class SchemaMedia(BaseTool):
         for field in native_reference_fields:
             if inputs.get(field) and field not in props:
                 raise ValueError(f"{endpoint} does not accept {field}")
+        reject_unsupported_final_pins(inputs, props, endpoint)
         payload = {k: v for k, v in inputs.items() if k in props and k != "model"}
         payload.update(inputs.get("provider_params") or {})
         if self.provider == "atlascloud":

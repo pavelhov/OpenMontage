@@ -154,6 +154,9 @@ class FalMedia(BaseTool):
             raise ValueError(f"Unsupported model/operation: {model}/{operation}")
         schema = CONTRACTS[endpoint]["input_schema"]
         props = schema["properties"]
+        from tools.schema_media import reject_unsupported_final_pins
+
+        reject_unsupported_final_pins(inputs, props, endpoint)
         payload = {k: v for k, v in inputs.items() if k in props}
         native = inputs.get("provider_params", {})
         if not isinstance(native, dict):
