@@ -53,7 +53,7 @@ Supported native operations:
   argument. Near-9:16 drifts such as `720x1264` are common and must be
   normalized at compose/stitch to exact TikTok-safe `720x1280` (or
   `1080x1920`) before shipping.
-- `reference_to_video`: 1-7 local reference images and/or 1-3 preset `voices`,
+- `reference_to_video`: 1-14 local reference images and/or 1-3 preset `voices`,
   1-15 seconds, 480p/720p, and an explicit aspect ratio. References guide subjects
   and style; they do not pin frame one. Requested aspect ratio is not a guarantee
   of exact output pixels: inspect and normalize delivery geometry before shipping.
@@ -65,9 +65,15 @@ Supported native operations:
   as `<IMAGE_0>`, etc. No uploaded audio or voice cloning is exposed. Voice-only
   reference generation is supported; it is not a pinned-first-frame operation.
   Presets do not guarantee speaker attribution or lip sync; review both.
+- `first_last_frame` (CLI >= 1.0.34): maps to native `reference_to_video` with
+  local `first_frame` / `last_frame` pins and optional mid-clip `keyframes`
+  (up to 4). Use selector aliases `reference_image_path` / `last_image_path`.
+  Same image for both endpoints authors a loop; there is still no native `loop`
+  switch. Remote URL ending frames are unsupported on this route.
 
-The CLI adapter does not expose direct text-to-video, video edit, extend, or
-upscale. Do not emulate those operations with a hidden multi-step workflow.
+The CLI adapter does not expose direct text-to-video, video edit, extend,
+upscale, or Imagine Image 2.0 model selection. Do not emulate those operations
+with a hidden multi-step workflow.
 For TikTok delivery after `image_to_video`, package through `video_stitch` /
 `video_compose` with `profile="tiktok_720p"` (or `compose_target`
 `720x1280`) — never raw ffmpeg concat `-c copy` of off-geometry clips.
@@ -89,9 +95,14 @@ image to a specific role in plain language. Keep the full prompt at or below
 
 The remaining sections describe the REST API route only.
 
-## Pinned video endpoints (REST Video 1.5)
+## Verified current capabilities (2026-09-10)
 
-REST video supports pinned endpoints on `model="grok-imagine-video-1.5"`.
+Image 2.0 is a still-image model; Video 1.5 is the current separate video model.
+For REST stills, default to `model="grok-imagine-image-2.0"`; optional
+`quality` is `low`, `medium`, or `auto`. Auto currently selects low for generation
+and medium for edits. Up to five source images are supported by Image 2.0.
+
+REST video defaults to `model="grok-imagine-video-1.5"` and supports pinned endpoints on that model.
 Use `operation="first_last_frame"`, `last_image_url` or `last_image_path`, and
 optionally `image_url`/`image_path` (selector aliases: `reference_image_url` or
 `reference_image_path`). The adapter sends REST `last_frame` and `image`.
@@ -100,18 +111,28 @@ Use the same image for both endpoints to author a loop. There is no native
 frame pairs/reference guidance: 480p or 720p. Prompts and first frames are
 optional in last-frame requests. Reference images can accompany the frame pins.
 
-Classic `grok-imagine-video` cannot accept a last frame. Never silently change
-the model, omit the last frame, or replace endpoint control with a prompt.
-The CLI contract exposes neither ending-frame pins nor Imagine model selection.
+Classic `grok-imagine-video` remains available only as an explicit downgrade. It cannot accept a last frame. Never silently change the model, omit the last frame, or replace endpoint control with a prompt.
+CLI >= 1.0.34 exposes local ending-frame pins through `reference_to_video`; it
+still does not expose Imagine model selection or Image 2.0 overrides.
 CLI coding model `grok-4.6` is not an Imagine media model identifier.
 
-See the [official first/last-frame guide](https://docs.x.ai/developers/model-capabilities/video/reference-to-video).
+On timeout, inspect the returned `diagnostics`: configured deadline, process
+stage, session UUID, stdout activity, and session event/update summaries.
+`no_tool_call_recorded` is not proof of no submission or no charge. A media
+timeout stays `indeterminate` and must not trigger an automatic retry. C36's
+failed and successful retry sessions used the same CLI/model; causation by the
+update is unproven.
+
+Sources and limits: [audit](../../../docs/GROK_IMAGINE_CAPABILITIES_2026-09-10.md),
+[official first/last-frame guide](https://docs.x.ai/developers/model-capabilities/video/reference-to-video),
+[official Image 2.0](https://x.ai/news/grok-imagine-image-2).
 
 ## REST API models
 
-- `grok-imagine-image` for image generation and image editing
-- `grok-imagine-video` for classic text-to-video, image-to-video, and reference-image video
-- `grok-imagine-video-1.5` for video including pinned first/last frames
+- `grok-imagine-image-2.0` default for still-image generation/editing
+- `grok-imagine-image` legacy cheaper still route (explicit downgrade only)
+- `grok-imagine-video-1.5` default for current video including pinned first/last frames
+- `grok-imagine-video` legacy cheaper video route (explicit downgrade only; no last frame)
 
 ## REST API authentication
 
@@ -186,8 +207,9 @@ See the [official first/last-frame guide](https://docs.x.ai/developers/model-cap
 
 - `grok-imagine-video-1.5`: $0.08/s at 480p, $0.14/s at 720p, $0.25/s at
   1080p, plus $0.01 per input image (including each endpoint slot).
-  These are REST estimates, not CLI media charges. Verify
-  [current pricing](https://docs.x.ai/developers/pricing) before production.
+- `grok-imagine-image-2.0`: low 1k/2k $0.04/$0.06; medium 1k/2k $0.06/$0.08;
+  plus $0.01 per source image. These are REST estimates, not CLI media charges.
+- Verify [current pricing](https://docs.x.ai/developers/pricing) before production.
 
 ## Grok-Specific Prompt Guidance
 

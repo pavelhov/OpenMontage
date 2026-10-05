@@ -1,0 +1,47 @@
+{
+  "source": "skills/short-form-video-script/references/script-anatomy-and-templates.md: Worked planning case — courier enters a folding doorway (revision 2026-09-20)",
+  "evidence_kind": "synthetic software-test attestations, not model-generated media or visual-quality evidence",
+  "story_revision": "courier-story-1",
+  "target_runtime_seconds": 23,
+  "clip_count": 3,
+  "story": {
+    "desire": "Courier Mira wants her ringing red parcel silenced.",
+    "action": "Mira carries the parcel fully through a paper clinic doorway.",
+    "consequence": "Inside, Mira discovers the parcel is the patient and places it on the table.",
+    "payoff": "Dr. Sen examines the unchanged parcel and says It needs a nap. Ringing stops; the parcel snores."
+  },
+  "invariants": [
+    "Mira and Dr. Sen retain their identities, body counts and clothing.",
+    "Exactly one red parcel exists; it never becomes another body or creature.",
+    "Mira owns the parcel through entry; placement visibly transfers it to the table; it stays there through payoff."
+  ],
+  "shots": [
+    {
+      "id": "entry", "duration_seconds": 8, "cast_ids": ["mira"],
+      "initial_state": "Mira outside, parcel in both hands; paper doorway visibly wide enough.",
+      "dominant_action": "Mira braces the doorway and crosses fully with the parcel during seconds 2–6.5.",
+      "completed_end_state": "Both feet, torso and parcel entirely beyond threshold; empty doorway held through second 8.",
+      "dialogue": [{"speaker_id":"mira", "source":"visible", "text":"Please stop ringing.", "start_seconds":1, "end_seconds":2}],
+      "transition": {"type":"hard_cut", "rationale":"Exterior completed entry cuts to new interior establishing composition; never interpolate between the two locations."},
+      "upstream_shot_id": null
+    },
+    {
+      "id": "interior", "duration_seconds": 7, "cast_ids": ["mira", "sen"],
+      "initial_state": "New interior wide: Mira holds the parcel, Dr. Sen stands beside an empty table.",
+      "dominant_action": "Mira places the parcel on the table and releases both hands during seconds 1–4.",
+      "completed_end_state": "Parcel rests alone on the table, hands visibly clear; Mira points at it.",
+      "dialogue": [{"speaker_id":"sen", "source":"visible", "text":"Who's the patient?", "start_seconds":4, "end_seconds":5.5}],
+      "transition": {"type":"hard_cut", "rationale":"Cut closer on the same table; same identities and completed transfer persist."},
+      "upstream_shot_id": "entry"
+    },
+    {
+      "id": "payoff", "duration_seconds": 8, "cast_ids": ["mira", "sen"],
+      "initial_state": "Same parcel on table, Sen holds stethoscope, empty-handed Mira visible screen left.",
+      "dominant_action": "Sen touches the parcel with the instrument, listens, and diagnoses; parcel stops ringing and snores.",
+      "completed_end_state": "Contact shown, ringing stopped, audible snore, both actors react and hold; parcel remains unchanged.",
+      "dialogue": [{"speaker_id":"sen", "source":"visible", "text":"It needs a nap.", "start_seconds":3, "end_seconds":5}],
+      "transition": {"type":"continuous", "rationale":"Standalone ending with readable reaction hold; no additional shot."},
+      "upstream_shot_id": "interior"
+    }
+  ]
+}

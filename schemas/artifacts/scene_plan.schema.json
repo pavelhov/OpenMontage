@@ -7,6 +7,17 @@
   "required": ["version", "scenes"],
   "properties": {
     "version": { "type": "string", "const": "1.0" },
+    "shot_contract": {
+      "type": "object",
+      "description": "Optional versioned production sidecar. Absence preserves legacy reading, not strict motion eligibility.",
+      "required": ["path", "version", "story_revision"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "version": { "const": "1.0" },
+        "story_revision": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
     "style_playbook": { "type": "string", "description": "Optional name of a loadable active style playbook. Omit when the approved style path is project-local atelier art direction." },
     "scenes": {
       "type": "array",

@@ -1,0 +1,263 @@
+{
+  "version": "1.0",
+  "project_id": "offline-first-pass",
+  "story_revision": "story-1",
+  "story": {
+    "desire": "Seek help",
+    "action": "Enter creature",
+    "consequence": "Reach interior clinic",
+    "payoff": "The doctor explains the strange diagnosis."
+  },
+  "assets": [
+    {
+      "id": "start",
+      "role": "start_frame",
+      "path": "assets/start.svg",
+      "sha256": "4e72f589dd9e1b56b66ca6f94a9520aa5863e7a46449ae1d7c74650789862bf8",
+      "cast_ids": [
+        "patient"
+      ],
+      "review": {
+        "review_id": "offline-review-1",
+        "reviewer": "synthetic fixture author",
+        "story_revision": "story-1",
+        "subject_sha256": "4e72f589dd9e1b56b66ca6f94a9520aa5863e7a46449ae1d7c74650789862bf8",
+        "status": "pass",
+        "predicates": [
+          {
+            "name": "asset_quality",
+            "status": "pass",
+            "evidence": "Synthetic declared pass for asset_quality"
+          },
+          {
+            "name": "cast_identity",
+            "status": "pass",
+            "evidence": "Synthetic declared pass for cast_identity"
+          }
+        ]
+      }
+    },
+    {
+      "id": "end",
+      "role": "end_frame",
+      "path": "assets/end.svg",
+      "sha256": "4e72f589dd9e1b56b66ca6f94a9520aa5863e7a46449ae1d7c74650789862bf8",
+      "cast_ids": [
+        "patient"
+      ],
+      "review": {
+        "review_id": "offline-review-1",
+        "reviewer": "synthetic fixture author",
+        "story_revision": "story-1",
+        "subject_sha256": "4e72f589dd9e1b56b66ca6f94a9520aa5863e7a46449ae1d7c74650789862bf8",
+        "status": "pass",
+        "predicates": [
+          {
+            "name": "asset_quality",
+            "status": "pass",
+            "evidence": "Synthetic declared pass for asset_quality"
+          },
+          {
+            "name": "cast_identity",
+            "status": "pass",
+            "evidence": "Synthetic declared pass for cast_identity"
+          }
+        ]
+      }
+    },
+    {
+      "id": "doctor",
+      "role": "identity_reference",
+      "path": "assets/doctor.svg",
+      "sha256": "4e72f589dd9e1b56b66ca6f94a9520aa5863e7a46449ae1d7c74650789862bf8",
+      "cast_ids": [
+        "doctor"
+      ],
+      "review": {
+        "review_id": "offline-review-1",
+        "reviewer": "synthetic fixture author",
+        "story_revision": "story-1",
+        "subject_sha256": "4e72f589dd9e1b56b66ca6f94a9520aa5863e7a46449ae1d7c74650789862bf8",
+        "status": "pass",
+        "predicates": [
+          {
+            "name": "asset_quality",
+            "status": "pass",
+            "evidence": "Synthetic declared pass for asset_quality"
+          },
+          {
+            "name": "cast_identity",
+            "status": "pass",
+            "evidence": "Synthetic declared pass for cast_identity"
+          }
+        ]
+      }
+    },
+    {
+      "id": "payoff",
+      "role": "payoff_board",
+      "path": "assets/payoff.svg",
+      "sha256": "4e72f589dd9e1b56b66ca6f94a9520aa5863e7a46449ae1d7c74650789862bf8",
+      "cast_ids": [
+        "patient",
+        "doctor"
+      ],
+      "review": {
+        "review_id": "offline-review-1",
+        "reviewer": "synthetic fixture author",
+        "story_revision": "story-1",
+        "subject_sha256": "4e72f589dd9e1b56b66ca6f94a9520aa5863e7a46449ae1d7c74650789862bf8",
+        "status": "pass",
+        "predicates": [
+          {
+            "name": "asset_quality",
+            "status": "pass",
+            "evidence": "Synthetic declared pass for asset_quality"
+          },
+          {
+            "name": "cast_identity",
+            "status": "pass",
+            "evidence": "Synthetic declared pass for cast_identity"
+          }
+        ]
+      }
+    },
+    {
+      "id": "patient",
+      "role": "identity_reference",
+      "path": "assets/patient.svg",
+      "sha256": "4e72f589dd9e1b56b66ca6f94a9520aa5863e7a46449ae1d7c74650789862bf8",
+      "cast_ids": [
+        "patient"
+      ],
+      "review": {
+        "review_id": "offline-review-1",
+        "reviewer": "synthetic fixture author",
+        "story_revision": "story-1",
+        "subject_sha256": "4e72f589dd9e1b56b66ca6f94a9520aa5863e7a46449ae1d7c74650789862bf8",
+        "status": "pass",
+        "predicates": [
+          {
+            "name": "asset_quality",
+            "status": "pass",
+            "evidence": "Synthetic declared pass for asset_quality"
+          },
+          {
+            "name": "cast_identity",
+            "status": "pass",
+            "evidence": "Synthetic declared pass for cast_identity"
+          }
+        ]
+      }
+    }
+  ],
+  "project_review": {
+    "review_id": "offline-review-1",
+    "reviewer": "synthetic fixture author",
+    "story_revision": "story-1",
+    "subject_sha256": "867298de899c2f0bc80dc87134d5ae72a59b67aa7379871af65c80a1132c19e4",
+    "status": "pass",
+    "predicates": [
+      {
+        "name": "payoff",
+        "status": "pass",
+        "evidence": "Synthetic declared pass for payoff"
+      },
+      {
+        "name": "late_cast",
+        "status": "pass",
+        "evidence": "Synthetic declared pass for late_cast"
+      },
+      {
+        "name": "cast_identity",
+        "status": "pass",
+        "evidence": "Synthetic declared pass for cast_identity"
+      },
+      {
+        "name": "cast_count",
+        "status": "pass",
+        "evidence": "Synthetic declared pass for cast_count"
+      },
+      {
+        "name": "speaker_source",
+        "status": "pass",
+        "evidence": "Synthetic declared pass for speaker_source"
+      }
+    ]
+  },
+  "late_cast_ids": [
+    "doctor"
+  ],
+  "payoff_speaker_ids": [
+    "doctor"
+  ],
+  "payoff_asset_id": "payoff",
+  "shots": [
+    {
+      "id": "entry",
+      "initial_state": "Patient stands entirely outside the opening.",
+      "dominant_action": "Patient crawls fully through the opening.",
+      "completed_end_state": "Entire patient is inside; the opening is empty.",
+      "endpoint_completion": "completed",
+      "duration_seconds": 8,
+      "cast_ids": [
+        "patient"
+      ],
+      "required_visible_speakers": [],
+      "dialogue": [],
+      "prop_body_invariants": [
+        "Patient identity and body count remain fixed."
+      ],
+      "allowed_transformations": [],
+      "transition": {
+        "type": "continuous",
+        "rationale": "One local action with a completed endpoint."
+      },
+      "asset_ids": [
+        "start",
+        "end",
+        "patient"
+      ],
+      "review": {
+        "review_id": "offline-review-1",
+        "reviewer": "synthetic fixture author",
+        "story_revision": "story-1",
+        "subject_sha256": "867298de899c2f0bc80dc87134d5ae72a59b67aa7379871af65c80a1132c19e4",
+        "status": "pass",
+        "predicates": [
+          {
+            "name": "cast_identity",
+            "status": "pass",
+            "evidence": "Synthetic declared pass for cast_identity"
+          },
+          {
+            "name": "cast_count",
+            "status": "pass",
+            "evidence": "Synthetic declared pass for cast_count"
+          },
+          {
+            "name": "completed_action",
+            "status": "pass",
+            "evidence": "Synthetic declared pass for completed_action"
+          },
+          {
+            "name": "speaker_source",
+            "status": "pass",
+            "evidence": "Synthetic declared pass for speaker_source"
+          },
+          {
+            "name": "possession",
+            "status": "pass",
+            "evidence": "Synthetic declared pass for possession"
+          },
+          {
+            "name": "transformation",
+            "status": "pass",
+            "evidence": "Synthetic declared pass for transformation"
+          }
+        ]
+      },
+      "upstream": []
+    }
+  ]
+}

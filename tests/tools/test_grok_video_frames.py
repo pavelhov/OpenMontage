@@ -88,8 +88,8 @@ def test_explicit_model_and_last_frame_required_by_schema():
 
 def test_classic_generation_and_15_second_new_reference_mode():
     tool = GrokVideo()
-    assert tool._build_payload({'prompt': 'A cloud moves.'})['model'] == 'grok-imagine-video'
-    assert tool.estimate_cost({'duration': 6, 'resolution': '720p'}) == pytest.approx(.42)
+    assert tool._build_payload({'prompt': 'A cloud moves.'})['model'] == 'grok-imagine-video-1.5'
+    assert tool.estimate_cost({'duration': 6, 'resolution': '720p'}) == pytest.approx(.84)
     payload = tool._build_payload({'model': MODEL, 'operation': 'reference_to_video',
                                    'reference_image_urls': [FIRST], 'duration': 15})
     assert payload['duration'] == 15
@@ -144,6 +144,7 @@ def test_selector_rejects_unsupported_frame_route_and_unknown_model(monkeypatch)
                   'allowed_providers': ['grok_cli'], 'last_image_url': LAST}
         result = selector.execute(inputs)
         assert not result.success and 'pinned final frame' in result.error
+        assert 'local last_image_path' in result.error
         assert selector.fallback_tools_for(inputs) == []
         rank = selector.execute({**inputs, 'operation': 'rank', 'target_operation': operation})
         assert rank.data['rankings'] == []
@@ -151,13 +152,30 @@ def test_selector_rejects_unsupported_frame_route_and_unknown_model(monkeypatch)
         assert selector._filter_candidates({**request(), 'model': model}, [rest]) == []
 
 
-@pytest.mark.parametrize('field', ['last_image_url', 'last_image_path', 'last_frame', 'end_frame', 'loop', 'seamless_loop'])
-def test_direct_cli_rejects_frame_controls_before_any_process(monkeypatch, field):
+@pytest.mark.parametrize('field', ['last_image_url', 'last_frame', 'end_frame', 'loop', 'seamless_loop'])
+def test_direct_cli_rejects_unsupported_or_url_frame_controls_before_any_process(monkeypatch, field):
     runner = Mock(side_effect=AssertionError('No process'))
     monkeypatch.setattr('tools.video.grok_cli_video.execute_grok_cli_media', runner)
     result = GrokCLIVideo().execute({'prompt': 'Loop', 'operation': 'image_to_video', field: LAST})
     assert not result.success and result.data['error_category'] == 'capability'
     assert result.data['dispatch_status'] == 'not_dispatched'
+    runner.assert_not_called()
+
+
+def test_direct_cli_rejects_last_image_path_on_image_to_video(monkeypatch, tmp_path):
+    runner = Mock(side_effect=AssertionError('No process'))
+    monkeypatch.setattr('tools.video.grok_cli_video.execute_grok_cli_media', runner)
+    last = tmp_path / 'last.png'
+    last.write_bytes(b'last')
+    result = GrokCLIVideo().execute({
+        'prompt': 'Loop',
+        'operation': 'image_to_video',
+        'last_image_path': str(last),
+        'output_path': str(tmp_path / 'out.mp4'),
+        'allow_unknown_cost': True,
+    })
+    assert not result.success and result.data['error_category'] == 'capability'
+    assert 'first_last_frame' in result.error
     runner.assert_not_called()
 
 
@@ -172,7 +190,7 @@ def test_selector_rejects_unsupported_controls_without_provider_discovery(monkey
 
 
 @pytest.mark.parametrize("allowed", [None, ["grok_cli", "grok"]])
-def test_cli_preference_cannot_silently_migrate_pinned_endpoint_to_rest(monkeypatch, allowed):
+def test_cli_preference_cannot_silently_migrate_url_pinned_endpoint_to_rest(monkeypatch, allowed):
     selector, cli, rest = VideoSelector(), GrokCLIVideo(), GrokVideo()
     monkeypatch.setattr(selector, "_providers", lambda: [cli, rest])
     monkeypatch.setattr(rest, "get_status", lambda: ToolStatus.AVAILABLE)
@@ -183,6 +201,7 @@ def test_cli_preference_cannot_silently_migrate_pinned_endpoint_to_rest(monkeypa
         inputs["allowed_providers"] = allowed
     result = selector.execute(inputs)
     assert not result.success and "separately API-billed" in result.error
+    assert "local last_image_path" in result.error
     assert result.data["dispatch_status"] == "not_dispatched"
     assert selector.fallback_tools_for(inputs) == []
     assert selector.execute({**inputs, "operation": "rank", "target_operation": "first_last_frame"}).data["rankings"] == []

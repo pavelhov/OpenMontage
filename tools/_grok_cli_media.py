@@ -26,6 +26,7 @@ from tools.base_tool import ToolResult
 
 
 MIN_CLI_VERSION = "1.0.18"
+FRAME_PIN_MIN_CLI_VERSION = "1.0.34"
 PINNED_MODEL = "grok-4.6"
 # Compatibility field `model` identifies the CLI agent, never the media backend.
 MODEL_PROVENANCE = {
@@ -91,6 +92,12 @@ _READ_CLASSIFIED_MEDIA_TOOLS = {
 }
 
 
+
+def _release_tuple(version: str) -> tuple[int, ...]:
+    """Parse a numeric CLI release, stripping build metadata and prerelease tags."""
+    return tuple(int(part) for part in version.split("-")[0].split("+")[0].split("."))
+
+
 class GrokCLIContractError(Exception):
     """A classified, non-retryable Grok CLI adapter failure."""
 
@@ -123,6 +130,15 @@ def _failure(error: GrokCLIContractError, *, started: float, cli_version: str | 
         duration_seconds=round(time.monotonic() - started, 2),
         model=PINNED_MODEL,
     )
+
+
+def validate_session_id(value: Any = None) -> str:
+    """Validate the caller's prelaunch identity without accepting path components."""
+    if value is None:
+        return str(uuid4())
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", value):
+        raise GrokCLIContractError("invalid_argument", "session_id must be a safe 1-128 character token (letters, digits, hyphen, underscore)")
+    return value
 
 
 def validate_prompt(prompt: Any) -> str:
@@ -761,15 +777,35 @@ def execute_grok_cli_media(
     sessions_root: str,
     timeout_seconds: int,
     media_kind: str,
+    session_id: str | None = None,
 ) -> ToolResult:
-    """Execute one explicit Grok media primitive and import its artifact."""
+    """Execute one primitive with a caller-reservable identity.
+
+    Persist ``session_id`` before calling for interruption recovery. This
+    function never retries or resumes a possibly charged native generation.
+    The returned session_id is the launch identity, and a reported mismatch
+    fails closed before artifact import.
+    """
 
     started = time.monotonic()
     prompt_path: Path | None = None
     dispatch_session_id: str | None = None
     cli_version: str | None = None
     media_process_returned = False
+    dispatch_started = False
+    working_directory: Path | None = None
+
+    def failure(error: GrokCLIContractError) -> ToolResult:
+        if dispatch_started and working_directory is not None:
+            error.diagnostics.update(_session_diagnostics(Path(sessions_root), working_directory, dispatch_session_id))
+        result = _failure(error, started=started, cli_version=cli_version)
+        result.data.update(session_id=dispatch_session_id, dispatch_session_id=dispatch_session_id)
+        if working_directory is not None and dispatch_session_id:
+            result.data["session_directory"] = str(Path(sessions_root).expanduser() / quote(str(working_directory), safe="") / dispatch_session_id)
+        return result
+
     try:
+        dispatch_session_id = validate_session_id(session_id)
         if tool_name not in _RAW_OUTPUT_TYPES:
             raise GrokCLIContractError("capability", f"unsupported Grok CLI media tool: {tool_name}")
         working_directory = Path(cwd).expanduser().resolve(strict=True)
@@ -784,10 +820,18 @@ def execute_grok_cli_media(
             grok_path = str(Path(resolved).absolute())
         cli_version = _verify_compatibility(grok_path, cwd=working_directory)
         if arguments.get("voices"):
-            release = tuple(int(part) for part in cli_version.split("-")[0].split("+")[0].split("."))
+            release = _release_tuple(cli_version)
             if release < (1, 0, 25) or (release == (1, 0, 25) and "-" in cli_version):
                 raise GrokCLIContractError(
                     "capability", "Preset voices require qualified Grok CLI 1.0.25 or newer"
+                )
+        if any(arguments.get(key) for key in ("first_frame", "last_frame", "keyframes")):
+            release = _release_tuple(cli_version)
+            minimum = _release_tuple(FRAME_PIN_MIN_CLI_VERSION)
+            if release < minimum or (release == minimum and "-" in cli_version):
+                raise GrokCLIContractError(
+                    "capability",
+                    f"Pinned first/last frames and keyframes require Grok CLI {FRAME_PIN_MIN_CLI_VERSION} or newer",
                 )
         instruction = _build_instruction(tool_name, arguments)
         with tempfile.NamedTemporaryFile(
@@ -797,27 +841,24 @@ def execute_grok_cli_media(
             prompt_path = Path(prompt_file.name)
         os.chmod(prompt_path, 0o600)
 
-        dispatch_session_id = str(uuid4())
-        try:
-            process = _run_process(
-                _generation_argv(grok_path, prompt_path, tool_name, working_directory, session_id=dispatch_session_id),
-                cwd=working_directory,
-                timeout=timeout_seconds,
-            )
-            media_process_returned = True
-        except GrokCLIContractError as exc:
-            if exc.category == "timeout":
-                exc.diagnostics.update(_session_diagnostics(Path(sessions_root), working_directory, dispatch_session_id))
-            raise
+        dispatch_started = True
+        process = _run_process(
+            _generation_argv(grok_path, prompt_path, tool_name, working_directory, session_id=dispatch_session_id),
+            cwd=working_directory,
+            timeout=timeout_seconds,
+        )
+        media_process_returned = True
         if process.returncode != 0:
             raise _classify_message(
                 "\n".join(part for part in (process.stderr, process.stdout) if part),
                 dispatched=True,
             )
-        source_path, reported_cost, session_id = _parse_stream(
+        source_path, reported_cost, reported_session_id = _parse_stream(
             process.stdout, tool_name=tool_name, expected_arguments=arguments
         )
-        trusted_source = _trusted_session_artifact(source_path, Path(sessions_root), session_id)
+        if reported_session_id != dispatch_session_id:
+            raise GrokCLIContractError("protocol", "reported session identity does not match the caller-reserved session", dispatch_status="indeterminate")
+        trusted_source = _trusted_session_artifact(source_path, Path(sessions_root), reported_session_id)
         metadata = _copy_and_validate(
             trusted_source,
             target,
@@ -837,7 +878,11 @@ def execute_grok_cli_media(
                 "operation": tool_name,
                 "output": str(target.expanduser().resolve(strict=False)),
                 "source_artifact": str(trusted_source),
-                "session_id": session_id,
+                "session_id": dispatch_session_id,
+                "dispatch_session_id": dispatch_session_id,
+                "reported_session_id": reported_session_id,
+                "session_directory": str(Path(sessions_root).expanduser() / quote(str(working_directory), safe="") / dispatch_session_id),
+                "dispatch_status": "completed",
                 "media_cost_status": "unknown_subscription_media_cost",
                 "agent_cost_status": agent_cost_status,
                 "agent_cost_usd": reported_cost,
@@ -855,13 +900,13 @@ def execute_grok_cli_media(
     except GrokCLIContractError as exc:
         if media_process_returned and exc.dispatch_status == "not_dispatched":
             exc.dispatch_status = "indeterminate"
-        return _failure(exc, started=started, cli_version=cli_version)
+        return failure(exc)
     except (TypeError, ValueError, OSError) as exc:
         error = GrokCLIContractError(
             "invalid_argument", str(exc),
-            dispatch_status="indeterminate" if media_process_returned else "not_dispatched",
+            dispatch_status="indeterminate" if dispatch_started else "not_dispatched",
         )
-        return _failure(error, started=started, cli_version=cli_version)
+        return failure(error)
     finally:
         if prompt_path is not None:
             try:

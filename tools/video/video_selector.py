@@ -8,8 +8,16 @@ the tool file in tools/video/; no changes to this selector are needed.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
-from tools.base_tool import BaseTool, ToolResult, ToolRuntime, ToolStability, ToolStatus, ToolTier
+from tools.base_tool import (
+    BaseTool,
+    ToolResult,
+    ToolRuntime,
+    ToolStability,
+    ToolStatus,
+    ToolTier,
+)
 
 
 class VideoSelector(BaseTool):
@@ -20,7 +28,13 @@ class VideoSelector(BaseTool):
     provider = "selector"
     stability = ToolStability.BETA
     runtime = ToolRuntime.HYBRID
-    agent_skills = ["ai-video-gen", "create-video", "ltx2", "gemini-omni", "atlas-cloud"]
+    agent_skills = [
+        "ai-video-gen",
+        "create-video",
+        "ltx2",
+        "gemini-omni",
+        "atlas-cloud",
+    ]
 
     # Operations that REQUIRE motion: an image-only tool (image_selector) is not
     # an acceptable last-resort fallback for these, so fallback_tools_for() drops it.
@@ -47,6 +61,14 @@ class VideoSelector(BaseTool):
     input_schema = {
         "type": "object",
         "properties": {
+            "preferred_tool": {
+                "type": "string",
+                "description": "Exact tool name; never falls back.",
+            },
+            "hosting_provider": {
+                "type": "string",
+                "description": "Required API host, e.g. fal.ai, atlascloud, replicate.",
+            },
             "prompt": {"type": "string"},
             "preferred_provider": {
                 "type": "string",
@@ -88,6 +110,15 @@ class VideoSelector(BaseTool):
                 "type": "string",
                 "description": "Duration hint (e.g., '5', '10'). Passed through to the selected provider.",
             },
+            "image_path": {"type": "string"},
+            "first_frame": {"type": "string"},
+            "last_frame": {"type": "string"},
+            "keyframes": {"type": "array", "items": {"type": "object"}},
+            "voices": {"type": "array", "items": {"type": "string"}},
+            "cli_session_id": {"type": "string"},
+            "allow_unknown_cost": {"type": "boolean"},
+            "cwd": {"type": "string"},
+            "timeout_seconds": {"type": "integer"},
             "reference_image_path": {
                 "type": "string",
                 "description": "Local path to a reference image for image_to_video. Auto-uploaded if the provider requires a URL.",
@@ -248,9 +279,13 @@ class VideoSelector(BaseTool):
     def _providers(self) -> list[BaseTool]:
         """Auto-discover video generation providers from the registry."""
         from tools.tool_registry import registry
+
         registry.ensure_discovered()
-        return [t for t in registry.get_by_capability("video_generation")
-                if t.name != self.name]
+        return [
+            t
+            for t in registry.get_by_capability("video_generation")
+            if t.name != self.name
+        ]
 
     @property
     def fallback_tools(self) -> list[str]:
@@ -323,6 +358,20 @@ class VideoSelector(BaseTool):
     def execute(self, inputs: dict[str, object]) -> ToolResult:
         from lib.scoring import rank_providers
 
+        inputs = dict(inputs)
+        # Native aliases are accepted only on the explicitly locked CLI route.
+        if "last_frame" in inputs and self._is_exact_provider_pin(inputs, "grok_cli"):
+            if inputs.get("last_image_path") is not None and (
+                not isinstance(inputs["last_frame"], str)
+                or not isinstance(inputs["last_image_path"], str)
+                or Path(inputs["last_frame"]).expanduser().resolve() != Path(inputs["last_image_path"]).expanduser().resolve()
+            ):
+                return ToolResult(success=False, data={"fallback_tools": [], "dispatch_status": "not_dispatched"},
+                                  error="Conflicting last_frame and last_image_path")
+            inputs["last_image_path"] = inputs.pop("last_frame")
+        if self._is_exact_provider_pin(inputs, "grok_cli") and any(key in inputs for key in ("model", "model_name")):
+            return ToolResult(success=False, data={"fallback_tools": [], "dispatch_status": "not_dispatched"},
+                error="Grok CLI video does not expose Imagine model selection; omit model/model_name for the subscription CLI route.")
         unsupported_frame_controls = {
             "last_frame", "last_frame_url", "last_frame_path", "end_frame",
             "end_frame_url", "end_frame_path", "loop", "seamless_loop",
@@ -330,7 +379,7 @@ class VideoSelector(BaseTool):
         if unsupported_frame_controls.intersection(inputs):
             return ToolResult(
                 success=False,
-                data={"fallback_tools": [], "fallback_attempted": False},
+                data={"fallback_tools": [], "fallback_attempted": False, "dispatch_status": "not_dispatched"},
                 error="Use last_image_url or last_image_path for a pinned final frame; no loop switch or other ending-frame alias is supported.",
             )
         if inputs.get("endpoint_requirement_id") and not (inputs.get("last_image_url") or inputs.get("last_image_path")):
@@ -403,15 +452,16 @@ class VideoSelector(BaseTool):
                 error=(
                     "No available provider supports the requested pinned final frame/model on the requested route. "
                     "Check the provider's pinned_final_frame capability, exact model, and credential availability. "
-                    "Grok CLI cannot pin final frames; Grok REST is separately API-billed and requires explicit "
-                    "route approval and REST credentials. No fallback was attempted."
+                    "Grok CLI pins require local last_image_path on CLI >=1.0.34; HTTPS last_image_url needs "
+                    "Grok REST (separately API-billed) with explicit route approval and credentials. "
+                    "No fallback was attempted."
                     if self._requires_final_frame(inputs) else "No video generation provider available."
                 ),
             )
 
         # Adapt input keys: stock tools use 'query' while generators use 'prompt'
         adapted = dict(inputs)
-        if hasattr(tool, 'input_schema'):
+        if hasattr(tool, "input_schema"):
             required = tool.input_schema.get("properties", {})
             if "query" in required and "query" not in adapted:
                 adapted["query"] = adapted.get("prompt", "")
@@ -422,17 +472,26 @@ class VideoSelector(BaseTool):
                 adapted["duration"] = int(duration)
 
         # Auto-resolve reference_image_path to a URL for providers that need it
-        if adapted.get("operation") == "image_to_video" and adapted.get("reference_image_path"):
+        if adapted.get("operation") == "image_to_video" and adapted.get(
+            "reference_image_path"
+        ):
             tool_props = getattr(tool, "input_schema", {}).get("properties", {})
             # If the provider uses image_url (not reference_image_path), upload and convert
             if "image_path" in tool_props:
-                if adapted.get("image_path") and adapted["image_path"] != adapted["reference_image_path"]:
+                if adapted.get("image_path") and (
+                    not isinstance(adapted["image_path"], str)
+                    or not isinstance(adapted["reference_image_path"], str)
+                    or Path(adapted["image_path"]).expanduser().resolve() != Path(adapted["reference_image_path"]).expanduser().resolve()
+                ):
                     return ToolResult(success=False, error="Conflicting image_path and reference_image_path")
                 adapted["image_path"] = adapted["reference_image_path"]
             elif "image_url" in tool_props and "image_url" not in adapted:
                 try:
                     from tools.video._shared import upload_image_fal
-                    adapted["image_url"] = upload_image_fal(adapted["reference_image_path"])
+
+                    adapted["image_url"] = upload_image_fal(
+                        adapted["reference_image_path"]
+                    )
                 except Exception as e:
                     return ToolResult(
                         success=False,
@@ -443,6 +502,13 @@ class VideoSelector(BaseTool):
                         error=f"Failed to upload reference image: {e}",
                     )
 
+        # Routing-only constraints are consumed by the selector; never forward
+        # them to the provider tool.
+        adapted.pop("preferred_tool", None)
+        adapted.pop("hosting_provider", None)
+        if tool.input_schema.get("additionalProperties") is False:
+            for key in ("preferred_provider", "preferred_provider_gap", "allowed_providers", "task_context", "target_operation"):
+                adapted.pop(key, None)
         result = tool.execute(adapted)
         if explicit_route:
             result.data["alternatives_considered"] = []
@@ -450,7 +516,9 @@ class VideoSelector(BaseTool):
         if result.success:
             result.data.setdefault("selected_tool", tool.name)
             result.data["selected_provider"] = tool.provider
-            result.data["selection_reason"] = score.explain() if score else f"Selected {tool.provider} ({tool.name})"
+            result.data["selection_reason"] = (
+                score.explain() if score else f"Selected {tool.provider} ({tool.name})"
+            )
             if score:
                 result.data["provider_score"] = score.to_dict()
             result.data.update(self._tool_context_payload(tool))
@@ -507,7 +575,9 @@ class VideoSelector(BaseTool):
         # provider="seedance", so only the first-registered was ever reachable.
         # Keying by name keeps every backend selectable; ranking picks the best.
         selectable_by_name: dict[str, BaseTool] = {
-            tool.name: tool for tool in candidates if self._tool_selectable(tool, inputs)
+            tool.name: tool
+            for tool in candidates
+            if self._tool_selectable(tool, inputs)
         }
 
         def _tool_for(score: object) -> BaseTool | None:
@@ -520,15 +590,24 @@ class VideoSelector(BaseTool):
         # claimed "unless drastically worse" but no gate enforced it).
         if preferred != "auto" and rankings:
             try:
-                gap = float(inputs.get("preferred_provider_gap", self.PREFERRED_PROVIDER_GAP))
+                gap = float(
+                    inputs.get("preferred_provider_gap", self.PREFERRED_PROVIDER_GAP)
+                )
             except (TypeError, ValueError):
                 gap = self.PREFERRED_PROVIDER_GAP
             top_score = rankings[0].weighted_score
             preferred_score = next(
-                (s for s in rankings if s.provider == preferred and _tool_for(s) is not None),
+                (
+                    s
+                    for s in rankings
+                    if s.provider == preferred and _tool_for(s) is not None
+                ),
                 None,
             )
-            if preferred_score is not None and preferred_score.weighted_score >= top_score - gap:
+            if (
+                preferred_score is not None
+                and preferred_score.weighted_score >= top_score - gap
+            ):
                 return _tool_for(preferred_score), preferred_score
 
         # Return the highest-scored selectable provider
@@ -565,7 +644,9 @@ class VideoSelector(BaseTool):
             "selected_tool_best_for": info.get("best_for", []),
         }
 
-    def _serialize_rankings(self, candidates: list[BaseTool], rankings: list[object]) -> list[dict[str, object]]:
+    def _serialize_rankings(
+        self, candidates: list[BaseTool], rankings: list[object]
+    ) -> list[dict[str, object]]:
         tool_by_name = {tool.name: tool for tool in candidates}
         serialized: list[dict[str, object]] = []
         for score in rankings:
@@ -627,15 +708,26 @@ class VideoSelector(BaseTool):
             )
         ]
 
+        # Upstream exact tool/host/model constraints apply after the fork's
+        # allowed-provider and explicit-only (CLI opt-in) filtering, so a
+        # preferred_tool/hosting_provider can only narrow, never re-admit an
+        # explicit-only or disallowed provider.
+        from tools.provider_routing import filter_explicit_route
+
+        candidates = filter_explicit_route(inputs, candidates)
         exact_model = inputs.get("model")
         if exact_model:
             model_matches = [
-                tool for tool in candidates
-                if exact_model in getattr(tool, "input_schema", {}).get("properties", {}).get("model", {}).get("enum", [])
+                tool
+                for tool in candidates
+                if exact_model
+                in getattr(tool, "input_schema", {})
+                .get("properties", {})
+                .get("model", {})
+                .get("enum", [])
                 or exact_model in tool.get_info().get("model_catalog", {})
             ]
-            if model_matches or self._requires_final_frame(inputs) or str(exact_model).startswith("grok-imagine-"):
-                candidates = model_matches
+            candidates = model_matches
 
         if self._requires_final_frame(inputs):
             candidates = [tool for tool in candidates if self._final_frame_eligible(tool, inputs)]
@@ -663,14 +755,21 @@ class VideoSelector(BaseTool):
                 continue
 
             if operation == "image_to_video":
-                if supports.get("image_to_video") or "image_url" in props or "reference_image_url" in props:
+                if (
+                    supports.get("image_to_video")
+                    or "image_url" in props
+                    or "reference_image_url" in props
+                ):
                     matched_operation = True
                     if self._operation_ready(tool, "image_to_video"):
                         filtered.append(tool)
                 continue
 
             if operation == "reference_to_video":
-                if supports.get("reference_to_video") or "reference_image_urls" in props:
+                if (
+                    supports.get("reference_to_video")
+                    or "reference_image_urls" in props
+                ):
                     matched_operation = True
                     filtered.append(tool)
                 continue
@@ -723,7 +822,7 @@ class VideoSelector(BaseTool):
     def _requires_final_frame(inputs: dict[str, object]) -> bool:
         operation = inputs.get("target_operation") if inputs.get("operation") == "rank" else inputs.get("operation")
         return operation == "first_last_frame" or any(
-            key in inputs for key in ("last_image_url", "last_image_path", "endpoint_requirement_id")
+            key in inputs for key in ("last_image_url", "last_image_path", "last_frame", "endpoint_requirement_id")
         )
 
     @staticmethod
@@ -763,7 +862,9 @@ class VideoSelector(BaseTool):
     def _has_custom_workflow(inputs: dict[str, object]) -> bool:
         return bool(inputs.get("workflow_json") or inputs.get("workflow_path"))
 
-    def _custom_workflow_eligible(self, tool: BaseTool, inputs: dict[str, object]) -> bool:
+    def _custom_workflow_eligible(
+        self, tool: BaseTool, inputs: dict[str, object]
+    ) -> bool:
         """Whether a tool can run the caller-supplied custom workflow.
 
         Eligibility is based on server availability, not bundled-model readiness:

@@ -77,7 +77,7 @@ Agent reads pipeline manifest (YAML) -> reads stage director skill (MD)
 -> checkpoints (Python utility) -> presents to human for approval
 ```
 
-**Python = tools + persistence.** No orchestration logic, creative decisions, review logic, or checkpoint policy in Python code. The agent makes those decisions guided by instructions.
+**Python = tools, persistence, and objective governance.** Agents choose story, directing, and semantic review outcomes. Python enforces declared prerequisites, approved scope, hashes, dependencies, review completeness, and final eligibility; it does not infer character identity or understand story pixels.
 
 Core loop:
 
@@ -572,15 +572,30 @@ Stage contract rules:
 - Non-canonical outputs such as media files belong in stage-specific directories.
 - Tools should record seeds/model versions for reproducibility.
 
+## Strict generative production
+
+New Studio projects opt into strict governance through `init_project(..., governance="strict", story_revision=...)`; existing projects require deliberate `enroll_production_project`. Legacy diagnostic/editing workflows keep their existing behavior.
+
+Before authoring a production package, read `schemas/artifacts/shot_contract.schema.json` and `tests/fixtures/first_pass/README.md`. The fixture `valid_shot_contract.json` shows the exact structure; its synthetic passing reviews are test data and must never be copied as real review evidence. Translate the portable shootable package into the schema: completed action → `endpoint_completion`; introduced late characters → `late_cast_ids`; ending speakers → `payoff_speaker_ids`; visible dialogue sources → `required_visible_speakers`. Keep unknown evidence unknown until the corresponding assets or footage are reviewed.
+
+Store the contract at `artifacts/shot_contract.json`. The common dispatcher requires `production_scopes.json` plus request `governance: {scope_id, shot_id}`. Use `planned_request_digest` for a fixed request, or `planned_request_template` for explicitly planned `$upstream` bindings; the template freezes static asset hashes at approval time. Set an explicit duration matching the shot contract and a unique output path for every attempt. Constructing a scope or template does not authorize it: retain the user's exact approval and attempt allowance.
+
+Use canonical registry tools and their normal `execute`/`dry_run` paths; Studio's entry defaults to a zero-call dry run. Preserve attempts, original-session reconciliation and reviewed selections through `lib.production_execution`. Selection and final certification require complete matching attempt provenance. Failures and uncertain results are evidence, never a retry allowance. See `tests/integration/test_first_pass_workflow.py` for an offline example of the entire control path, including a deliberate serial handoff.
+
+Current strict limits for the refreshed schema/fal/HeyGen adapters. Governance refuses these before attempt reservation: native remote or unencoded media fields (`image_uri`, `image_input`, `last_frame_uri`, `audio_uri`, `mask`, `web_url`, `link` and similar); provider-job `resume_job`, which cannot yet be reconciled as a strict attempt; and avatar generation/resume, which is not governed yet. None of these is ever treated as a new approved attempt. Avatar `list_looks`/`inspect_look` stay read-only and ungoverned. SchemaMedia/FalMedia encode only canonical local `image_path`/`image_paths`/`mask_path`. In every mode they reject at request build, which may come after reservation but always before any provider POST: raw filesystem paths in native media fields (for example `images`/`image`), and final-frame pins such as `last_image_path`/`last_frame` that the endpoint schema does not declare. Those pins are refused, never silently dropped, and the approved pin requirement stands: choose an explicitly approved route with documented first/last-frame support (see `pinned_final_frame`; qualified Grok pinned routes can be governed). Refreshed adapter native frame routes are not yet strict-compatible.
+
 ## Reviewer Protocol
 
-The reviewer is a meta skill (`skills/meta/reviewer.md`) — advisory, never directly blocks progression.
+The reviewer is a meta skill (`skills/meta/reviewer.md`). Agents supply semantic judgments; the engine enforces required evidence and current bindings. Critical prerequisites block motion and final certification.
 
 - Self-review after every stage execution, before checkpointing.
 - Load `review_focus` items from the pipeline manifest for the current stage.
-- Maximum two review rounds. After that, pass with warnings and move on.
+- Review-round and budget limits never turn missing, unknown, unreviewed, or failed critical predicates into a pass. Stop with an honest draft and unresolved findings when the approved repair allowance is exhausted.
 - Findings categorized: critical (must fix), suggestion (should fix), nitpick (nice-to-have).
-- Critical findings -> fix and re-review. Suggestions -> note and proceed.
+- Critical findings -> diagnose, obtain applicable repair authorization, fix and re-review. Suggestions -> note and proceed. Inability to identify a fix does not downgrade a critical failure.
+- A rendered file or legacy `final_review` v1 `status: pass` is diagnostic/draft evidence. Current final certification requires v2 with complete synchronized audiovisual viewing and listening, reviewer provenance, and passing transport, technical, visual, audio, and story dimensions.
+- Use `lib.production_review.certify_final(project_dir, review)` for canonical final selection (`artifacts/final_review.json`). `write_checkpoint` applies the same current-byte gate to final claims and governed publish advancement. Unrelated legacy publishing remains explicitly `uncertified_legacy`. A completed compose checkpoint without certification explicitly records `metadata.release_status: draft`. Certification is not publication authorization.
+- Bind final evidence to the actual master hash/duration, current story/contract, exact planned scene coverage, and current selected attempts/output/review hashes. Changed bytes or selections require fresh matching review; archived evidence remains inspectable.
 - Check playbook `quality_rules` as constraints, not suggestions.
 
 ## Human Checkpoint Protocol

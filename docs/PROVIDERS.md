@@ -2,6 +2,32 @@
 
 Everything you need to know about every provider in OpenMontage — setup instructions, pricing, free tiers, and what each unlocks.
 
+## October 2026 provider refresh
+
+See [implementation status and verified model map](provider-update-plan-2026-10-03.md)
+and [adapter usage](../.agents/skills/provider-model-refresh/SKILL.md).
+
+New routes cover HeyGen Avatar V, Eleven v4/Turbo, Wan 3.0 on fal/Atlas/Replicate,
+GPT Image 2.5 Flare/Sunburst, Gemini 3 Pro Image (Nano Banana Pro), Ideogram 4.5
+and Precise Edit, H3 Max, Gemini 3.8 TTS, Lyria 3.5, LTX-2.5, Sonic 3.6,
+Inworld TTS-2/Flash and local Qwen Image 2.1. Each model uses the exact API host's
+contract; an API key does not establish account entitlement.
+
+For image/video selectors use `model`, `hosting_provider`, and optionally
+`preferred_tool`. Speech uses `model_id`. Explicit tool, host and model constraints
+never silently fall back. Legacy `preferred_provider` remains a ranking preference.
+Several tools may share a host; ranking selects the actual tool name.
+
+New asynchronous video/image tools return `resume_job` and optionally save
+`job_path`. Resume the same job after a polling timeout instead of submitting
+another paid request. Unpriced calls return `cost_usd: null` with `cost_status`,
+not zero. Ideogram direct supports an unbilled `dry_run` price quote.
+
+Kling 4/Flash stays gated pending verified public schemas and account access.
+LTX-2.5 local execution requires a supplied ComfyUI API workflow and installed
+weights; the direct LTX API is implemented separately. GPU and paid API output
+quality require live validation in the intended environment.
+
 ---
 
 ## Quick Start: What Should I Set Up?
@@ -140,6 +166,11 @@ Current xAI docs pricing for the Grok media models:
 | `grok-imagine-video` at 480p | $0.05/sec |
 | `grok-imagine-video` at 720p | $0.07/sec |
 | `grok-imagine-video` input images | $0.002 per input image |
+OpenMontage REST defaults:
+- stills: `grok-imagine-image-2.0`
+- video: `grok-imagine-video-1.5` (supports first/last frames)
+- classic `grok-imagine-image` / `grok-imagine-video` remain available only as explicit downgrades
+
 
 OpenMontage now uses those published rates in the Grok tool estimators.
 
@@ -153,8 +184,10 @@ OpenMontage now uses those published rates in the Grok tool estimators.
 
 The CLI route is a separate `grok_cli` provider. It exposes the proven native
 Imagine primitives `image_gen`, `image_edit`, `image_to_video`, and
-`reference_to_video`. It does not expose direct text-to-video, video editing,
-or post-generation upscaling as provider primitives.
+`reference_to_video` (including `first_frame`/`last_frame`/`keyframes` on CLI
+>=1.0.34 via `reference_to_video`). It does not expose direct text-to-video,
+video editing, post-generation upscaling, or Imagine model selection as provider
+primitives.
 
 This route is **explicit-only**: callers must set both
 `preferred_provider: grok_cli` and `allowed_providers: [grok_cli]`. It never
