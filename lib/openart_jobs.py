@@ -2048,11 +2048,12 @@ def reconcile_job(attempt_id: str) -> dict:
     launch = launch_record(aid)
     events = read_events(aid)
     evidence_path = _evidence_path(aid)
-    evidence_sha = (hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    evidence_raw = (evidence_path.read_bytes()
                     if evidence_path.is_file() and not evidence_path.is_symlink() else None)
+    evidence_sha = hashlib.sha256(evidence_raw).hexdigest() if evidence_raw is not None else None
     output = None
     if evidence_sha:
-        output = json.loads(evidence_path.read_bytes()).get("output")
+        output = json.loads(evidence_raw).get("output")
     state = ("collected" if evidence_sha else
              "failed_terminal" if (job_dir(aid, create=False) / _TERMINAL_FAIL_FILE).is_file() else
              "quarantined" if any(e.get("type") == "quarantined" for e in events) else

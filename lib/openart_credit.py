@@ -12,7 +12,6 @@ import time
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 from pathlib import Path
-from uuid import uuid4
 
 from tools import _openart_cli as cli
 from lib import openart_jobs as jobs, openart_setup as setup, openart_qualification as qual
@@ -327,12 +326,16 @@ def validate_credit_authorization(project_root,authorization,*,scope,marker,inpu
     governance=inputs.get('governance',{})
     if governance.get('scope_id')!=scope.get('id') or governance.get('shot_id')!=a['shot_id']:
         _fail('credit authorization shot/scope mismatch')
-    for evidence in (a['evidence'],scope.get('evidence',{})):
+    credit_evidence_raw = None
+    for index, evidence in enumerate((a['evidence'],scope.get('evidence',{}))):
         if not evidence.get('path') or not evidence.get('sha256'): _fail('retained approval evidence required')
-        if hashlib.sha256(_inside(root,evidence['path']).read_bytes()).hexdigest()!=evidence['sha256']:
+        evidence_raw = _inside(root,evidence['path']).read_bytes()
+        if hashlib.sha256(evidence_raw).hexdigest()!=evidence['sha256']:
             _fail('retained approval bytes changed')
+        if index == 0:
+            credit_evidence_raw = evidence_raw
     try:
-        credit_evidence=json.loads(_inside(root,a['evidence']['path']).read_bytes())
+        credit_evidence=json.loads(credit_evidence_raw)
     except (OSError,ValueError): _fail('explicit structured credit approval capture required')
     expected={'kind':'openart_credit_authorization','terms':{k:v for k,v in a.items() if k!='evidence'}}
     if credit_evidence!=expected:
