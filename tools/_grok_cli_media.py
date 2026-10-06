@@ -35,6 +35,21 @@ MODEL_PROVENANCE = {
     "media_model": None,
     "media_model_status": "unreported",
 }
+_REFERENCE_ASPECT_RATIOS = frozenset({"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"})
+# A fixed, JSON-serializable snapshot of the adapter's native request contract.
+GROK_VIDEO_NATIVE_PROFILE = {
+    "image_to_video": {
+        "durations": [6, 10], "resolutions": ["480p", "720p"],
+        "aspect_ratios": None, "pins": False, "max_images": 0, "max_voices": 0,
+    },
+    **{operation: {
+        "duration_range": [1, 15], "resolutions": ["480p", "720p"],
+        "aspect_ratios": sorted(_REFERENCE_ASPECT_RATIOS), "pins": True,
+        "max_images": 14, "max_voices": 3,
+    } for operation in ("reference_to_video", "first_last_frame")},
+    "min_cli": {"base": MIN_CLI_VERSION, "voices": "1.0.25", "pins": FRAME_PIN_MIN_CLI_VERSION},
+    "native_audio_flag": None, "model_argument": False, **MODEL_PROVENANCE,
+}
 MAX_MEDIA_PROMPT_CHARS = 4096
 DEFAULT_GROK_PATH = "grok"
 
@@ -391,6 +406,40 @@ def _verify_compatibility(grok_path: str, *, cwd: Path) -> str:
         exc.diagnostics["cli_version"] = version
         raise
     return version
+
+
+def check_cli_feature_gates(cli_version: str, arguments: dict[str, Any]) -> None:
+    """Apply native voice/frame version gates without observing or dispatching CLI."""
+    if arguments.get("voices"):
+        release = _release_tuple(cli_version)
+        if release < (1, 0, 25) or (release == (1, 0, 25) and "-" in cli_version):
+            raise GrokCLIContractError(
+                "capability", "Preset voices require qualified Grok CLI 1.0.25 or newer"
+            )
+    if any(arguments.get(key) for key in ("first_frame", "last_frame", "keyframes")):
+        release = _release_tuple(cli_version)
+        minimum = _release_tuple(FRAME_PIN_MIN_CLI_VERSION)
+        if release < minimum or (release == minimum and "-" in cli_version):
+            raise GrokCLIContractError(
+                "capability",
+                f"Pinned first/last frames and keyframes require Grok CLI {FRAME_PIN_MIN_CLI_VERSION} or newer",
+            )
+
+
+def observe_grok_cli_compatibility(grok_path: str, *, cwd: str | Path) -> dict[str, str]:
+    """Observe --version and --help afresh; call outside project/ledger locks."""
+    configured = str(Path(grok_path).expanduser())
+    resolved = shutil.which(configured) if not Path(configured).is_absolute() else configured
+    if resolved:
+        executable = str(Path(resolved).absolute())
+    elif Path(configured).parent == Path("."):
+        # Dispatch retains unresolved bare names for subprocess PATH lookup.
+        # Never turn that lookup into authority for an unrelated cwd binary.
+        raise GrokCLIContractError("capability", f"Grok CLI executable is not available on PATH: {configured}")
+    else:
+        # An unresolved relative executable is interpreted in subprocess cwd.
+        executable = str((Path(cwd).expanduser() / configured).absolute())
+    return {"cli_version": _verify_compatibility(executable, cwd=Path(cwd)), "grok_path": executable}
 
 
 def _build_instruction(tool_name: str, arguments: dict[str, Any]) -> str:
@@ -835,20 +884,7 @@ def execute_grok_cli_media(
         if resolved:
             grok_path = str(Path(resolved).absolute())
         cli_version = _verify_compatibility(grok_path, cwd=working_directory)
-        if arguments.get("voices"):
-            release = _release_tuple(cli_version)
-            if release < (1, 0, 25) or (release == (1, 0, 25) and "-" in cli_version):
-                raise GrokCLIContractError(
-                    "capability", "Preset voices require qualified Grok CLI 1.0.25 or newer"
-                )
-        if any(arguments.get(key) for key in ("first_frame", "last_frame", "keyframes")):
-            release = _release_tuple(cli_version)
-            minimum = _release_tuple(FRAME_PIN_MIN_CLI_VERSION)
-            if release < minimum or (release == minimum and "-" in cli_version):
-                raise GrokCLIContractError(
-                    "capability",
-                    f"Pinned first/last frames and keyframes require Grok CLI {FRAME_PIN_MIN_CLI_VERSION} or newer",
-                )
+        check_cli_feature_gates(cli_version, arguments)
         instruction = _build_instruction(tool_name, arguments)
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", prefix="openmontage-grok-cli-", suffix=".md", delete=False
