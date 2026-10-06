@@ -16,6 +16,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import hashlib
+import math
 import json
 import re
 import inspect
@@ -954,7 +955,11 @@ def public_frozen_request(attempt_id: str) -> dict:
 # ---------------------------------------------------------------- reservation seam
 
 def _no_ledger(project_root: Path, attempt_id: str, request_sha256: str) -> Optional[dict]:
-    return None
+    from lib.openart_dispatch import reservation_lookup
+    try:
+        return reservation_lookup(project_root,attempt_id,request_sha256)
+    except (OpenArtCLIError, ValueError, OSError) as exc:
+        raise OpenArtCLIError('no_active_reservation','no matching original submitting credit reservation') from exc
 
 
 _RESERVATION_LOOKUP: Callable[[Path, str, str], Optional[dict]] = _no_ledger
@@ -1155,13 +1160,22 @@ def _launch_sha256(attempt_id: str) -> Optional[str]:
 
 
 def launch_submit(project_root: Path, binding: dict, native: dict, profile: dict,
-                  *, wait_timeout: float = cli.MAX_TIMEOUT) -> dict:
+                  *, wait_timeout: float = cli.MAX_TIMEOUT, deadline: Optional[float] = None) -> dict:
     """Submit exactly once. Any existing launch marker for the attempt refuses a second submit.
 
     Requires: frozen snapshot matching binding.snapshot_sha256, real active reservation from the
     registered ledger lookup, non-None native body digest from retained preview, and a current
     account check inside the serialized transport (mismatch -> quarantine, no Popen).
     """
+    entry_time = time.monotonic()
+    if wait_timeout is None:
+        raise OpenArtCLIError("invalid_argument", "finite positive launch wait timeout required")
+    timeout = cli.validate_timeout(wait_timeout)
+    if deadline is not None and (isinstance(deadline, bool) or not isinstance(deadline, (int, float))
+                                or not math.isfinite(deadline)):
+        raise OpenArtCLIError("invalid_argument", "finite internal absolute launch deadline required")
+    deadline = min(deadline, entry_time + timeout) if deadline is not None else entry_time + timeout
+    cli.lock_remaining(deadline)
     missing = [k for k in _BINDING_KEYS if not binding.get(k)]
     if missing:
         raise OpenArtCLIError("binding_incomplete", f"launch binding missing {missing}")
@@ -1188,8 +1202,7 @@ def launch_submit(project_root: Path, binding: dict, native: dict, profile: dict
         raise OpenArtCLIError("binding_mismatch", "submit argv differs from frozen digest")
     if cli.is_offline():
         raise OpenArtCLIError("offline_only", "OpenArt submit refused during offline preparation")
-    timeout = cli.validate_timeout(wait_timeout)
-    deadline = time.monotonic() + timeout
+    timeout=cli.lock_remaining(deadline)
     binary = cli.resolve_binary()
     full = argv + cli.GLOBAL_FLAGS
     if job_dir(attempt_id, create=False).joinpath("launch.json").exists():
@@ -1200,6 +1213,9 @@ def launch_submit(project_root: Path, binding: dict, native: dict, profile: dict
         if account != binding["account_id_sha256"]:
             append_event(attempt_id, {"type": "quarantined", "reason": "account_mismatch_prelaunch"})
             raise OpenArtCLIError("account_mismatch", "current account differs; attempt quarantined, not launched")
+        if _RESERVATION_LOOKUP is _no_ledger:
+            from lib.openart_dispatch import validate_prelaunch
+            validate_prelaunch(project_root,attempt_id,binding['request_sha256'],deadline)
         cli.lock_remaining(deadline)  # never spawn a paid submit after the budget is exhausted
         if qualification_attempt:
             _consume_qualification_marker(profile, reservation, attempt_id, account)
@@ -1215,6 +1231,9 @@ def launch_submit(project_root: Path, binding: dict, native: dict, profile: dict
             cli.write_private(jdir / "launch.json", _canon(launch))  # exclusive: submit-once marker
         except FileExistsError:
             raise OpenArtCLIError("already_launched", "attempt already has a launch marker; never resubmit")
+        if _RESERVATION_LOOKUP is _no_ledger:
+            from lib.openart_dispatch import _checkpoint
+            _checkpoint('launch_marker',attempt_id)
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
         out_fd = os.open(jdir / "submit.stdout", flags, 0o600)
         try:
@@ -1240,6 +1259,9 @@ def launch_submit(project_root: Path, binding: dict, native: dict, profile: dict
                 return _launch_result(attempt_id, "uncertain", None)
             append_event(attempt_id, {"type": "spawned", "pid": proc.pid,
                                       "birth": process_identity(proc.pid)})
+            if _RESERVATION_LOOKUP is _no_ledger:
+                from lib.openart_dispatch import _checkpoint
+                _checkpoint("spawned",attempt_id)
         finally:
             os.close(out_fd)
             os.close(err_fd)
@@ -1252,6 +1274,9 @@ def launch_submit(project_root: Path, binding: dict, native: dict, profile: dict
             _fsync_file(jdir / name)
         append_event(attempt_id, {"type": "exited", "returncode": rc, "pid": proc.pid,
                                   "proof": "parent_waitpid"})
+        if _RESERVATION_LOOKUP is _no_ledger:
+            from lib.openart_dispatch import _checkpoint
+            _checkpoint("provider_acceptance",attempt_id)
         return _finish_parse(attempt_id, rc, launch["profile"])
 
 
@@ -1424,6 +1449,9 @@ def _finish_parse(attempt_id: str, rc: Optional[int], profile: dict) -> dict:
     append_event(attempt_id, {"type": "parsed", "returncode": rc, "job_id_sha256": _sha(job_id),
                               "stdout_sha256": hashlib.sha256(raw).hexdigest(),
                               "parse_sha256": _parse_sha256(raw, job_id)})
+    if _RESERVATION_LOOKUP is _no_ledger:
+        from lib.openart_dispatch import _checkpoint
+        _checkpoint("parsed_job",attempt_id)
     return _launch_result(attempt_id, "submitted", job_id)
 
 

@@ -301,3 +301,19 @@ def test_oversized_retained_receipt_refused_without_unbounded_read(synthetic_con
     monkeypatch.setattr(cli, "MAX_STDOUT", len(raw) - 1)
     with pytest.raises(Error):
         qualification.validate_profile(profile)
+
+
+@pytest.mark.parametrize('prompt',['First line\nSecond line','First line\r\nSecond line'])
+def test_positional_compiled_prompt_newlines_in_actual_raw_capture(synthetic_contract,prompt):
+    profile,_,_,capture=synthetic_contract
+    entry=capture('dry_run',['generate','video',prompt,'--model','m-turbo','--dry-run'],{'body':{'params':{'prompt':prompt}}})
+    assert qualification._record(entry)['argv'][2]==prompt
+
+
+@pytest.mark.parametrize('argv',[
+    ['generate','video','safe\x00unsafe','--model','m-turbo','--dry-run'],
+    ['generate','video','safe','--model','m-\nturbo','--dry-run'],
+    ['creation','get','job\nunsafe']])
+def test_other_argument_controls_remain_rejected(synthetic_contract,argv):
+    profile,_,_,capture=synthetic_contract
+    with pytest.raises(Error): qualification._record(capture('dry_run',argv,{}))

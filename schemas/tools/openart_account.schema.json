@@ -27,9 +27,13 @@
         "qualify_inspection",
         "qualify_upload",
         "qualify_preview",
-        "qualify_result"
+        "qualify_result",
+        "qualify_quote",
+        "refresh_quote",
+        "repair_outbox",
+        "qualify_resolution_contract"
       ],
-      "description": "No action submits generation or reserves credits. collect requires the original attempt, project directory and frozen request digest. upload is allowed only after internal nonspending qualification and approval lookup. resolve_attempt and submit remain unavailable."
+      "description": "No action submits generation or reserves credits. collect requires the original attempt, project directory and frozen request digest. upload is allowed only after internal nonspending qualification and approval lookup. resolve_attempt repairs only original evidence; submit remains unavailable."
     },
     "read_only": {
       "const": true,
@@ -96,6 +100,26 @@
     "image_upload_id": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+    },
+    "request": {
+      "type": "object"
+    },
+    "quote_contract": {
+      "type": "object"
+    },
+    "billing_contract": {
+      "type": "object"
+    },
+    "billing_proof_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "qualification_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "quote_id": {
+      "type": "string"
     },
     "json_paths": {
       "type": "object"

@@ -45,6 +45,16 @@ def _text(value: Any) -> bool:
     return isinstance(value, str) and bool(value) and not any(ord(c) < 32 or ord(c) == 127 for c in value)
 
 
+def _captured_argument(argv: list, index: int) -> bool:
+    """Only a captured video prompt may contain CR/LF; argv is never shell text."""
+    value = argv[index]
+    if index == 2 and len(argv) >= 6 and argv[:2] == ["generate", "video"] \
+            and argv[-2:] == cli.GLOBAL_FLAGS and argv[-3] in {"--dry-run", "--async"}:
+        return isinstance(value, str) and bool(value) \
+            and not any((ord(c) < 32 and c not in "\r\n") or ord(c) == 127 for c in value)
+    return _text(value)
+
+
 def _path(value: Any) -> bool:
     return isinstance(value, str) and bool(_PATH.fullmatch(value))
 
@@ -106,7 +116,8 @@ def _record(entry: dict, kind: str = "generation_unqualified") -> dict:
         record = json.loads(raw)
         if not isinstance(record, dict) or type(record.get("returncode")) is not int or record["returncode"] != 0 \
                 or not _text(record.get("started_at")) or not isinstance(record.get("argv"), list) \
-                or any(not _text(a) for a in record["argv"]) or not _SHA.fullmatch(record.get("stdout_sha256", "")):
+                or any(not _captured_argument(record["argv"], i) for i in range(len(record["argv"]))) \
+                or not _SHA.fullmatch(record.get("stdout_sha256", "")):
             raise ValueError
         streams = record.get("streams")
         if not isinstance(streams, dict) or set(streams) != {"stdout", "stderr"}:

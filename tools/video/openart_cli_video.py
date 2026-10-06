@@ -34,6 +34,7 @@ class OpenArtCLIVideo(BaseTool):
         'governance':{'type':'object'}, 'operation':{'type':'string'},
         'image_path':{'type':'string'}, 'image_upload_id':{'type':'string'},
         'compiled_request_id':{'type':'string'}, 'preparation_review_id':{'type':'string'},
+        'credit_authorization_id':{'type':'string'},'credit_quote_id':{'type':'string'},'credit_qualification_sha256':{'type':'string'},
         'native_dry_run_receipt_id':{'type':'string'}, 'native_dry_run_receipt_sha256':{'type':'string'}}}
 
     def get_status(self):
@@ -44,7 +45,7 @@ class OpenArtCLIVideo(BaseTool):
             profiles = jobs.list_qualifications()
         except (jobs.OpenArtCLIError, ValueError, OSError, AttributeError):
             return ToolStatus.UNAVAILABLE
-        if (not any(row.get('valid') is True for row in profiles) or jobs._RESERVATION_LOOKUP is jobs._no_ledger
+        if (not any(row.get('valid') is True for row in profiles)
                 or execution._OPENART_COMPILED_REQUEST_CHECK is None):
             return ToolStatus.UNAVAILABLE
         return ToolStatus.AVAILABLE
@@ -52,9 +53,13 @@ class OpenArtCLIVideo(BaseTool):
     def get_info(self):
         info = super().get_info()
         info.update(generation_enabled=self.get_status() == ToolStatus.AVAILABLE,
-                    qualification_required=True, billing_unit='credits',
+                    qualification_required=True, credit_authorization_required=True, current_quote_required=True, billing_unit='credits',
                     usd_cost_status='unknown', estimated_cost_usd=None)
         return info
+
+    def prepare_offline(self, inputs, governance):
+        from lib.openart_dispatch import offline_readiness
+        return offline_readiness(inputs)
 
     def estimate_cost(self, inputs):
         raise PriceQuoteRequired('OpenArt USD cost unknown; credits require retained account quote evidence')
@@ -62,7 +67,10 @@ class OpenArtCLIVideo(BaseTool):
     def execute(self, inputs):
         active = active_openart_dispatch(inputs)
         launch = jobs.launch_submit(active['root'], active['openart_binding'],
-                                    active['openart_native'], active['openart_profile'])
+                                    active['openart_native'], active['openart_profile'],deadline=active.get('openart_deadline'))
+        from lib.openart_dispatch import record_launch_result
+        if jobs._RESERVATION_LOOKUP is jobs._no_ledger:
+            record_launch_result(launch['attempt_id'])
         return ToolResult(success=False, cost_usd=None, model=inputs.get('model'),
             data={'provider':self.provider, 'attempt_id':launch['attempt_id'],
                   'dispatch_status':'submitted_async' if launch['status']=='submitted' else 'uncertain',

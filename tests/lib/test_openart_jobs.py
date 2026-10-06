@@ -229,6 +229,20 @@ def test_freeze_is_immutable_and_tamper_detected(env):
 
 # ------------------------------------------------------------ launch
 
+@pytest.mark.parametrize("bad_timeout", [None, True, 0, -1, float("nan"), float("inf"), "1"])
+def test_launch_rejects_explicit_invalid_wait_timeout_before_provider_calls(env, monkeypatch, bad_timeout):
+    def unexpected_call(*args, **kwargs):
+        pytest.fail("invalid launch timeout must fail before provider calls")
+
+    monkeypatch.setattr(jobs, "_current_account", unexpected_call)
+    monkeypatch.setattr(jobs, "_POPEN", unexpected_call)
+    with pytest.raises(OpenArtCLIError) as exc:
+        jobs.launch_submit(env["tmp"] / "project", {}, {}, {}, wait_timeout=bad_timeout,
+                           deadline=jobs.time.monotonic() + 30)
+    assert exc.value.kind == "invalid_argument"
+    assert calls(env) == []
+
+
 def test_launch_without_reservation_never_spawns(env, monkeypatch):
     profile, _, native, binding = prepared(env)
     monkeypatch.setattr(jobs, "_ALLOW_FIXTURE_LAUNCH", True)

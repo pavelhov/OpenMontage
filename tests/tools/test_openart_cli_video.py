@@ -17,6 +17,9 @@ def test_cost_unknown_and_no_retry():
     assert tool.supports['explicit_selection_only'] is True
 
 def synthetic_openart_project(tmp_path, monkeypatch):
+    # Explicit U2/U3 synthetic transport isolation: this helper has no credit approval.
+    from lib import openart_dispatch
+    monkeypatch.setattr(openart_dispatch,"prepare_dispatch",lambda *args,**kwargs:None)
     """Component seam only: fake qualification/transport, not live compatibility."""
     import copy
     import json
@@ -58,7 +61,7 @@ def synthetic_openart_project(tmp_path, monkeypatch):
         return {'state':'collected' if state['output'] else 'open', 'binding':state['launch'][aid]['binding'],
                 'job_id_sha256':'j'*64,'events_sha256':jobs.sha256_json(state['events'][aid]),
                 'output':state['output'],'billing':'unknown','release_authorized':False}
-    def launch(root,binding,native,profile):
+    def launch(root,binding,native,profile,**kwargs):
         state['submits'] += 1
         aid = binding['attempt_id']
         assert aid not in state['launch']
@@ -101,7 +104,7 @@ def synthetic_openart_project(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs,'reconcile_job',evidence)
     monkeypatch.setattr(jobs,'verify_collection_receipt',verify,raising=False)
     monkeypatch.setattr(jobs,'_RESERVATION_LOOKUP',lambda root,aid,digest:{'state':'active','attempt_id':aid,
-                        'request_sha256':digest,'reservation_id':'synthetic-reservation'})
+                        'request_sha256':digest,'reservation_id':aid})
     return inputs, scope, state
 
 def test_missing_ledger_zero_launch(tmp_path, monkeypatch):
@@ -111,7 +114,7 @@ def test_missing_ledger_zero_launch(tmp_path, monkeypatch):
     with pytest.raises(Exception, match='reservation'):
         OpenArtCLIVideo().execute(inputs)
     assert state['submits'] == 0
-    assert not (tmp_path/'production_attempts').exists()
+    assert not list((tmp_path/'production_attempts').glob('*/provider_result.json'))
 
 def test_synthetic_submit_collect_original_once(tmp_path, monkeypatch):
     from lib.production_execution import collect_openart_attempt
@@ -166,7 +169,7 @@ def test_original_job_authorized_recovery_path_preserves_occupied_original(tmp_p
 from tests.lib.test_openart_jobs import env as actual_jobs_env
 
 @pytest.mark.parametrize('terminal', ['collected','failed_terminal'])
-def test_actual_jobs_api_dispatch_collect_compatibility(actual_jobs_env, monkeypatch, terminal):
+def test_actual_jobs_api_dispatch_collect_compatibility(actual_jobs_env, monkeypatch, terminal, legacy_u2_u3_bridge_isolation):
     """Actual private receipts/builders, synthetic CLI only; no live qualification."""
     import contextlib
     import json
@@ -253,7 +256,7 @@ def test_actual_jobs_api_dispatch_collect_compatibility(actual_jobs_env, monkeyp
     scope['provider']='openart_cli'
     scope['requests']['entry']=execution.planned_request_digest(inputs,project_dir=root)
     write_scopes(root,scope)
-    jobs.register_reservation_lookup(active_ledger)
+    jobs.register_reservation_lookup(lambda root,aid,digest:dict(active_ledger(root,aid,digest),reservation_id=aid))
     # Assert every subprocess boundary stays outside the project lock.
     locked = {'value':False}
     original_lock = execution._lock
@@ -290,3 +293,11 @@ def test_actual_jobs_api_dispatch_collect_compatibility(actual_jobs_env, monkeyp
         assert record['result']['data']['openart_evidence']==proof
         assert proof['binding']['request_sha256']==result.data['production_request_sha256']
     assert len([call for call in calls(actual_jobs_env) if '--async' in call])==1
+
+
+@pytest.fixture
+def legacy_u2_u3_bridge_isolation(monkeypatch):
+    # These synthetic transport/provenance tests predate credit authority. U4 uses
+    # the real default bridge in integration/test_openart_dispatch_recovery.py.
+    from lib import openart_dispatch
+    monkeypatch.setattr(openart_dispatch,'prepare_dispatch',lambda *args,**kwargs:None)

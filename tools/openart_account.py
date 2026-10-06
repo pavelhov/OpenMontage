@@ -11,8 +11,9 @@ from tools.base_tool import (BaseTool, Determinism, DependencyError, ExecutionMo
 
 READ_ONLY_ACTIONS = ("inspect", "quote", "form", "native_dry_run", "readiness",
                      "status", "collect", "verify", "upload", "qualifications",
-                     "qualify_inspection", "qualify_upload", "qualify_preview", "qualify_result")
-DISABLED_ACTIONS = ("resolve_attempt", "submit")
+                     "qualify_inspection", "qualify_upload", "qualify_preview", "qualify_result",
+                     "qualify_quote", "refresh_quote", "resolve_attempt", "repair_outbox", "qualify_resolution_contract")
+DISABLED_ACTIONS = ("submit",)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -53,12 +54,12 @@ class OpenArtAccount(BaseTool):
                                         'qualify_inspection',
                                         'qualify_upload',
                                         'qualify_preview',
-                                        'qualify_result'],
+                                        'qualify_result','qualify_quote','refresh_quote','repair_outbox','qualify_resolution_contract'],
                                'description': 'No action submits generation or reserves credits. '
                                               'collect requires the original attempt, project '
                                               'directory and frozen request digest. upload is allowed '
                                               'only after internal nonspending qualification and '
-                                              'approval lookup. resolve_attempt and submit remain '
+                                              'approval lookup. resolve_attempt repairs only original evidence; submit remains '
                                               'unavailable.'},
                     'read_only': {'const': True, 'description': 'Must be explicitly true.'},
                     'model': {'type': 'string', 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$'},
@@ -78,6 +79,8 @@ class OpenArtAccount(BaseTool):
                     'source_path': {'type': 'string', 'minLength': 1},
                     'image_upload_id': {'type': 'string',
                                         'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$'},
+                    'request': {'type':'object'},'quote_contract':{'type':'object'},'billing_contract':{'type':'object'},'billing_proof_id':{'type':'string','pattern':'^[0-9a-f]{64}$'},
+                    'qualification_sha256':{'type':'string','pattern':'^[0-9a-f]{64}$'},'quote_id':{'type':'string'},
                     'json_paths': {'type': 'object'},
                     'guarantee': {'type': 'object'},
                     'url_hosts': {'type': 'array', 'items': {'type': 'string'}}},
@@ -138,6 +141,29 @@ class OpenArtAccount(BaseTool):
                           data={"error": public, "reservations": 0, "paid_submission": False})
 
     def _dispatch(self, action: str, inputs: dict) -> ToolResult:
+        if action in {'qualify_quote','refresh_quote','resolve_attempt','repair_outbox','qualify_resolution_contract'}:
+            from lib import openart_credit as credit, openart_jobs as jobs, openart_dispatch as dispatch
+            timeout=cli.validate_timeout(inputs.get('timeout_seconds'))
+            if action in {'resolve_attempt','repair_outbox','qualify_resolution_contract'}:
+                root=Path(inputs.get('project_dir') or inputs.get('project_root')).resolve()
+                attempt=self._attempt_id(inputs)
+                if action=='resolve_attempt':
+                    result=dispatch.resolve_attempt(root,attempt,inputs.get('request_sha256'),timeout=timeout,billing_proof_id=inputs.get('billing_proof_id'))
+                elif action=='qualify_resolution_contract':
+                    result=dispatch.qualify_resolution_contract(root,attempt,inputs.get('request_sha256'),dispatch.BillingContract(**inputs.get('billing_contract',{})),timeout=timeout)
+                else:
+                    from lib.production_execution import _lock
+                    with _lock(root): result=dispatch.repair_outbox(root,attempt)
+            else:
+                request=inputs.get('request')
+                if not isinstance(request,dict): raise cli.OpenArtCLIError('invalid_argument','exact native request required')
+                profile=jobs.load_qualification(model=request.get('model'),mode=request.get('mode'),require='pre_submit')
+                if action=='qualify_quote':
+                    result=credit.qualify_quote_contract(request,profile,credit.QuoteContract(**inputs.get('quote_contract',{})),timeout=timeout)
+                else:
+                    result=credit.refresh_credit_evidence(request,profile,qualification_sha256=inputs.get('qualification_sha256'),
+                        approved_quote_id=inputs.get('quote_id'),timeout=timeout)
+            return self._ok(action,result)
         if action.startswith("qualify_"):
             from lib import openart_setup as setup, openart_jobs as jobs
             timeout = cli.validate_timeout(inputs.get("timeout_seconds"))

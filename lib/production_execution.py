@@ -28,7 +28,7 @@ from typing import Any
 
 from lib.shot_contract import contract_digest, file_sha256, validate_shot_contract
 
-GOVERNANCE_KEYS = {'governance', 'project_dir', 'shot_id', 'scope_id', 'production_phase', 'shot_contract_path', 'compiled_request_id', 'preparation_review_id'}
+GOVERNANCE_KEYS = {'governance', 'project_dir', 'shot_id', 'scope_id', 'production_phase', 'shot_contract_path', 'compiled_request_id', 'preparation_review_id', 'credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256'}
 INPUT_PATH_KEYS = {'image', 'image_path', 'image_paths', 'reference_image_path', 'reference_image_paths',
                    'first_frame', 'last_frame', 'last_image_path', 'images', 'audio_path',
                    'reference_audio_path', 'reference_audio_paths', 'video_path', 'reference_video_path',
@@ -488,7 +488,12 @@ def _state(root, attempt):
     reconciled = directory / 'reconciliation.json'
     result = directory / 'result.json'
     try:
-        return _read(reconciled if reconciled.exists() else result) if result.exists() or reconciled.exists() else {'status': 'uncertain'}
+        state = _read(reconciled if reconciled.exists() else result) if result.exists() or reconciled.exists() else {'status': 'uncertain'}
+        if state.get('status') == 'uncertain':
+            from lib.openart_dispatch import existing_terminal_state
+            terminal = existing_terminal_state(root, attempt['attempt_id'])
+            if terminal is not None: return terminal
+        return state
     except ProductionGovernanceError as exc:
         # An old/incomplete journal remains consumed and recoverable, never retryable.
         return {'status':'uncertain', 'journal_error':str(exc)}
@@ -805,20 +810,28 @@ def execute_governed(tool, inputs, invoke):
         result = invoke(cleaned)
         _write_new(active['directory'] / 'provider_result.json', asdict(result))
         return result
+    import time
+    from tools import _openart_cli as cli
+    dispatch_deadline = time.monotonic()+cli.MAX_TIMEOUT
     checked = preflight(tool, inputs)
     if not checked['governed']:
         return invoke(inputs)
     root = checked['root']
+    openart_prepared = None
+    session_id = str(uuid.uuid4())
+    if checked.get('openart'):
+        import time
+        from lib import openart_dispatch as credit_dispatch
+        from tools import _openart_cli as cli
+        openart_prepared = credit_dispatch.prepare_dispatch(inputs, checked, session_id, dispatch_deadline)
     with _lock(root):
         checked = preflight(tool, inputs)  # allowance and source hashes rechecked under lock
-        session_id = str(uuid.uuid4())
         openart_binding = None
         if checked.get('openart'):
             from lib import openart_jobs as jobs
             profile, native = checked['openart']
-            reservation = jobs.get_active_reservation(root, session_id, checked['request_sha256'])
             openart_binding = {'attempt_id':session_id, 'request_sha256':checked['request_sha256'],
-                               'reservation_id':reservation['reservation_id'],
+                               'reservation_id':session_id,
                                **{key:native[key] for key in ('native_controls_sha256', 'native_argv_sha256',
                                   'profile_sha256', 'account_id_sha256', 'native_body_sha256')}}
         directory = root / 'production_attempts' / session_id
@@ -857,7 +870,7 @@ def execute_governed(tool, inputs, invoke):
             _fail('input changed during reservation')
         submitted = _provider_inputs(tool, submitted, session_id)
         if openart_binding:
-            for key in ('compiled_request_id', 'preparation_review_id'):
+            for key in ('compiled_request_id', 'preparation_review_id', 'credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256'):
                 if key in inputs:
                     submitted[key] = inputs[key]
         scope = checked['scope']
@@ -887,6 +900,8 @@ def execute_governed(tool, inputs, invoke):
             request['scope'] = public_scope(scope)
             request['approval_evidence'] = {'snapshot_id':session_id, 'sha256':scope['evidence']['sha256']}
             request['submitted_inputs'] = _openart_public_inputs(submitted)
+        if openart_prepared:
+            credit_dispatch.reserve_dispatch(openart_prepared, checked, request, frozen)
         _write_new(directory / 'request.json', request)
         evidence_path = _inside(scope['evidence']['path'], root)
         evidence_copy = directory / ('approval-evidence' + evidence_path.suffix)
@@ -898,11 +913,13 @@ def execute_governed(tool, inputs, invoke):
         if checked['contract']:
             _write_new(directory / 'shot_contract.json', checked['contract'])
         _write_new(directory / 'selected_attempts.json', load_selected_attempts(root))
+        if openart_prepared:
+            credit_dispatch.journal_ready(session_id)
     active = {'provider':scope['provider'], 'provider_called':tool.provider != 'selector',
         'session_id':session_id,'root':root,'directory':directory,'submitted_inputs':submitted,
         'snapshot_paths':{item['path'] for item in asset_records}, 'contract':checked['contract'],'shot_id':checked['shot_id']}
     if openart_binding:
-        active.update(openart_binding=openart_binding, openart_profile=profile, openart_native=native)
+        active.update(openart_binding=openart_binding, openart_profile=profile, openart_native=native, openart_deadline=openart_prepared['deadline'] if openart_prepared else None)
     token = _ACTIVE.set(active)
     try:
         result = invoke(submitted)

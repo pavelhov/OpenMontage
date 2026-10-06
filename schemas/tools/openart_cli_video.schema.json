@@ -88,6 +88,15 @@
     "preparation_review_id": {
       "type": "string",
       "minLength": 1
+    },
+    "credit_authorization_id": {
+      "type": "string"
+    },
+    "credit_quote_id": {
+      "type": "string"
+    },
+    "credit_qualification_sha256": {
+      "type": "string"
     }
   }
 }

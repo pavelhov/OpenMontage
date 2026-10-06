@@ -16,7 +16,7 @@ from jsonschema.exceptions import ValidationError
 from schemas.artifacts import load_schema
 from lib.shot_contract import contract_digest, file_sha256, review_digest, validate_shot_contract
 
-METADATA = frozenset({'compiled_request_id', 'preparation_review_id'})
+METADATA = frozenset({'compiled_request_id', 'preparation_review_id', 'credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256'})
 PREDICATES = frozenset({'coverage', 'reference_suitability', 'native_compatibility', 'continuity', 'feasibility'})
 
 
