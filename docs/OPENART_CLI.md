@@ -1,10 +1,118 @@
-# OpenArt subscription CLI (U1–U2: transport, account and job recovery)
+# OpenArt subscription CLI (guarded video route)
 
-OpenMontage drives the official OpenArt CLI (`openart`, installed version 0.1.1, see
-https://github.com/OpenArt-AI/cli) as a sibling of the Grok CLI route: one
-subscription account, authenticated by the CLI's own OAuth flow. OpenMontage adds
-a read-only transport (`tools/_openart_cli.py`) and a nonspending account and
-recovery tool (`tools/openart_account.py`). **No generation submission surface is enabled.**
+OpenMontage drives the official OpenArt CLI (`openart`, verified version 0.1.1, see
+https://github.com/OpenArt-AI/cli) as an explicit-only sibling of the Grok CLI route.
+The transport is `tools/_openart_cli.py`. Setup, qualification and recovery go
+through `tools/openart_account.py`. Generation goes through the governed adapter
+`tools/video/openart_cli_video.py`. Generation is possible only through the
+guarded path below. Dispatch runs automatically only inside an approved strict
+scope with a matching credit authorization and a fresh account refresh. It never
+retries automatically and never falls back to another provider.
+
+## Current guarded capabilities
+
+- **Account discovery is pending (as last observed).** A nonspending root
+  account probe on 2026-10-06 found the official CLI installed (0.1.1), but its
+  `account` command exited 1 with a login-required signal
+  (`authentication_required: true`). No generation, reservation or upload ran.
+  This is the last observed state, not a live claim: it changes only when a
+  human signs in and a later probe captures the account shape. Until
+  `openart_account inspect` succeeds, no route is production-available. The menu derives
+  `account_discovery` from retained qualification rows (`inspected`,
+  `pre_submit` or `full`). A retained row never replaces the fresh account
+  refresh that every dispatch requires.
+- **Binary.** The official binary 0.1.1 is verified (`version --json`).
+- **Resolution.** In one dummy, unauthenticated v0.1.1 dry-run probe, a
+  caller-passed `--resolution` flag stayed in argv, but the provider's returned
+  preview body did not include a resolution field. That single probe does not
+  show the CLI ignores the flag, or that every account lacks the control. A
+  required resolution stays unqualified until an observed `model form` and an
+  exact preview carry it. A server default never stands in for a required value.
+- **Uploads.** Image-to-video uploads stay refused until the provider itself
+  states, in a captured response, that uploading is nonspending and has no
+  delayed charge. That statement must exist before the first upload. A caller
+  claim or an unchanged balance does not count.
+- **Exact quote contract.** Each paid attempt needs a current quote for the
+  exact settings (`quote_required`), kept as a raw private receipt. A quote for
+  other settings is not reused.
+- **Staged qualification.** A profile moves through `inspected`, then
+  `pre_submit`, then `full`. Inspection and `pre_submit` rows are
+  qualification candidates only. A `full` profile needs a real result proof from
+  one original, separately credit-authorized attempt. Fixture profiles are never
+  live.
+- **Governed jobs.** Each attempt launches exactly once, inside strict project
+  governance with a ledger reservation. Status, collect and resolve can be
+  repeated safely against that original attempt, and they never launch again.
+  An ungoverned OpenArt pin is refused before any provider call.
+- **Private ledger.** The credit ledger is a real SQLite database in private
+  state outside Git (see Private state). Menus and dry runs read it only through
+  `provider_credit_ledger.read_existing_snapshot()`. That call never initializes
+  or migrates the ledger and writes no ledger rows. An absent state root creates
+  no files. For an existing database, SQLite may still update its own WAL/SHM
+  reader bookkeeping files.
+- **Unknown outcomes.** An uncertain submission stays `uncertain` with its credit
+  hold. Nothing expires it on a timer, and it is never resubmitted
+  automatically. It is resolved only from qualified original receipts, or from
+  provider history if such history becomes available. OpenMontage does not
+  assume provider history exists.
+- **Approval modes.** Strict approval is the default. A strict original scope
+  can preapprove a bounded batch of exact attempts, so a new prompt per attempt
+  is not mandatory. An optional
+  Auto-continue mode is planned (U5P). It is not implemented yet, and nothing in
+  OpenMontage behaves as if it exists.
+
+The preflight menu (`provider_menu_summary()["qualified_cli_video_routes"]`)
+shows this state truthfully. That covers exact qualified model IDs, forms,
+controls and limitations, account stages, pending jobs, holds, quarantine and
+errors. The adapter's model catalog reads each actual-qualified `full` profile's
+reference-only receipts (`{kind, receipt_id, receipt_sha256}`) from private
+state, verifies their digests and reapplies the form and preview parsers. It
+shows only safe creative values (duration, aspect ratio, resolution); prompts,
+image URLs and any other parameter appear only as `value_redacted` plus a
+SHA-256. A profile whose receipts cannot be verified drops out of the catalog,
+the row reports `model_catalog_unverified` or `model_catalog_error`, and that
+row is kept but marked not production-ready (`full_profile_receipts_unverified`).
+Only actual-qualified `full` real profiles are production-ready. `inspected`
+and `pre_submit` rows are candidates, and fixtures are never ready. A
+resolution flag present in argv but absent from the effective preview is
+reported as `argv_flag_without_effective_preview`, with no guessed support.
+
+`dispatch_readiness` is separate from qualification, because a qualified model
+does not make an account available. It always requires a fresh prelaunch
+account refresh. A pending, submitting or uncertain job slot blocks it
+(`unknown_job_acceptance_unresolved`), as do quarantine and unacknowledged outbox
+events. A retained unknown-billing hold on a terminal slot does not block by
+itself. It marks economics as incomplete (`incomplete_unknown_billing_hold`)
+and requires a remaining allowance and a fresh exact quote. Holds and quarantine
+are filtered to the exact OpenArt account. Facts from other providers never
+enter the OpenArt row. Billing is listed in credits with
+`usd_cost_status: unknown`.
+
+The Grok CLI row is reported separately with `model_policy:
+cli_managed_media_unreported`, `model_selection: not_supported`, no model list
+and billing `subscription_quota_unknown`. The pinned Grok agent model is not a
+video model and is never shown as one. Grok controls are operation-specific
+(native audio, voices, reference image, first/last frame) according to the
+actual tool.
+
+The OpenArt part of the menu runs no OpenArt CLI and creates or mutates no
+ledger rows. Grok `get_status` does run the existing read-only `--version` and
+`--help` compatibility probe (`status_probe: readonly_cli_version_and_help`).
+The menu recommends no default and never offers a paid API fallback.
+
+For explicit-only CLI providers (such as `openart_cli`), the video selector
+treats `preferred_provider` as an explicit pin. Ordinary provider preferences
+keep the existing scoring behavior. When the preferred provider is
+explicit-only and `allowed_providers` is anything other than exactly that
+provider, the scopes are crossed and the request fails as `not_dispatched`
+before any provider call. A singleton pin that asks for an unsupported control,
+or an unavailable or unqualified model, is rejected before scoring and never
+falls back.
+
+Missing controls stay visible. The v0.1.1 surface has no end-frame pin, native
+audio or multiple reference images. An explicit OpenArt pin that requests any
+of them fails with `missing_controls` before any credit reservation. It never
+substitutes a prompt or another provider.
 
 ## Binary and credentials
 
@@ -83,8 +191,14 @@ strings and all URL query strings, which covers signed URLs.
   the private URL internally, uses the guarded `--image` dry-run path, and redacts URL query
   credentials from published argv and request bodies. Local paths are never passed as `--image`.
 
-`resolve_attempt` and `submit` remain unavailable. All actions return
-`cost_usd: 0`, `reservations: 0` and `paid_submission: false`. Auth identity, model IDs,
+- `qualify_quote` and `refresh_quote`: capture and retain an exact settings quote
+  for an approved request.
+- `resolve_attempt`, `repair_outbox` and `qualify_resolution_contract`: resolve
+  or repair one original attempt from retained receipts. They never launch a
+  new job.
+
+Only `submit` is disabled as an account action. Paid submission goes through the
+governed adapter. No account action reserves credits or submits paid work. Auth identity, model IDs,
 settings quotes, upload billing, async results, exhaustive history and generation controls
 remain unqualified until backed by captured account evidence. Status, collection and
 verification do not authorize retries or release account-credit holds.
@@ -96,9 +210,11 @@ In strict governed dry-runs, `BaseTool` calls an optional
 hook's return value is attached as `offline_preparation`, and the governance keys
 cannot be overridden. While the context is active, the OpenArt transport refuses
 to launch (`offline_only`). Tools without the hook return exactly the previous
-governed result. `offline_quote_status(evidence, request_sha256)` is the pure
-helper a hook uses: it returns `retained` only for matching evidence with
-`covers_settings: true`, and `quote_required` otherwise.
+governed result. The OpenArt hook calls `dispatch.offline_readiness(inputs)`.
+It loads the `pre_submit` profile, prepares and validates the native request
+and looks up the retained exact quote. It returns `provider_calls: 0`,
+`reservations: 0` and `credit_state` of either `retained_quote` or
+`quote_required`.
 
 ## Unsupported gates (all `unqualified` until live account evidence)
 

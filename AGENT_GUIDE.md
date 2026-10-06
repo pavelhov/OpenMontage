@@ -350,6 +350,53 @@ Already Available:
 - If the user declines setup, proceed with the best available path — no nagging.
 - If a tool shares an env var with others, group them (read from `dependencies` field).
 
+### Qualified CLI Video Routes (Grok CLI and OpenArt CLI)
+
+`provider_menu_summary()["qualified_cli_video_routes"]` lists the two
+subscription CLI video routes. Grok comes first, then OpenArt. Present them next to the other
+video providers, using only the observed fields:
+
+- **Models.** Show only the exact model IDs in `models`. Those are full,
+  real-result qualified profiles. List `qualification_candidates` (inspected or
+  pre_submit) as candidates, and `not_live` as unavailable. Never invent model
+  IDs (for example H3 IDs), audio, end-frame pins, rates or defaults.
+- **Controls and limitations.** Read `controls` and `limitations`. When a
+  control is false (end-frame pin, native audio, multiple references), say it
+  is unavailable on that route. A pinned request that needs it fails before any
+  credit reservation. Never paper over it with a prompt rewrite.
+  OpenArt controls come from the adapter's catalog of actual-qualified full
+  profiles, read from verified private receipts with prompts and URLs redacted.
+  An unverifiable profile is not production-ready. A required resolution stays
+  unqualified until an observed form and exact preview carry it. Grok reports
+  no video models (`model_policy: cli_managed_media_unreported`), and its
+  agent model is never a video model. Approved dialogue stays in the prompt
+  even on a route with no native audio; disclose the missing guarantee.
+- **Billing.** Show OpenArt in credits with `current_quote_required`, and say
+  its dollar cost is unknown. Show Grok CLI separately as subscription or usage
+  of unknown cost. Never add them together or convert either to dollars.
+- **State.** Report `account_stages`, `dispatch_readiness`, pending jobs, credit
+  holds, quarantine and `errors` as they appear. A qualified model does not make
+  the account ready: any OpenArt blocker in `dispatch_readiness` stops dispatch,
+  and every dispatch still needs a fresh account refresh and a current quote.
+  Unresolved job acceptance (pending, submitting or uncertain slot) blocks.
+  An unknown-billing hold on a terminal slot does not block and does not
+  invalidate approved footage, but the economics stay incomplete and a remaining
+  allowance plus a fresh quote are required. Account status is as last observed;
+  never claim live auth without a fresh probe. The OpenArt menu part runs no
+  OpenArt CLI; Grok status runs its existing read-only `--version`/`--help` probe.
+- **No recommendation.** `recommendation` is null. Do not call either route the
+  default or the best without benchmark evidence, and never offer an external
+  API or paid provider as a silent fallback.
+
+Ask the user for creative choices (shot, duration, aspect ratio, reference image),
+not for job commands. Using a route requires an explicit singleton pin
+(`preferred_provider` plus `allowed_providers` set to that single provider)
+inside a strict project. Approved settings pass through unchanged. Read
+`docs/OPENART_CLI.md` and the `openart-cli` skill before any OpenArt step.
+Strict approval is the default; a strict original scope may preapprove a bounded
+batch of exact attempts. Each attempt launches once; status, collect and resolve
+repeat safely on the original attempt. Auto-continue is planned and not implemented yet.
+
 ### Setup Offer Protocol
 
 When tools are `UNAVAILABLE` but can be fixed with simple configuration, **offer the user setup help instead of silently working around the limitation.** Many tools are one env var away from working.

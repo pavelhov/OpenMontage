@@ -390,6 +390,29 @@ class VideoSelector(BaseTool):
             )
         candidates = self._providers()
 
+        # Crossed scopes: a preferred explicit-only provider outside a non-empty
+        # allowed set (or an allowed set that is not exactly that provider) is a
+        # contradictory route approval. Refuse before ranking or provider calls.
+        preferred = inputs.get("preferred_provider", "auto")
+        allowed = self._allowed_provider_set(inputs)
+        if (inputs.get("operation") != "rank"
+                and preferred not in (None, "auto") and allowed and allowed != {preferred}
+                and any(t.provider == preferred and self._is_explicit_only(t) for t in candidates)):
+            frame_note = (
+                " Grok CLI pins require local last_image_path on CLI >=1.0.34; HTTPS last_image_url needs "
+                "Grok REST (separately API-billed) with explicit route approval and credentials. "
+                "No fallback was attempted."
+                if self._requires_final_frame(inputs) else "")
+            return ToolResult(
+                success=False,
+                data={"alternatives_considered": [], "fallback_tools": [], "fallback_attempted": False,
+                      "dispatch_status": "not_dispatched", "crossed_scopes": {
+                          "preferred_provider": preferred, "allowed_providers": sorted(allowed)}},
+                error=(f"preferred_provider {preferred!r} is explicit-only and needs allowed_providers "
+                       f"exactly [{preferred!r}]; got {sorted(allowed)}. No provider was called."
+                       + frame_note),
+            )
+
         # Rank mode — return scored provider rankings without generating
         if inputs.get("operation") == "rank":
             rank_inputs = self._rank_inputs(inputs)
@@ -439,9 +462,28 @@ class VideoSelector(BaseTool):
 
         # Normal generation — use scored selection
         task_context = self._prepare_task_context(inputs)
+        # An exact explicit-only singleton pin is decided before filtering so a
+        # missing control or unqualified model fails visibly instead of being
+        # filtered away into scoring/fallback.
+        pinned = self._exact_explicit_candidate(inputs, candidates)
+        if pinned is not None:
+            missing = self._missing_pinned_controls(inputs, pinned)
+            if missing:
+                return ToolResult(
+                    success=False,
+                    data={"alternatives_considered": [], "fallback_tools": [], "fallback_attempted": False,
+                          "dispatch_status": "not_dispatched", "missing_controls": missing},
+                    error=("The explicitly pinned provider does not support the requested "
+                           + ", ".join(missing)
+                           + ". No prompt substitute, fallback or credit reservation was attempted; "
+                           "choose a route that supports it or revise the creative request."),
+                )
         candidates = self._filter_candidates(inputs, candidates)
-        explicit_route = self._exact_explicit_candidate(inputs, candidates) is not None
-        tool, score = self._select_best_tool(inputs, candidates, task_context)
+        explicit_route = pinned is not None or self._exact_explicit_candidate(inputs, candidates) is not None
+        if pinned is not None and self._exact_explicit_candidate(inputs, candidates) is None:
+            tool, score = None, None  # pinned route filtered out: never score or fall back
+        else:
+            tool, score = self._select_best_tool(inputs, candidates, task_context)
         if tool is None:
             return ToolResult(
                 success=False,
@@ -786,6 +828,26 @@ class VideoSelector(BaseTool):
     @staticmethod
     def _is_explicit_only(tool: BaseTool) -> bool:
         return bool(getattr(tool, "supports", {}).get("explicit_selection_only"))
+
+    @staticmethod
+    def _missing_pinned_controls(inputs: dict[str, object], tool: BaseTool | None) -> list[str]:
+        """Requested controls the exact pinned tool cannot honor (fail before reserve)."""
+        if tool is None:
+            return []
+        supports = getattr(tool, "supports", {}) or {}
+        missing: list[str] = []
+        if (inputs.get("last_image_path") or inputs.get("last_image_url")
+                or inputs.get("endpoint_requirement_id")
+                or inputs.get("operation") == "first_last_frame") and supports.get("first_last_frame") is not True:
+            missing.append("first_last_frame (end-frame pin)")
+        if (inputs.get("native_audio") or inputs.get("voices") or inputs.get("voice")
+                or inputs.get("generate_audio")) and supports.get("native_audio") is not True:
+            missing.append("native_audio")
+        refs = inputs.get("reference_image_paths") or inputs.get("reference_image_urls")
+        if (isinstance(refs, (list, tuple)) and len(refs) > 1
+                and supports.get("multiple_reference_images") is not True):
+            missing.append("multiple_reference_images")
+        return missing
 
     @staticmethod
     def _allowed_provider_set(inputs: dict[str, object]) -> set[str]:
