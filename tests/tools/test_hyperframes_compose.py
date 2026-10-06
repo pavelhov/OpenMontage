@@ -310,7 +310,7 @@ def test_video_compose_render_engines_follow_hyperframes_runtime_check(monkeypat
 
 
 def test_provider_menu_summary_returns_expected_shape():
-    """Regression: AGENT_GUIDE.md line 246 points agents at provider_menu_summary
+    """Regression: AGENT_GUIDE.md points agents at provider_menu_summary
     for the capability menu. The shape must be stable and cover the fields
     the guide references."""
     from tools.tool_registry import registry
@@ -324,7 +324,12 @@ def test_provider_menu_summary_returns_expected_shape():
         "setup_offers",
         "runtime_warnings",
         "pinned_final_frame_routes",
+        "qualified_cli_video_routes",
     }
+    routes = s["qualified_cli_video_routes"]
+    assert isinstance(routes, list)
+    assert [row["provider"] for row in routes] == ["grok_cli", "openart_cli"]
+    assert all(isinstance(row["models"], list) for row in routes)
     # Composition runtimes MUST include all three engines so the HARD RULE
     # presentation has the data it needs.
     for engine in ("ffmpeg", "remotion", "hyperframes"):

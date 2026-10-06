@@ -145,77 +145,424 @@
       }
     },
     "native_binding": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "native_controls_sha256",
-        "native_argv_sha256",
-        "native_body_sha256",
-        "profile_sha256",
-        "form_sha256",
-        "form_defaults_sha256",
-        "account_id_sha256",
-        "cli_version",
-        "tier",
-        "model",
-        "mode",
-        "source"
-      ],
-      "properties": {
-        "native_controls_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "native_controls_sha256",
+            "native_argv_sha256",
+            "native_body_sha256",
+            "profile_sha256",
+            "form_sha256",
+            "form_defaults_sha256",
+            "account_id_sha256",
+            "cli_version",
+            "tier",
+            "model",
+            "mode",
+            "source"
+          ],
+          "properties": {
+            "native_controls_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "native_argv_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "native_body_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "profile_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "form_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "form_defaults_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "account_id_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "cli_version": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "tier": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "mode": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "source": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          }
         },
-        "native_argv_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
-        "native_body_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
-        "profile_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
-        "form_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
-        "form_defaults_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
-        "account_id_sha256": {
-          "type": "string",
-          "pattern": "^[a-f0-9]{64}$"
-        },
-        "cli_version": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "tier": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "model": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "mode": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        },
-        "source": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "cli_version",
+            "grok_path",
+            "request"
+          ],
+          "properties": {
+            "provider": {
+              "const": "grok_cli"
+            },
+            "cli_version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "grok_path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "request": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "native_tool",
+                "operation",
+                "arguments",
+                "input_assets",
+                "requirement_id",
+                "receipt",
+                "request_sha256"
+              ],
+              "properties": {
+                "native_tool": {
+                  "enum": [
+                    "image_to_video",
+                    "reference_to_video"
+                  ]
+                },
+                "operation": {
+                  "enum": [
+                    "image_to_video",
+                    "reference_to_video",
+                    "first_last_frame"
+                  ]
+                },
+                "arguments": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "prompt",
+                    "duration",
+                    "resolution_name"
+                  ],
+                  "properties": {
+                    "prompt": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "duration": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 15
+                    },
+                    "resolution_name": {
+                      "enum": [
+                        "480p",
+                        "720p"
+                      ]
+                    },
+                    "aspect_ratio": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "image": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "first_frame": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "last_frame": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "images": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "voices": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1
+                      }
+                    },
+                    "keyframes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "image",
+                          "timestamp_s"
+                        ],
+                        "properties": {
+                          "image": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "timestamp_s": {
+                            "type": "number"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "input_assets": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "role",
+                      "path",
+                      "sha256"
+                    ],
+                    "properties": {
+                      "role": {
+                        "enum": [
+                          "first_frame",
+                          "last_frame",
+                          "reference",
+                          "keyframe"
+                        ]
+                      },
+                      "path": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "sha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "index": {
+                        "type": "integer"
+                      },
+                      "timestamp_s": {
+                        "type": "number"
+                      }
+                    }
+                  }
+                },
+                "requirement_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "receipt": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "version",
+                    "provider",
+                    "native_tool",
+                    "adapter_version",
+                    "agent_model",
+                    "media_model",
+                    "media_model_status",
+                    "requirement_id",
+                    "submitted_arguments",
+                    "input_assets",
+                    "request_sha256",
+                    "model_role"
+                  ],
+                  "properties": {
+                    "version": {
+                      "const": "1.0"
+                    },
+                    "provider": {
+                      "const": "grok_cli"
+                    },
+                    "native_tool": {
+                      "enum": [
+                        "image_to_video",
+                        "reference_to_video"
+                      ]
+                    },
+                    "adapter_version": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "agent_model": {
+                      "const": "grok-4.6"
+                    },
+                    "media_model": {
+                      "const": null
+                    },
+                    "media_model_status": {
+                      "const": "unreported"
+                    },
+                    "requirement_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "submitted_arguments": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "prompt",
+                        "duration",
+                        "resolution_name"
+                      ],
+                      "properties": {
+                        "prompt": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "duration": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "maximum": 15
+                        },
+                        "resolution_name": {
+                          "enum": [
+                            "480p",
+                            "720p"
+                          ]
+                        },
+                        "aspect_ratio": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "image": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "first_frame": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "last_frame": {
+                          "type": "string",
+                          "minLength": 1
+                        },
+                        "images": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "voices": {
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "keyframes": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "image",
+                              "timestamp_s"
+                            ],
+                            "properties": {
+                              "image": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "timestamp_s": {
+                                "type": "number"
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "input_assets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "role",
+                          "path",
+                          "sha256"
+                        ],
+                        "properties": {
+                          "role": {
+                            "enum": [
+                              "first_frame",
+                              "last_frame",
+                              "reference",
+                              "keyframe"
+                            ]
+                          },
+                          "path": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "sha256": {
+                            "type": "string",
+                            "pattern": "^[a-f0-9]{64}$"
+                          },
+                          "index": {
+                            "type": "integer"
+                          },
+                          "timestamp_s": {
+                            "type": "number"
+                          }
+                        }
+                      }
+                    },
+                    "request_sha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "model_role": {
+                      "const": "agent"
+                    }
+                  }
+                },
+                "request_sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              }
+            }
+          }
         }
-      }
+      ]
     },
     "coverage": {
       "type": "array",
@@ -247,7 +594,10 @@
             "pattern": "^[a-f0-9]{64}$"
           },
           "native_pointer": {
-            "const": "/params/prompt"
+            "enum": [
+              "/params/prompt",
+              "/arguments/prompt"
+            ]
           },
           "start": {
             "type": "integer",

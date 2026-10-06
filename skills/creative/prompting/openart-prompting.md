@@ -55,4 +55,9 @@ unknown dollar cost, and show it separately from Grok subscription billing.
 
 Once the user approves a prompt and settings, they are sent unchanged. Any
 wording or setting change is a new request that needs a new quote and a new
-approval. There is no automatic retry or Auto-continue yet.
+approval, unless an active user-approved Auto-continue policy explicitly
+authorizes that deterministic flex. Compile the prompt from retained/rooted
+planning and obtain a fresh named preparation review. Preserve dialogue wording,
+speaker/source/order, identity, story facts and native frame pins. A repair needs
+actual failed-review evidence and exact replacement attempt IDs; uncertain jobs
+never authorize a retry.

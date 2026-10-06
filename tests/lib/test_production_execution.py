@@ -969,3 +969,32 @@ def test_openart_component_terminal_failure_binding_rejected(tmp_path,monkeypatc
         execution.collect_openart_attempt(tmp_path,aid,request_sha256=result.data['production_request_sha256'])
     assert not (tmp_path/'production_attempts'/aid/'reconciliation.json').exists()
     assert state['submits']==1
+
+
+def test_grok_analyze_bypasses_project_discovery_and_compatibility_probe(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from lib import production_execution as execution
+    tool = SimpleNamespace(name='synthetic_grok_analyze', provider='grok_cli',
+                           capability='video_generation', tier=ToolTier.ANALYZE)
+    inputs = {'project_dir': str(tmp_path), 'action': 'inspect', 'read_only': True,
+              'governance': {'scope_id': 'unused-diagnostic', 'shot_id': 'entry'}}
+    monkeypatch.setattr(execution, 'discover_project', lambda *a: pytest.fail('Analyze discovered production project'))
+    monkeypatch.setattr('tools._grok_cli_media.observe_grok_cli_compatibility',
+                        lambda *a, **k: pytest.fail('Analyze probed Grok executable'))
+    invoked = []
+    result = execution.execute_governed(tool, inputs, lambda clean: invoked.append(clean) or 'diagnostic-result')
+    assert result == 'diagnostic-result' and invoked == [inputs]
+    assert not list(tmp_path.iterdir())
+
+
+def test_grok_generation_unknown_project_still_fails_without_probe(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from lib import production_execution as execution
+    tool = SimpleNamespace(name='synthetic_grok_motion', provider='grok_cli',
+                           capability='video_generation', tier=ToolTier.GENERATE)
+    monkeypatch.setattr('tools._grok_cli_media.observe_grok_cli_compatibility',
+                        lambda *a, **k: pytest.fail('Unknown project probed Grok executable'))
+    with pytest.raises(ProductionGovernanceError, match='missing project.json'):
+        execution.execute_governed(tool, {'project_dir': str(tmp_path)},
+                                   lambda clean: pytest.fail('Unknown project invoked provider'))
+    assert not list(tmp_path.iterdir())

@@ -92,7 +92,7 @@ def _manifest_requirement_binding(manifest, shot_id):
             'motion_handoffs': handoffs, 'reference_assets': references}
 
 
-def source_packet(project_dir, shot_id):
+def source_packet(project_dir, shot_id, *, provider="openart_cli"):
     """Resolve authoritative closed contract, explicit scene→script mapping and bytes."""
     from lib.production_execution import approval_plan_digest, load_selected_attempts
     root = Path(project_dir).resolve()
@@ -136,7 +136,10 @@ def source_packet(project_dir, shot_id):
     manifest = _read(root, 'asset_manifest.json') if manifest_path.exists() else None
     if manifest is not None:
         _schema('asset_manifest', manifest)
-    _check_required_native_controls(scene_plan, manifest, shot_id)
+    if provider == "openart_cli":
+        _check_required_native_controls(scene_plan, manifest, shot_id)
+    elif provider != "grok_cli":
+        raise ValueError("unsupported preparation provider")
     scenes = [s for s in scene_plan['scenes'] if s['id'] == shot_id]
     if len(scenes) != 1 or not scenes[0].get('script_section_id'):
         raise ValueError('explicit scene.script_section_id mapping required')
@@ -169,6 +172,10 @@ def source_packet(project_dir, shot_id):
 def compile_prompt(project_dir, shot_id):
     """Return literal prompt and trace map; this does not create a passing review."""
     packet = source_packet(project_dir, shot_id)
+    return _compile_packet(packet)
+
+
+def _compile_packet(packet, *, native_pointer='/params/prompt'):
     prompt, coverage = '', []
     for row in packet['occurrences']:
         # Strings stay literal (including speech). Repeated lines remain distinct spans.
@@ -189,12 +196,32 @@ def compile_prompt(project_dir, shot_id):
         start = len(prompt) + len(prefix)
         prompt += prefix + fragment + '\n'
         coverage.append({'occurrence_id': row['occurrence_id'], 'source_pointer': row['source_pointer'],
-                         'value_sha256': row['value_sha256'], 'native_pointer': '/params/prompt',
+                         'value_sha256': row['value_sha256'], 'native_pointer': native_pointer,
                          'start': start, 'end': start + len(fragment), 'fragment_sha256': digest(fragment)})
     return {'prompt': prompt, 'coverage': coverage, 'source_binding': packet['binding']}
 
 
+def build_static_source_packet(project_dir, shot_id, *, provider):
+    """Validated provider-neutral source bytes; OpenArt's original guard is preserved."""
+    packet = source_packet(project_dir, shot_id, provider=provider)
+    if provider == 'grok_cli':
+        from lib.production_autonomy import contract_delta, current_projection
+        contract_delta(project_dir, shot_id, current_projection(project_dir, shot_id))
+    return packet
+
+
+def compile_provider_prompt(project_dir, shot_id, *, provider):
+    packet = build_static_source_packet(project_dir, shot_id, provider=provider)
+    compiled = _compile_packet(packet, native_pointer='/arguments/prompt' if provider == 'grok_cli' else '/params/prompt')
+    if provider == 'grok_cli':
+        from tools._grok_cli_media import validate_prompt
+        compiled['prompt'] = validate_prompt(compiled['prompt'])
+    return compiled
+
+
 def _body(native):
+    if native.get('provider') == 'grok_cli':
+        return {'params': copy.deepcopy(native['request']['arguments'])}
     from lib import openart_jobs as jobs
     evidence = native['dry_run']
     receipt = jobs._load_receipt(evidence['receipt_id'], evidence['receipt_sha256'], 'native_preview_invalid')
@@ -205,6 +232,8 @@ def _body(native):
 
 
 def _native_binding(native):
+    if native.get('provider') == 'grok_cli':
+        return copy.deepcopy(native)
     return {key: native[key] for key in ('native_controls_sha256', 'native_argv_sha256', 'native_body_sha256',
         'profile_sha256', 'form_sha256', 'form_defaults_sha256', 'cli_version', 'tier', 'account_id_sha256', 'model', 'mode', 'source')}
 
@@ -304,11 +333,36 @@ def validate_timing(timing, packet, project_dir, body):
         raise ValueError('overlapping action/speech requires explicit parallel review')
 
 
+def prepare_grok_native(inputs, observation):
+    """Pure genuine native builder; caller observation is refreshed at dispatch outside locks."""
+    from lib.production_execution import _clean
+    from tools.video.grok_cli_video import build_native_video_request, GrokCLIVideo
+    from tools._grok_cli_media import check_cli_feature_gates
+    if set(observation) != {'cli_version', 'grok_path'} or not all(isinstance(v, str) and v.strip() for v in observation.values()):
+        raise ValueError('closed fresh Grok CLI observation required')
+    cleaned = _clean(inputs)
+    cleaned.pop('preferred_provider', None)
+    cleaned.pop('allowed_providers', None)
+    native = build_native_video_request(cleaned, adapter_version=GrokCLIVideo.version)
+    check_cli_feature_gates(observation['cli_version'], native['arguments'])
+    return {'provider': 'grok_cli', 'cli_version': observation['cli_version'],
+            'grok_path': observation['grok_path'], 'request': native}
+
+
+def prep_builder(provider):
+    if provider == 'grok_cli':
+        return prepare_grok_native
+    if provider == 'openart_cli':
+        from lib.openart_jobs import prepare_native_request
+        return prepare_native_request
+    raise ValueError('provider outside Auto-continue')
+
+
 def prepare_compiled_request(inputs, native, profile, *, coverage, timing):
     """Build sidecar after a retained preview. Persist and obtain named review separately."""
     from lib.production_execution import planned_request_digest
     root = Path(inputs['project_dir']).resolve()
-    packet = source_packet(root, inputs['governance']['shot_id'])
+    packet = source_packet(root, inputs['governance']['shot_id'], provider=native.get('provider', 'openart_cli'))
     value = {'version': '1.0', 'request_sha256': planned_request_digest(inputs, project_dir=root),
              'source_binding': packet['binding'], 'native_binding': _native_binding(native),
              'coverage': copy.deepcopy(coverage), 'timing': copy.deepcopy(timing)}
@@ -327,11 +381,15 @@ def _schema(name, value):
 def _validate_compiled(compiled, inputs, native, profile, packet):
     from lib.production_execution import planned_request_digest
     _schema('compiled_request', compiled)
-    from lib import openart_jobs as jobs
-    try:
-        actual_native = jobs.prepare_native_request(controls(inputs), profile)
-    except jobs.OpenArtCLIError as exc:
-        raise ValueError('native preparation invalid: ' + exc.kind) from None
+    grok = native.get('provider') == 'grok_cli'
+    if grok:
+        actual_native = prepare_grok_native(inputs, {'cli_version': native['cli_version'], 'grok_path': native['grok_path']})
+    else:
+        from lib import openart_jobs as jobs
+        try:
+            actual_native = jobs.prepare_native_request(controls(inputs), profile)
+        except jobs.OpenArtCLIError as exc:
+            raise ValueError('native preparation invalid: ' + exc.kind) from None
     if actual_native != native:
         raise ValueError('stale native body/controls/version/tier/form/defaults')
     if compiled['source_binding'] != packet['binding']:
@@ -350,7 +408,8 @@ def _validate_compiled(compiled, inputs, native, profile, packet):
         if any(mapped[key] != row[key] for key in ('occurrence_id', 'source_pointer', 'value_sha256')):
             raise ValueError('coverage occurrence/source mismatch')
         start, end = mapped['start'], mapped['end']
-        if mapped['native_pointer'] != '/params/prompt' or not 0 <= start < end <= len(prompt):
+        expected_pointer = '/arguments/prompt' if grok else '/params/prompt'
+        if mapped['native_pointer'] != expected_pointer or not 0 <= start < end <= len(prompt):
             raise ValueError('coverage must target actual native prompt fragment')
         fragment = prompt[start:end]
         if mapped['fragment_sha256'] != digest(fragment):
@@ -361,7 +420,13 @@ def _validate_compiled(compiled, inputs, native, profile, packet):
         if any(max(start, a) < min(end, b) for a, b in spans):
             raise ValueError('duplicate coverage reuses a native fragment')
         spans.append((start, end))
-    if native['mode'] == 'image2video':
+    if grok:
+        refs = packet['binding']['references']
+        start_refs = [r for r in refs if r['role'] == 'start_frame' and r['id'] in packet['shot']['asset_ids']]
+        submitted = native['request']['input_assets']
+        if len(start_refs) != 1 or not any(r['role'] == 'first_frame' and r['sha256'] == start_refs[0]['sha256'] for r in submitted):
+            raise ValueError('Grok native request must carry approved start board')
+    elif native['mode'] == 'image2video':
         refs = packet['binding']['references']
         start_refs = [r for r in refs if r['role'] == 'start_frame' and r['id'] in packet['shot']['asset_ids']]
         upload = native['image_upload']
@@ -369,7 +434,7 @@ def _validate_compiled(compiled, inputs, native, profile, packet):
             raise ValueError('image2video must carry the approved start board')
     else:
         raise ValueError('closed shot contract needs approved start board: text2video unsupported')
-    if profile['source'] == 'real':
+    if not grok and profile['source'] == 'real':
         from lib import openart_jobs as jobs
         entry = next(e for e in profile['captured_receipts'] if e['kind'] == 'form')
         form = jobs._receipt_parsed(entry['receipt_id'], entry['receipt_sha256'])
@@ -386,7 +451,7 @@ def validate_preparation(inputs, native, profile):
     root = Path(inputs['project_dir']).resolve()
     compiled = _read(root, 'compiled_request-' + _id(inputs.get('compiled_request_id')) + '.json')
     review = _read(root, 'preparation_review-' + _id(inputs.get('preparation_review_id')) + '.json')
-    packet = source_packet(root, inputs['governance']['shot_id'])
+    packet = source_packet(root, inputs['governance']['shot_id'], provider=native.get('provider', 'openart_cli'))
     _validate_compiled(compiled, inputs, native, profile, packet)
     _schema('preparation_review', review)
     if review['review_id'] != inputs['preparation_review_id']:
@@ -484,7 +549,7 @@ def freeze_preparation(attempt_id, inputs, native, profile):
     review = _read(root, 'preparation_review-' + _id(inputs['preparation_review_id']) + '.json')
     if proof != {'compiled_sha256': digest(compiled), 'review_sha256': digest(review)}:
         raise ValueError('preparation changed while snapshotting')
-    packet = source_packet(root, inputs['governance']['shot_id'])
+    packet = source_packet(root, inputs['governance']['shot_id'], provider=native.get('provider', 'openart_cli'))
     if packet['binding'] != compiled['source_binding']:
         raise ValueError('source packet changed while snapshotting')
     payload = {'compiled': compiled, 'review': review, 'source_packet': packet}
@@ -494,7 +559,7 @@ def freeze_preparation(attempt_id, inputs, native, profile):
     return {'snapshot_id': aid, 'snapshot_sha256': hashlib.sha256(raw).hexdigest(), **proof}
 
 
-def validate_frozen_preparation(request, frozen, project_dir):
+def _validate_frozen_preparation(request, frozen, project_dir, *, current_required):
     """Replay the frozen preparation against current source and frozen native body."""
     from tools import _openart_cli as cli
     proof = request['openart']['preparation_snapshot']
@@ -521,13 +586,12 @@ def validate_frozen_preparation(request, frozen, project_dir):
             raise ValueError('preparation input snapshot differs')
         return record['original_path']
     inputs = _paths(inputs, Path(project_dir).resolve(), restore)
-    current = source_packet(project_dir, request['shot_id'])
     packet = data['source_packet']
-    # A later unrelated serial observation can refresh the global contract/review
-    # without changing this attempt's approved planning or relevant current facts.
-    stable = set(packet['binding']) - {'contract_sha256', 'reviews_sha256'}
-    if any(current['binding'][key] != packet['binding'][key] for key in stable):
-        raise ValueError('stale source/reference/review/upstream bindings')
+    if current_required:
+        current = source_packet(project_dir, request['shot_id'])
+        stable = set(packet['binding']) - {'contract_sha256', 'reviews_sha256'}
+        if any(current['binding'][key] != packet['binding'][key] for key in stable):
+            raise ValueError('stale source/reference/review/upstream bindings')
     _validate_compiled(data['compiled'], inputs, frozen['native'], frozen['profile'], packet)
     review = data['review']
     _schema('preparation_review', review)
@@ -538,3 +602,17 @@ def validate_frozen_preparation(request, frozen, project_dir):
     if frozen['profile']['source'] == 'real' and review['evidence_kind'] != 'reviewed':
         raise ValueError('fixture-only preparation cannot certify live provider')
     return proof
+
+
+def validate_frozen_preparation(request, frozen, project_dir):
+    """Certify preparation against current planning and immutable native bytes."""
+    return _validate_frozen_preparation(request, frozen, project_dir, current_required=True)
+
+
+def validate_frozen_preparation_history(request, frozen, project_dir):
+    """Validate an immutable historical fact, without claiming current eligibility.
+
+    All named evidence, copied asset bytes, compiled content, native/profile proof,
+    timing, coverage and preparation predicates remain required.
+    """
+    return _validate_frozen_preparation(request, frozen, project_dir, current_required=False)

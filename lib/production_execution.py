@@ -53,6 +53,7 @@ STRICT_UNENCODED_NATIVE_KEYS = {'image_urls', 'image_input', 'image_uri', 'last_
                                 'mask_url', 'audio_uri', 'audio_url', 'target_audio_url',
                                 'video_uri', 'file', 'file_url', 'web_url', 'link'}
 _ACTIVE = contextvars.ContextVar('production_execution', default=None)
+_GROK_COMPATIBILITY = contextvars.ContextVar('production_grok_compatibility', default=None)
 
 
 class ProductionGovernanceError(ValueError):
@@ -499,7 +500,7 @@ def _state(root, attempt):
         return {'status':'uncertain', 'journal_error':str(exc)}
 
 
-def _check_motion_inputs(contract, shot_id, inputs, root):
+def _check_motion_inputs(contract, shot_id, inputs, root, *, policy_composite=False):
     shot = next(item for item in contract['shots'] if item['id'] == shot_id)
     assets = {item['id']: item for item in contract['assets']}
     actual = []
@@ -512,6 +513,8 @@ def _check_motion_inputs(contract, shot_id, inputs, root):
         keys = role_keys.get(asset['role'])
         if asset['role'] == 'end_frame' and not (inputs.get('operation') == 'first_last_frame' or inputs.get('endpoint_requirement_id') or inputs.get('last_frame') or inputs.get('last_image_path')):
             keys = None
+        if asset['role'] == 'identity_reference' and policy_composite:
+            keys = None  # rooted named prep/actual board proof already validated every member
         if asset['role'] == 'identity_reference' and inputs.get('operation') == 'image_to_video':
             keys = None  # approved single-image method carries identity through reviewed start board
         if keys and not any(key in keys and digest == asset['sha256'] for key, digest in actual):
@@ -614,6 +617,14 @@ def preflight(tool, inputs):
         _fail('strict governance cannot resume provider jobs as new attempts; '
               'reconcile the original attempt (unsupported for this provider)')
     scope_id, shot_id = context['scope_id'], context['shot_id']
+    # This read-only early check is repeated by execute_governed under the
+    # project lock, before attempt directories or provider reservations exist.
+    # Private unpublished reservations take precedence over public journals.
+    from lib.production_video_guard import read_video_duplicate_blocks, classify_production_kind
+    if kind == 'motion':
+        blockers = read_video_duplicate_blocks(root, shot_id)
+        if blockers:
+            _fail('; '.join(blockers))
     scopes = _read(root / 'production_scopes.json')
     if scopes.get('version') != '1.0':
         _fail('unsupported approval scopes version')
@@ -621,6 +632,8 @@ def preflight(tool, inputs):
     if len(matches) != 1:
         _fail('approval scope must exist exactly once')
     scope = matches[0]
+    if 'derived_from_policy' in scope and not isinstance(scope['derived_from_policy'], dict):
+        _fail('malformed derived_from_policy')
     if scope.get('status') != 'approved' or not scope.get('approved_by'):
         _fail('scope lacks explicit approval provenance')
     evidence = scope.get('evidence', {})
@@ -654,6 +667,7 @@ def preflight(tool, inputs):
     if output.exists():
         _fail('output already exists; reconcile the original attempt instead of file-size reuse')
     contract = None
+    policy_validated = False
     if kind in {'motion','local_render'}:
         contract = _read(_artifact_path(root, 'shot_contract.json'))
         if contract.get('project_id') != marker.get('project_id'):
@@ -664,13 +678,33 @@ def preflight(tool, inputs):
             _fail('; '.join(checked['errors']))
         if scope.get('approval_plan_sha256') != approval_plan_digest(contract):
             _fail('approval scope has a stale contract binding')
+        if 'derived_from_policy' in scope:
+            from lib.production_autonomy import validate_derived_scope
+            try:
+                validate_derived_scope(root, scope, inputs=inputs, observation=_GROK_COMPATIBILITY.get())
+            except (ValueError, KeyError, TypeError, OSError) as exc:
+                _fail('derived policy dispatch refused: ' + str(exc))
+            policy_validated = True
         if kind == 'local_render':
             _check_provisioned_local_runtime()
-        (_check_local_render_inputs if kind == 'local_render' else _check_motion_inputs)(contract, shot_id, _clean(inputs), root)
+            _check_local_render_inputs(contract, shot_id, _clean(inputs), root)
+        else:
+            if policy_validated:
+                _check_motion_inputs(contract, shot_id, _clean(inputs), root, policy_composite=True)
+            else:
+                _check_motion_inputs(contract, shot_id, _clean(inputs), root)
     allowance = scope.get('attempts_per_shot', {}).get(shot_id)
     if isinstance(allowance, bool) or not isinstance(allowance, int) or allowance < 1:
         _fail('scope lacks a positive exact shot allowance')
-    previous = [item for item in attempts if item['shot_id'] == shot_id]
+    previous = []
+    for item in attempts:
+        if item.get('shot_id') != shot_id:
+            continue
+        prior_kind = classify_production_kind(item)
+        if prior_kind is None:
+            _fail('an original attempt has missing or unclassifiable media kind')
+        if prior_kind == kind:
+            previous.append(item)
     if any(_state(root, item)['status'] == 'uncertain' for item in previous):
         _fail('an original job is uncertain; reconcile it before another attempt')
     if phase == 'first_pass' and previous:
@@ -678,7 +712,8 @@ def preflight(tool, inputs):
     if phase == 'repair':
         replaces = scope.get('replaces_attempt_ids')
         authorized_shots = set(scope.get('requests', {})) & set(scope.get('attempts_per_shot', {}))
-        eligible = {item['attempt_id'] for item in attempts if item['shot_id'] in authorized_shots}
+        eligible = {item['attempt_id'] for item in attempts if item['shot_id'] in authorized_shots
+                    and classify_production_kind(item) == kind}
         if (not isinstance(replaces, list) or not replaces or not set(replaces).issubset(eligible)
                 or not set(replaces).intersection(item['attempt_id'] for item in previous)):
             _fail('repair scope must name existing exact attempts to replace')
@@ -689,7 +724,7 @@ def preflight(tool, inputs):
     openart = _openart_prepare(inputs) if _is_openart(tool) or provider == 'openart_cli' else None
     return {'openart':openart, 'governed': True, 'root': root, 'marker': marker, 'scope': scope,
             'shot_id': shot_id, 'kind': kind, 'contract': contract, 'request_sha256': digest,
-            'scope_attempt_index':scope_used}
+            'scope_attempt_index':scope_used, 'policy_validated': policy_validated}
 
 
 @contextlib.contextmanager
@@ -771,6 +806,34 @@ def _save_result(directory, result=None, error=None):
 
 
 def execute_governed(tool, inputs, invoke):
+    """Fresh Grok observation occurs outside project/ledger locks for policy dispatch."""
+    observation = None
+    if (not _ACTIVE.get() and isinstance(inputs, dict) and _kind(tool, inputs) == 'motion'
+            and (tool.provider == 'grok_cli' or
+                 tool.provider == 'selector' and inputs.get('preferred_provider') == 'grok_cli')):
+        context = inputs.get('governance')
+        root = None
+        if isinstance(context, dict) and context.get('scope_id') and context.get('shot_id'):
+            root = discover_project(inputs)
+        marker = _read(root / 'project.json') if root is not None else {}
+        if (root is not None and marker.get('governance', {}).get('mode') == 'strict'
+                and marker.get('governance', {}).get('version') == '1.0'
+                and (root / 'production_scopes.json').exists()):
+            scopes = _read(root / 'production_scopes.json').get('scopes', [])
+            selected = [s for s in scopes if s.get('id') == context.get('scope_id')]
+            if len(selected) == 1 and 'derived_from_policy' in selected[0] and selected[0].get('provider') == 'grok_cli':
+                from tools._grok_cli_media import observe_grok_cli_compatibility, DEFAULT_GROK_PATH
+                import os
+                configured = getattr(tool, '_grok_path', None) or os.environ.get('GROK_CLI_PATH', DEFAULT_GROK_PATH)
+                observation = observe_grok_cli_compatibility(configured, cwd=inputs.get('cwd') or root)
+    token = _GROK_COMPATIBILITY.set(observation or _GROK_COMPATIBILITY.get())
+    try:
+        return _execute_governed(tool, inputs, invoke)
+    finally:
+        _GROK_COMPATIBILITY.reset(token)
+
+
+def _execute_governed(tool, inputs, invoke):
     """Invoke exactly once after durable reservation; nesting cannot reserve/fallback."""
     if not isinstance(inputs, dict):
         if _is_openart(tool): _fail('OpenArt requires strict request object')
@@ -790,7 +853,10 @@ def execute_governed(tool, inputs, invoke):
         if any(path not in active['snapshot_paths'] for path in assets):
             _fail('nested dispatch introduced an unsnapshotted input')
         if active['contract']:
-            _check_motion_inputs(active['contract'], active['shot_id'], cleaned, active['root'])
+            if active.get('policy_validated'):
+                _check_motion_inputs(active['contract'], active['shot_id'], cleaned, active['root'], policy_composite=True)
+            else:
+                _check_motion_inputs(active['contract'], active['shot_id'], cleaned, active['root'])
         for key in ('prompt','negative_prompt','duration','resolution','aspect_ratio','voices','endpoint_requirement_id','seed','model','model_name'):
             expected = active['submitted_inputs'].get(key)
             actual = cleaned.get(key)
@@ -856,7 +922,13 @@ def execute_governed(tool, inputs, invoke):
         submitted = _paths(_clean(inputs), root, snapshot)
         submitted['output_path'] = str(_inside(inputs['output_path'], root))
         if checked['contract']:
-            (_check_local_render_inputs if checked['kind'] == 'local_render' else _check_motion_inputs)(checked['contract'], checked['shot_id'], submitted, root)
+            if checked['kind'] == 'local_render':
+                _check_local_render_inputs(checked['contract'], checked['shot_id'], submitted, root)
+            else:
+                if checked.get('policy_validated'):
+                    _check_motion_inputs(checked['contract'], checked['shot_id'], submitted, root, policy_composite=True)
+                else:
+                    _check_motion_inputs(checked['contract'], checked['shot_id'], submitted, root)
         # Rebind actual submitted snapshot bytes to ORIGINAL approved locations.
         # Rereading original files alone is insufficient if they changed then reverted.
         bindings = iter(asset_records)
@@ -902,6 +974,18 @@ def execute_governed(tool, inputs, invoke):
             request['submitted_inputs'] = _openart_public_inputs(submitted)
         if openart_prepared:
             credit_dispatch.reserve_dispatch(openart_prepared, checked, request, frozen)
+        if 'derived_from_policy' in scope and scope['provider'] == 'grok_cli':
+            from lib import production_request as preparation
+            from lib.production_autonomy import current_projection
+            native_policy = preparation.prepare_grok_native(inputs, _GROK_COMPATIBILITY.get())
+            compiled_policy = preparation._read(root, 'compiled_request-' + preparation._id(inputs['compiled_request_id']) + '.json')
+            review_policy = preparation._read(root, 'preparation_review-' + preparation._id(inputs['preparation_review_id']) + '.json')
+            payload = {'compiled': compiled_policy, 'review': review_policy,
+                       'source_packet': preparation.source_packet(root, checked['shot_id'], provider='grok_cli'),
+                       'native': native_policy, 'projection': current_projection(root, checked['shot_id'])}
+            snapshot_path = directory / 'autonomy_preparation.json'
+            _write_new(snapshot_path, payload)
+            request['autonomy_preparation'] = {'path': str(snapshot_path), 'sha256': file_sha256(snapshot_path)}
         _write_new(directory / 'request.json', request)
         evidence_path = _inside(scope['evidence']['path'], root)
         evidence_copy = directory / ('approval-evidence' + evidence_path.suffix)
@@ -917,7 +1001,7 @@ def execute_governed(tool, inputs, invoke):
             credit_dispatch.journal_ready(session_id)
     active = {'provider':scope['provider'], 'provider_called':tool.provider != 'selector',
         'session_id':session_id,'root':root,'directory':directory,'submitted_inputs':submitted,
-        'snapshot_paths':{item['path'] for item in asset_records}, 'contract':checked['contract'],'shot_id':checked['shot_id']}
+        'policy_validated': checked.get('policy_validated', False), 'snapshot_paths':{item['path'] for item in asset_records}, 'contract':checked['contract'],'shot_id':checked['shot_id']}
     if openart_binding:
         active.update(openart_binding=openart_binding, openart_profile=profile, openart_native=native, openart_deadline=openart_prepared['deadline'] if openart_prepared else None)
     token = _ACTIVE.set(active)

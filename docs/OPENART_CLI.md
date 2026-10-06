@@ -57,9 +57,11 @@ retries automatically and never falls back to another provider.
   assume provider history exists.
 - **Approval modes.** Strict approval is the default. A strict original scope
   can preapprove a bounded batch of exact attempts, so a new prompt per attempt
-  is not mandatory. An optional
-  Auto-continue mode is planned (U5P). It is not implemented yet, and nothing in
-  OpenMontage behaves as if it exists.
+  is not mandatory. Optional Auto-continue requires a retained, user-approved policy and an active
+  decision-log entry. Each dispatch derives one exact scope, rechecks the
+  approved planning, native controls, preparation review, attempt caps and
+  credit allowance. Invalid, changed or revoked policy authority stops
+  continuation. It never resubmits an unknown job.
 
 The preflight menu (`provider_menu_summary()["qualified_cli_video_routes"]`)
 shows this state truthfully. That covers exact qualified model IDs, forms,
@@ -237,7 +239,7 @@ image-to-video is permitted only through the separately qualified retained-uploa
 6. A paid benchmark is a separate, exact, explicitly approved step (U4).
 
 Observed nonspending dry-run (unauthed dummy model, explicitly unqualified):
-`{"endpoint":"POST /api/cli/v1/generate","body":{"model","media":"video","mode":"text2video","params":{"aspectRatio","duration","prompt","resolution"}}}`.
+`{"endpoint":"POST /api/cli/v1/generate","body":{"model","media":"video","mode":"text2video","params":{"aspectRatio","duration","prompt"}}}`.
 Server creative defaults absent from `params` are not represented, so bind
 `model form` defaults separately.
 
@@ -301,3 +303,32 @@ pure and raises `OpenArtCLIError` on unsupported or altered evidence.
 
 Offline executable fake-CLI tests prove this staging and private transport
 behavior. Their synthetic field names and guarantees are not provider evidence.
+
+
+## Optional Auto-continue
+
+Strict remains the default. A user-approved `artifacts/autonomy_policy.json`
+retains the full approved planning and request templates in a SHA-bound approval
+file. Activate its canonical policy SHA through the decision log; selecting
+Strict revokes that authority. An empty checkpoint-stage list permits provider
+continuation only. Listed stages must be actual gated pipeline stages, with a
+fresh structured passing review of the current artifact. Publishing and
+benchmarks cannot be preauthorized.
+
+Only explicitly declared deterministic duration, resolution and noncast
+reference flex can change approved settings. Duration changes shift subsequent
+scene and script timing coherently while preserving dialogue text, speakers,
+sources and order. Cast identity, required payoff assets, story facts and native
+pins stay locked; a reviewed composite start board must name each required
+member's bytes. Explicit dialogue locks address ordered occurrence indices,
+because dialogue records have no line IDs. Every candidate needs canonical
+root-derived prompts and a fresh named native preparation review.
+
+OpenArt uses the exact policy credit ceiling through a shared allowance and
+normal retained quote/authorization checks. Grok uses the existing subscription;
+remaining quota is unknown. No paid Grok API, purchases or top-ups are authorized.
+Repairs name actual failed attempts and verified failed-review evidence; first
+pass cannot authorize rerolls. Pending or uncertain motion attempts block another
+provider for the same shot. Completion reports read actual journals, private
+credit state and current certification, preserve history, and make no AV quality
+claim beyond the retained reviews.

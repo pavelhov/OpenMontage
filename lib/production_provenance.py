@@ -147,8 +147,14 @@ def _validate_attempt_provenance(
     require(request['contract_sha256'] == digest, 'frozen contract digest differs from reservation')
     current = execution.load_shot_contract(root)
     require(contract['project_id'] == marker['project_id'] and contract['story_revision'] == story_revision, 'frozen contract story/project differs')
-    require(scope.get('approval_plan_sha256') == execution.approval_plan_digest(contract)
-            == execution.approval_plan_digest(current), 'approved planning semantics changed')
+    policy_derived = 'derived_from_policy' in scope
+    if policy_derived:
+        from lib.production_autonomy import validate_policy_attempt
+        validate_policy_attempt(root, request, scope, contract,
+                                frozen_openart=execution.load_openart_frozen(request) if openart else None)
+    else:
+        require(scope.get('approval_plan_sha256') == execution.approval_plan_digest(contract)
+                == execution.approval_plan_digest(current), 'approved planning semantics changed')
     shots = [shot for shot in contract['shots'] if shot['id'] == shot_id]
     require(len(shots) == 1, 'reserved shot missing or duplicated in contract')
     shot = shots[0]
@@ -226,13 +232,23 @@ def _validate_attempt_provenance(
     else:
         approved_digest = execution.approved_request_digest(approved, project_dir=root, selected_attempts=selected_snapshot)
     require(approved_digest == request['request_sha256'], 'submitted request differs from exact frozen approval')
-    (execution._check_local_render_inputs if local_render else execution._check_motion_inputs)(contract, shot_id, submitted, root)
+    if local_render:
+        execution._check_local_render_inputs(contract, shot_id, submitted, root)
+    else:
+        if policy_derived:
+            execution._check_motion_inputs(contract, shot_id, submitted, root, policy_composite=True)
+        else:
+            execution._check_motion_inputs(contract, shot_id, submitted, root)
     expected_hashes = {assets[asset_id]['sha256'] for asset_id in shot['asset_ids']}
     require(all(item['sha256'] in expected_hashes or (local_render and item['role'] == 'workspace_path') for item in bindings), 'submitted input outside approved shot assets')
     if openart:
         if 'preparation_snapshot' in request['openart']:
-            from lib.production_request import validate_frozen_preparation
-            validate_frozen_preparation(request, frozen_openart, root)
+            if policy_derived:
+                from lib.production_request import validate_frozen_preparation_history
+                validate_frozen_preparation_history(request, frozen_openart, root)
+            else:
+                from lib.production_request import validate_frozen_preparation
+                validate_frozen_preparation(request, frozen_openart, root)
         elif not _ALLOW_OPENART_COMPONENT_PREPARATION:
             fail('OpenArt immutable preparation snapshot missing')
         return _validate_openart_result(root, directory, request, frozen_openart, expected_output, bound_file, read, require)

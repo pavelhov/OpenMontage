@@ -101,6 +101,14 @@ Before any paid or consequential generation call, state:
 - the reason it was chosen,
 - whether it is a sample or a batch run.
 
+For Auto-continue, announce before **every** generation: “Shot <id>; route
+<provider / exact model or CLI-managed media>; reason <eligible route>; phase
+<first pass / repair and replacement IDs>; changes <explicit approved flex or
+none>; budget <OpenArt credits against ceiling / Grok subscription quota
+unknown>; remaining caps <total / per-shot / repair>; approval <policy SHA and
+activation decision>.” Log the route and any compromise before execution.
+Never infer Grok's media backend from its reported agent model.
+
 ### Ask Before Major Changes
 
 The agent must ask the user before changing any major production choice, including:
@@ -111,6 +119,13 @@ The agent must ask the user before changing any major production choice, includi
 - switching composition engine when that changes the output character,
 - dropping narration, music, or other approved creative elements,
 - changing from sample mode to batch mode.
+
+The sole bounded exception is a currently valid retained Auto-continue policy:
+its exact approved routes/models and declared flex may proceed after announcement
+and decision logging without another prompt. Recompute authority before each
+attempt. Anything outside that policy still requires approval; publishing,
+benchmarks, purchases and top-ups are excluded. A generic “go ahead” is not policy
+authority.
 
 Minor prompt refinements inside an already approved provider/model path do not require separate approval unless they materially change the creative direction.
 
@@ -169,6 +184,12 @@ When asking the user to choose, do not just list options. The agent should:
 ### No Unilateral Substitutions
 
 If the approved path is blocked, the agent may investigate and prepare alternatives, but may not execute those alternatives without user approval.
+
+A valid retained Auto-continue policy can preauthorize only its named eligible
+routes/models and explicit flex, after fresh preparation and announcement.
+Blocked locks, missing native controls, exhausted caps or uncertain original
+jobs stop continuation; they never authorize a substitute. All other alternatives
+still need user approval.
 
 This applies especially to:
 
@@ -395,7 +416,14 @@ inside a strict project. Approved settings pass through unchanged. Read
 `docs/OPENART_CLI.md` and the `openart-cli` skill before any OpenArt step.
 Strict approval is the default; a strict original scope may preapprove a bounded
 batch of exact attempts. Each attempt launches once; status, collect and resolve
-repeat safely on the original attempt. Auto-continue is planned and not implemented yet.
+repeat safely on the original attempt. Optional Auto-continue requires a retained
+user-approved policy with an active decision-log activation. Derive exact
+one-attempt scopes through `lib.production_autonomy.derive_scope`; dispatch
+rechecks retained planning, explicit flex, implicit cast/dialogue/story locks,
+native controls, named preparation, caps and normal credit authorization.
+Missing, conflicting, changed or revoked authority stops continuation. Unknown
+original jobs are never resubmitted. Grok subscription quota stays unknown; no
+paid Grok API, purchases or top-ups are authorized. Read `docs/OPENART_CLI.md`.
 
 ### Setup Offer Protocol
 
@@ -655,11 +683,29 @@ The reviewer is a meta skill (`skills/meta/reviewer.md`). Agents supply semantic
 
 The checkpoint protocol meta skill (`skills/meta/checkpoint-protocol.md`) teaches the agent when to pause:
 
-- Read `human_approval_default` from the pipeline manifest per stage. **The manifest value is binding** — never re-judge it. `lib/checkpoint.py` enforces this: a gated stage cannot be written `completed` without `human_approved=True`.
+- Read `human_approval_default` from the pipeline manifest per stage. **The manifest value is binding** — never re-judge it. `lib/checkpoint.py` requires human approval or validated retained policy preauthorization for that exact gated stage. A fresh structured review must bind the current artifact, with no critical findings; policy SHA and activation decision form the approval basis.
 - Typical gated stages: `idea`/`proposal`, `script`, `scene_plan`, **`assets`** (review the generated assets scene-by-scene — the Backlot board's filmstrip — before compose locks them in), and `publish` where the pipeline has one. Most pipelines auto-proceed on `edit` and `compose`, but not all (documentary-montage gates `edit`) — the manifest you loaded is the only authority.
-- When approval is required: write the checkpoint as `awaiting_human`, present artifact summary, review findings, and cost snapshot — then **END YOUR TURN**. Doing further pipeline work in the same response is a gate violation.
+- When approval is required and no valid retained policy preauthorizes this exact stage: write the checkpoint as `awaiting_human`, present artifact summary, review findings, and cost snapshot — then **END YOUR TURN**. Doing further pipeline work in the same response is a gate violation.
 - **Approval is per-gate.** An early "go ahead" never covers later gates; explicit full-run pre-authorization must be recorded as a `decision_log` entry (`category: "approval_policy"`) to count.
 - Wait for human to approve, request revision, or abort.
+
+### Set Up Optional Auto-continue
+
+Before activation, ask the user to choose and approve:
+
+- Strict or Auto-continue; Strict is the default.
+- Allowed exact provider routes and qualified OpenArt models; Grok media is CLI-managed and unreported.
+- Locked must-haves: cast identities, dialogue occurrences, source assets, story predicates and native controls.
+- Explicit flex: deterministic duration range, resolution options and exact noncast reference drops/substitutions.
+- OpenArt credit ceiling, alongside Grok's unknown remaining subscription quota.
+- Total, per-shot and repair attempt caps, and the actual gated checkpoint stages to preauthorize (or none).
+
+Retain the full approved planning, templates and policy evidence before writing
+the activation decision. Do not silently approve current drift as a new baseline.
+An invalid or revoked policy stops continuation; surface the reason and obtain
+new approval where needed. Use this exact budget explanation:
+
+> Grok CLI uses your existing subscription; its remaining quota is unknown and is not a cost ceiling. Auto-continue never uses paid Grok API calls and never buys plans, credits or top-ups.
 
 ## Communication Protocol
 

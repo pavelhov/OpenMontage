@@ -25,8 +25,11 @@ reference is `docs/OPENART_CLI.md`. Prompt guidance is in
   menu's current state and do not assert live auth without a fresh probe.
 - Strict approval is the default. A strict original scope can preapprove a
   bounded batch of exact attempts, so a new prompt per attempt is not
-  mandatory. Auto-continue (U5P) is planned and not implemented yet. Do not
-  describe it as available.
+  mandatory. Optional Auto-continue requires a retained user-approved policy
+  activated by the decision log. Use the rooted policy derivation and normal
+  governed dispatch; never supply caller-created authority or bypass quotes,
+  preparation, caps or the shared credit allowance. Missing or revoked policy
+  authority stops continuation. Unknown jobs are never resubmitted.
 
 ## Read the menu, never guess
 
