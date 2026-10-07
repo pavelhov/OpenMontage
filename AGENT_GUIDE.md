@@ -278,6 +278,7 @@ If the folder has tracks, the proposal and asset stages should present them as o
 | `avatar-spokesperson` | Presenter-led avatar or lip-sync videos | production |
 | `localization-dub` | Subtitle, dub, and translated variants | beta |
 | `framework-smoke` | Test: minimal 2-stage smoke test | test |
+| `provider-qualification` | One separately approved OpenArt transport sample | beta |
 
 > **Beta pipelines** have not been fully audited. They work, but expect rough edges. Mention this when the user selects one.
 
@@ -392,17 +393,23 @@ video providers, using only the observed fields:
   no video models (`model_policy: cli_managed_media_unreported`), and its
   agent model is never a video model. Approved dialogue stays in the prompt
   even on a route with no native audio; disclose the missing guarantee.
-- **Billing.** Show OpenArt in credits with `current_quote_required`, and say
-  its dollar cost is unknown. Show Grok CLI separately as subscription or usage
-  of unknown cost. Never add them together or convert either to dollars.
+- **Billing.** Report the selected OpenArt billing mode. Exact-quote mode keeps
+  its current quote and ceiling requirements. The explicit unknown-cost mode
+  acknowledges that no enforceable credit ceiling exists; do not call its
+  charge zero, affordable or a USD estimate. Show Grok CLI separately as
+  subscription or usage of unknown cost. Never add them together or convert
+  either to dollars.
 - **State.** Report `account_stages`, `dispatch_readiness`, pending jobs, credit
   holds, quarantine and `errors` as they appear. A qualified model does not make
   the account ready: any OpenArt blocker in `dispatch_readiness` stops dispatch,
-  and every dispatch still needs a fresh account refresh and a current quote.
+  and every dispatch needs a fresh account refresh. Exact-quote dispatch needs
+  its current quote; unknown-cost dispatch needs its separate retained
+  authorization and explicit no-enforceable-ceiling acknowledgement.
   Unresolved job acceptance (pending, submitting or uncertain slot) blocks.
   An unknown-billing hold on a terminal slot does not block and does not
-  invalidate approved footage, but the economics stay incomplete and a remaining
-  allowance plus a fresh quote are required. Account status is as last observed;
+  invalidate approved footage. In priced mode, economics stay incomplete and
+  require a remaining allowance plus a fresh quote; unknown-cost mode has no
+  allowance or quote arithmetic. Account status is as last observed;
   never claim live auth without a fresh probe. The OpenArt menu part runs no
   OpenArt CLI; Grok status runs its existing read-only `--version`/`--help` probe.
 - **No recommendation.** `recommendation` is null. Do not call either route the
@@ -706,6 +713,10 @@ An invalid or revoked policy stops continuation; surface the reason and obtain
 new approval where needed. Use this exact budget explanation:
 
 > Grok CLI uses your existing subscription; its remaining quota is unknown and is not a cost ceiling. Auto-continue never uses paid Grok API calls and never buys plans, credits or top-ups.
+
+Unknown-cost Auto-continue is deferred until a separately approved and
+qualified policy variant exists. Do not offer it as a current activation option;
+existing policies retain exact-quote ceiling semantics.
 
 ## Communication Protocol
 

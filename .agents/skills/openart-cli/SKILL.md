@@ -1,6 +1,6 @@
 ---
 name: openart-cli
-description: Guarded OpenArt subscription CLI video route. Read the qualified route menu, ask for creative options, and run only fully qualified, explicitly pinned, governed attempts.
+description: Guarded OpenArt subscription CLI video route. Read the qualified route menu, bind exact-quote or explicitly acknowledged unknown-cost authority, and run only explicitly pinned, governed attempts.
 metadata:
   author: OpenMontage
   version: "1.0.0"
@@ -30,9 +30,20 @@ reference is `docs/OPENART_CLI.md`. Prompt guidance is in
   bounded batch of exact attempts, so a new prompt per attempt is not
   mandatory. Optional Auto-continue requires a retained user-approved policy
   activated by the decision log. Use the rooted policy derivation and normal
-  governed dispatch; never supply caller-created authority or bypass quotes,
-  preparation, caps or the shared credit allowance. Missing or revoked policy
+  governed dispatch; never supply caller-created authority or bypass the
+  applicable billing authorization, preparation or caps. Missing or revoked policy
   authority stops continuation. Unknown jobs are never resubmitted.
+  Existing policies use the exact-quote ceiling mode. Unknown-cost
+  Auto-continue remains unavailable until a separately approved policy variant
+  exists; no policy migration is implied.
+- Exact-quote authorization keeps its existing quote and ceiling requirements.
+  This implementation also provides a separate unknown-cost opt-in that
+  acknowledges there is no enforceable credit ceiling. It requires fresh
+  account evidence and binds the exact request and bounded occurrence. It
+  cannot reuse an older credit authorization or claim affordability.
+- This path does not establish production qualification. The earlier Free/40
+  credit observation and 1s/720p dry-run are not verified current entitlement
+  or real-result qualification; an exact sample and its approval remain pending.
 
 ## Read the menu, never guess
 
@@ -44,19 +55,22 @@ Call `provider_menu_summary()` and read
    `limitations` as written.
 2. `qualification_candidates` (inspected or pre_submit) are not production
    routes. Their only use is the next qualification stage. The first original
-   result qualification is a separately credit-authorized attempt whose
-   purpose is reported as qualification. It does not require a full profile to
-   exist first.
+   result qualification is an original attempt with its own applicable retained
+   billing authorization and qualification purpose. It does not require a full
+   profile to exist first. Its approval does not authorize the separate H3
+   paired benchmark.
 3. `not_live` (fixtures and rejected rows) is never live.
-4. `billing` is in credits with `current_quote_required: true`, and the dollar
-   cost is unknown. Show it separately from Grok's subscription or usage
-   billing.
+4. Report the billing mode truthfully. Exact-quote mode retains its current
+   quote and ceiling requirements. Unknown-cost mode has no enforceable credit
+   ceiling; the charge and dollar cost are unknown. Keep it separate from
+   Grok's unknown subscription quota.
 5. Report `pending`, `holds`, `quarantine`, `unacknowledged_outbox` and
    `errors` as they appear. An unresolved job acceptance (pending, submitting
    or uncertain slot) blocks dispatch as `unknown_job_acceptance_unresolved`.
    An unknown-billing hold on a terminal slot does not block by itself and
    does not invalidate approved footage. Report the economics as incomplete:
-   a remaining allowance and a fresh exact quote are required.
+   a remaining allowance and fresh exact quote are required in priced mode.
+   Unknown-cost mode has no allowance or quote arithmetic.
 6. The OpenArt metadata runs no OpenArt CLI and writes no ledger rows. The
    Grok row's status runs the existing read-only `--version`/`--help` probe.
    Grok reports no video models (`model_policy:
@@ -94,8 +108,12 @@ there is no native-audio guarantee.
   unqualified. Server defaults never stand in for it. A strict scope may
   preapprove a bounded batch of exact attempts. A request that changes any
   approved setting is outside that scope and needs a new approval and a new
-  quote. Nothing retries automatically.
-- Every paid attempt needs a current exact quote and a credit authorization.
+  quote in exact-quote mode. Unknown-cost mode requires new applicable retained
+  authorization and approval. Nothing retries automatically.
+- Every priced attempt needs a current exact quote and a credit authorization.
+  Unknown-cost attempts use the distinct retained authorization and explicit
+  no-enforceable-ceiling acknowledgement, with no quote, allowance or
+  affordability claim.
   Each attempt launches exactly once. Status, collect and resolve can be
   repeated safely against the original attempt and never launch again. Never
   resubmit an `uncertain` attempt. It stays held with no timeout until

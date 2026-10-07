@@ -5,6 +5,11 @@ Pair it with the `openart-cli` skill and `docs/OPENART_CLI.md`.
 
 ## Scope comes from the menu
 
+The explicit `reference_free` request mode is a narrow option for OpenArt
+text-to-video when there are no cast members, dialogue, source assets or pinned
+upstream assets. It does not waive production contracts on other routes or
+legacy board requirements.
+
 The only creative controls are those the qualified profile lists in
 `provider_menu_summary()["qualified_cli_video_routes"]`. The current v0.1.1
 surface exposes:
@@ -48,15 +53,20 @@ change the shot.
 
 Offer creative choices: the shot description, mood, duration, framing and an
 optional reference image. Do not ask the user for model IDs they have not seen
-in the menu, or for CLI commands. Present credit billing as credits with an
-unknown dollar cost, and show it separately from Grok subscription billing.
+in the menu, or for CLI commands. Present the selected billing mode plainly.
+Exact-quote mode retains its exact quote and ceiling requirements. The separate
+unknown-cost mode explicitly acknowledges that there is no enforceable credit
+ceiling; never describe the unknown charge as zero, affordable or a USD
+estimate. Keep OpenArt credits separate from Grok's unknown subscription quota.
 
 ## Approval is exact
 
 Once the user approves a prompt and settings, they are sent unchanged. Any
-wording or setting change is a new request that needs a new quote and a new
-approval, unless an active user-approved Auto-continue policy explicitly
-authorizes that deterministic flex. Compile the prompt from retained/rooted
+wording or setting change is a new request that needs new applicable billing
+authority and approval, unless an active user-approved Auto-continue policy
+explicitly authorizes that deterministic flex. Exact-quote mode needs a new
+quote; unknown-cost mode needs its applicable retained authorization. Compile
+the prompt from retained/rooted
 planning and obtain a fresh named preparation review. Preserve dialogue wording,
 speaker/source/order, identity, story facts and native frame pins. A repair needs
 actual failed-review evidence and exact replacement attempt IDs; uncertain jobs

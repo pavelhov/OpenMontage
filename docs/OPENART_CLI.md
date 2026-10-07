@@ -6,7 +6,7 @@ The transport is `tools/_openart_cli.py`. Setup, qualification and recovery go
 through `tools/openart_account.py`. Generation goes through the governed adapter
 `tools/video/openart_cli_video.py`. Generation is possible only through the
 guarded path below. Dispatch runs automatically only inside an approved strict
-scope with a matching credit authorization and a fresh account refresh. It never
+scope with a matching billing-mode authorization and a fresh account refresh. It never
 retries automatically and never falls back to another provider.
 
 ## Current guarded capabilities
@@ -34,13 +34,33 @@ retries automatically and never falls back to another provider.
   states, in a captured response, that uploading is nonspending and has no
   delayed charge. That statement must exist before the first upload. A caller
   claim or an unchanged balance does not count.
-- **Exact quote contract.** Each paid attempt needs a current quote for the
+- **Priced approval.** Each paid attempt in exact-quote mode needs a current quote for the
   exact settings (`quote_required`), kept as a raw private receipt. A quote for
   other settings is not reused. The observed model/mode cost responses quote
   5s, 16:9, 480P and one output: Max 125 credits and Turbo 75 credits. The
   provider says prices vary with settings and are finalized at generation time.
   Those responses do not establish the required exact 768P quote or conservative
   ceiling, and the proposed benchmark remains blocked before spending.
+- **Unknown-cost approval.** This implementation provides a separate, explicit
+  opt-in for an attempt when an enforceable OpenArt credit ceiling cannot be
+  established. It requires fresh account identity and balance evidence and a
+  new authorization bound to the exact request, native settings, account,
+  profile, references and bounded occurrence. The authorization explicitly
+  acknowledges that there is no enforceable credit ceiling. It does not reuse
+  an older credit authorization, turn unknown cost into zero or dollars, or
+  establish affordability. An unpriced account claim shares the account's
+  single active slot with priced claims. An uncertain original job remains held
+  and is never resubmitted; terminal proof can release the slot while billing
+  remains unknown. Balance changes are not attributed to a particular job.
+  Earlier authenticated account evidence showed 40 credits. A separate 50-credit
+  price response was associated with default 5s/540p settings; it does not price,
+  prove affordability for, or prove insufficiency of the 1s/720p request.
+- **Current production qualification.** Earlier authenticated CLI evidence
+  showed a Free account with 40 credits and an actual 1s/720p text-to-video
+  dry-run. This is not a verified current entitlement and does not qualify a
+  production route. A real exact sample and its approval remain separate
+  qualification gates. Do not claim production readiness or a Free entitlement
+  from these observations.
 - **Staged qualification.** A profile moves through `inspected`, then
   `pre_submit`, then `full`. Inspection and `pre_submit` rows are
   qualification candidates only. A `full` profile needs a real result proof from
@@ -90,8 +110,10 @@ does not make an account available. It always requires a fresh prelaunch
 account refresh. A pending, submitting or uncertain job slot blocks it
 (`unknown_job_acceptance_unresolved`), as do quarantine and unacknowledged outbox
 events. A retained unknown-billing hold on a terminal slot does not block by
-itself. It marks economics as incomplete (`incomplete_unknown_billing_hold`)
-and requires a remaining allowance and a fresh exact quote. Holds and quarantine
+itself. In priced mode it marks economics as incomplete
+(`incomplete_unknown_billing_hold`) and requires a remaining allowance and a
+fresh exact quote. Unknown-cost mode has no allowance or quote arithmetic.
+Holds and quarantine
 are filtered to the exact OpenArt account. Facts from other providers never
 enter the OpenArt row. Billing is listed in credits with
 `usd_cost_status: unknown`.
@@ -107,6 +129,25 @@ The OpenArt part of the menu runs no OpenArt CLI and creates or mutates no
 ledger rows. Grok `get_status` does run the existing read-only `--version` and
 `--help` compatibility probe (`status_probe: readonly_cli_version_and_help`).
 The menu recommends no default and never offers a paid API fallback.
+
+## Reference-free and provider qualification paths
+
+The approved `reference_free` option applies only to OpenArt text-to-video
+requests with no cast, dialogue, source assets or pinned upstream assets. It
+does not change board requirements for existing projects or unlock native
+audio, an end-frame pin or multiple references. Unknown-cost authority does not
+remove that request boundary.
+
+The provider-qualification pipeline is a minimal beta/custom path with prepare
+and generate stages. Preparation has a human gate bound to the exact prepared
+packet. Generation uses the original registered `openart_cli_video` and
+`openart_account` paths, permits one original generation and allows no repairs.
+Status, collection and recovery may repeat against that original attempt without
+resubmission. This validates transport and reconciliation behavior; it
+does not establish production quality or route qualification by itself. No
+actual sample or live approval is established by implementing this workflow.
+See the [approved local plan](plans/2026-10-07-feat-openart-unknown-cost-plan.md)
+for scope and acceptance criteria.
 
 Current nonspending discovery evidence, command receipt digests and remaining
 qualification gates are retained in
@@ -206,6 +247,12 @@ strings and all URL query strings, which covers signed URLs.
 
 - `qualify_quote` and `refresh_quote`: capture and retain an exact settings quote
   for an approved request.
+- Unknown-cost preparation and dispatch use a separate authorization and typed
+  unpriced claim through the registered account and generation tools. This path
+  requires a fresh account observation and the explicit no-enforceable-ceiling
+  acknowledgement. Exact action/input names are defined by the registered tool
+  schemas; do not construct caller-side authority or infer an API from this
+  guide.
 - `resolve_attempt`, `repair_outbox` and `qualify_resolution_contract`: resolve
   or repair one original attempt from retained receipts. They never launch a
   new job.
@@ -224,10 +271,11 @@ hook's return value is attached as `offline_preparation`, and the governance key
 cannot be overridden. While the context is active, the OpenArt transport refuses
 to launch (`offline_only`). Tools without the hook return exactly the previous
 governed result. The OpenArt hook calls `dispatch.offline_readiness(inputs)`.
-It loads the `pre_submit` profile, prepares and validates the native request
-and looks up the retained exact quote. It returns `provider_calls: 0`,
-`reservations: 0` and `credit_state` of either `retained_quote` or
-`quote_required`.
+It loads the `pre_submit` profile and prepares and validates the native
+request. In priced mode it looks up the retained exact quote and reports
+`retained_quote` or `quote_required`; unknown-cost mode uses its distinct
+authorization path and never represents the unknown charge as a quote.
+Preparation itself makes no provider generation call and reserves no credits.
 
 ## Unsupported gates (all `unqualified` until live account evidence)
 
@@ -247,7 +295,13 @@ image-to-video is permitted only through the separately qualified retained-uploa
 5. Record the captured receipts as evidence. Only that evidence may qualify a gate.
    A passing fixture test is not a qualification. Fixtures prove transport
    behavior, not provider shapes.
-6. A paid benchmark is a separate, exact, explicitly approved step (U4).
+6. The new reference-free path is limited to OpenArt text-to-video requests with
+   no cast, dialogue or source assets and no pinned upstream assets. It is an
+   explicit request mode; it does not change legacy board requirements. A paid
+   exact sample request packet and its later approval are separate qualification
+   gates (U4); this implementation does not make the live call. The prior H3
+   paired benchmark remains a separate, unchanged effort, and this sample
+   authority does not authorize that benchmark.
 
 Observed nonspending dry-run (unauthed dummy model, explicitly unqualified):
 `{"endpoint":"POST /api/cli/v1/generate","body":{"model","media":"video","mode":"text2video","params":{"aspectRatio","duration","prompt"}}}`.
@@ -336,7 +390,9 @@ because dialogue records have no line IDs. Every candidate needs canonical
 root-derived prompts and a fresh named native preparation review.
 
 OpenArt uses the exact policy credit ceiling through a shared allowance and
-normal retained quote/authorization checks. Grok uses the existing subscription;
+normal retained quote/authorization checks. Unknown-cost Auto-continue is deferred until
+a separately approved policy variant is implemented and qualified; existing
+policies cannot authorize unknown-cost attempts. Grok uses the existing subscription;
 remaining quota is unknown. No paid Grok API, purchases or top-ups are authorized.
 Repairs name actual failed attempts and verified failed-review evidence; first
 pass cannot authorize rerolls. Pending or uncertain motion attempts block another
