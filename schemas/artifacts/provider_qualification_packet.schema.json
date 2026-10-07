@@ -1,0 +1,233 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "title": "Proposed provider qualification packet",
+  "properties": {
+    "version": {
+      "const": "1.0"
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "purpose": {
+      "const": "result_contract_qualification"
+    },
+    "authorization_status": {
+      "const": "proposed"
+    },
+    "governance_mode": {
+      "const": "strict"
+    },
+    "tool": {
+      "const": "openart_cli_video"
+    },
+    "prompt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prompt_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "request_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "native_binding": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "native_controls_sha256",
+        "native_argv_sha256",
+        "native_body_sha256",
+        "profile_sha256"
+      ],
+      "properties": {
+        "native_controls_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "native_argv_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "native_body_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "profile_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "compiled_request": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "preparation_review": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    "unknown_exposure": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "credits",
+        "usd",
+        "guaranteed_ceiling"
+      ],
+      "properties": {
+        "kind": {
+          "const": "unknown_cost"
+        },
+        "credits": {
+          "type": "null"
+        },
+        "usd": {
+          "type": "null"
+        },
+        "guaranteed_ceiling": {
+          "const": false
+        }
+      }
+    },
+    "attempt_cap": {
+      "const": 1
+    },
+    "repair_cap": {
+      "const": 0
+    },
+    "quality_scope": {
+      "const": "transport_only"
+    },
+    "story_revision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "shot_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "unknown_cost_authorization_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "provider": {
+      "const": "openart_cli"
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "const": "text2video"
+    },
+    "duration": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "aspect_ratio": {
+      "type": "string",
+      "minLength": 1
+    },
+    "resolution": {
+      "type": "string",
+      "minLength": 1
+    },
+    "native_no_reference": {
+      "const": true
+    }
+  },
+  "required": [
+    "version",
+    "project_id",
+    "purpose",
+    "authorization_status",
+    "governance_mode",
+    "tool",
+    "prompt",
+    "prompt_sha256",
+    "request_sha256",
+    "native_binding",
+    "compiled_request",
+    "preparation_review",
+    "sources",
+    "unknown_exposure",
+    "attempt_cap",
+    "repair_cap",
+    "quality_scope",
+    "story_revision",
+    "scope_id",
+    "shot_id",
+    "unknown_cost_authorization_id",
+    "provider",
+    "model",
+    "mode",
+    "duration",
+    "aspect_ratio",
+    "resolution",
+    "native_no_reference"
+  ]
+}

@@ -1,0 +1,11 @@
+# Original qualification generation and collection (beta)
+
+Read this director, the manifest, `docs/OPENART_CLI.md`, the registered tools' Layer 3 skills and checkpoint/reviewer protocols before using tools. Require a completed, human-approved preparation checkpoint and exact current packet/input/native/profile/source/compiled/review bindings through `validate_qualification_stage`. No Auto-continue activation is allowed. Inputs use `governance.stage: generate` and the normal strict shot/scope identifiers.
+
+Announce the exact registered `openart_cli_video` route/model, qualification purpose, exact settings, unknown credit exposure, one original launch and zero repairs. Dispatch only via the registered tool and the normal strict production lifecycle, with the separately retained unknown-cost authorization and result-contract-qualification purpose. A staged profile is not production-qualified. Read-only account refresh and durable status/collect/resolve use registered `openart_account`; never repeat submit. Preserve original job affinity, once-markers and raw private receipts with public opaque hashes.
+
+Insufficient-credit or unavailable-plan confirmation stops the sample. An ambiguous failure is uncertain and stops; it never earns a repeat. Recover only the original attempt. Never switch to a paid API, website generation, upload, purchase or top-up.
+
+Retain schema-valid `artifacts/provider_qualification_report.json`. Report original job status and output byte hashes separately from billing. Unknown charge is never zero, USD, a guaranteed ceiling or settled economics. Actual result-contract promotion requires original collected bytes plus verified observed receipts through the qualification mechanism. A one-second transport/collection sample is not creative-quality approval, production certification or permission for a batch.
+
+Self-review actual evidence honestly, preserve incomplete dimensions, and write the report at the `generate` checkpoint awaiting human review. Do not fabricate full audiovisual reviews, passing result proofs or live approvals. The human review gate has no retry authority; a new attempt or any repair requires a separate later scope and approval.

@@ -1,0 +1,33 @@
+name: provider-qualification
+version: "1.0"
+description: One explicitly approved original OpenArt result-contract sample, with unknown credit exposure and no repair allowance. Transport qualification only.
+category: custom
+stability: beta
+default_checkpoint_policy: manual_all
+stages:
+  - name: prepare
+    skill: pipelines/provider-qualification/prepare-director
+    produces: [provider_qualification_packet]
+    tools_available: [openart_account]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - Exact prompt, request, native preview, profile and local source/review bindings
+      - Proposed unknown-cost exposure is neither USD nor a guaranteed credit ceiling
+      - One original qualification attempt, zero repairs; no live approval inferred
+    success_criteria:
+      - Schema-valid proposed packet retained for separate exact human approval
+  - name: generate
+    skill: pipelines/provider-qualification/generate-director
+    required_artifacts_in: [provider_qualification_packet]
+    produces: [provider_qualification_report]
+    required_tools: [openart_cli_video, openart_account]
+    tools_available: [openart_cli_video, openart_account]
+    checkpoint_required: true
+    human_approval_default: true
+    review_focus:
+      - Original attempt status and collected byte hashes remain separate from unknown billing
+      - Transport-only qualification never certifies creative production quality
+      - Original-attempt recovery only, no automatic repeat or repairs
+    success_criteria:
+      - Schema-valid honest report retains original attempt and unresolved dimensions

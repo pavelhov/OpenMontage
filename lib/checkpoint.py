@@ -158,6 +158,7 @@ def _validate_artifacts_for_stage(
     stage: str,
     status: str,
     artifacts: dict[str, Any],
+    pipeline_type: str | None = None,
 ) -> None:
     # Valid stages come from the pipeline manifest (get_pipeline_stages), which
     # can declare stages beyond the 9 canonical ones (e.g. character-animation's
@@ -165,6 +166,11 @@ def _validate_artifacts_for_stage(
     # canonical artifact, so look it up defensively — a missing entry means the
     # stage simply has no required artifact, not a crash.
     required_artifact = CANONICAL_STAGE_ARTIFACTS.get(stage)
+    if pipeline_type == "provider-qualification":
+        required_artifact = {
+            "prepare": "provider_qualification_packet",
+            "generate": "provider_qualification_report",
+        }.get(stage)
     if (
         required_artifact is not None
         and status in {"completed", "awaiting_human"}
@@ -216,7 +222,7 @@ def validate_checkpoint(checkpoint: dict[str, Any]) -> None:
     if not isinstance(artifacts, dict):
         raise CheckpointValidationError("Checkpoint artifacts must be a dictionary")
 
-    _validate_artifacts_for_stage(stage, status, artifacts)
+    _validate_artifacts_for_stage(stage, status, artifacts, pipeline_type)
 
     try:
         jsonschema.validate(instance=checkpoint, schema=_load_checkpoint_schema())
@@ -642,6 +648,11 @@ def write_checkpoint(
         approval_basis is not None
         or (isinstance(metadata, dict) and "approval_basis" in metadata)
     )
+    if pipeline_type == "provider-qualification" and policy_requested:
+        raise CheckpointValidationError(
+            "GATE VIOLATION: provider qualification requires exact human approval; "
+            "retained Auto-continue policy is not authority for this pipeline"
+        )
     try:
         manifest_gate = _stage_requires_approval(pipeline_type, stage)
     except CheckpointValidationError as exc:
