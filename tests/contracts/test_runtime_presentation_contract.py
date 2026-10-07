@@ -72,10 +72,11 @@ def _load_skill(skill_ref: str) -> tuple[Path, str]:
 ALL_MANIFESTS = sorted(PIPELINE_DIR.glob("*.yaml"))
 assert ALL_MANIFESTS, "No pipeline manifests found"
 
-# Test-only pipelines that don't compose final video go on this list with
+# Qualification/test pipelines that don't compose final video go on this list with
 # an explicit reason. Everything else is required to follow the contract.
 _EXCLUDED_PIPELINES = {
     "framework-smoke": "minimal 2-stage smoke test, no compose stage",
+    "provider-qualification": "one original transport sample; no composition stage or runtime selection",
 }
 
 
