@@ -12,6 +12,7 @@ from tools.base_tool import (BaseTool, Determinism, DependencyError, ExecutionMo
 READ_ONLY_ACTIONS = ("inspect", "quote", "form", "native_dry_run", "readiness",
                      "status", "collect", "verify", "upload", "qualifications",
                      "qualify_inspection", "qualify_upload", "qualify_preview", "qualify_result",
+                     "recover_original_submit",
                      "qualify_quote", "refresh_quote", "refresh_unknown_cost_evidence", "resolve_attempt", "repair_outbox", "qualify_resolution_contract")
 DISABLED_ACTIONS = ("submit",)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -54,6 +55,7 @@ class OpenArtAccount(BaseTool):
                                         'qualify_inspection',
                                         'qualify_upload',
                                         'qualify_preview',
+                                        'recover_original_submit',
                                         'qualify_result','qualify_quote','refresh_quote','refresh_unknown_cost_evidence','repair_outbox','qualify_resolution_contract'],
                                'description': 'No action submits generation or reserves credits. '
                                               'collect requires the original attempt, project '
@@ -94,6 +96,8 @@ class OpenArtAccount(BaseTool):
                 'then': {'required': ['model', 'mode', 'prompt']}},
                {'if': {'properties': {'action': {'const': 'qualify_result'}}},
                 'then': {'required': ['attempt_id', 'json_paths']}},
+               {'if': {'properties': {'action': {'const': 'recover_original_submit'}}},
+                'then': {'required': ['attempt_id', 'json_paths']}},
                {'if': {'properties': {'action': {'const': 'refresh_unknown_cost_evidence'}}},
                 'then': {'required': ['request'], 'not': {'anyOf': [
                     {'required': ['quote_contract']}, {'required': ['qualification_sha256']},
@@ -132,8 +136,12 @@ class OpenArtAccount(BaseTool):
         try:
             return self._dispatch(action, inputs)
         except cli.OpenArtCLIError as exc:
+            if action == "recover_original_submit":
+                return self._error(exc.kind, "original submit recovery refused; original evidence remains held")
             return self._error(exc.kind, exc.message, exc.public())
         except Exception as exc:
+            if action == "recover_original_submit":
+                return self._error(type(exc).__name__, "original submit recovery failed; diagnostics remain private")
             # Keep unexpected helper diagnostics useful without publishing credentials,
             # signed URL queries, or any unredacted nested value.
             public_error = cli.redact({"kind": type(exc).__name__, "message": str(exc)})
@@ -146,6 +154,11 @@ class OpenArtAccount(BaseTool):
                           data={"error": public, "reservations": 0, "paid_submission": False})
 
     def _dispatch(self, action: str, inputs: dict) -> ToolResult:
+        if action == "recover_original_submit":
+            from lib import openart_jobs as jobs
+            return self._ok(action, jobs.recover_original_submit(
+                self._attempt_id(inputs), json_paths=inputs.get("json_paths"),
+                timeout=cli.validate_timeout(inputs.get("timeout_seconds"))))
         if action in {'qualify_quote','refresh_quote','refresh_unknown_cost_evidence','resolve_attempt','repair_outbox','qualify_resolution_contract'}:
             if action == 'refresh_unknown_cost_evidence' and any(
                     key in inputs for key in ('quote_contract', 'qualification_sha256', 'quote_id')):

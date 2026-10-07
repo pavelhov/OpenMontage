@@ -190,6 +190,10 @@ def _verify_result_evidence(profile: dict, proof: dict) -> None:
                           "status_terminal_fail", "url_hosts"}:
             raise OpenArtCLIError(bad, "result proof paths incomplete")
         _validate_result_paths(paths, bad)
+        if os.path.lexists(job_dir(aid, create=False) / _SUBMIT_RECOVERY_FILE):
+            recovered, _, _ = _load_submit_recovery(aid, bad)
+            if any(paths[k] != recovered["json_paths"][k] for k in ("submit_job_id", "result_job_id")):
+                raise OpenArtCLIError(bad, "result proof paths differ from original submit recovery")
         job_id = original_job_id(aid)
         if job_id is None or _sha(job_id) != ev["job_id_sha256"]:
             raise OpenArtCLIError(bad, "result proof job differs")
@@ -1345,6 +1349,398 @@ def _devnull():
 
 # ---------------------------------------------------------------- result-contract promotion
 
+_SUBMIT_RECOVERY_FILE = "submit_recovery.json"
+
+
+def _strict_json(raw: bytes, kind: str) -> Any:
+    """One UTF-8 JSON response, with no duplicate keys or nonfinite values."""
+    def unique(pairs):
+        out = {}
+        for key, value in pairs:
+            if key in out:
+                raise ValueError
+            out[key] = value
+        return out
+    def finite(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError
+        return number
+    try:
+        return json.loads(raw.decode("utf-8"), object_pairs_hook=unique,
+                          parse_float=finite,
+                          parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+    except (ValueError, UnicodeError, RecursionError):
+        raise OpenArtCLIError(kind, "original response is not one unambiguous JSON document") from None
+
+
+def _private_bounded(path: Path, kind: str) -> bytes:
+    try:
+        cli._check_private(path, False)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as fh:
+            raw = fh.read(cli.MAX_STDOUT + 1)
+        if len(raw) > cli.MAX_STDOUT:
+            raise ValueError
+        return raw
+    except (OSError, ValueError, OpenArtCLIError):
+        raise OpenArtCLIError(kind, "original evidence missing, oversized or not private") from None
+
+
+def _recovery_protocol(value: Any, launch: dict, kind: str) -> None:
+    if not isinstance(value, dict):
+        raise OpenArtCLIError(kind, "original response is not an object")
+    expected = {"model": launch["profile"]["model"], "mode": launch["profile"]["mode"],
+                "media": "video"}
+    if any(key in value and value[key] != target for key, target in expected.items()):
+        raise OpenArtCLIError(kind, "original response model, mode or media differs from frozen request")
+
+
+def _recovery_origin(aid: str, kind: str, *, job_id: Optional[str] = None) -> tuple[dict, bytes, dict]:
+    """Pure original authority; current ledger may advance but original bindings cannot change."""
+    try:
+        raw_launch = _private_bounded(job_dir(aid, create=False) / "launch.json", kind)
+        launch = _strict_json(raw_launch, kind)
+        prof, binding = launch["profile"], launch["binding"]
+        origin = prof["profile_sha256"]
+        if _canon(launch) != raw_launch or launch.get("attempt_id") != aid \
+                or binding.get("attempt_id") != aid or launch.get("purpose") != QUALIFICATION_PURPOSE \
+                or prof.get("source") != "real" or not _is_staged(prof) \
+                or sha256_json({k: v for k, v in prof.items() if k != "profile_sha256"}) != origin \
+                or binding.get("profile_sha256") != origin \
+                or binding.get("account_id_sha256") != prof["account_id_sha256"]:
+            raise ValueError
+        validate_profile(prof, require="pre_submit")
+        frozen = _verify_origin_frozen(aid, launch, kind)
+        events_path = job_dir(aid, create=False) / "events.jsonl"
+        _private_bounded(events_path, kind)
+        events = read_events(aid)
+        if any(e.get("type") in {"corrupt_line", "quarantined", "provider_refused", "spawn_failed",
+                                  "spawn_skipped", "hold_wrong_job"} for e in events):
+            raise ValueError
+        intents = [e for e in events if e.get("type") == "intent"]
+        spawned = [e for e in events if e.get("type") == "spawned"]
+        exits = [e for e in events if e.get("type") == "exited"]
+        holds = [e for e in events if e.get("type") == "hold_unknown_job"]
+        if len(intents) != 1 or len(spawned) != 1 or len(exits) != 1 or len(holds) != 1 \
+                or intents[0].get("launch_sha256") != hashlib.sha256(raw_launch).hexdigest() \
+                or intents[0].get("account_check_sha256") != prof["account_id_sha256"] \
+                or type(spawned[0].get("pid")) is not int or spawned[0]["pid"] <= 0 \
+                or exits[0].get("pid") != spawned[0]["pid"] \
+                or exits[0].get("proof") != "parent_waitpid" \
+                or type(exits[0].get("returncode")) is not int or exits[0]["returncode"] != 0 \
+                or type(holds[0].get("returncode")) is not int or holds[0]["returncode"] != 0 \
+                or not events.index(intents[0]) < events.index(spawned[0]) < events.index(exits[0]) < events.index(holds[0]):
+            raise ValueError
+        raw = _private_bounded(job_dir(aid, create=False) / "submit.stdout", kind)
+        stderr = _private_bounded(job_dir(aid, create=False) / "submit.stderr", kind)
+        parsed = _strict_json(raw, kind)
+        _recovery_protocol(parsed, launch, kind)
+        if stderr or holds[0].get("stdout_sha256") != hashlib.sha256(raw).hexdigest():
+            raise ValueError
+        root = Path(launch["project_root"])
+        if _RESERVATION_LOOKUP is _no_ledger:
+            from dataclasses import asdict
+            from lib import openart_dispatch as dispatch
+            from lib.provider_credit_ledger import read_existing_snapshot
+            manifest, credit_binding, _ = dispatch._manifest(aid)
+            dispatch._ready_journal(credit_binding, manifest)
+            cb = asdict(credit_binding)
+            snapshot = read_existing_snapshot()
+            rows = [r for r in snapshot["unpriced_reservations" if dispatch._unpriced(credit_binding)
+                                        else "reservations"] if r["attempt_id"] == aid]
+            if len(rows) != 1 or rows[0]["binding_json"] != json.dumps(cb, sort_keys=True, separators=(",", ":")) \
+                    or manifest["purpose"] != QUALIFICATION_PURPOSE \
+                    or Path(credit_binding.project_root) != root \
+                    or credit_binding.request_sha256 != binding["request_sha256"] \
+                    or credit_binding.native_sha256 != binding["native_body_sha256"] \
+                    or credit_binding.profile_sha256 != origin \
+                    or credit_binding.account_id != prof["account_id_sha256"] \
+                    or binding["reservation_id"] != aid \
+                    or (job_id is None and rows[0]["slot_state"] not in {"submitting", "uncertain"}) \
+                    or (rows[0].get("job_id") and rows[0]["job_id"] != job_id):
+                raise ValueError
+            reservation = {"authorization_occurrence_id": credit_binding.authorization_occurrence,
+                           "reservation_id": aid}
+            authority_sha = sha256_json(cb)
+            dispatch_sha = hashlib.sha256(_private_bounded(dispatch._manifest_path(aid), kind)).hexdigest()
+        else:  # Existing registered internal test seam; never selected by caller data.
+            reservation = get_active_reservation(root, aid, binding["request_sha256"])
+            if reservation.get("purpose") != QUALIFICATION_PURPOSE \
+                    or reservation["reservation_id"] != binding["reservation_id"]:
+                raise ValueError
+            authority_sha, dispatch_sha = sha256_json(reservation), None
+        marker = (cli.state_dir(create=False) / "qualification" / cli._safe_part(prof["model"])
+                  / cli._safe_part(prof["mode"]) / "attempts"
+                  / (_marker_key(prof, reservation, prof["account_id_sha256"]) + ".json"))
+        marker_raw = _private_bounded(marker, kind)
+        marker_value = _strict_json(marker_raw, kind)
+        expected_marker = {"marker_key": _marker_key(prof, reservation, prof["account_id_sha256"]),
+                           "authorization_occurrence_id": reservation["authorization_occurrence_id"],
+                           "reservation_id": binding["reservation_id"], "attempt_id": aid,
+                           "account_id_sha256": prof["account_id_sha256"], "model": prof["model"],
+                           "mode": prof["mode"], "origin_profile_sha256": origin}
+        if marker_value != expected_marker or _canon(marker_value) != marker_raw:
+            raise ValueError
+        evidence = {"attempt_id": aid, "launch_sha256": hashlib.sha256(raw_launch).hexdigest(),
+                    "snapshot_sha256": frozen["snapshot_sha256"], "origin_profile_sha256": origin,
+                    "account_id_sha256": prof["account_id_sha256"],
+                    "submit_stdout_sha256": hashlib.sha256(raw).hexdigest(),
+                    "submit_stderr_sha256": hashlib.sha256(stderr).hexdigest(),
+                    "original_events_sha256": sha256_json(events[:events.index(holds[0]) + 1]),
+                    "reservation_binding_sha256": authority_sha, "dispatch_sha256": dispatch_sha,
+                    "qualification_marker_sha256": hashlib.sha256(marker_raw).hexdigest()}
+        return launch, raw, evidence
+    except OpenArtCLIError:
+        raise
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        raise OpenArtCLIError(kind, "original qualification launch, process or reservation evidence differs") from None
+
+
+def _response_fields(value: Any) -> list[tuple[str, Any]]:
+    """Bounded JSON paths only; private scalar values are never returned by the public API."""
+    fields = []
+    def walk(node, prefix="", depth=0):
+        if depth > 8 or len(fields) >= 500:
+            return
+        children = node.items() if isinstance(node, dict) else enumerate(node) if isinstance(node, list) else []
+        for key, child in children:
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if len(path) > 256 or not _qual()._path(path) or len(fields) >= 500:
+                continue
+            fields.append((path, child))
+            walk(child, path, depth + 1)
+    walk(value)
+    return fields
+
+
+def _safe_response_shape(value: Any) -> dict:
+    statuses = {"PENDING", "QUEUED", "PROCESSING", "RUNNING", "COMPLETED", "COMPLETE", "SUCCEEDED",
+                "SUCCESS", "FAILED", "ERROR", "CANCELLED", "CANCELED", "pending", "queued",
+                "processing", "running", "completed", "complete", "succeeded", "success", "failed",
+                "error", "cancelled", "canceled", "done"}
+    fields, observed_statuses, hosts = [], [], []
+    for path, value in _response_fields(value):
+        kind = ("null" if value is None else "boolean" if isinstance(value, bool) else
+                "object" if isinstance(value, dict) else "array" if isinstance(value, list) else
+                "string" if isinstance(value, str) else "number")
+        fields.append({"path": path, "type": kind})
+        if path.rsplit(".", 1)[-1].lower() in {"status", "state"} and isinstance(value, str) and value in statuses:
+            observed_statuses.append({"path": path, "value": value})
+        if isinstance(value, str) and value.startswith("https://"):
+            try:
+                host = urlsplit(value).hostname
+                _qual()._hosts([host], "submit_recovery_invalid")
+                hosts.append({"path": path, "host": host})
+            except (ValueError, _qual().OpenArtQualificationError):
+                pass
+    return {"fields": fields, "observed_statuses": observed_statuses, "url_hosts": hosts}
+
+
+def _strict_qual_record(entry: dict, name: str, kind: str) -> dict:
+    rec = _qual_record(entry, name, kind)
+    parsed = _strict_json(_private_bounded(cli.state_dir() / "streams" / rec["streams"]["stdout"], kind), kind)
+    if parsed != rec["parsed"]:
+        raise OpenArtCLIError(kind, "retained response differs from its receipt")
+    return rec
+
+
+def _recovery_candidate(raw: bytes, launch: dict, path: str, kind: str) -> str:
+    # This compatibility repair qualifies only the observed official top-level historyId.
+    # A generic scalar path would let model/status or a request echo masquerade as identity.
+    if path != "historyId":
+        raise OpenArtCLIError(kind, "original submit recovery requires the observed top-level historyId field")
+    parsed = _strict_json(raw, kind)
+    candidate = lookup_path(parsed, path)
+    if not isinstance(candidate, str) or not cli._ID_RE.fullmatch(candidate):
+        raise OpenArtCLIError(kind, "declared original submit path lacks one safe job candidate")
+    native = load_frozen_request(launch["attempt_id"])["native"]
+    if _scalar_occurrences(parsed, candidate, kind) != 1 \
+            or _scalar_occurrences(native, candidate, kind) \
+            or candidate in {launch["profile"]["model"], launch["profile"]["mode"], "video"}:
+        raise OpenArtCLIError(kind, "original job candidate is ambiguous or equals frozen protocol values")
+    if any(key in parsed and parsed[key] != candidate for key in ("id", "creationId", "jobId", "job")):
+        raise OpenArtCLIError(kind, "original submit has conflicting identifier fields")
+    old = lookup_path(parsed, launch["profile"]["json_paths"]["submit_job_id"])
+    if old is not None and old != candidate:
+        raise OpenArtCLIError(kind, "declared submit path conflicts with the frozen submit path")
+    return candidate
+
+
+def _scalar_occurrences(value: Any, candidate: str, kind: str) -> int:
+    count, visited, stack = 0, 0, [value]
+    while stack:
+        node = stack.pop()
+        visited += 1
+        if visited > 10000:
+            raise OpenArtCLIError(kind, "original response shape exceeds recovery bounds")
+        if isinstance(node, dict):
+            stack.extend(node.values())
+        elif isinstance(node, list):
+            stack.extend(node)
+        elif node == candidate:
+            count += 1
+    return count
+
+
+def _result_identity_path(value: Any, candidate: str, declaration: Optional[str], kind: str) -> Optional[str]:
+    """One identifier field in a result wrapper, never a protocol/request/error/billing echo."""
+    # Bound the entire tree before using the bounded public field listing.
+    _scalar_occurrences(value, candidate, kind)
+    leaves = {"id", "_id", "historyId", "creationId", "jobId", "job"}
+    wrappers = {"creation", "data", "result"}
+    matches, stack = [], [("", value)]
+    while stack:
+        prefix, node = stack.pop()
+        if not isinstance(node, dict):
+            continue
+        for key, item in node.items():
+            path = f"{prefix}.{key}" if prefix else key
+            if key in leaves and isinstance(item, str) and item == candidate:
+                if len(path) > 256:
+                    raise OpenArtCLIError(kind, "original result identifier path exceeds recovery bounds")
+                matches.append(path)
+            elif key in wrappers:
+                stack.append((path, item))
+    if len(matches) != 1 or declaration is not None and declaration != matches[0]:
+        return None
+    return matches[0]
+
+
+def _load_submit_recovery(aid: str, kind: str, *, incomplete: bool = False) -> tuple[dict, str, str]:
+    raw_proof = _private_bounded(job_dir(aid, create=False) / _SUBMIT_RECOVERY_FILE, kind)
+    proof = _strict_json(raw_proof, kind)
+    try:
+        paths = proof["json_paths"]
+        if _canon(proof) != raw_proof or proof.get("version") != "1" \
+                or set(paths) != {"submit_job_id", "result_job_id"} \
+                or not all(_qual()._path(p) for p in paths.values()):
+            raise ValueError
+        launch, raw, origin = _recovery_origin(aid, kind, job_id=original_job_id(aid))
+        candidate = _recovery_candidate(raw, launch, paths["submit_job_id"], kind)
+        if proof["origin"] != origin or proof["job_id_sha256"] != _sha(candidate):
+            raise ValueError
+        acct = _strict_qual_record(proof["account_receipt"], "submit_recovery_account", kind)
+        if _check_account_receipt(acct, launch["profile"]) != origin["account_id_sha256"]:
+            raise ValueError
+        rec = _strict_qual_record(proof["creation_get_receipt"], "submit_recovery_creation_get", kind)
+        _recovery_protocol(rec["parsed"], launch, kind)
+        if rec["argv"] != ["creation", "get", candidate] + cli.GLOBAL_FLAGS \
+                or _result_identity_path(rec["parsed"], candidate, paths["result_job_id"], kind) is None:
+            raise ValueError
+        psha = hashlib.sha256(raw_proof).hexdigest()
+        parsed_events = [e for e in read_events(aid) if e.get("type") == "parsed"]
+        if len(parsed_events) > 1 or (not incomplete and len(parsed_events) != 1):
+            raise ValueError
+        if parsed_events and type(parsed_events[0].get("returncode")) is not int:
+            raise ValueError
+        if parsed_events and any(parsed_events[0].get(k) != v for k, v in {
+                "returncode": 0, "job_id_sha256": _sha(candidate),
+                "stdout_sha256": origin["submit_stdout_sha256"], "parse_sha256": _parse_sha256(raw, candidate),
+                "submit_recovery_sha256": psha, "submit_job_id_path": paths["submit_job_id"]}.items()):
+            raise ValueError
+        job_path = job_dir(aid, create=False) / "job_id"
+        if os.path.lexists(job_path):
+            if _private_bounded(job_path, kind) != candidate.encode():
+                raise ValueError
+        elif not incomplete:
+            raise ValueError
+        return proof, psha, candidate
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise OpenArtCLIError(kind, "original submit recovery proof or acknowledgement differs") from None
+
+
+def _recovery_observation(launch: dict, candidate: str, deadline: float, kind: str) -> tuple[dict, dict, dict]:
+    try:
+        acct = _account_receipt(launch["profile"], cli.lock_remaining(deadline))
+    except OpenArtCLIError as exc:
+        raise OpenArtCLIError(exc.kind, "original read-only account observation failed; diagnostics remain private") from None
+    if acct["account_id_sha256"] != launch["profile"]["account_id_sha256"]:
+        raise OpenArtCLIError("account_mismatch", "current account differs from original qualification account")
+    _strict_qual_record(acct, "submit_recovery_account", kind)
+    try:
+        got = cli.run_readonly(["creation", "get", candidate], timeout=cli.lock_remaining(deadline))
+    except OpenArtCLIError as exc:
+        raise OpenArtCLIError(exc.kind, "original read-only result observation failed; diagnostics remain private") from None
+    rec = _strict_qual_record(got, "submit_recovery_creation_get", kind)
+    _recovery_protocol(rec["parsed"], launch, kind)
+    if rec["argv"] != ["creation", "get", candidate] + cli.GLOBAL_FLAGS:
+        raise OpenArtCLIError(kind, "original status command differs from internal candidate")
+    return acct, got, rec
+
+
+def recover_original_submit(attempt_id: str, *, json_paths: dict,
+                            timeout: float = cli.DEFAULT_TIMEOUT) -> dict:
+    """Read-only original-job recovery; path declarations never supply a job identifier.
+
+    Only the original real staged qualification launch with a successful retained waitpid proof
+    can be recovered. A fresh account and `creation get` prove the candidate correlation before
+    an immutable recovery proof and canonical parsed acknowledgement are published. A response
+    without a unique matching ID stays held and returns only safe observed shape. No reservation,
+    profile, launch, request, settlement or slot is changed. Replay repairs interrupted publication.
+    """
+    bad, aid = "submit_recovery_invalid", cli._safe_part(attempt_id)
+    if not isinstance(json_paths, dict) or set(json_paths) - {"submit_job_id", "result_job_id"} \
+            or "submit_job_id" not in json_paths or not all(_qual()._path(p) for p in json_paths.values()):
+        raise OpenArtCLIError(bad, "only observed submit and optional result job paths may be declared")
+    if cli.is_offline():
+        raise OpenArtCLIError("offline_only", "OpenArt original status read refused during offline preparation")
+    deadline = time.monotonic() + cli.validate_timeout(timeout)
+    with cli.transport_lock(wait_timeout=cli.lock_remaining(deadline)):
+        target = job_dir(aid, create=False) / _SUBMIT_RECOVERY_FILE
+        if os.path.lexists(target):
+            proof, psha, candidate = _load_submit_recovery(aid, bad, incomplete=True)
+            if any(proof["json_paths"].get(k) != v for k, v in json_paths.items()):
+                raise OpenArtCLIError(bad, "path declaration conflicts with immutable original recovery proof")
+            launch = launch_record(aid)
+            _, got, rec = _recovery_observation(launch, candidate, deadline, bad)
+            if _result_identity_path(rec["parsed"], candidate, proof["json_paths"]["result_job_id"], bad) is None:
+                return {"status": "hold", "reason": "original_result_id_unproven",
+                        "submit_stdout_sha256": proof["origin"]["submit_stdout_sha256"],
+                        "creation_get_receipt_sha256": got["receipt_sha256"], **_safe_response_shape(rec["parsed"]),
+                        "billing": "unknown", "release_authorized": False}
+        else:
+            launch, raw, origin = _recovery_origin(aid, bad)
+            if os.path.lexists(job_dir(aid, create=False) / "job_id") \
+                    or any(e.get("type") == "parsed" for e in read_events(aid)) \
+                    or os.path.lexists(result_proof_path(launch["profile"]["model"], launch["profile"]["mode"],
+                                                       origin["origin_profile_sha256"])):
+                raise OpenArtCLIError(bad, "prior original job or result proof prevents submit recovery")
+            candidate = _recovery_candidate(raw, launch, json_paths["submit_job_id"], bad)
+            acct, got, rec = _recovery_observation(launch, candidate, deadline, bad)
+            shape = _safe_response_shape(rec["parsed"])
+            result_path = _result_identity_path(rec["parsed"], candidate, json_paths.get("result_job_id"), bad)
+            if result_path is None:
+                return {"status": "hold_unknown_job", "reason": "original_result_id_unproven",
+                        "submit_stdout_sha256": origin["submit_stdout_sha256"],
+                        "creation_get_receipt_sha256": got["receipt_sha256"], **shape,
+                        "billing": "unknown", "release_authorized": False}
+            proof = {"version": "1", "json_paths": {"submit_job_id": json_paths["submit_job_id"],
+                                                      "result_job_id": result_path},
+                     "origin": origin, "job_id_sha256": _sha(candidate),
+                     "account_receipt": {k: acct[k] for k in ("receipt_id", "receipt_sha256")},
+                     "creation_get_receipt": {k: got[k] for k in ("receipt_id", "receipt_sha256")}}
+            # Revalidate immutable original evidence after the provider read before publication.
+            if _recovery_origin(aid, bad)[2] != origin:
+                raise OpenArtCLIError(bad, "original evidence changed during recovery")
+            cli.write_private(target, _canon(proof))
+            psha = hashlib.sha256(_canon(proof)).hexdigest()
+        launch, raw, _ = _recovery_origin(aid, bad, job_id=original_job_id(aid))
+        if not any(e.get("type") == "parsed" for e in read_events(aid)):
+            append_event(aid, {"type": "parsed", "returncode": 0, "job_id_sha256": _sha(candidate),
+                               "stdout_sha256": proof["origin"]["submit_stdout_sha256"],
+                               "parse_sha256": _parse_sha256(raw, candidate), "submit_recovery_sha256": psha,
+                               "submit_job_id_path": proof["json_paths"]["submit_job_id"]})
+        job_path = job_dir(aid, create=False) / "job_id"
+        if not os.path.lexists(job_path):
+            cli.write_private(job_path, candidate.encode())
+        proof, psha, _ = _load_submit_recovery(aid, bad)
+        return {"status": "original_job_recovered", "submit_recovery_sha256": psha,
+                "submit_stdout_sha256": proof["origin"]["submit_stdout_sha256"],
+                "creation_get_receipt_sha256": got["receipt_sha256"],
+                "json_paths": proof["json_paths"], **_safe_response_shape(rec["parsed"]),
+                "billing": "unknown", "release_authorized": False}
+
 def promote_result_contract(attempt_id: str, *, json_paths: Optional[dict] = None,
                             timeout: float = cli.DEFAULT_TIMEOUT) -> dict:
     """Promote a staged pre_submit profile to full using the ORIGINAL qualification launch.
@@ -1352,8 +1748,8 @@ def promote_result_contract(attempt_id: str, *, json_paths: Optional[dict] = Non
     Consumes the governed launch.json, original raw submit stdout + single parsed event, a fresh
     read-only `account` receipt and a read-only `creation get <original job>` receipt. Writes an
     immutable private result proof keyed by the origin profile SHA; never rewrites launch/profile.
-    `json_paths` may only add/declare result keys (result_job_id/status/urls/status_terminal_*/
-    url_hosts); they stay unqualified until this observed original-job correlation succeeds.
+    `json_paths` may add/declare result keys and the immutable recovered submit path; they
+    stay unqualified until this observed original-job correlation succeeds.
     Returns {result_contract_sha256, result_proof_id, profile_sha256, level:'full'} (no paths).
     """
     bad = "result_contract_unqualified"
@@ -1371,8 +1767,17 @@ def promote_result_contract(attempt_id: str, *, json_paths: Optional[dict] = Non
     _verify_origin_frozen(aid, launch, bad)
     allowed = {"result_job_id", "status", "urls", "status_terminal_ok", "status_terminal_fail", "url_hosts"}
     extra = dict(json_paths or {})
-    if set(extra) - allowed:
+    if set(extra) - allowed - {"submit_job_id"}:
         raise OpenArtCLIError(bad, "promotion may only declare result-contract json paths")
+    recovery_path = job_dir(aid, create=False) / _SUBMIT_RECOVERY_FILE
+    if os.path.lexists(recovery_path):
+        recovered, _, _ = _load_submit_recovery(aid, bad)
+        if any(k in extra and extra[k] != recovered["json_paths"][k]
+               for k in ("submit_job_id", "result_job_id")):
+            raise OpenArtCLIError(bad, "promotion paths conflict with immutable original recovery")
+        extra = dict(recovered["json_paths"], **extra)
+    elif "submit_job_id" in extra and extra["submit_job_id"] != lprof["json_paths"]["submit_job_id"]:
+        raise OpenArtCLIError(bad, "changed submit path needs an original submit recovery proof")
     paths = dict(lprof["json_paths"], **extra)
     proof_paths = {k: paths.get(k) for k in ("submit_job_id",) + tuple(sorted(allowed))}
     _validate_result_paths(proof_paths, bad)
@@ -1459,7 +1864,15 @@ def _finish_parse(attempt_id: str, rc: Optional[int], profile: dict) -> dict:
         with open(stdout_path, "rb") as fh:
             raw = fh.read(cli.MAX_STDOUT + 1)
     text = raw[: cli.MAX_STDOUT].decode("utf-8", "replace")
-    job_id = parse_submit(text, profile) if len(raw) <= cli.MAX_STDOUT else None
+    paths, qualified = profile["json_paths"], True
+    if _is_staged(profile):
+        try:
+            paths = _effective_paths(profile)
+        except OpenArtCLIError:
+            # Only the first qualification launch may use its tentative frozen declaration.
+            # Ordinary launches parse through the already verified immutable full contract.
+            qualified = (launch_record(attempt_id) or {}).get("purpose") == QUALIFICATION_PURPOSE
+    job_id = parse_submit(text, profile, paths) if qualified and len(raw) <= cli.MAX_STDOUT else None
     if job_id is None:
         unknown=(launch_record(attempt_id) or {}).get('authorization_kind')=='unknown_cost'
         code=provider_refusal_code(raw) if unknown and len(raw)<=cli.MAX_STDOUT else None
@@ -1496,10 +1909,20 @@ def _verify_raw_submit(attempt_id: str, launch: dict, job_id: str, kind: str,
         raise OpenArtCLIError(kind, "original raw submit stdout missing or not private")
     if len(raw) > cli.MAX_STDOUT:
         raise OpenArtCLIError(kind, "original raw submit stdout exceeds bound")
+    recovery = None
+    if os.path.lexists(job_dir(attempt_id, create=False) / _SUBMIT_RECOVERY_FILE):
+        recovery, _, candidate = _load_submit_recovery(attempt_id, kind)
+        if candidate != job_id or launch["binding"]["profile_sha256"] != recovery["origin"]["origin_profile_sha256"]:
+            raise OpenArtCLIError(kind, "recovered original job differs from launch binding")
     try:
         paths = _effective_paths(launch["profile"]) if proven else launch["profile"]["json_paths"]
     except OpenArtCLIError:
-        raise OpenArtCLIError(kind, "result contract unqualified for this launch profile")
+        if recovery is None or os.path.lexists(result_proof_path(
+                launch["profile"]["model"], launch["profile"]["mode"], launch["binding"]["profile_sha256"])):
+            raise OpenArtCLIError(kind, "result contract unqualified for this launch profile")
+        paths = dict(launch["profile"]["json_paths"], **recovery["json_paths"])
+    if recovery is not None and paths["submit_job_id"] != recovery["json_paths"]["submit_job_id"]:
+        raise OpenArtCLIError(kind, "submit path differs from immutable original recovery")
     parsed = parse_submit(raw.decode("utf-8", "replace"), launch["profile"], paths)
     if parsed is None or parsed != job_id:
         raise OpenArtCLIError(kind, "original raw submit does not name the bound job")

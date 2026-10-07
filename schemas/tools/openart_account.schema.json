@@ -27,6 +27,7 @@
         "qualify_inspection",
         "qualify_upload",
         "qualify_preview",
+        "recover_original_submit",
         "qualify_result",
         "qualify_quote",
         "refresh_quote",
@@ -192,6 +193,21 @@
         "properties": {
           "action": {
             "const": "qualify_result"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "attempt_id",
+          "json_paths"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "recover_original_submit"
           }
         }
       },

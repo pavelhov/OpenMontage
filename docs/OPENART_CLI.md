@@ -234,6 +234,26 @@ strings and all URL query strings, which covers signed URLs.
 - `native_dry_run`: `generate video ... --dry-run`, returning `{endpoint, body_sha256, body}`.
 - `readiness`: gate table, plus an optional `version` probe.
 - `status`: reconcile one original attempt from its durable OpenArt event/job receipt.
+- `recover_original_submit`: only for the original real staged
+  `result_contract_qualification` attempt held because the tentative submit path
+  missed the observed response field (for example `historyId`). Pass `attempt_id`
+  and `json_paths: {"submit_job_id": "historyId"}` only when that top-level field
+  was observed in the original response; this compatibility repair accepts no
+  other submit path. The tool extracts the candidate internally,
+  checks the successful original process, frozen request, authorization marker
+  and original ledger reservation, then reads the current account and that
+  original creation. It returns safe field paths/types, recognized status enums,
+  URL hostnames and receipt hashes; no job ID or URL is returned. A unique returned
+  eligible identifier-field match establishes its path. Otherwise it keeps the
+  hold and reports shape. An observed `result_job_id` may be declared, but cannot
+  override ambiguity or qualify a protocol, request, error or billing echo. Its
+  immutable private recovery proof binds the canonical original acknowledgement
+  without rewriting the profile, launch or approved request. Repeating the action
+  reads the same original creation for current safe shape and repairs interrupted
+  acknowledgement publication. Conflicting declarations fail closed. Use
+  `qualify_result` with the observed terminal result paths and hosts afterward.
+  Recovery never resubmits, settles billing, releases the slot, supplies a credit
+  ceiling or establishes creative quality.
 - `collect`: call only `collect_openart_attempt(project_dir, attempt_id, request_sha256, timeout)`;
   it writes the original project's result and never submits or reserves again.
 - `verify`: verify the retained collection receipt against the original frozen profile. Pure.
@@ -353,10 +373,12 @@ provider success, billing guarantees or result eligibility.
    image URL must equal the exact retained upload URL. No manual profile edits
    or fabricated submit/result receipts are needed.
 5. `qualify_result` targets `attempt_id` plus declared result `json_paths`. Only
-   the original separately credit-authorized benchmark attempt may establish a
+   the original separately authorized qualification attempt may establish a
    result proof through `promote_result_contract`. This proof is immutable and
    bound to the original `pre_submit` profile SHA; it never rewrites that creative
-   profile to bless older artifacts. Ordinary paid production still requires full
+   profile to bless older artifacts. A verified original submit recovery supplies
+   its immutable `historyId` and returned identity paths to this promotion.
+   Ordinary paid production still requires full
    qualification and the later ledger/approval gates.
 
 The helpers are `inspect_qualification(model, mode, *, json_paths, timeout)`,
