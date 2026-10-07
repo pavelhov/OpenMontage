@@ -591,3 +591,192 @@ def test_frozen_proof_survives_unrelated_serial_observation(package):
     refresh(contract);write(root/'artifacts/shot_contract.json',contract)
     write(root/'artifacts/selected_attempts.json',selected)
     assert request.validate_frozen_preparation(saved,{'inputs':inputs,'native':native,'profile':profile},root)==proof
+
+
+@pytest.fixture
+def reference_free_package(tmp_path, monkeypatch):
+    from tests.lib.test_shot_contract import reference_free_contract
+    root = tmp_path / 'project'
+    root.mkdir()
+    monkeypatch.setenv('OPENMONTAGE_OPENART_STATE_DIR', str(tmp_path / 'private'))
+    monkeypatch.setattr(cli, '_run_checked', lambda *a, **k: pytest.fail('reference-free preparation invoked CLI'))
+    contract = reference_free_contract()
+    write(root/'artifacts/shot_contract.json', contract)
+    write(root/'project.json', {'project_id':contract['project_id'],'story_revision':contract['story_revision'],
+                              'governance':{'version':'1.0','mode':'strict'}})
+    write(root/'artifacts/scene_plan.json', {'version':'1.0','scenes':[{'id':'entry','type':'generated',
+        'description':'Synthetic cube action','start_seconds':0,'end_seconds':1,'script_section_id':'s1'}]})
+    write(root/'artifacts/script.json', {'version':'1.0','title':'Synthetic action','total_duration_seconds':1,
+        'sections':[{'id':'s1','text':'A red cube drops and comes to rest.','start_seconds':0,'end_seconds':1}]})
+    authored = request.compile_prompt(root, 'entry')
+    inputs = {'project_dir':str(root),'governance':{'scope_id':'approved','shot_id':'entry'},
+              'prompt':authored['prompt'],'model':'fixture-model','mode':'text2video','operation':'text_to_video',
+              'duration':1,'aspect_ratio':'16:9','resolution':'720p','output_path':str(root/'clip.mp4'),
+              'compiled_request_id':'c1','preparation_review_id':'r1'}
+    profile = {'source':'fixture','model':'fixture-model','mode':'text2video','cli_version':'fixture-0',
+               'tier':'fixture-only','form_sha256':'f'*64,'form_defaults':{'duration':1},
+               'profile_sha256':'e'*64,'account_id_sha256':'a'*64,'dry_run_endpoint':'POST /fixture'}
+    argv = cli.native_video_argv(inputs['prompt'], model=inputs['model'], mode='text2video',duration=1,
+                                 aspect_ratio='16:9',resolution='720p')
+    body = {'model':inputs['model'],'media':'video','mode':'text2video','params':{'prompt':inputs['prompt'],
+             'duration':1,'aspectRatio':'16:9','resolution':'720p'}}
+    rid, sha = retain({'endpoint':profile['dry_run_endpoint'],'body':body},argv+['--dry-run']+cli.GLOBAL_FLAGS,'preview')
+    inputs.update(native_dry_run_receipt_id=rid, native_dry_run_receipt_sha256=sha)
+    native = jobs.prepare_native_request(request.controls(inputs), profile)
+    shot = contract['shots'][0]
+    timing = {'method':'segmented_estimate','duration_seconds':1,'language':'en','margin_seconds':0.05,
+              'rationale':'Synthetic no-speech timing','overlap_policy':'serial','overlap_rationale':'Sequential action/end',
+              'segments':[], 'action_windows':[
+                  {'source_pointer':'/shot_contract/shots/0/'+key,'value_sha256':request.digest(shot[key]),
+                   'start_seconds':start,'end_seconds':end,'rationale':'Synthetic timing fixture'}
+                  for key,start,end in [('dominant_action',0,0.6),('completed_end_state',0.6,0.95)]]}
+    compiled = request.prepare_compiled_request(inputs,native,profile,coverage=authored['coverage'],timing=timing)
+    review = {'version':'1.0','review_id':'r1','reviewer':'synthetic textual reviewer','status':'pass',
+              'subject_sha256':request.digest(compiled),'evidence_kind':'fixture_only',
+              'predicates':[{'name':p,'status':'pass','severity':'critical','evidence':'Synthetic fixture only'} for p in sorted(request.PREDICATES)]}
+    result = (root,inputs,native,profile,compiled,review)
+    publish(result)
+    return result
+
+
+def test_reference_free_preparation_keeps_actual_empty_references(reference_free_package):
+    root,inputs,native,profile,compiled,review = reference_free_package
+    assert compiled['source_binding']['references'] == []
+    assert compiled['source_binding']['upstream'] == []
+    assert native['image_upload'] is None
+    assert not (root/'assets').exists()
+    assert request.validate_preparation(inputs,native,profile)['compiled_sha256'] == request.digest(compiled)
+
+
+@pytest.mark.parametrize('change', ['prompt','source','script','mapping','model','duration','timing','review'])
+def test_reference_free_preparation_refuses_drift(reference_free_package, change):
+    from tests.lib.test_shot_contract import refresh
+    root,inputs,native,profile,compiled,review = reference_free_package
+    if change == 'prompt':
+        inputs['prompt'] += 'changed'
+    elif change == 'source':
+        contract = json.loads((root/'artifacts/shot_contract.json').read_text())
+        contract['shots'][0]['completed_end_state'] = 'A different endpoint.'
+        refresh(contract)
+        write(root/'artifacts/shot_contract.json', contract)
+    elif change == 'script':
+        script = json.loads((root/'artifacts/script.json').read_text())
+        script['sections'][0]['text'] = 'Different context.'
+        write(root/'artifacts/script.json', script)
+    elif change == 'mapping':
+        scene = json.loads((root/'artifacts/scene_plan.json').read_text())
+        scene['scenes'][0]['script_section_id'] = 'missing'
+        write(root/'artifacts/scene_plan.json', scene)
+    elif change in ('model','duration'):
+        inputs[change] = 'different' if change == 'model' else 2
+    elif change == 'timing':
+        compiled['timing']['action_windows'][0]['end_seconds'] = 2
+        publish(reference_free_package)
+    else:
+        review['review_id'] = 'another-review'
+        write(root/'artifacts/preparation_review-r1.json', review)
+    with pytest.raises(ValueError):
+        request.validate_preparation(inputs,native,profile)
+    assert not (root/'production_attempts').exists()
+
+
+@pytest.mark.parametrize('pin', ['pinned_start_frame','pinned_initial_frame','pinned_first_frame','pinned_final_frame'])
+def test_reference_free_declared_frame_pin_refused(reference_free_package, pin):
+    root,*_ = reference_free_package
+    scene = json.loads((root/'artifacts/scene_plan.json').read_text())
+    scene['metadata'] = {'visual_development':{'shot_cards':{'entry':{pin:{'required':True,'requirement_id':'pin-entry','end_state':'Pinned endpoint'}}}}}
+    write(root/'artifacts/scene_plan.json', scene)
+    with pytest.raises(ValueError, match='frame pin|ending-frame'):
+        request.compile_prompt(root, 'entry')
+    assert not (root/'production_attempts').exists()
+
+
+@pytest.mark.parametrize('kind', ['reference_assets','motion_handoffs'])
+def test_reference_free_manifest_reference_refused(reference_free_package, kind):
+    root,*_ = reference_free_package
+    write(root/'artifacts/asset_manifest.json', {'version':'1.0','assets':[],
+          'metadata':{kind:{'ref':{'scene_id':'entry','asset_id':'ref'}}}})
+    with pytest.raises(ValueError, match='reference/handoff'):
+        request.compile_prompt(root, 'entry')
+
+
+@pytest.mark.parametrize('field,value', [('image_path','unused.png'), ('image_upload_id','upload'),
+    ('first_frame','unused.png'),('reference_images',['unused.png']),('keyframes',[]),('audio',False)])
+def test_reference_free_native_reference_inputs_refused(reference_free_package, field, value):
+    _,inputs,native,profile,_,_ = reference_free_package
+    inputs[field] = value
+    with pytest.raises(ValueError, match='native preparation invalid'):
+        request.validate_preparation(inputs,native,profile)
+
+
+def test_reference_free_native_mode_and_grok_refused(reference_free_package):
+    root,inputs,native,profile,_,_ = reference_free_package
+    wrong = copy.deepcopy(native)
+    wrong['mode'] = 'image2video'
+    with pytest.raises(ValueError, match='requires OpenArt text2video'):
+        request.validate_preparation(inputs,wrong,profile)
+    with pytest.raises(ValueError, match='requires OpenArt text2video'):
+        request.compile_provider_prompt(root,'entry',provider='grok_cli')
+
+
+def test_reference_free_frozen_current_and_historical_evidence(reference_free_package):
+    from tests.lib.test_shot_contract import refresh
+    root,inputs,native,profile,compiled,review = reference_free_package
+    proof = request.freeze_preparation('att-text',inputs,native,profile)
+    saved = {'attempt_id':'att-text','scope_id':'approved','shot_id':'entry','input_assets':[],
+             'openart':{'preparation_snapshot':proof}}
+    frozen = {'inputs':inputs,'native':native,'profile':profile}
+    assert request.validate_frozen_preparation(saved,frozen,root) == proof
+    assert request.validate_frozen_preparation_history(saved,frozen,root) == proof
+    contract = json.loads((root/'artifacts/shot_contract.json').read_text())
+    contract['shots'][0]['initial_state'] = 'A different initial state.'
+    refresh(contract)
+    write(root/'artifacts/shot_contract.json', contract)
+    with pytest.raises(ValueError, match='stale source'):
+        request.validate_frozen_preparation(saved,frozen,root)
+    assert request.validate_frozen_preparation_history(saved,frozen,root) == proof
+    frozen['inputs'] = dict(inputs,prompt=inputs['prompt']+'mutation')
+    with pytest.raises(ValueError):
+        request.validate_frozen_preparation_history(saved,frozen,root)
+
+
+def test_reference_free_snapshot_tampering_refused(reference_free_package):
+    root,inputs,native,profile,_,_ = reference_free_package
+    proof = request.freeze_preparation('att-text',inputs,native,profile)
+    saved = {'attempt_id':'att-text','scope_id':'approved','shot_id':'entry','input_assets':[],
+             'openart':{'preparation_snapshot':proof}}
+    path = cli.state_dir()/'preparation/att-text/review.json'
+    path.write_bytes(path.read_bytes()+b' ')
+    with pytest.raises(ValueError, match='snapshot bytes changed'):
+        request.validate_frozen_preparation(saved,{'inputs':inputs,'native':native,'profile':profile},root)
+
+
+def test_legacy_prompt_and_coverage_keep_pre_variant_golden_bytes(package):
+    # Captured from pre-variant HEAD; exact canonical bytes were independently
+    # compared against the prior compiler, including source and compiled bindings.
+    root,*_ = package
+    authored = request.compile_prompt(root,'entry')
+    assert request.digest(authored['prompt']) == '29298259b873227a9451f66a6fb87a7db06a55d18f997db31e4ca20290db8915'
+    assert request.digest(authored['coverage']) == 'bbe98fc2f92eebe92f64bee3227f2021ed6ce1bd60112c501bfb270e215561e3'
+    grok = request._compile_packet(request.source_packet(root,'entry',provider='grok_cli'),native_pointer='/arguments/prompt')
+    assert grok['prompt'] == authored['prompt']
+    assert request.digest(grok['coverage']) == '7f86625f33b3d425026c7bb2d5b58e34fbc23c64425fbe8633dc95e17135d02d'
+
+
+def test_legacy_board_contract_still_refuses_text2video(package):
+    root,inputs,_,profile,compiled,_ = package
+    candidate = copy.deepcopy(inputs)
+    candidate.pop('image_path')
+    candidate.pop('image_upload_id')
+    candidate.update(mode='text2video',operation='text_to_video')
+    profile = dict(profile,mode='text2video')
+    argv = cli.native_video_argv(candidate['prompt'],model=candidate['model'],mode='text2video',
+        duration=8,aspect_ratio='16:9',resolution='720p')
+    body = {'model':candidate['model'],'media':'video','mode':'text2video','params':{'prompt':candidate['prompt'],
+        'duration':8,'aspectRatio':'16:9','resolution':'720p'}}
+    rid,sha = retain({'endpoint':profile['dry_run_endpoint'],'body':body},argv+['--dry-run']+cli.GLOBAL_FLAGS,'preview')
+    candidate.update(native_dry_run_receipt_id=rid,native_dry_run_receipt_sha256=sha)
+    native = jobs.prepare_native_request(request.controls(candidate),profile)
+    authored = request.compile_prompt(root,'entry')
+    with pytest.raises(ValueError, match='needs approved start board'):
+        request.prepare_compiled_request(candidate,native,profile,coverage=authored['coverage'],timing=compiled['timing'])

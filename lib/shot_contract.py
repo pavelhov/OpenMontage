@@ -190,13 +190,15 @@ def validate_shot_contract(
         errors.append(f"shots.{shot_id}: shot missing")
         return result()
 
-    # Global payoff and late-cast evidence is required even for the opening shot.
-    payoff = assets.get(contract["payoff_asset_id"])
-    if not payoff or payoff["role"] != "payoff_board":
+    reference_free = contract.get("reference_mode") == "reference_free"
+    # Legacy board-backed contracts retain the global payoff gate.
+    payoff_id = contract.get("payoff_asset_id")
+    payoff = assets.get(payoff_id)
+    if not reference_free and (not payoff or payoff["role"] != "payoff_board"):
         errors.append("payoff_asset_id: missing payoff_board role")
-    elif not set(contract["payoff_speaker_ids"]).issubset(payoff["cast_ids"]):
+    elif not reference_free and not set(contract["payoff_speaker_ids"]).issubset(payoff["cast_ids"]):
         errors.append("payoff_speaker_ids: missing payoff speaker in board cast")
-    required_assets = set(shot["asset_ids"]) | {contract["payoff_asset_id"]}
+    required_assets = set(shot["asset_ids"]) | ({payoff_id} if not reference_free else set())
     for cast_id in set(contract["late_cast_ids"]) | set(shot["cast_ids"]) | set(contract["payoff_speaker_ids"]):
         identity = [a for a in assets.values() if a["role"] == "identity_reference" and cast_id in a["cast_ids"]]
         if not identity:
@@ -225,7 +227,7 @@ def validate_shot_contract(
                     errors.append(f"assets.{asset_id}.upstream_source: path/hash differ from current selected outgoing frame")
     local_assets = [assets[i] for i in shot["asset_ids"] if i in assets]
     for role in ("start_frame", "end_frame"):
-        if sum(a["role"] == role for a in local_assets) != 1:
+        if not reference_free and sum(a["role"] == role for a in local_assets) != 1:
             errors.append(f"shots.{shot_id}.asset_ids: require exactly one {role}")
     for asset in local_assets:
         if asset["role"] == "timed_keyframe" and not (0 < asset.get("time_seconds", -1) < shot["duration_seconds"]):

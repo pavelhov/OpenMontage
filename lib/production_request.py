@@ -108,13 +108,19 @@ def source_packet(project_dir, shot_id, *, provider="openart_cli"):
     if contract['project_id'] != marker['project_id']:
         raise ValueError('contract project mismatch')
     index, shot = next((i, s) for i, s in enumerate(contract['shots']) if s['id'] == shot_id)
+    reference_free = contract.get('reference_mode') == 'reference_free'
+    if reference_free and provider != 'openart_cli':
+        raise ValueError('reference-free contract requires OpenArt text2video')
     rows = []
+    if reference_free:
+        rows.extend(_leaf(contract['story'], '/shot_contract/story'))
     for key in ('initial_state', 'dominant_action', 'completed_end_state', 'endpoint_completion',
                 'cast_ids', 'required_visible_speakers', 'dialogue', 'prop_body_invariants',
                 'allowed_transformations', 'transition'):
         rows.extend(_leaf(shot[key], f'/shot_contract/shots/{index}/{key}'))
     refs = []
-    needed_assets = set(shot['asset_ids']) | {contract['payoff_asset_id']}
+    payoff_id = contract.get('payoff_asset_id')
+    needed_assets = set(shot['asset_ids']) | ({payoff_id} if not reference_free else set())
     needed_cast = set(shot['cast_ids']) | set(contract['late_cast_ids']) | set(contract['payoff_speaker_ids'])
     needed_assets.update(a['id'] for a in contract['assets'] if a['role'] == 'identity_reference' and needed_cast.intersection(a['cast_ids']))
     # All contract review bindings are retained: review prose is outside contract_digest.
@@ -126,7 +132,7 @@ def source_packet(project_dir, shot_id, *, provider="openart_cli"):
             raise ValueError('reference bytes changed')
         refs.append({'id': asset['id'], 'role': asset['role'], 'cast_ids': asset['cast_ids'],
                      'sha256': asset['sha256'], 'review_sha256': review_digest(asset['review'])})
-        if asset['id'] in shot['asset_ids'] or asset['id'] == contract['payoff_asset_id'] or asset['role'] == 'identity_reference':
+        if asset['id'] in shot['asset_ids'] or asset['id'] == payoff_id or asset['role'] == 'identity_reference':
             for key in ('id', 'role', 'cast_ids'):
                 rows.extend(_leaf(asset[key], f'/shot_contract/assets/{ai}/{key}'))
     scene_plan = _read(root, 'scene_plan.json')
@@ -140,6 +146,18 @@ def source_packet(project_dir, shot_id, *, provider="openart_cli"):
         _check_required_native_controls(scene_plan, manifest, shot_id)
     elif provider != "grok_cli":
         raise ValueError("unsupported preparation provider")
+    if reference_free:
+        card = scene_plan.get('metadata', {}).get('visual_development', {}).get('shot_cards', {}).get(shot_id, {})
+        for key in ('pinned_initial_frame', 'pinned_start_frame', 'pinned_first_frame', 'pinned_final_frame'):
+            requirement = card.get(key)
+            if requirement is not None:
+                if not isinstance(requirement, dict) or type(requirement.get('required')) is not bool:
+                    raise ValueError('malformed declared reference-free frame-pin requirement')
+                if requirement['required']:
+                    raise ValueError('reference-free contract conflicts with required frame pin')
+        obligations = _manifest_requirement_binding(manifest, shot_id)
+        if obligations['motion_handoffs'] or obligations['reference_assets']:
+            raise ValueError('reference-free contract conflicts with manifest reference/handoff requirement')
     scenes = [s for s in scene_plan['scenes'] if s['id'] == shot_id]
     if len(scenes) != 1 or not scenes[0].get('script_section_id'):
         raise ValueError('explicit scene.script_section_id mapping required')
@@ -166,6 +184,8 @@ def source_packet(project_dir, shot_id, *, provider="openart_cli"):
                'approval_plan_sha256': approval_plan_digest(contract), 'references': refs,
                'upstream': upstream, 'script_sha256': digest(script), 'scene_plan_sha256': digest(scene_plan), 'asset_manifest_sha256': digest(_manifest_requirement_binding(manifest, shot_id)),
                'reviews_sha256': digest([contract['project_review'], shot.get('review')])}
+    if reference_free:
+        binding['reference_mode'] = 'reference_free'
     return {'binding': binding, 'occurrences': rows, 'shot': shot}
 
 
@@ -183,6 +203,8 @@ def _compile_packet(packet, *, native_pointer='/params/prompt'):
         parts = row['source_pointer'].split('/')
         if parts[1] == 'script':
             label = 'Script context'
+        elif parts[2] == 'story':
+            label = 'Story ' + ' '.join(part.replace('_', ' ') for part in parts[3:])
         elif parts[2] == 'shots':
             label = ' '.join(part.replace('_', ' ') for part in parts[4:])
         else:
@@ -382,6 +404,9 @@ def _validate_compiled(compiled, inputs, native, profile, packet):
     from lib.production_execution import planned_request_digest
     _schema('compiled_request', compiled)
     grok = native.get('provider') == 'grok_cli'
+    reference_free = packet['binding'].get('reference_mode') == 'reference_free'
+    if reference_free and (grok or native.get('mode') != 'text2video'):
+        raise ValueError('reference-free contract requires OpenArt text2video')
     if grok:
         actual_native = prepare_grok_native(inputs, {'cli_version': native['cli_version'], 'grok_path': native['grok_path']})
     else:
@@ -420,7 +445,12 @@ def _validate_compiled(compiled, inputs, native, profile, packet):
         if any(max(start, a) < min(end, b) for a, b in spans):
             raise ValueError('duplicate coverage reuses a native fragment')
         spans.append((start, end))
-    if grok:
+    if reference_free:
+        if packet['binding']['references'] or packet['binding']['upstream'] or native.get('image_upload') is not None:
+            raise ValueError('reference-free native request contains image/reference obligations')
+        if any(key in body['params'] for key in ('image', 'images', 'first_frame', 'last_frame', 'keyframes', 'references', 'voices', 'audio')):
+            raise ValueError('reference-free native request contains image/reference controls')
+    elif grok:
         refs = packet['binding']['references']
         start_refs = [r for r in refs if r['role'] == 'start_frame' and r['id'] in packet['shot']['asset_ids']]
         submitted = native['request']['input_assets']

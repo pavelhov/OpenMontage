@@ -275,3 +275,71 @@ def test_generic_intentional_cuts_are_valid(package,cut):
     package[0]['shots'][0]['transition']={'type':cut,'rationale':'Deliberate temporal coverage change.'}
     refresh(package[0])
     assert check(package)['eligible']
+
+
+def reference_free_contract():
+    """Synthetic textual intent only; no image or provider quality evidence."""
+    contract = json.loads((FIXTURES / 'valid_shot_contract.json').read_text())
+    contract.update(reference_mode='reference_free', assets=[], late_cast_ids=[], payoff_speaker_ids=[])
+    del contract['payoff_asset_id']
+    shot = contract['shots'][0]
+    shot.update(initial_state='A plain red cube rests above a flat surface.',
+                dominant_action='The cube drops onto the surface.',
+                completed_end_state='The cube rests motionless on the surface.',
+                duration_seconds=1, cast_ids=[], required_visible_speakers=[], dialogue=[],
+                asset_ids=[], upstream=[], prop_body_invariants=['The cube remains red.'],
+                allowed_transformations=[], transition={'type':'hard_cut','rationale':'A single completed action.'})
+    contract['shots'] = [shot]
+    contract['story'] = dict(desire='The cube is above the surface.', action=shot['dominant_action'],
+                             consequence=shot['completed_end_state'], payoff='The cube comes to rest.')
+    for review in (contract['project_review'], shot['review']):
+        review['reviewer'] = 'synthetic textual fixture reviewer'
+        for predicate in review['predicates']:
+            predicate['evidence'] = 'Synthetic textual contract only; no footage reviewed.'
+    refresh(contract)
+    return contract
+
+
+def test_explicit_reference_free_textual_contract_needs_no_boards(tmp_path):
+    contract = reference_free_contract()
+    result = validate_shot_contract(contract, project_dir=tmp_path, shot_id='entry')
+    assert result['eligible'], result
+    assert contract['assets'] == [] and not list(tmp_path.iterdir())
+
+
+def test_untagged_empty_reference_contract_keeps_legacy_requirement(tmp_path):
+    contract = reference_free_contract()
+    del contract['reference_mode']
+    refresh(contract)
+    assert not validate_shot_contract(contract, project_dir=tmp_path, shot_id='entry')['eligible']
+
+
+@pytest.mark.parametrize('field,value', [
+    ('cast_ids',['actor']), ('required_visible_speakers',['actor']),
+    ('dialogue',[{'speaker_id':'actor','source':'visible','text':'Hello','start_seconds':0,'end_seconds':0.5}]),
+    ('asset_ids',['start']), ('upstream',[{'shot_id':'other'}])])
+def test_reference_free_rejects_shot_reference_obligations(tmp_path, field, value):
+    contract = reference_free_contract()
+    contract['shots'][0][field] = value
+    refresh(contract)
+    assert not validate_shot_contract(contract, project_dir=tmp_path, shot_id='entry')['eligible']
+
+
+@pytest.mark.parametrize('field,value', [('late_cast_ids',['actor']), ('payoff_speaker_ids',['actor']),
+                                        ('payoff_asset_id','payoff')])
+def test_reference_free_rejects_global_reference_obligations(tmp_path, field, value):
+    contract = reference_free_contract()
+    contract[field] = value
+    refresh(contract)
+    assert not validate_shot_contract(contract, project_dir=tmp_path, shot_id='entry')['eligible']
+
+
+def test_reference_free_rejects_identity_asset_and_missing_story_review(tmp_path):
+    contract = reference_free_contract()
+    contract['assets'] = [copy.deepcopy(json.loads((FIXTURES/'valid_shot_contract.json').read_text())['assets'][2])]
+    refresh(contract)
+    assert not validate_shot_contract(contract, project_dir=tmp_path, shot_id='entry')['eligible']
+    contract = reference_free_contract()
+    contract['shots'][0]['review']['predicates'] = [p for p in contract['shots'][0]['review']['predicates'] if p['name'] != 'completed_action']
+    result = validate_shot_contract(contract, project_dir=tmp_path, shot_id='entry')
+    assert not result['eligible'] and 'completed_action' in ' '.join(result['errors'])
