@@ -107,8 +107,8 @@ def _capture_inspection(model: str, mode: str, json_paths: dict, timeout: float)
     identity = qual.lookup_path(account["parsed"], json_paths["account_id"])
     if not qual._text(identity):
         raise cli.OpenArtCLIError("generation_unqualified", "observed account identity missing")
-    schema = form["parsed"].get("schema", form["parsed"]) if isinstance(form["parsed"], dict) else {}
-    cli.form_controls(form["parsed"])
+    schema = cli.form_schema(form["parsed"], model=model, mode=mode)
+    cli.form_controls(form["parsed"], model=model, mode=mode)
     profile = dict(dummy, source="real", cli_version=qual.lookup_path(version["parsed"], "version"),
                    account_id_sha256=hashlib.sha256(identity.encode()).hexdigest(),
                    tier=qual.lookup_path(account["parsed"], json_paths["account_tier"]),

@@ -33,6 +33,8 @@ if args==['version']: out={'version':os.environ.get('VERSION','1')}
 elif args==['account']: out={'id':os.environ.get('ACCOUNT','private-account'),'tier':os.environ.get('TIER','turbo'),'upload':g}
 elif args[:2]==['model','form']:
  out={'properties':{'prompt':{'type':'string'},'image':{'type':'string'},'duration':{'type':'integer','default':int(os.environ.get('DEFAULT','5'))}},'required':['prompt']}
+ if os.environ.get('FORM_WRAPPER')=='true': out={'model':os.environ.get('FORM_MODEL','m1'),'media':os.environ.get('FORM_MEDIA','video'),'mode':os.environ.get('FORM_MODE','image2video'),'jsonSchema':out}
+ if os.environ.get('FORM_CONFLICT')=='true': out['schema']={'properties':{'prompt':{'type':'string'}}}
 elif args[:2]==['upload','add']: out={'url':url,'upload':g}
 elif args[:2]==['generate','video']:
  params={'prompt':args[2]}
@@ -88,6 +90,35 @@ def test_first_account_real_capture_to_pre_submit(fake):
     assert sum(x[:2]==['upload','add'] for x in calls)==1
     assert sum(x[:2]==['generate','video'] for x in calls)==1
     assert all('--async' not in x for x in calls)
+
+
+def test_jsonschema_wrapped_form_capture_preserves_raw_hash_and_defaults(fake, monkeypatch):
+    # Synthetic wrapper representative of the observed official 0.1.1 response.
+    monkeypatch.setenv('FORM_WRAPPER', 'true')
+    result = _inspect()
+    profile = jobs.load_qualification(model='m1', mode='image2video', require='inspected')
+    raw_form = {'model':'m1','media':'video','mode':'image2video','jsonSchema':
+        {'properties':{'prompt':{'type':'string'},'image':{'type':'string'},'duration':{'type':'integer','default':5}},'required':['prompt']}}
+    assert result['level'] == 'inspected'
+    assert profile['form_defaults'] == {'duration': 5}
+    assert profile['form_sha256'] == setup.qual._hash(raw_form)
+
+
+@pytest.mark.parametrize('key,value', [('FORM_MODEL','another-model'), ('FORM_MODE','image2video-extra'), ('FORM_MEDIA','image')])
+def test_jsonschema_wrapper_metadata_must_match_target(fake, monkeypatch, key, value):
+    monkeypatch.setenv('FORM_WRAPPER', 'true')
+    monkeypatch.setenv(key, value)
+    with pytest.raises(cli.OpenArtCLIError, match='form_shape_unqualified'):
+        _inspect()
+    assert jobs.qualification_status('m1','image2video')['level'] == 'none'
+
+
+def test_conflicting_jsonschema_wrapper_is_rejected(fake, monkeypatch):
+    monkeypatch.setenv('FORM_WRAPPER', 'true')
+    monkeypatch.setenv('FORM_CONFLICT', 'true')
+    with pytest.raises(cli.OpenArtCLIError, match='form_shape_unqualified'):
+        _inspect()
+    assert jobs.qualification_status('m1','image2video')['level'] == 'none'
 
 
 @pytest.mark.parametrize('guarantee',[None,{'argv':['account'],'nonspending':{'path':'upload.free','expected':True}},

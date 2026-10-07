@@ -229,6 +229,46 @@ def test_refreshed_form_hash_still_requires_observed_defaults(synthetic_contract
         qualification.validate_profile(profile)
 
 
+def test_jsonschema_wrapper_validates_against_raw_receipt_and_preserves_defaults(synthetic_contract):
+    profile, _, refresh, _ = synthetic_contract
+    raw_form = {"model": "m-turbo", "media": "video", "mode": "text2video", "jsonSchema": {
+        "properties": {"prompt": {"type": "string"}, "duration": {"type": "integer", "default": 5}},
+        "required": ["prompt"]}}
+    refresh("form", parsed=raw_form)
+    profile["form_sha256"] = digest(raw_form)
+    profile["form_defaults"] = {"duration": 5}
+    assert qualification.validate_profile(profile)["form_defaults"] == {"duration": 5}
+
+
+@pytest.mark.parametrize("metadata", [
+    {"model": "other", "media": "video", "mode": "text2video"},
+    {"model": "m-turbo", "media": "image", "mode": "text2video"},
+    {"model": "m-turbo", "media": "video", "mode": "image2video"},
+])
+def test_jsonschema_wrapper_metadata_mismatch_is_rejected(synthetic_contract, metadata):
+    profile, _, refresh, _ = synthetic_contract
+    form = dict(metadata, jsonSchema={"properties": {"prompt": {"type": "string"},
+                                                     "duration": {"type": "integer", "default": 5}},
+                                      "required": ["prompt"]})
+    refresh("form", parsed=form)
+    profile["form_sha256"] = digest(form)
+    with pytest.raises(Error):
+        qualification.validate_profile(profile)
+
+
+def test_conflicting_form_wrappers_are_rejected_by_captured_validator(synthetic_contract):
+    profile, _, refresh, _ = synthetic_contract
+    form = {"model": "m-turbo", "media": "video", "mode": "text2video",
+            "jsonSchema": {"properties": {"prompt": {"type": "string"},
+                                            "duration": {"type": "integer", "default": 5}},
+                           "required": ["prompt"]},
+            "schema": {"properties": {"prompt": {"type": "string"}}}}
+    refresh("form", parsed=form)
+    profile["form_sha256"] = digest(form)
+    with pytest.raises(Error):
+        qualification.validate_profile(profile)
+
+
 @pytest.mark.parametrize("field,value", [("mode", "image2video"), ("model", "other-model"), ("media", "image")])
 def test_refreshed_native_body_sha_still_binds_model_mode(synthetic_contract, field, value):
     profile, bodies, refresh, _ = synthetic_contract

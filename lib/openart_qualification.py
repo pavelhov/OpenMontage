@@ -199,12 +199,12 @@ def _verify_captured(profile: dict, level: str = "full") -> None:
     try:
         _argv(records["form"], cli.model_form_argv(profile["model"], profile["mode"]))
         form = records["form"]["parsed"]
-        controls = cli.form_controls(form)
+        schema = cli.form_schema(form, model=profile["model"], mode=profile["mode"])
+        controls = cli.form_controls(form, model=profile["model"], mode=profile["mode"])
     except cli.OpenArtCLIError:
         _fail("model form controls are unsupported", "unsupported_gate")
     if _hash(form) != profile["form_sha256"]:
         _fail("observed form hash differs from profile")
-    schema = form.get("schema", form)
     defaults = {name: spec["default"] for name, spec in schema["properties"].items()
                 if isinstance(spec, dict) and "default" in spec}
     if _hash(defaults) != _hash(profile["form_defaults"]):

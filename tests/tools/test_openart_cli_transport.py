@@ -290,6 +290,19 @@ def test_form_controls_and_missing_controls():
     assert err.value.kind == "form_shape_unqualified"
 
 
+def test_form_controls_accepts_jsonschema_wrapper_and_rejects_ambiguity():
+    schema = {"type": "object", "properties": {"prompt": {"type": "string"},
+              "duration": {"type": "integer", "default": 5}}, "required": ["prompt"]}
+    wrapped = {"model": "m1", "media": "video", "mode": "text2video", "jsonSchema": schema}
+    controls = cli.form_controls(wrapped, model="m1", mode="text2video")
+    assert controls["duration"]["default"] == 5
+    with pytest.raises(cli.OpenArtCLIError, match="conflicting schema"):
+        cli.form_schema(dict(wrapped, schema={"properties": {"duration": {"default": 8}}}),
+                        model="m1", mode="text2video")
+    with pytest.raises(cli.OpenArtCLIError, match="target model"):
+        cli.form_controls(dict(wrapped, model="other"), model="m1", mode="text2video")
+
+
 def test_offline_quote_status_never_calls(env):
     assert cli.offline_quote_status(None)["status"] == "quote_required"
     ev = {"kind": "model_cost", "model": "m1", "mode": "text2video", "covers_settings": False,

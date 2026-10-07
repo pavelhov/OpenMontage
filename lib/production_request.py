@@ -436,11 +436,14 @@ def _validate_compiled(compiled, inputs, native, profile, packet):
         raise ValueError('closed shot contract needs approved start board: text2video unsupported')
     if not grok and profile['source'] == 'real':
         from lib import openart_jobs as jobs
+        from tools import _openart_cli as cli
         entry = next(e for e in profile['captured_receipts'] if e['kind'] == 'form')
         form = jobs._receipt_parsed(entry['receipt_id'], entry['receipt_sha256'])
-        form_schema = form.get('schema', form)
         try:
+            form_schema = cli.form_schema(form, model=profile['model'], mode=profile['mode'])
             Draft202012Validator(form_schema).validate(body['params'])
+        except cli.OpenArtCLIError:
+            raise ValueError('native form schema or metadata is unsupported') from None
         except ValidationError as exc:
             raise ValueError('native form rejects field ' + '/'.join(map(str, exc.absolute_path))) from None
     validate_timing(compiled['timing'], packet, inputs['project_dir'], body)

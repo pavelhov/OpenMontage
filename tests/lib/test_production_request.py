@@ -108,10 +108,10 @@ def retain(parsed,argv,name):
 
 
 def preview(inputs,profile,url):
-    creative=cli.native_video_argv(inputs['prompt'],model=inputs['model'],mode=inputs['mode'],duration=8,
-                                   aspect_ratio='16:9',resolution='720p',image_url=url)
+    creative=cli.native_video_argv(inputs['prompt'],model=inputs['model'],mode=inputs['mode'],duration=inputs['duration'],
+                                   aspect_ratio=inputs['aspect_ratio'],resolution=inputs['resolution'],image_url=url)
     body={'model':inputs['model'],'media':'video','mode':'image2video','params':{'prompt':inputs['prompt'],
-           'duration':8,'aspectRatio':'16:9','resolution':'720p','image':url}}
+           'duration':inputs['duration'],'aspectRatio':inputs['aspect_ratio'],'resolution':inputs['resolution'],'image':url}}
     rid,rsha=retain({'endpoint':profile['dry_run_endpoint'],'body':body},creative+['--dry-run']+cli.GLOBAL_FLAGS,'preview')
     inputs['native_dry_run_receipt_id']=rid; inputs['native_dry_run_receipt_sha256']=rsha
     return jobs.prepare_native_request(request.controls(inputs),profile)
@@ -399,6 +399,73 @@ def test_actual_native_form_bounds_and_fixture_review_never_live(package,maximum
     compiled['native_binding']=request._native_binding(native);publish((root,inputs,native,profile,compiled,review))
     with pytest.raises(ValueError,match='native form' if maximum==7 else 'fixture-only'):
         request.validate_preparation(inputs,native,profile)
+
+
+def _compile_with_synthetic_real_form(package, form, *, duration=8, resolution='720p'):
+    """Exercise the real-profile native form validator with synthetic retained evidence."""
+    root,inputs,_,fixture_profile,compiled,_=package
+    profile=copy.deepcopy(fixture_profile); profile['source']='real'
+    profile['form_sha256']=request.digest(form); profile['form_defaults']={'duration':5}
+    profile['dry_run_endpoint']='POST /synthetic/native-form-test'
+    rid,sha=retain(form,cli.model_form_argv(profile['model'],profile['mode']),'form')
+    profile['captured_receipts']=[{'kind':'form','receipt_id':rid,'receipt_sha256':sha}]
+    upload_path=jobs._upload_record_path('up-1')
+    upload_record=json.loads(upload_path.read_bytes())
+    upload_record.update(profile_source='real',binding=jobs.upload_binding(profile))
+    upload_record['binding_sha256']=jobs.sha256_json(upload_record['binding'])
+    upload_path.write_text(json.dumps(upload_record))
+    inputs['duration']=duration; inputs['resolution']=resolution
+    url='https://up.openart.test/start.svg?sig=private'
+    native=preview(inputs,profile,url)
+    result=request.prepare_compiled_request(inputs,native,profile,
+        coverage=compiled['coverage'],timing=compiled['timing'])
+    return result, inputs, native, profile
+
+
+def test_jsonschema_form_bounds_reject_out_of_range_native_duration(package):
+    form={'model':'fixture-model','media':'video','mode':'image2video','jsonSchema':{
+        'type':'object','properties':{'prompt':{'type':'string'},'image':{'type':'string'},
+            'duration':{'type':'number','minimum':5,'maximum':7},'aspectRatio':{'type':'string'},
+            'resolution':{'type':'string','enum':['768P']}}}}
+    with pytest.raises(ValueError,match='native form rejects field duration'):
+        _compile_with_synthetic_real_form(package,form)
+
+
+def _observed_jsonschema_form(model='fixture-model', media='video', mode='image2video'):
+    return {'model':model,'media':media,'mode':mode,'jsonSchema':{
+        'type':'object','properties':{'prompt':{'type':'string'},'image':{'type':'string'},
+            'duration':{'type':'integer','minimum':5,'maximum':15,'default':5},
+            'aspectRatio':{'type':'string'},'resolution':{'type':'string','enum':['768P']}}}}
+
+
+def test_jsonschema_native_validation_accepts_observed_duration_and_resolution(package):
+    result,_,_,_=_compile_with_synthetic_real_form(package,_observed_jsonschema_form(),
+                                                   duration=8,resolution='768P')
+    assert result['version']=='1.0'
+
+
+@pytest.mark.parametrize('duration', [4,16])
+def test_jsonschema_native_validation_rejects_out_of_range_duration(package,duration):
+    with pytest.raises(ValueError,match='native form rejects field duration'):
+        _compile_with_synthetic_real_form(package,_observed_jsonschema_form(),
+                                          duration=duration,resolution='768P')
+
+
+def test_jsonschema_native_validation_rejects_wrong_resolution(package):
+    with pytest.raises(ValueError,match='native form rejects field resolution'):
+        _compile_with_synthetic_real_form(package,_observed_jsonschema_form(),
+                                          duration=8,resolution='720p')
+
+
+@pytest.mark.parametrize('model,media,mode', [
+    ('other-model','video','image2video'),
+    ('fixture-model','image','image2video'),
+    ('fixture-model','video','text2video'),
+])
+def test_jsonschema_native_validation_rejects_mismatched_wrapper_metadata(package,model,media,mode):
+    with pytest.raises(ValueError,match='native form schema or metadata is unsupported'):
+        _compile_with_synthetic_real_form(package,_observed_jsonschema_form(model,media,mode),
+                                          duration=5,resolution='768P')
 
 
 @pytest.mark.parametrize('case',['no_language','drop_line','bad_review','stale_prompt'])

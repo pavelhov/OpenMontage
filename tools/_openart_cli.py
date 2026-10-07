@@ -598,12 +598,44 @@ def dry_run_request(parsed: Any) -> dict:
 
 
 # --- evidence interpretation (pure) ----------------------------------------
-def form_controls(form: Any) -> dict:
-    """Controls from `model form` JSON Schema (defaults inline; defaulted props not required)."""
-    if isinstance(form, dict) and isinstance(form.get("schema"), dict):
-        form = form["schema"]
-    if not isinstance(form, dict) or not isinstance(form.get("properties"), dict):
+def form_schema(form: Any, *, model: Optional[str] = None, mode: Optional[str] = None) -> dict:
+    """Extract a form schema without discarding or rewriting the captured response.
+
+    Accept legacy bare/``schema`` forms and the observed CLI 0.1.1
+    ``jsonSchema`` wrapper. Metadata is checked when the caller binds the form
+    to a model/mode qualification.
+    """
+    if not isinstance(form, dict):
         raise OpenArtCLIError("form_shape_unqualified", "model form output is not a JSON Schema object")
+    if "model" in form and model is not None and form["model"] != model:
+        raise OpenArtCLIError("form_shape_unqualified", "model form metadata differs from target model")
+    if "mode" in form and mode is not None and form["mode"] != mode:
+        raise OpenArtCLIError("form_shape_unqualified", "model form metadata differs from target mode")
+    if "media" in form and form["media"] != "video":
+        raise OpenArtCLIError("form_shape_unqualified", "model form metadata is not video")
+
+    candidates = []
+    for key in ("schema", "jsonSchema"):
+        if key in form:
+            value = form[key]
+            if not isinstance(value, dict):
+                raise OpenArtCLIError("form_shape_unqualified", "model form schema wrapper is malformed")
+            candidates.append(value)
+    if isinstance(form.get("properties"), dict):
+        candidates.append(form)
+    if not candidates:
+        raise OpenArtCLIError("form_shape_unqualified", "model form output is not a JSON Schema object")
+    schema = candidates[0]
+    if any(candidate != schema for candidate in candidates[1:]):
+        raise OpenArtCLIError("form_shape_unqualified", "model form has conflicting schema wrappers")
+    if not isinstance(schema.get("properties"), dict):
+        raise OpenArtCLIError("form_shape_unqualified", "model form output is not a JSON Schema object")
+    return schema
+
+
+def form_controls(form: Any, *, model: Optional[str] = None, mode: Optional[str] = None) -> dict:
+    """Controls from `model form` JSON Schema (defaults inline; defaulted props not required)."""
+    form = form_schema(form, model=model, mode=mode)
     required = set(form.get("required") or [])
     out = {}
     for name, spec in form["properties"].items():
