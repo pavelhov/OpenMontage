@@ -35,7 +35,17 @@ class OpenArtCLIVideo(BaseTool):
         'image_path':{'type':'string'}, 'image_upload_id':{'type':'string'},
         'compiled_request_id':{'type':'string'}, 'preparation_review_id':{'type':'string'},
         'credit_authorization_id':{'type':'string'},'credit_quote_id':{'type':'string'},'credit_qualification_sha256':{'type':'string'},
-        'native_dry_run_receipt_id':{'type':'string'}, 'native_dry_run_receipt_sha256':{'type':'string'}}}
+        'unknown_cost_authorization_id':{'type':'string','minLength':1,
+            'description':'Retained explicit unknown-cost authorization; requires matching unknown_cost_evidence_id. Unknown never means zero, a USD estimate, or a cost ceiling.'},
+        'unknown_cost_evidence_id':{'type':'string','pattern':'^[0-9a-f]{64}$'},
+        'native_dry_run_receipt_id':{'type':'string'}, 'native_dry_run_receipt_sha256':{'type':'string'}},
+        'dependentRequired': {'unknown_cost_authorization_id':['unknown_cost_evidence_id'],
+                              'unknown_cost_evidence_id':['unknown_cost_authorization_id']},
+        'allOf':[{'if':{'anyOf':[{'required':['unknown_cost_authorization_id']},
+                                {'required':['unknown_cost_evidence_id']}]},
+                  'then':{'not':{'anyOf':[{'required':['credit_authorization_id']},
+                                         {'required':['credit_quote_id']},
+                                         {'required':['credit_qualification_sha256']}]}}}]}
 
     def get_status(self):
         # No CLI/auth or readiness guessing during registry discovery.

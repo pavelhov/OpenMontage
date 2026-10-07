@@ -40,6 +40,35 @@ def _routes(registry: ToolRegistry) -> dict[str, dict]:
     return {row["provider"]: row for row in registry.qualified_cli_video_routes()}
 
 
+def test_unknown_cost_is_separate_explicit_opt_in(private_state, no_side_effects):
+    row = _routes(ToolRegistry())["openart_cli"]
+    modes = row['billing']['authorization_modes']
+    assert modes['exact_credit']['default'] is True
+    unknown = modes['unknown_cost']
+    assert unknown == {'default': False, 'recommended': False,
+                       'explicit_acknowledgement': 'no_enforceable_credit_ceiling',
+                       'current_quote_required': False, 'guaranteed_ceiling': False,
+                       'requested_charge': 'unknown', 'auto_continue_available': False}
+    assert row['billing']['current_quote_required'] is True
+
+
+def test_unpriced_pending_account_claim_is_visible(private_state, no_side_effects, monkeypatch):
+    monkeypatch.setattr(ledger_mod, 'read_existing_snapshot', lambda: {
+        'initialized': True, 'unpriced_reservations': [
+            {'attempt_id': 'unknown', 'account_key': '["openart_cli","h","ws"]',
+             'slot_state': 'uncertain', 'billing_state': 'unknown'},
+            {'attempt_id': 'foreign', 'account_key': '["other_cli","x","ws"]',
+             'slot_state': 'uncertain', 'billing_state': 'unknown'}],
+        'unpriced_outbox': [{'attempt_id': 'unknown'}, {'attempt_id': 'foreign'}]})
+    row = _routes(ToolRegistry())["openart_cli"]
+    assert [r['attempt_id'] for r in row['ledger']['pending']] == ['unknown']
+    hold = row['billing']['holds']['unknown_cost'][0]
+    assert hold['requested_charge'] == 'unknown' and hold['billing_state'] == 'unknown'
+    assert 'reserved_units' not in hold and 'debit_state' not in hold
+    assert row['ledger']['unacknowledged_outbox'] == 1
+    assert 'unknown_job_acceptance_unresolved' in row['dispatch_readiness']['blockers']
+
+
 def test_summary_exposes_qualified_routes(private_state, monkeypatch):
     monkeypatch.setattr(ledger_mod.CreditLedger, "__init__",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("ledger constructed")))
@@ -58,7 +87,7 @@ def _seed_ledger(root, rows=_DEFAULT_ROWS, quarantine=True, outbox=True):
     credits.mkdir(mode=0o700)
     path = credits / "ledger.sqlite3"
     db = sqlite3.connect(path)
-    for ddl in ledger_mod._SCHEMA:
+    for ddl in (*ledger_mod._SCHEMA, *ledger_mod._SCHEMA_V2_ADDITIONS):
         db.execute(ddl)
     db.execute(f"PRAGMA user_version={ledger_mod.SCHEMA_VERSION}")
     oa_acct = '["openart_cli","h","ws"]'

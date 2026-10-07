@@ -307,6 +307,7 @@ def baseline_descriptor(retained, root=None):
     template = retained['planned_request_template']
     if set(template) != {'inputs', 'static_input_assets'}:
         raise AutonomyError('invalid retained request template')
+    _refuse_unknown_cost(template['inputs'])
     static = []
     for item in template['static_input_assets']:
         assets = [a for a in projection['assets'] if a.get('path') and
@@ -737,7 +738,15 @@ def _scope_record(policy, sha, decision_id, *, shot_id, provider, request_digest
     return scope
 
 
+def _refuse_unknown_cost(inputs):
+    if any(key in inputs for key in ('unknown_cost_authorization_id',
+            'unknown_cost_evidence_id', 'unknown_cost_authorization',
+            'unknown_cost_authorization_sha256')):
+        raise AutonomyError('unknown-cost Auto-continue is unavailable; use separate Strict approval')
+
+
 def _scope_material(root, inputs, provider, observation=None):
+    _refuse_unknown_cost(inputs)
     from lib import production_request as preparation, production_execution as execution
     policy, sha, decision_id = require_active_policy(root)
     shot_id = inputs['governance']['shot_id']

@@ -30,10 +30,11 @@
         "qualify_result",
         "qualify_quote",
         "refresh_quote",
+        "refresh_unknown_cost_evidence",
         "repair_outbox",
         "qualify_resolution_contract"
       ],
-      "description": "No action submits generation or reserves credits. collect requires the original attempt, project directory and frozen request digest. upload is allowed only after internal nonspending qualification and approval lookup. resolve_attempt repairs only original evidence; submit remains unavailable."
+      "description": "No action submits generation or reserves credits. collect requires the original attempt, project directory and frozen request digest. upload is allowed only after internal nonspending qualification and approval lookup. resolve_attempt repairs only original evidence; submit remains unavailable. refresh_unknown_cost_evidence retains observations only: unknown requested charge never means zero, a USD estimate, or a cost ceiling."
     },
     "read_only": {
       "const": true,
@@ -199,6 +200,39 @@
           "attempt_id",
           "json_paths"
         ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "refresh_unknown_cost_evidence"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "request"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "quote_contract"
+              ]
+            },
+            {
+              "required": [
+                "qualification_sha256"
+              ]
+            },
+            {
+              "required": [
+                "quote_id"
+              ]
+            }
+          ]
+        }
       }
     }
   ]

@@ -10,12 +10,13 @@ import hashlib
 import json
 import re
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from uuid import uuid4
 
 from lib import production_autonomy as autonomy
 from lib import production_execution as execution
-from lib.provider_credit_ledger import Binding, CreditScale, read_existing_snapshot
+from lib.provider_credit_ledger import Binding, UnpricedBinding, CreditScale, read_existing_snapshot
 
 
 def _require(ok, message):
@@ -115,6 +116,100 @@ def _finding_field(error):
     # Keep a bounded schema/check label, never its potentially private exception body.
     label = str(error).split(':', 1)[0]
     return label if re.fullmatch(r'[A-Za-z0-9_. -]{1,128}', label) else 'current_final_binding'
+
+
+def _observed_credits(value):
+    _require(isinstance(value, str), 'provider credits require a decimal string')
+    try:
+        amount = Decimal(value)
+    except InvalidOperation:
+        raise autonomy.AutonomyError('autonomy report: invalid observed credits') from None
+    _require(amount.is_finite() and amount >= 0, 'invalid observed credits')
+    return value
+
+
+def unknown_cost_report(project_root):
+    """Pure Strict summary; unknown exposure never enters Auto credit totals.
+
+    Reads typed private originals and safe evidence summaries without calling
+    the provider, initializing state, approving, repairing, or writing files.
+    Balance observations carry no per-job attribution or affordability claim.
+    """
+    from lib import openart_dispatch as dispatch, openart_credit as credit
+    root = Path(project_root).resolve()
+    snapshot = read_existing_snapshot()
+    rows = snapshot.get('unpriced_reservations', [])
+    origins = {row['attempt_id'] for row in rows}
+    _require(len(origins) == len(rows), 'duplicate unpriced reservation')
+    _require(all(item['attempt_id'] in origins for key in ('unpriced_claims', 'unpriced_outbox')
+                 for item in snapshot.get(key, [])), 'unpriced pending state lacks original')
+    attempts = []
+    for row in rows:
+        binding = UnpricedBinding(**json.loads(row['binding_json']))
+        binding.validate()
+        if binding.project_root != str(root):
+            continue
+        _require(binding.provider == 'openart_cli' and binding.attempt_id == row['attempt_id']
+                 and binding.account_key == row['account_key'] and binding.claim_key == row['claim_key']
+                 and binding.authorization_occurrence == row['authorization_occurrence'], 'unpriced ledger binding differs')
+        manifest, original, frozen = dispatch._manifest(binding.attempt_id)
+        _require(original == binding and manifest.get('authorization_kind') == 'unknown_cost', 'unpriced private original differs')
+        authority = manifest['unknown_cost_authorization']
+        _require(authority['sha256'] == binding.authorization_sha256
+                 and authority['occurrence'] == binding.authorization_occurrence, 'unpriced authority binding differs')
+        request = manifest['journal_records']['request.json']
+        _require(request['request_sha256'] == binding.request_sha256, 'unpriced request binding differs')
+        summary = manifest['unknown_cost_evidence']
+        call_keys = {'provider_calls', 'read_only_cli_calls', 'generation_calls'}
+        current = credit.load_unknown_evidence(summary['evidence_id'])
+        _require({k: v for k, v in current.items() if k not in call_keys}
+                 == {k: v for k, v in summary.items() if k not in call_keys}, 'unknown evidence summary changed')
+        _require(summary['evidence_sha256'] == binding.evidence_sha256
+                 and summary['account_id_sha256'] == binding.account_id
+                 and summary['native_body_sha256'] == binding.native_sha256
+                 and summary['profile_sha256'] == binding.profile_sha256
+                 and frozen['native']['native_body_sha256'] == binding.native_sha256
+                 and frozen['profile']['profile_sha256'] == binding.profile_sha256,
+                 'unknown evidence account/native/profile binding differs')
+        _require(summary['requested_charge'] == 'unknown'
+                 and summary['workspace_billing_guarantee'] == 'unverified', 'unknown economics were overstated')
+        slot = row['slot_state']; billing = row['billing_state']
+        _require(slot in {'prepared', 'ready', 'submitting', 'submitted', 'uncertain', 'terminal', 'closed', 'no-dispatch'}
+                 and billing in {'unknown', 'qualified'}, 'invalid unpriced state')
+        if slot not in {'prepared', 'no-dispatch'}:
+            dispatch._ready_journal(binding, manifest)
+        classification = summary['price_classification']
+        _require(classification in {'settings_matched', 'mismatched_default', 'missing', 'unavailable'}, 'invalid price classification')
+        balance = summary['balance_observation']
+        _require(balance['label'] == 'unattributed_observation', 'balance observation cannot be attributed to a job')
+        item = {'attempt_id': binding.attempt_id, 'shot_id': _token(request['shot_id']),
+                'authorization_kind': 'unknown_cost', 'request_sha256': binding.request_sha256,
+                'requested_charge': 'unknown', 'price_classification': classification,
+                'balance_observation': {'label': 'unattributed_observation', 'credits': _observed_credits(balance['credits'])},
+                'workspace_billing_guarantee': 'unverified', 'slot_state': slot, 'billing_state': billing,
+                'settings': _settings(frozen['inputs'], request, 'openart_cli')}
+        if classification == 'mismatched_default' and summary.get('observed_default_price') is not None:
+            default = summary['observed_default_price']
+            item['observed_default_price'] = {'label': 'model_default_not_requested',
+                'credits': _observed_credits(default['credits']),
+                'settings': {key: _token(default['settings'].get(key)) for key in ('duration', 'resolution', 'aspect_ratio')}}
+        if billing == 'qualified':
+            _require(re.fullmatch('[a-f0-9]{64}', row['billing_evidence_sha256']) is not None
+                     and bool(row['job_id']), 'qualified per-job billing proof missing')
+            item['billed_amount'] = _observed_credits(row['billed_amount'])
+        if row.get('release_kind'):
+            _require(row['release_kind'] in {'terminal', 'proved_not_dispatched', 'inactive_unidentified'}, 'invalid unpriced release kind')
+            item['release_kind'] = row['release_kind']
+            if row['release_kind'] == 'inactive_unidentified' and not row.get('job_id'):
+                refusal = dispatch.verify_provider_refusal(binding.attempt_id)
+                if refusal is not None:
+                    _require(refusal['code'] in {'insufficient_credit', 'unavailable_plan'}, 'invalid provider refusal code')
+                    item['provider_refusal'] = {'code': refusal['code'], 'evidence_sha256': refusal['evidence_sha256']}
+        attempts.append(item)
+    _require(read_existing_snapshot() == snapshot, 'credit ledger changed during report; retry with current evidence')
+    return {'version': '1.0', 'authorization_kind': 'unknown_cost',
+            'as_of_utc': datetime.now(timezone.utc).isoformat(),
+            'attempts': sorted(attempts, key=lambda item: item['attempt_id']), 'quality_status': 'unreviewed'}
 
 
 def completion_report(project_root, policy_sha):

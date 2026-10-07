@@ -128,6 +128,7 @@ def _openart_route(tool: BaseTool) -> dict[str, Any]:
     profile_accounts = sorted({m["account_id_sha256"] for m in available_models if m["account_id_sha256"]})
     ledger: dict[str, Any] = {"initialized": False, "scope": "provider:openart_cli",
                               "accounts": [], "pending": [], "holds": [],
+                              "unpriced_holds": [],
                               "quarantine": [], "unacknowledged_outbox": 0, "error": None}
     try:
         from lib.provider_credit_ledger import read_existing_snapshot
@@ -157,6 +158,20 @@ def _openart_route(tool: BaseTool) -> dict[str, Any]:
                                         else "pending_reservation",
                                         "job_acceptance_unknown":
                                         res.get("slot_state") in _OPENART_PENDING_SLOTS})
+        unpriced_attempts: set[str] = set()
+        for res in snap.get("unpriced_reservations", []):
+            account = _openart_account_key(res.get("account_key"))
+            if account is None or not _in_scope(account, profile_accounts):
+                continue
+            unpriced_attempts.add(str(res.get("attempt_id")))
+            item = {"attempt_id": res.get("attempt_id"), "account": account,
+                    "authorization_kind": "unknown_cost", "requested_charge": "unknown",
+                    "slot_state": res.get("slot_state"), "billing_state": res.get("billing_state"),
+                    "job_acceptance_unknown": res.get("slot_state") in _OPENART_PENDING_SLOTS}
+            if item["job_acceptance_unknown"]:
+                ledger["pending"].append(item)
+            if res.get("billing_state") == "unknown":
+                ledger["unpriced_holds"].append(item)
         for acct in snap.get("accounts", []):
             account = _openart_account_key(acct.get("account_key"))
             if account is None or not _in_scope(account, profile_accounts):
@@ -171,7 +186,8 @@ def _openart_route(tool: BaseTool) -> dict[str, Any]:
             if claim is not None and _in_scope(claim, profile_accounts):
                 ledger["quarantine"].append({"account": claim, "reason": q.get("reason")})
         ledger["unacknowledged_outbox"] = sum(
-            1 for o in snap.get("outbox", []) if str(o.get("attempt_id")) in attempts)
+            1 for o in snap.get("outbox", []) if str(o.get("attempt_id")) in attempts) + sum(
+            1 for o in snap.get("unpriced_outbox", []) if str(o.get("attempt_id")) in unpriced_attempts)
     except Exception as exc:
         ledger["error"] = f"{type(exc).__name__}: {exc}"
         errors.append("ledger_snapshot_error")
@@ -196,7 +212,7 @@ def _openart_route(tool: BaseTool) -> dict[str, Any]:
         blockers.append("ledger_unreadable")
     if ledger["pending"]:
         blockers.append("pending_openart_attempts_need_reconciliation")
-    if any(h["job_acceptance_unknown"] for h in ledger["holds"]):
+    if any(h["job_acceptance_unknown"] for h in ledger["holds"] + ledger["unpriced_holds"]):
         blockers.append("unknown_job_acceptance_unresolved")
     billing_holds = [h for h in ledger["holds"] if h["hold"] == "unknown_billing"]
     if ledger["quarantine"]:
@@ -247,6 +263,8 @@ def _openart_route(tool: BaseTool) -> dict[str, Any]:
                               else "all_openart_accounts_until_verified_profile_account"),
             "fresh_prelaunch_refresh_required": True,
             "requires": ["fresh_account_refresh", "current_quote", "approved_credit_authorization"],
+            "unknown_cost_requires": ["fresh_account_refresh", "fresh_price_evidence",
+                                      "approved_unknown_cost_authorization", "no_enforceable_credit_ceiling_acknowledgement"],
         },
         "billing": {
             "kind": "credits",
@@ -254,9 +272,17 @@ def _openart_route(tool: BaseTool) -> dict[str, Any]:
             "current_quote_required": True,
             "usd_cost_status": "unknown",
             "estimated_cost_usd": None,
+            "authorization_modes": {
+                "exact_credit": {"default": True, "current_quote_required": True},
+                "unknown_cost": {"default": False, "recommended": False,
+                    "explicit_acknowledgement": "no_enforceable_credit_ceiling",
+                    "current_quote_required": False, "guaranteed_ceiling": False,
+                    "requested_charge": "unknown", "auto_continue_available": False},
+            },
             "holds": {
                 "pending_reservation": [h for h in ledger["holds"] if h["hold"] == "pending_reservation"],
                 "unknown_billing": billing_holds,
+                "unknown_cost": ledger["unpriced_holds"],
             },
             # Retained unknown-billing holds keep the route eligible but the
             # economics incomplete: remaining allowance + a current quote decide.

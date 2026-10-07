@@ -12,7 +12,7 @@ from tools.base_tool import (BaseTool, Determinism, DependencyError, ExecutionMo
 READ_ONLY_ACTIONS = ("inspect", "quote", "form", "native_dry_run", "readiness",
                      "status", "collect", "verify", "upload", "qualifications",
                      "qualify_inspection", "qualify_upload", "qualify_preview", "qualify_result",
-                     "qualify_quote", "refresh_quote", "resolve_attempt", "repair_outbox", "qualify_resolution_contract")
+                     "qualify_quote", "refresh_quote", "refresh_unknown_cost_evidence", "resolve_attempt", "repair_outbox", "qualify_resolution_contract")
 DISABLED_ACTIONS = ("submit",)
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -54,13 +54,14 @@ class OpenArtAccount(BaseTool):
                                         'qualify_inspection',
                                         'qualify_upload',
                                         'qualify_preview',
-                                        'qualify_result','qualify_quote','refresh_quote','repair_outbox','qualify_resolution_contract'],
+                                        'qualify_result','qualify_quote','refresh_quote','refresh_unknown_cost_evidence','repair_outbox','qualify_resolution_contract'],
                                'description': 'No action submits generation or reserves credits. '
                                               'collect requires the original attempt, project '
                                               'directory and frozen request digest. upload is allowed '
                                               'only after internal nonspending qualification and '
                                               'approval lookup. resolve_attempt repairs only original evidence; submit remains '
-                                              'unavailable.'},
+                                              'unavailable. refresh_unknown_cost_evidence retains observations only: '
+                                              'unknown requested charge never means zero, a USD estimate, or a cost ceiling.'},
                     'read_only': {'const': True, 'description': 'Must be explicitly true.'},
                     'model': {'type': 'string', 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$'},
                     'mode': {'type': 'string', 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$'},
@@ -92,7 +93,11 @@ class OpenArtAccount(BaseTool):
                {'if': {'properties': {'action': {'const': 'qualify_preview'}}},
                 'then': {'required': ['model', 'mode', 'prompt']}},
                {'if': {'properties': {'action': {'const': 'qualify_result'}}},
-                'then': {'required': ['attempt_id', 'json_paths']}}]}
+                'then': {'required': ['attempt_id', 'json_paths']}},
+               {'if': {'properties': {'action': {'const': 'refresh_unknown_cost_evidence'}}},
+                'then': {'required': ['request'], 'not': {'anyOf': [
+                    {'required': ['quote_contract']}, {'required': ['qualification_sha256']},
+                    {'required': ['quote_id']}]}}}]}
 
     def check_dependencies(self) -> None:
         try:
@@ -141,7 +146,10 @@ class OpenArtAccount(BaseTool):
                           data={"error": public, "reservations": 0, "paid_submission": False})
 
     def _dispatch(self, action: str, inputs: dict) -> ToolResult:
-        if action in {'qualify_quote','refresh_quote','resolve_attempt','repair_outbox','qualify_resolution_contract'}:
+        if action in {'qualify_quote','refresh_quote','refresh_unknown_cost_evidence','resolve_attempt','repair_outbox','qualify_resolution_contract'}:
+            if action == 'refresh_unknown_cost_evidence' and any(
+                    key in inputs for key in ('quote_contract', 'qualification_sha256', 'quote_id')):
+                raise cli.OpenArtCLIError('invalid_argument', 'unknown-cost evidence cannot include exact quote fields')
             from lib import openart_credit as credit, openart_jobs as jobs, openart_dispatch as dispatch
             timeout=cli.validate_timeout(inputs.get('timeout_seconds'))
             if action in {'resolve_attempt','repair_outbox','qualify_resolution_contract'}:
@@ -160,6 +168,8 @@ class OpenArtAccount(BaseTool):
                 profile=jobs.load_qualification(model=request.get('model'),mode=request.get('mode'),require='pre_submit')
                 if action=='qualify_quote':
                     result=credit.qualify_quote_contract(request,profile,credit.QuoteContract(**inputs.get('quote_contract',{})),timeout=timeout)
+                elif action == 'refresh_unknown_cost_evidence':
+                    result=credit.refresh_unknown_cost_evidence(request,profile,timeout=timeout)
                 else:
                     result=credit.refresh_credit_evidence(request,profile,qualification_sha256=inputs.get('qualification_sha256'),
                         approved_quote_id=inputs.get('quote_id'),timeout=timeout)

@@ -998,3 +998,77 @@ def test_grok_generation_unknown_project_still_fails_without_probe(tmp_path, mon
         execution.execute_governed(tool, {'project_dir': str(tmp_path)},
                                    lambda clean: pytest.fail('Unknown project invoked provider'))
     assert not list(tmp_path.iterdir())
+
+
+def _qualification_marker(root):
+    marker = json.loads((root/'project.json').read_text())
+    marker['pipeline_type'] = 'provider-qualification'
+    (root/'project.json').write_text(json.dumps(marker))
+
+
+def test_provider_qualification_pipeline_rejects_non_openart_motion_route(tmp_path):
+    inputs, _, _ = project(tmp_path, motion=True)
+    _qualification_marker(tmp_path)
+    tool = MotionTool()
+    with pytest.raises(ProductionGovernanceError, match='provider-qualification'):
+        preflight(tool, inputs)
+    assert tool.calls == 0 and not (tmp_path/'production_attempts').exists()
+
+
+def test_non_qualification_pipeline_motion_preflight_unchanged(tmp_path):
+    inputs, _, _ = project(tmp_path, motion=True)
+    assert preflight(MotionTool(), inputs)['governed'] is True
+
+
+def test_provider_qualification_hook_runs_for_openart_with_native_and_profile(tmp_path, monkeypatch):
+    from tests.tools.test_openart_cli_video import synthetic_openart_project
+    from lib import provider_qualification
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    inputs, _, state = synthetic_openart_project(tmp_path, monkeypatch)
+    _qualification_marker(tmp_path)
+    seen = []
+    def gate(root, given, digest, *, native=None, profile=None):
+        seen.append((Path(root), digest, native, profile))
+        raise provider_qualification.QualificationValidationError('Provider qualification: synthetic refusal')
+    monkeypatch.setattr(provider_qualification, 'validate_qualification_stage', gate)
+    with pytest.raises(ProductionGovernanceError, match='synthetic refusal'):
+        preflight(OpenArtCLIVideo(), inputs)
+    assert len(seen) == 1 and seen[0][2] and seen[0][3]
+    assert seen[0][1] == planned_request_digest(inputs, project_dir=tmp_path)
+    assert state['submits'] == 0
+
+
+@pytest.mark.parametrize('extra', [
+    {'unknown_cost_authorization_id': 'retained'},
+    {'unknown_cost_evidence_id': 'a' * 64},
+    {'unknown_cost_authorization_id': None, 'unknown_cost_evidence_id': None},
+    {'unknown_cost_authorization_id': 'retained', 'unknown_cost_evidence_id': 'a' * 64}])
+def test_grok_cannot_carry_openart_unknown_authority(tmp_path, monkeypatch, extra):
+    from lib import production_execution as execution
+    class GrokMotion(MotionTool):
+        provider = 'grok_cli'
+    inputs, _, _ = project(tmp_path, motion=True)
+    inputs.update(extra)
+    before = {str(p.relative_to(tmp_path)): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    def forbidden(*args, **kwargs):
+        raise AssertionError('cross-route unknown authority reached OpenArt preparation')
+    monkeypatch.setattr(execution, '_openart_prepare', forbidden)
+    tool = GrokMotion()
+    with pytest.raises(ProductionGovernanceError, match='invalid_argument:.*OpenArt route'):
+        tool.execute(inputs)
+    assert tool.calls == 0
+    assert {str(p.relative_to(tmp_path)): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
+
+
+@pytest.mark.parametrize('authorization', ['../escape', 'unsafe.id', 'with space', '/absolute', ''])
+def test_openart_unknown_authorization_requires_safe_artifact_id(tmp_path, monkeypatch, authorization):
+    from lib import production_execution as execution
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    inputs, _, _ = project(tmp_path, motion=True)
+    inputs.update(unknown_cost_authorization_id=authorization, unknown_cost_evidence_id='a' * 64)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('unsafe unknown authorization reached preparation')
+    monkeypatch.setattr(execution, '_openart_prepare', forbidden)
+    with pytest.raises(ProductionGovernanceError, match='invalid_argument:'):
+        preflight(OpenArtCLIVideo(), inputs)
+    assert not (tmp_path / 'production_attempts').exists()

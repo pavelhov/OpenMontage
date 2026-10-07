@@ -28,7 +28,7 @@ from typing import Any
 
 from lib.shot_contract import contract_digest, file_sha256, validate_shot_contract
 
-GOVERNANCE_KEYS = {'governance', 'project_dir', 'shot_id', 'scope_id', 'production_phase', 'shot_contract_path', 'compiled_request_id', 'preparation_review_id', 'credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256'}
+GOVERNANCE_KEYS = {'governance', 'project_dir', 'shot_id', 'scope_id', 'production_phase', 'shot_contract_path', 'compiled_request_id', 'preparation_review_id', 'credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256', 'unknown_cost_authorization_id', 'unknown_cost_evidence_id'}
 INPUT_PATH_KEYS = {'image', 'image_path', 'image_paths', 'reference_image_path', 'reference_image_paths',
                    'first_frame', 'last_frame', 'last_image_path', 'images', 'audio_path',
                    'reference_audio_path', 'reference_audio_paths', 'video_path', 'reference_video_path',
@@ -580,6 +580,22 @@ def active_openart_dispatch(inputs):
 
 def preflight(tool, inputs):
     """Perform the same factual checks used by dispatch, without writing or calling."""
+    unknown_keys = ('unknown_cost_authorization_id', 'unknown_cost_evidence_id')
+    if any(key in inputs for key in unknown_keys):
+        if any(key in inputs for key in ('credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256')):
+            _fail('invalid_argument: unknown-cost and exact credit authorization are mutually exclusive')
+        if not (_is_openart(tool) or (tool.provider == 'selector' and inputs.get('preferred_provider') == 'openart_cli')):
+            _fail('invalid_argument: unknown-cost authorization requires an OpenArt route')
+        if any(not isinstance(inputs.get(key), str) or not inputs[key] for key in unknown_keys):
+            _fail('invalid_argument: unknown-cost authorization and evidence IDs are required together')
+        from lib.production_request import _id
+        try:
+            _id(inputs['unknown_cost_authorization_id'])
+        except ValueError:
+            _fail('invalid_argument: unknown-cost authorization ID must be an opaque safe ID')
+        evidence_id = inputs['unknown_cost_evidence_id']
+        if len(evidence_id) != 64 or any(c not in '0123456789abcdef' for c in evidence_id):
+            _fail('invalid_argument: unknown-cost evidence ID must be a lowercase SHA-256 digest')
     kind = _kind(tool, inputs)
     if _is_openart(tool) or (tool.provider == 'selector' and inputs.get('preferred_provider') == 'openart_cli'):
         root = discover_project(inputs)
@@ -601,6 +617,10 @@ def preflight(tool, inputs):
         return {'governed': False, 'label': 'ungoverned_legacy'}
     if marker['governance'].get('version') != '1.0':
         _fail('unsupported governance version')
+    qualification = marker.get('pipeline_type') == 'provider-qualification'
+    if qualification and (kind != 'motion' or not (_is_openart(tool) or (
+            tool.provider == 'selector' and inputs.get('preferred_provider') == 'openart_cli'))):
+        _fail('provider-qualification pipeline admits only canonical OpenArt strict video generation')
     if kind == 'avatar':
         # Avatar generation/resume has no shot-contract, scope phase or attempt
         # provenance binding yet. Fail closed in strict projects rather than
@@ -722,6 +742,16 @@ def preflight(tool, inputs):
     if any(_inside(item.get('submitted_inputs', {}).get('output_path', ''), root) == output for item in attempts):
         _fail('output path already reserved; reconcile the original attempt')
     openart = _openart_prepare(inputs) if _is_openart(tool) or provider == 'openart_cli' else None
+    if qualification:
+        # The generic gate above applies to every route; this pipeline additionally
+        # requires the current human-approved packet bound to actual native/profile.
+        if provider != 'openart_cli' or openart is None:
+            _fail('provider-qualification pipeline admits only canonical OpenArt strict video generation')
+        from lib.provider_qualification import validate_qualification_stage
+        try:
+            validate_qualification_stage(root, inputs, digest, native=openart[1], profile=openart[0])
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            _fail(str(exc))
     return {'openart':openart, 'governed': True, 'root': root, 'marker': marker, 'scope': scope,
             'shot_id': shot_id, 'kind': kind, 'contract': contract, 'request_sha256': digest,
             'scope_attempt_index':scope_used, 'policy_validated': policy_validated}
@@ -942,7 +972,7 @@ def _execute_governed(tool, inputs, invoke):
             _fail('input changed during reservation')
         submitted = _provider_inputs(tool, submitted, session_id)
         if openart_binding:
-            for key in ('compiled_request_id', 'preparation_review_id', 'credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256'):
+            for key in ('compiled_request_id', 'preparation_review_id', 'credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256', 'unknown_cost_authorization_id', 'unknown_cost_evidence_id'):
                 if key in inputs:
                     submitted[key] = inputs[key]
         scope = checked['scope']

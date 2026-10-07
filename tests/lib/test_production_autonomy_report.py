@@ -20,6 +20,78 @@ def write(path, value):
     path.write_text(json.dumps(value))
 
 
+def test_unknown_report_absent_state_is_readonly(tmp_path, monkeypatch):
+    from lib import production_autonomy_report as reports
+    private = tmp_path / 'absent'
+    monkeypatch.setenv('OPENMONTAGE_OPENART_STATE_DIR', str(private))
+    report = reports.unknown_cost_report(tmp_path / 'project')
+    assert report['attempts'] == [] and report['quality_status'] == 'unreviewed'
+    assert not private.exists()
+
+
+@pytest.mark.parametrize('qualified', [False, True, 'refused'])
+@pytest.mark.parametrize('corruption', [None, 'account', 'native', 'profile', 'authority', 'balance_attribution'])
+def test_unknown_report_uses_typed_binding_and_never_balance_delta(tmp_path, monkeypatch, qualified, corruption):
+    from lib import production_autonomy_report as reports, openart_dispatch as dispatch, openart_credit as credit
+    from lib.provider_credit_ledger import CreditLedger, OriginalJobReceipt, QualifiedUnpricedBilling, QualifiedSlotRelease
+    from tests.lib.test_provider_credit_ledger_unpriced import unpriced, D
+    root = (tmp_path / 'project').resolve()
+    monkeypatch.setenv('OPENMONTAGE_OPENART_STATE_DIR', str(tmp_path / 'private'))
+    ledger = CreditLedger(); claim = unpriced(project=str(root)); binding = claim.binding
+    ledger.reserve_unpriced(claim)
+    if qualified == 'refused':
+        ledger.mark_unpriced(binding, 'ready', D); ledger.mark_unpriced(binding, 'submitting', D)
+        ledger.release_unpriced(QualifiedSlotRelease(binding, 'inactive_unidentified', 'c' * 64, D, ''))
+    elif qualified:
+        ledger.mark_unpriced(binding, 'ready', D); ledger.mark_unpriced(binding, 'submitting', D)
+        ledger.mark_unpriced_submitted(OriginalJobReceipt(binding, D, 'job-one'))
+        ledger.record_unpriced_billing(QualifiedUnpricedBilling(binding, 'b' * 64, 'job-one', '12.5'))
+    summary = {'evidence_id': 'ev', 'evidence_sha256': D, 'requested_charge': 'unknown',
+               'price_classification': 'mismatched_default',
+               'observed_default_price': {'label': 'model_default_not_requested', 'credits': '50',
+                                          'settings': {'duration': 5, 'resolution': '540p', 'aspect_ratio': '16:9'}},
+               'balance_observation': {'label': 'unattributed_observation', 'credits': '40'},
+               'account_id_sha256': binding.account_id, 'workspace_billing_guarantee': 'unverified',
+               'native_body_sha256': D, 'profile_sha256': D, 'raw_identity': 'PRIVATE SECRET'}
+    manifest = {'authorization_kind': 'unknown_cost', 'unknown_cost_evidence': summary,
+                'unknown_cost_authorization': {'sha256': D, 'occurrence': binding.authorization_occurrence},
+                'journal_records': {'request.json': {'request_sha256': D, 'shot_id': 'shot', 'input_assets': []}},
+                'authorization': {'purpose': 'result_contract_qualification'}}
+    frozen = {'inputs': {'model': 'pixverseV6', 'duration': 1, 'resolution': '720p', 'aspect_ratio': '16:9'},
+              'native': {'native_body_sha256': D}, 'profile': {'profile_sha256': D}}
+    monkeypatch.setattr(dispatch, '_manifest', lambda _: (manifest, binding, frozen))
+    monkeypatch.setattr(dispatch, '_ready_journal', lambda *a: None)
+    monkeypatch.setattr(credit, 'load_unknown_evidence', lambda _: summary, raising=False)
+    monkeypatch.setattr(dispatch, 'verify_provider_refusal', lambda _: {
+        'code': 'insufficient_credit', 'evidence_sha256': 'c' * 64, 'message': 'PRIVATE ERROR'}, raising=False)
+    before = ledger.inspect_unpriced(binding.attempt_id)
+    if corruption:
+        if corruption == 'authority':
+            manifest['unknown_cost_authorization']['sha256'] = 'b' * 64
+        elif corruption == 'balance_attribution':
+            summary['balance_observation']['label'] = 'job_charge'
+        else:
+            key = {'account': 'account_id_sha256', 'native': 'native_body_sha256', 'profile': 'profile_sha256'}[corruption]
+            summary[key] = 'b' * 64
+        with pytest.raises(autonomy.AutonomyError):
+            reports.unknown_cost_report(root)
+        assert ledger.inspect_unpriced(binding.attempt_id) == before
+        return
+    report = reports.unknown_cost_report(root)
+    row = report['attempts'][0]
+    assert row['requested_charge'] == 'unknown'
+    assert row['billing_state'] == ('qualified' if qualified is True else 'unknown')
+    assert row.get('billed_amount') == ('12.5' if qualified is True else None)
+    if qualified == 'refused':
+        assert row['slot_state'] == 'closed' and row['release_kind'] == 'inactive_unidentified'
+        assert row['provider_refusal'] == {'code': 'insufficient_credit', 'evidence_sha256': 'c' * 64}
+    assert row['observed_default_price']['label'] == 'model_default_not_requested'
+    assert row['balance_observation'] == {'label': 'unattributed_observation', 'credits': '40'}
+    assert not any(key in row for key in ('ceiling', 'cost_usd', 'reserved_units', 'charged_units'))
+    assert 'PRIVATE' not in json.dumps(report) and str(root) not in json.dumps(report)
+    assert ledger.inspect_unpriced(binding.attempt_id) == before
+
+
 @pytest.mark.parametrize('raw', [b'{invalid', b'[]', b'null'])
 def test_malformed_current_final_review_is_honest_draft(project, raw):
     root, _, sha = project

@@ -47,6 +47,20 @@ def retained_fixture(root):
                       'approval_plan_sha256': approval_plan_digest(contract)}}
 
 
+def test_unknown_cost_input_refused_before_policy_read(monkeypatch, tmp_path):
+    monkeypatch.setattr(pa, 'require_active_policy', lambda _: pytest.fail('policy read before refusal'))
+    with pytest.raises(pa.AutonomyError, match='unknown-cost Auto-continue is unavailable'):
+        pa._scope_material(tmp_path, {'unknown_cost_authorization_id': 'one'}, 'openart_cli')
+
+
+def test_unknown_cost_template_cannot_activate_policy(tmp_path):
+    fixture_planning(tmp_path)
+    retained = retained_fixture(tmp_path)['entry']
+    retained['planned_request_template']['inputs']['unknown_cost_authorization_id'] = 'one'
+    with pytest.raises(pa.AutonomyError, match='unknown-cost Auto-continue is unavailable'):
+        pa.baseline_descriptor(retained, tmp_path)
+
+
 def make_policy(root=None, **over):
     # Descriptors are finalized from real retained planning by install(); root allows direct use.
     if root is not None:
