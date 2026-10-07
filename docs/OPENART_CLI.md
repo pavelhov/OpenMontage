@@ -11,30 +11,36 @@ retries automatically and never falls back to another provider.
 
 ## Current guarded capabilities
 
-- **Account discovery is pending (as last observed).** A nonspending root
-  account probe on 2026-10-06 found the official CLI installed (0.1.1), but its
-  `account` command exited 1 with a login-required signal
-  (`authentication_required: true`). No generation, reservation or upload ran.
-  This is the last observed state, not a live claim: it changes only when a
-  human signs in and a later probe captures the account shape. Until
-  `openart_account inspect` succeeds, no route is production-available. The menu derives
+- **Account discovery succeeded; production qualification is pending.** Fresh
+  nonspending probes on 2026-10-06 at 23:51 and 23:55 UTC succeeded. The later
+  response carried a nonempty `user.uid`, a `plan` string and integer `credits`;
+  identity values remain private. No explicit authentication boolean was
+  returned. These observations supersede the earlier login-required response.
+  No generation, reservation or upload ran. Account access alone does not make
+  a route production-available. The menu derives
   `account_discovery` from retained qualification rows (`inspected`,
   `pre_submit` or `full`). A retained row never replaces the fresh account
   refresh that every dispatch requires.
 - **Binary.** The official binary 0.1.1 is verified (`version --json`).
-- **Resolution.** In one dummy, unauthenticated v0.1.1 dry-run probe, a
-  caller-passed `--resolution` flag stayed in argv, but the provider's returned
-  preview body did not include a resolution field. That single probe does not
-  show the CLI ignores the flag, or that every account lacks the control. A
-  required resolution stays unqualified until an observed `model form` and an
-  exact preview carry it. A server default never stands in for a required value.
+- **Observed candidates and resolution.** The actual catalog lists
+  `fal-h3-max` and `fal-h3-max-turbo` with `text2video`. Both observed forms use
+  a `jsonSchema` wrapper, support duration 5 through 15 seconds and list `768P`.
+  Exact-case read-only previews carry duration 5 and resolution `768P` in the
+  native body. Lowercase `768p` is echoed by the CLI but is outside the observed
+  form enums; it is not silently normalized. These are catalog, form and preview
+  observations, not full real-result qualification. They supersede the earlier
+  dummy preview's omitted resolution field for these two model/mode pairs.
 - **Uploads.** Image-to-video uploads stay refused until the provider itself
   states, in a captured response, that uploading is nonspending and has no
   delayed charge. That statement must exist before the first upload. A caller
   claim or an unchanged balance does not count.
 - **Exact quote contract.** Each paid attempt needs a current quote for the
   exact settings (`quote_required`), kept as a raw private receipt. A quote for
-  other settings is not reused.
+  other settings is not reused. The observed model/mode cost responses quote
+  5s, 16:9, 480P and one output: Max 125 credits and Turbo 75 credits. The
+  provider says prices vary with settings and are finalized at generation time.
+  Those responses do not establish the required exact 768P quote or conservative
+  ceiling, and the proposed benchmark remains blocked before spending.
 - **Staged qualification.** A profile moves through `inspected`, then
   `pre_submit`, then `full`. Inspection and `pre_submit` rows are
   qualification candidates only. A `full` profile needs a real result proof from
@@ -101,6 +107,11 @@ The OpenArt part of the menu runs no OpenArt CLI and creates or mutates no
 ledger rows. Grok `get_status` does run the existing read-only `--version` and
 `--help` compatibility probe (`status_probe: readonly_cli_version_and_help`).
 The menu recommends no default and never offers a paid API fallback.
+
+Current nonspending discovery evidence, command receipt digests and remaining
+qualification gates are retained in
+[`2026-10-06-openart-live-contracts.json`](implementation/2026-10-06-openart-live-contracts.json).
+That sanitized report contains no raw account values, credentials or signed URLs.
 
 For explicit-only CLI providers (such as `openart_cli`), the video selector
 treats `preferred_provider` as an explicit pin. Ordinary provider preferences

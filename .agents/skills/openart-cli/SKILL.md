@@ -19,10 +19,13 @@ reference is `docs/OPENART_CLI.md`. Prompt guidance is in
 - It is an explicit-only, credit-billed subscription CLI route, separate from Grok CLI
   and from every external API. It is never a fallback for anything else, and
   nothing falls back from it.
-- Account discovery is pending as last observed. A nonspending probe on
-  2026-10-06 found the official CLI 0.1.1 installed, but `account` reported a
-  login is required. That is a past observation, not a live claim. Report the
-  menu's current state and do not assert live auth without a fresh probe.
+- Account discovery succeeded on 2026-10-06 at 23:55 UTC using official CLI
+  0.1.1. The account response carried an identity, plan and credit balance; no
+  explicit authentication boolean. Earlier login-required evidence is
+  superseded. Catalog/form/preview candidates `fal-h3-max` and
+  `fal-h3-max-turbo` support observed 5s/768P text-to-video, but exact 768P credit
+  quotes and real result qualification remain absent. Report the menu's current
+  qualification state; a past account observation never replaces a fresh probe.
 - Strict approval is the default. A strict original scope can preapprove a
   bounded batch of exact attempts, so a new prompt per attempt is not
   mandatory. Optional Auto-continue requires a retained user-approved policy

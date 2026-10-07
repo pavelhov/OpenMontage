@@ -9,6 +9,13 @@ The first result-contract qualification for each model consumes its first
 occurrence within these twelve. There is no extra qualification or corrective
 video attempt. Optional auto-continue never changes this frozen benchmark.
 
+Nonspending discovery on 2026-10-06 observed candidate IDs `fal-h3-max` and
+`fal-h3-max-turbo`, with 5 seconds and literal `768P` present in their forms and
+read-only previews. Model/mode cost responses cover 480P defaults only: Max 125
+and Turbo 75 credits. They are not quotes for the frozen 768P requests. No live
+benchmark approval or generation occurred; the exact quote gate remains blocked.
+See the [sanitized discovery report](implementation/2026-10-06-openart-live-contracts.json).
+
 ## Frozen fixture manifest
 
 `provider_benchmark.schema.json` version `draft-2` is closed and explicitly
