@@ -246,8 +246,11 @@ strings and all URL query strings, which covers signed URLs.
   URL hostnames and receipt hashes; no job ID or URL is returned. A unique returned
   eligible identifier-field match establishes its path. Otherwise it keeps the
   hold and reports shape. An observed `result_job_id` may be declared, but cannot
-  override ambiguity or qualify a protocol, request, error or billing echo. Its
-  immutable private recovery proof binds the canonical original acknowledgement
+  override ambiguity or qualify a protocol, request, error or billing echo.
+  The observed `history.id` result identity is eligible; media `resources[].id` and
+  `resources[].generation.historyId` remain outside the job identity selector.
+  Resource URL fields are reported as safe paths/types and hostnames only.
+  The immutable private recovery proof binds the canonical original acknowledgement
   without rewriting the profile, launch or approved request. Repeating the action
   reads the same original creation for current safe shape and repairs interrupted
   acknowledgement publication. Conflicting declarations fail closed. Use

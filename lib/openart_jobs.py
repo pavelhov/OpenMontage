@@ -1588,7 +1588,7 @@ def _result_identity_path(value: Any, candidate: str, declaration: Optional[str]
     # Bound the entire tree before using the bounded public field listing.
     _scalar_occurrences(value, candidate, kind)
     leaves = {"id", "_id", "historyId", "creationId", "jobId", "job"}
-    wrappers = {"creation", "data", "result"}
+    wrappers = {"creation", "data", "result", "history"}
     matches, stack = [], [("", value)]
     while stack:
         prefix, node = stack.pop()

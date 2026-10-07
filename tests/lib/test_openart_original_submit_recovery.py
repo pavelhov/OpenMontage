@@ -39,6 +39,79 @@ def recover(**kwargs):
     return jobs.recover_original_submit("qa-1", json_paths={"submit_job_id": "historyId"}, timeout=20, **kwargs)
 
 
+def observed_history_result():
+    """Synthetic values with the safely observed official history/resources field structure."""
+    return {"history": {"id": "job-1", "status": "completed"}, "resources": [{
+        "createdAt": 1234567890, "generation": {"historyId": "job-1"}, "id": "resource-private-1",
+        "resourceType": "video", "sourceType": "generation", "status": "completed",
+        "thumbnailUrl": "https://cdn.openart.ai/private-thumbnail.jpg?sig=private-thumbnail",
+        "url": "https://cdn.openart.ai/private-video.mp4?sig=private-video"}]}
+
+
+def install_result_response(monkeypatch, response):
+    binary = Path(cli.resolve_binary())
+    text = binary.read_text().replace('print(os.environ.get("RAW_SUBMIT", json.dumps(out))',
+        'if args[:2] == ["creation", "get"]: out = json.loads(os.environ["RESULT_RESPONSE"])\n'
+        'print(os.environ.get("RAW_SUBMIT", json.dumps(out))')
+    binary.write_text(text)
+    monkeypatch.setenv("RESULT_RESPONSE", json.dumps(response))
+
+
+def test_observed_history_result_recovers_original_once_and_keeps_resource_ids_private(staged, monkeypatch):
+    profile, _ = lost_launch(staged, monkeypatch)
+    install_result_response(monkeypatch, observed_history_result())
+    result = OpenArtAccount().execute({"action": "recover_original_submit", "read_only": True,
+        "attempt_id": "qa-1", "json_paths": {"submit_job_id": "historyId", "result_job_id": "history.id"}})
+    assert result.success, result.error
+    evidence = result.data["evidence"]
+    assert evidence["status"] == "original_job_recovered"
+    assert evidence["json_paths"] == {"submit_job_id": "historyId", "result_job_id": "history.id"}
+    assert evidence["observed_statuses"] == [{"path": "history.status", "value": "completed"},
+                                             {"path": "resources.0.status", "value": "completed"}]
+    assert evidence["url_hosts"] == [{"path": "resources.0.thumbnailUrl", "host": "cdn.openart.ai"},
+                                      {"path": "resources.0.url", "host": "cdn.openart.ai"}]
+    assert {"path": "resources.0.createdAt", "type": "number"} in evidence["fields"]
+    public = json.dumps(result.data)
+    assert not any(private in public for private in ("job-1", "resource-private-1", "https://", "private-video", "private-thumbnail"))
+    assert jobs.original_job_id("qa-1") == "job-1"
+    assert evidence["billing"] == "unknown" and evidence["release_authorized"] is False
+    promoted = jobs.promote_result_contract("qa-1", json_paths={"status": "history.status",
+        "status_terminal_ok": "completed", "status_terminal_fail": "failed", "urls": "resources.0.url",
+        "url_hosts": ["cdn.openart.ai"]})
+    assert promoted["level"] == "full"
+    assert jobs.load_qualification(model="m1", mode="image2video", require="full") == profile
+    assert sum("--async" in c for c in staged_calls(staged)) == 1
+
+
+@pytest.mark.parametrize("change,declaration", [("wrong_history", "history.id"),
+    ("resource_echo_only", "history.id"), ("request_echo_only", "history.id"),
+    ("multiple_eligible", "history.id"), ("resource_id_declaration", "resources.0.id"),
+    ("resource_generation_declaration", "resources.0.generation.historyId"),
+    ("resource_url_declaration", "resources.0.url")])
+def test_observed_history_shape_requires_unique_original_history_id(staged, monkeypatch, change, declaration):
+    lost_launch(staged, monkeypatch)
+    response = observed_history_result()
+    if change == "wrong_history":
+        response["history"]["id"] = "foreign-job"
+    elif change == "resource_echo_only":
+        del response["history"]["id"]
+    elif change == "request_echo_only":
+        del response["history"]["id"]
+        response["resources"] = []
+        response["request"] = {"history": {"id": "job-1"}}
+    elif change == "multiple_eligible":
+        response["result"] = {"id": "job-1"}
+    elif change == "resource_id_declaration":
+        response["resources"][0]["id"] = "job-1"
+    install_result_response(monkeypatch, response)
+    result = OpenArtAccount().execute({"action": "recover_original_submit", "read_only": True,
+        "attempt_id": "qa-1", "json_paths": {"submit_job_id": "historyId", "result_job_id": declaration}})
+    assert result.success and result.data["evidence"]["status"] == "hold_unknown_job"
+    assert jobs.original_job_id("qa-1") is None
+    assert not (jobs.job_dir("qa-1") / "submit_recovery.json").exists()
+    assert sum("--async" in c for c in staged_calls(staged)) == 1
+
+
 def test_original_once_recovers_promotes_collects_without_changing_frozen_profile(staged, monkeypatch):
     profile, project = lost_launch(staged, monkeypatch)
     origin = {name: (jobs.job_dir("qa-1") / name).read_bytes()
