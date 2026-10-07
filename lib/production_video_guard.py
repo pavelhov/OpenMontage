@@ -9,7 +9,7 @@ import json
 from dataclasses import asdict
 from pathlib import Path
 
-from lib.provider_credit_ledger import (Binding, LedgerError, QualifiedSlotRelease,
+from lib.provider_credit_ledger import (Binding, UnpricedBinding, LedgerError, QualifiedSlotRelease,
                                         _digest, read_existing_snapshot)
 
 
@@ -18,20 +18,23 @@ def _proved_no_dispatch(binding, row, snapshot):
     from lib import openart_jobs as jobs
     if row['slot_state'] != 'no-dispatch' or row['release_kind'] != 'proved_not_dispatched':
         return False
+    unpriced = isinstance(binding, UnpricedBinding)
+    prefix = 'unpriced_' if unpriced else ''
     raw = json.loads(row['release_json'])
-    release = QualifiedSlotRelease(binding=Binding(**raw.pop('binding')), **raw)
+    binding_type = UnpricedBinding if unpriced else Binding
+    release = QualifiedSlotRelease(binding=binding_type(**raw.pop('binding')), **raw)
     _digest(release.evidence_sha256)
     _digest(release.original_process_exit_sha256)
     if (release.binding != binding or release.kind != 'proved_not_dispatched'
-            or release.job_id or row['job_id'] or row['charged_units']
-            or row['debit_state'] != 'released'
+            or release.job_id or row['job_id']
+            or (not unpriced and (row['charged_units'] or row['debit_state'] != 'released'))
             or row['release_json'] != json.dumps(asdict(release), sort_keys=True, separators=(',', ':'))
-            or any(c['attempt_id'] == binding.attempt_id for c in snapshot['claims'])):
+            or any(c['attempt_id'] == binding.attempt_id for c in snapshot[prefix + 'claims'])):
         return False
     marker = jobs.job_dir(binding.attempt_id, create=False) / 'launch.json'
     if marker.exists() or marker.is_symlink():
         return False
-    for event in snapshot['outbox']:
+    for event in snapshot[prefix + 'outbox']:
         if event['attempt_id'] != binding.attempt_id:
             continue
         if event['kind'] not in {'prepared', 'ready', 'no-dispatch'}:
@@ -77,17 +80,26 @@ def read_video_duplicate_blocks(project_dir, shot_id):
     except (cli.OpenArtCLIError, LedgerError, OSError, ValueError, TypeError) as exc:
         return [f'shot {shot_id}: private video reservation state cannot be verified: {exc}']
 
-    rows = {row['attempt_id']: row for row in snapshot['reservations']}
-    # Outbox.kind denotes an event, never the request's media kind. Claims and
-    # pending events must have their reservation origin before they can be safe.
-    pending = {item['attempt_id'] for key in ('claims', 'outbox') for item in snapshot[key]}
-    for attempt_id in sorted(pending - rows.keys()):
-        block(attempt_id, 'has private pending state without a reservation origin')
-        private_ids.add(attempt_id)
+    try:
+        rows = []
+        for prefix, binding_type in (('', Binding), ('unpriced_', UnpricedBinding)):
+            origins = {row['attempt_id']: row for row in snapshot[prefix + 'reservations']}
+            # Event kind never classifies media. Both claim types need their own
+            # typed reservation origin, even if the other table has this ID.
+            pending = {item['attempt_id'] for key in ('claims', 'outbox')
+                       for item in snapshot[prefix + key]}
+            for attempt_id in sorted(pending - origins.keys()):
+                block(attempt_id, 'has private pending state without a reservation origin')
+                private_ids.add(attempt_id)
+            rows.extend((attempt_id, row, prefix, binding_type) for attempt_id, row in origins.items())
+        if len({item[0] for item in rows}) != len(rows):
+            raise ValueError('attempt has conflicting typed reservation origins')
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        return [f'shot {shot_id}: private video reservation state cannot be verified: {exc}']
 
-    for attempt_id, row in rows.items():
+    for attempt_id, row, prefix, binding_type in rows:
         try:
-            binding = Binding(**json.loads(row['binding_json']))
+            binding = binding_type(**json.loads(row['binding_json']))
             binding.validate()
             if Path(binding.project_root).resolve() != root:
                 continue
@@ -96,8 +108,16 @@ def read_video_duplicate_blocks(project_dir, shot_id):
             if (binding != original or binding.attempt_id != attempt_id
                     or binding.account_key != row['account_key']
                     or binding.authorization_occurrence != row['authorization_occurrence']
-                    or binding.allowance_id != row['allowance_id']):
+                    or (not prefix and binding.allowance_id != row['allowance_id'])):
                 raise ValueError('reservation binding differs from private original')
+            expected_kind = 'unknown_cost' if prefix else 'exact_credit'
+            if manifest.get('authorization_kind', 'exact_credit') != expected_kind:
+                raise ValueError('reservation authorization kind differs from private original')
+            if prefix and (row['record_version'] != 2 or row['claim_key'] != binding.claim_key
+                    or row['binding_json'] != json.dumps(asdict(binding), sort_keys=True, separators=(',', ':'))
+                    or row['slot_state'] not in {'prepared', 'ready', 'submitting', 'submitted', 'uncertain',
+                                                 'no-dispatch', 'terminal', 'closed'}):
+                raise ValueError('invalid private unpriced reservation state')
             request = manifest['journal_records']['request.json']
             if (request.get('attempt_id') != attempt_id
                     or request.get('request_sha256') != binding.request_sha256
@@ -116,7 +136,7 @@ def read_video_duplicate_blocks(project_dir, shot_id):
             # checking this original's public readiness or acceptance state.
             # Prepared origins legitimately have no public journal.
             no_dispatch = _proved_no_dispatch(binding, row, snapshot)
-            has_ready = any(item['attempt_id'] == attempt_id for item in snapshot['ready_journals'])
+            has_ready = any(item['attempt_id'] == attempt_id for item in snapshot[prefix + 'ready_journals'])
             if (row['slot_state'] != 'prepared' and not no_dispatch) or has_ready:
                 dispatch._ready_journal(binding, manifest)
             kind = classify_production_kind(request)
