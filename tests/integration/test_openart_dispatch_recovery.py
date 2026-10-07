@@ -117,6 +117,62 @@ def test_real_compiler_quote_ledger_popen_chain_submits_once(governed):
     assert len((tmp/'paid').read_text().splitlines())==1
 
 
+def test_exact_scope_with_unknown_cost_digest_refuses_before_claim_or_submit(governed,monkeypatch):
+    root,inputs,profile,tmp=governed
+    scopes=json.loads((root/'production_scopes.json').read_text())
+    scopes['scopes'][0]['unknown_cost_authorization_sha256']='b'*64
+    write(root/'production_scopes.json',scopes)
+    claimed=[];original=dispatch.CreditLedger.reserve_prepared
+    def reserve(self,packet):
+        claimed.append(packet.binding.attempt_id)
+        return original(self,packet)
+    monkeypatch.setattr(dispatch.CreditLedger,'reserve_prepared',reserve)
+    with pytest.raises(cli.OpenArtCLIError,match='scope cannot authorize both exact credit and unknown cost'):
+        OpenArtCLIVideo().execute(inputs)
+    assert claimed==[]
+    assert not (tmp/'paid').exists()
+    assert all('--async' not in json.loads(line) for line in (tmp/'calls').read_text().splitlines())
+    assert not (root/'production_attempts').exists()
+
+
+def test_legacy_published_exact_event_replays_after_interrupted_ack(governed,monkeypatch):
+    import sqlite3
+    root,inputs,profile,tmp=governed;seen=[]
+    def crash(stage,attempt):
+        if stage=='ledger_prepared':
+            seen.append(attempt)
+            raise RuntimeError('synthetic prepublication crash')
+    with monkeypatch.context() as patch:
+        patch.setattr(dispatch,'_CRASH_HOOK',crash)
+        with pytest.raises(RuntimeError,match='synthetic prepublication crash'):
+            OpenArtCLIVideo().execute(inputs)
+    attempt=seen[0];l=dispatch.ledger()
+    # Reproduce v1 publication's durable state when the acknowledgment was lost.
+    # Read the original SQLite row, without the new in-memory mode projection.
+    with sqlite3.connect(l.path) as db:
+        db.row_factory=sqlite3.Row
+        event=dict(db.execute('SELECT * FROM outbox WHERE attempt_id=?',(attempt,)).fetchone())
+    assert event['record_version']==1 and event['acknowledged']==0
+    record={k:v for k,v in event.items() if k not in {'acknowledged','journal_sha256'}}
+    events=root/'production_attempts'/attempt/'credit_events';events.mkdir(parents=True)
+    path=events/(event['event_id']+'.json');execution._write_new(path,record)
+    original=path.read_bytes();original_hash=hashlib.sha256(original).hexdigest()
+    assert 'authorization_kind' not in json.loads(original)
+    before=(tmp/'calls').read_text()
+
+    repaired=dispatch.repair_outbox(root,attempt)
+    assert repaired['slot_state']=='ready' and repaired['paid_submission'] is False
+    assert path.read_bytes()==original
+    with sqlite3.connect(l.path) as db:
+        assert db.execute('SELECT acknowledged,journal_sha256 FROM outbox WHERE event_id=?',
+                          (event['event_id'],)).fetchone()==(1,original_hash)
+    assert not [e for e in l.outbox() if e['attempt_id']==attempt]
+    dispatch.repair_outbox(root,attempt)
+    assert path.read_bytes()==original and hashlib.sha256(path.read_bytes()).hexdigest()==original_hash
+    assert (tmp/'calls').read_text()==before
+    assert not (tmp/'paid').exists()
+
+
 @pytest.mark.parametrize('stage,expected',[
     ('private_prepared',None),('ledger_prepared','prepared'),('journal_ready','ready'),
     ('ledger_submitting','submitting'),('current_prelaunch','submitting'),('launch_marker','submitting')])

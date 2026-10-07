@@ -313,6 +313,8 @@ def validate_credit_authorization(project_root,authorization,*,scope,marker,inpu
     try: jsonschema.validate(authorization,json.loads(schema.read_text()))
     except (jsonschema.ValidationError,TypeError): _fail('explicit credit authorization sidecar required','credit_authorization_invalid')
     a=authorization
+    if scope.get('unknown_cost_authorization_sha256'):
+        _fail('scope cannot authorize both exact credit and unknown cost')
     if scope.get('credit_authorization_sha256')!=credit_authorization_digest(a):
         _fail('current approved scope does not authorize these exact credit terms')
     if type(occurrence_index) is not int or occurrence_index<0: _fail('exact request occurrence required')

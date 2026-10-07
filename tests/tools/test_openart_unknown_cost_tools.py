@@ -102,6 +102,27 @@ def test_video_schema_and_metadata_expose_unknown_pair(monkeypatch):
     jsonschema.validate(video_inputs(), document)  # Legacy exact inputs remain accepted.
 
 
+def test_video_discovery_scopes_quote_requirement_to_authorization_mode(monkeypatch):
+    from tools.base_tool import ToolStatus
+    tool = OpenArtCLIVideo()
+    monkeypatch.setattr(tool, 'get_status', lambda: ToolStatus.UNAVAILABLE)
+    monkeypatch.setattr(jobs, 'list_qualifications', lambda: [])
+    info = tool.get_info()
+    assert info['requirement_flags_apply_to'] == info['default_authorization_mode'] == 'exact_credit'
+    exact = info['authorization_modes']['exact_credit']
+    unknown = info['authorization_modes']['unknown_cost']
+    assert exact['default'] is True and exact['current_quote_required'] is True
+    assert exact['credit_authorization_required'] is True
+    assert unknown['current_quote_required'] is False and unknown['credit_authorization_required'] is False
+    assert unknown['unknown_cost_authorization_required'] is True
+    assert unknown['required_fields'] == ['unknown_cost_authorization_id', 'unknown_cost_evidence_id']
+    assert unknown['native_modes'] == ['text2video'] and unknown['reference_mode'] == 'reference_free'
+    assert unknown['explicit_acknowledgement'] == 'no_enforceable_credit_ceiling'
+    assert unknown['guaranteed_ceiling'] is False and unknown['requested_charge'] == 'unknown'
+    assert unknown['auto_continue_available'] is False and unknown['recommended'] is False
+    jsonschema.validate({**video_inputs(), **dict(zip(unknown['required_fields'], ['retained', D]))}, info['input_schema'])
+
+
 @pytest.mark.parametrize('key', ['unknown_cost_authorization_id', 'unknown_cost_evidence_id'])
 @pytest.mark.parametrize('value', [None, '', 'retained', D])
 def test_video_schemas_refuse_lone_unknown_key(key, value):

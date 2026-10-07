@@ -9,6 +9,7 @@ from lib.production_provenance import validate_attempt_provenance
 from lib.checkpoint import init_project
 from lib.production_execution import ProductionGovernanceError
 from tests.integration.test_first_pass_workflow import Production
+from tests.lib.test_local_render_provenance import local, rendered
 
 
 def read(path):
@@ -48,6 +49,58 @@ def test_real_dispatch_and_native_receipt_pass(production):
     aid, _, output = attempt(production)
     assert check(production, aid, output)['result']['status'] == 'generated'
     assert len(production.transport.native_requests) == 1
+
+
+def test_legacy_board_backed_attempt_still_requires_input_snapshots(production):
+    aid, directory, output = attempt(production)
+    assert check(production, aid, output)['result']['status'] == 'generated'
+    request = read(directory / 'request.json')
+    request['input_assets'] = []
+    save(directory / 'request.json', request)
+    with pytest.raises(ProductionGovernanceError, match='immutable submitted inputs missing'):
+        check(production, aid, output)
+
+
+def test_reference_free_contract_cannot_certify_grok_attempt(production):
+    from tests.lib.test_shot_contract import reference_free_contract, refresh
+    from lib.production_execution import approval_plan_digest
+    from lib.shot_contract import contract_digest
+    aid, directory, output = attempt(production)
+    contract = reference_free_contract()
+    contract.update(project_id=production.contract['project_id'], story_revision=production.story['story_revision'])
+    contract['shots'][0]['duration_seconds'] = 8
+    contract['project_review']['story_revision'] = contract['story_revision']
+    contract['shots'][0]['review']['story_revision'] = contract['story_revision']
+    refresh(contract)
+    # A reference-free label on otherwise matching retained/current planning
+    # cannot turn a governed Grok original into an eligible OpenArt variant.
+    save(directory / 'shot_contract.json', contract)
+    save(production.root / 'artifacts/shot_contract.json', contract)
+    request = read(directory / 'request.json')
+    request['contract_sha256'] = contract_digest(contract)
+    request['scope']['approval_plan_sha256'] = approval_plan_digest(contract)
+    save(directory / 'request.json', request)
+    with pytest.raises(ProductionGovernanceError, match='requires OpenArt text2video'):
+        check(production, aid, output)
+
+
+def test_reference_free_contract_cannot_certify_local_render(local):
+    from tests.lib.test_shot_contract import reference_free_contract, refresh
+    from lib.production_execution import approval_plan_digest
+    from lib.shot_contract import contract_digest
+    root = local[0]
+    aid, directory, output = rendered(local)
+    contract = reference_free_contract()
+    contract['shots'][0]['duration_seconds'] = 8
+    refresh(contract)
+    save(directory / 'shot_contract.json', contract)
+    save(root / 'shot_contract.json', contract)
+    request = read(directory / 'request.json')
+    request['contract_sha256'] = contract_digest(contract)
+    request['scope']['approval_plan_sha256'] = approval_plan_digest(contract)
+    save(directory / 'request.json', request)
+    with pytest.raises(ProductionGovernanceError, match='requires OpenArt text2video'):
+        validate_attempt_provenance(root, aid, shot_id='entry', story_revision='story-1', expected_output=output)
 
 
 @pytest.mark.parametrize('field', ['version','scope','scope_id','cli_session_id','request_sha256','contract_sha256','input_assets','submitted_inputs','media_kind','scope_attempt_index','approval_evidence'])

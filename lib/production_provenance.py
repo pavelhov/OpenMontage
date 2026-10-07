@@ -158,6 +158,8 @@ def _validate_attempt_provenance(
     shots = [shot for shot in contract['shots'] if shot['id'] == shot_id]
     require(len(shots) == 1, 'reserved shot missing or duplicated in contract')
     shot = shots[0]
+    reference_free = contract.get('reference_mode') == 'reference_free'
+    require(not reference_free or openart, 'reference-free contract requires OpenArt text2video')
 
     def bound_review(review, subject, names, label, *, allow_draft=False):
         review_schema = {'$defs': schema['$defs'], '$ref': '#/$defs/review'}
@@ -177,7 +179,9 @@ def _validate_attempt_provenance(
     bound_review(shot['review'], digest, SHOT_PREDICATES, 'frozen shot review')
     assets = {asset['id']: asset for asset in contract['assets']}
     require(len(assets) == len(contract['assets']), 'duplicate frozen asset IDs')
-    required_assets = set(shot['asset_ids']) | {contract['payoff_asset_id']}
+    required_assets = set(shot['asset_ids'])
+    if not reference_free:
+        required_assets.add(contract['payoff_asset_id'])
     for asset in assets.values():
         if asset['role'] == 'identity_reference' and set(asset['cast_ids']) & (set(shot['cast_ids']) | set(contract['late_cast_ids'])):
             required_assets.add(asset['id'])
@@ -202,8 +206,16 @@ def _validate_attempt_provenance(
     if openart:
         require(request.get('tool_name') in {'openart_cli_video','video_selector'}, 'OpenArt tool identity differs')
         submitted = frozen_openart['inputs']
+        if reference_free:
+            require(submitted.get('mode') == frozen_openart['native'].get('mode')
+                    == frozen_openart['profile'].get('mode') == 'text2video',
+                    'reference-free contract requires OpenArt text2video')
     bindings = request['input_assets']
-    require(isinstance(submitted, dict) and isinstance(bindings, list) and bool(bindings), 'immutable submitted inputs missing')
+    require(isinstance(submitted, dict) and isinstance(bindings, list), 'immutable submitted inputs missing')
+    if reference_free:
+        require(not bindings, 'reference-free submitted input snapshots forbidden')
+    else:
+        require(bool(bindings), 'immutable submitted inputs missing')
     remaining = iter(bindings)
 
     def restore_binding(role, path):

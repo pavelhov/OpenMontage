@@ -299,6 +299,9 @@ def test_actual_full_profile_catalog_reads_reference_receipts(governed, monkeypa
     mode = catalog["m1"]["modes"]["image2video"]
     assert mode["profile_sha256"] == full["profile_sha256"] and mode["source"] == "real"
     assert mode["account_id_sha256"] == full["account_id_sha256"]
+    assert mode["default_authorization_mode"] == mode["requirement_flags_apply_to"] == "exact_credit"
+    assert "unknown_cost" not in mode["authorization_modes"]
+    assert mode["authorization_modes"]["exact_credit"]["current_quote_required"] is True
     native = mode["native_controls"]
     assert native["duration"]["preview"] == {"value": 8}
     assert native["duration"]["form_default"] == {"value": 8}
@@ -355,6 +358,8 @@ def test_argv_resolution_flag_without_effective_preview_is_unqualified(monkeypat
     monkeypatch.setattr(openart_jobs, "load_qualification", lambda **k: dict(prof))
     monkeypatch.setattr(openart_jobs, "_qual_record", lambda entry, name, kind: recs[name])
     mode = OpenArtCLIVideo._model_catalog()["m"]["modes"]["text2video"]
+    assert mode["authorization_modes"]["unknown_cost"]["native_modes"] == ["text2video"]
+    assert mode["authorization_modes"]["unknown_cost"]["reference_mode"] == "reference_free"
     assert mode["argv_flag_without_effective_preview"] == ["resolution"]
     assert mode["required_unqualified"] == ["resolution"]
     assert "preview" not in mode["native_controls"]["resolution"]

@@ -64,9 +64,30 @@ class OpenArtCLIVideo(BaseTool):
         info = super().get_info()
         info.update(generation_enabled=self.get_status() == ToolStatus.AVAILABLE,
                     qualification_required=True, credit_authorization_required=True, current_quote_required=True, billing_unit='credits',
-                    usd_cost_status='unknown', estimated_cost_usd=None)
+                    usd_cost_status='unknown', estimated_cost_usd=None,
+                    default_authorization_mode='exact_credit', requirement_flags_apply_to='exact_credit',
+                    authorization_modes=self._authorization_modes())
         info['model_catalog'] = self._model_catalog()
         return info
+
+    @staticmethod
+    def _authorization_modes(native_mode=None):
+        """Discovery distinguishes the legacy default from explicit unknown cost."""
+        modes = {
+            'exact_credit': {'default': True, 'current_quote_required': True,
+                             'credit_authorization_required': True},
+            'unknown_cost': {'default': False, 'recommended': False,
+                             'current_quote_required': False, 'credit_authorization_required': False,
+                             'unknown_cost_authorization_required': True,
+                             'required_fields': ['unknown_cost_authorization_id', 'unknown_cost_evidence_id'],
+                             'native_modes': ['text2video'], 'reference_mode': 'reference_free',
+                             'explicit_acknowledgement': 'no_enforceable_credit_ceiling',
+                             'guaranteed_ceiling': False, 'requested_charge': 'unknown',
+                             'auto_continue_available': False},
+        }
+        if native_mode is not None and native_mode != 'text2video':
+            modes.pop('unknown_cost')
+        return modes
 
     # Creative controls whose effective preview/default values are safe to show in a
     # menu. Everything else (prompt, signed image URL, unknown params) is hashed only.
@@ -173,6 +194,8 @@ class OpenArtCLIVideo(BaseTool):
                 'argv_flag_without_effective_preview': argv_only,
                 'first_last_frame': False, 'native_audio': False, 'multiple_reference_images': False,
                 'billing_unit': 'credits', 'current_quote_required': True, 'usd_cost_status': 'unknown',
+                'default_authorization_mode': 'exact_credit', 'requirement_flags_apply_to': 'exact_credit',
+                'authorization_modes': OpenArtCLIVideo._authorization_modes(row['mode']),
                 'production_ready': True, 'fresh_prelaunch_refresh_required': True}
         return catalog
 
@@ -181,7 +204,7 @@ class OpenArtCLIVideo(BaseTool):
         return offline_readiness(inputs)
 
     def estimate_cost(self, inputs):
-        raise PriceQuoteRequired('OpenArt USD cost unknown; credits require retained account quote evidence')
+        raise PriceQuoteRequired('OpenArt USD cost unknown; exact-credit mode requires retained account quote evidence; unknown-cost has no enforceable credit ceiling')
 
     def execute(self, inputs):
         active = active_openart_dispatch(inputs)

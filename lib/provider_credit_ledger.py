@@ -603,7 +603,8 @@ class CreditLedger:
 
     def outbox(self):
         with self._transaction() as db:
-            exact=[dict(row,authorization_kind='exact_credit') for row in db.execute('SELECT * FROM outbox WHERE acknowledged=0 ORDER BY sequence')]
+            # Exact v1 rows are the immutable publication format, including replays.
+            exact=[dict(row) for row in db.execute('SELECT * FROM outbox WHERE acknowledged=0 ORDER BY sequence')]
             unknown=[dict(row,authorization_kind='unknown_cost') for row in db.execute('SELECT * FROM unpriced_outbox WHERE acknowledged=0 ORDER BY sequence')]
             return exact+unknown
 
@@ -611,19 +612,15 @@ class CreditLedger:
         """Host confirms matching durable filesystem repair; original reservation only."""
         _digest(journal_sha256)
         if isinstance(binding,UnpricedBinding):
-            with self._transaction() as db:
-                self._unpriced_bound(db,binding)
-                row=db.execute('SELECT * FROM unpriced_outbox WHERE event_id=?',(event_id,)).fetchone()
-                if row is None or row['attempt_id']!=binding.attempt_id: raise LedgerError('outbox origin mismatch')
-                if row['acknowledged'] and row['journal_sha256']!=journal_sha256: raise LedgerError('outbox acknowledgment conflict')
-                db.execute('UPDATE unpriced_outbox SET acknowledged=1,journal_sha256=? WHERE event_id=?',(journal_sha256,event_id))
-            return
+            table,validate_bound='unpriced_outbox',self._unpriced_bound
+        else:
+            table,validate_bound='outbox',self._bound
         with self._transaction() as db:
-            self._bound(db,binding)
-            row=db.execute('SELECT * FROM outbox WHERE event_id=?',(event_id,)).fetchone()
+            validate_bound(db,binding)
+            row=db.execute(f'SELECT * FROM {table} WHERE event_id=?',(event_id,)).fetchone()
             if row is None or row['attempt_id']!=binding.attempt_id: raise LedgerError('outbox origin mismatch')
             if row['acknowledged'] and row['journal_sha256']!=journal_sha256: raise LedgerError('outbox acknowledgment conflict')
-            db.execute('UPDATE outbox SET acknowledged=1,journal_sha256=? WHERE event_id=?',(journal_sha256,event_id))
+            db.execute(f'UPDATE {table} SET acknowledged=1,journal_sha256=? WHERE event_id=?',(journal_sha256,event_id))
 
 
     # ---- Unknown-cost (unpriced) claims: no balance/allowance/ceiling arithmetic ----

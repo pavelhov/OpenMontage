@@ -123,6 +123,21 @@ def test_credit_authorization_retained_bytes_to_internal_packet(env,monkeypatch)
     assert credit.internal_ledger_packet(packet).binding==packet.binding
 
 
+def test_exact_credit_scope_refuses_co_tagged_unknown_cost_authority(env,monkeypatch):
+    from lib import production_execution as execution
+    monkeypatch.setattr(execution,'_OPENART_COMPILED_REQUEST_CHECK',lambda *args:None)
+    project,a,kwargs=authorization(env)
+    # Prove every exact-credit term is valid before introducing the scope conflict.
+    packet=credit.validate_credit_authorization(project,a,**kwargs)
+    assert packet.binding.quote=='2.25' and packet.binding.ceiling=='3'
+    before=env[1].read_text()
+    kwargs['scope']['unknown_cost_authorization_sha256']='b'*64
+    with pytest.raises(cli.OpenArtCLIError,match='scope cannot authorize both exact credit and unknown cost'):
+        credit.validate_credit_authorization(project,a,**kwargs)
+    assert not (cli.state_dir()/'credits').exists()
+    assert env[1].read_text()==before
+
+
 @pytest.mark.parametrize('field,value',[('scope_id','wrong'),('workspace','wrong'),('account_id_sha256','b'*64),('count',2),('purpose',True),('ceiling','1')])
 def test_wrong_credit_approval_fails_without_ledger_or_submit(env,field,value):
     project,a,kwargs=authorization(env); a[field]=value
