@@ -392,3 +392,310 @@ def validate_credit_authorization(project_root,authorization,*,scope,marker,inpu
 def qualify_billing_evidence(*args,**kwargs):
     """Per-job raw debit/refund contract is not yet qualified. Unknown stays held."""
     return {'billing_state':'unsupported_hold','reason':'per_job_billing_contract_unqualified'}
+
+
+# ---- Explicit unknown-cost authorization (strict opt-in; no ceiling, quote or USD) ----
+
+from lib.provider_credit_ledger import UnpricedBinding, ValidatedUnpricedClaim  # noqa: E402
+
+UNOBSERVED_WORKSPACE='__unobserved_workspace__'
+UNKNOWN_EVIDENCE_KIND='openart_unknown_cost_authorization'
+_SETTING_KEYS=(('duration','duration'),('resolution','resolution'),('aspect_ratio','aspectRatio'))
+
+
+def _observed_setting(key,value):
+    """Narrow provider-observed settings to safe scalars; anything else is None."""
+    if isinstance(value,bool): return None
+    if key=='duration':
+        if isinstance(value,int): return value if 0<value<=600 else None
+        if isinstance(value,Decimal) and value.is_finite() and value==value.to_integral_value():
+            n=int(value); return n if 0<n<=600 else None
+        return None
+    if not isinstance(value,str) or not 0<len(value)<=16: return None
+    if key=='resolution':
+        return value if all(c.isalnum() for c in value) else None
+    parts=value.split(':')
+    return value if len(parts)==2 and all(p.isdigit() and 0<len(p)<=4 and int(p)>0 for p in parts) else None
+
+
+def _uk_fail(message,kind='unknown_cost_unqualified'):
+    raise cli.OpenArtCLIError(kind,message)
+
+
+def _unknown_path(evidence_id,*,create):
+    if not isinstance(evidence_id,str) or not qual._SHA.fullmatch(evidence_id): _uk_fail('unknown-cost evidence ID must be 64 hex')
+    if create: return cli.private_dir('unknown_cost_evidence')/(evidence_id+'.json')
+    root=cli.state_dir(create=False)
+    return root/'unknown_cost_evidence'/(evidence_id+'.json')
+
+
+def _number_text(value):
+    if isinstance(value,bool) or not isinstance(value,(int,Decimal,str)): return None
+    try: d=Decimal(str(value))
+    except Exception: return None
+    if not d.is_finite() or d<0: return None
+    return str(value)
+
+
+def _classify(cost,profile,controls):
+    """Price evidence is model-level; only an exact settings match is labelled matched.
+
+    Even a matched price is an observation, never a provider-guaranteed charge.
+    Maximum/guarantee fields are never read.
+    """
+    if cost is None or cost=={'supported':False}: return 'unavailable',None
+    if not isinstance(cost,dict) or cost.get('currency')!='credits' or not isinstance(cost.get('items'),list):
+        _uk_fail('malformed available price envelope')
+    items=cost['items']
+    if any(not isinstance(i,dict) or not qual._text(i.get('model')) or not qual._text(i.get('mode')) for i in items):
+        _uk_fail('malformed available price rows')
+    rows=[i for i in items if i.get('model')==profile['model'] and i.get('mode')==profile['mode']]
+    if not rows: return 'missing',None
+    if len(rows)!=1 or cost.get('currency')!='credits': _uk_fail('malformed available price response')
+    row=rows[0]; cfg=row.get('config'); credits=_number_text(row.get('totalCredits'))
+    if not isinstance(cfg,dict) or credits is None: _uk_fail('malformed available price amount/settings')
+    settings={ours:_observed_setting(ours,cfg.get(theirs)) for ours,theirs in _SETTING_KEYS}
+    if not cfg or any(theirs in cfg and settings[ours] is None for ours,theirs in _SETTING_KEYS):
+        _uk_fail('malformed available price settings')
+    quantity=row.get('quantity'); count=cfg.get('videoCount'); audio=cfg.get('generateAudio')
+    if (quantity is not None and (isinstance(quantity,bool) or not isinstance(quantity,(int,Decimal)) or not Decimal(quantity).is_finite() or quantity<1 or Decimal(quantity)!=Decimal(quantity).to_integral_value())) \
+            or (count is not None and (type(count) is not int or count<1)) \
+            or (audio is not None and type(audio) is not bool):
+        _uk_fail('malformed available price count/audio')
+    requested={ours:controls.get(ours) for ours,_ in _SETTING_KEYS}
+    defaults=profile.get('form_defaults',{})
+    expected_count=controls.get('videoCount',defaults.get('videoCount'))
+    expected_audio=controls.get('generateAudio',defaults.get('generateAudio'))
+    matched=all(requested[k] is not None and requested[k]==settings[k] for k in requested) \
+        and quantity==1 and type(expected_count) is int and count is not None and count==expected_count \
+        and type(expected_audio) is bool and audio is not None and audio==expected_audio
+    if matched: return 'settings_matched',{'credits':credits,'settings':settings,'label':'model_price_for_requested_settings_unguaranteed'}
+    return 'mismatched_default',{'credits':credits,'settings':settings,'label':'model_default_not_requested'}
+
+
+def _unknown_terms(native,profile,controls,cost_entry,account_entry):
+    cost=_raw(cost_entry,cli.model_cost_argv(profile['model'],profile['mode']))
+    account=_raw(account_entry,['account'])
+    identity=qual.lookup_path(account,profile['json_paths']['account_id'])
+    if not qual._text(identity) or hashlib.sha256(identity.encode()).hexdigest()!=profile['account_id_sha256']:
+        _uk_fail('observed account differs from reviewed profile')
+    classification,price=_classify(cost,profile,controls)
+    balance=_number_text(account.get('credits')) if isinstance(account,dict) else None
+    if balance is None: _uk_fail('fresh account balance observation required (unattributed)')
+    terms={'version':'1','requested_charge':'unknown','price_classification':classification,
+        'observed_default_price':price,
+        'balance_observation':{'credits':balance,'label':'unattributed_observation'},
+        'account_id_sha256':profile['account_id_sha256'],'workspace':UNOBSERVED_WORKSPACE,
+        'workspace_billing_guarantee':'unverified','model':profile['model'],'mode':profile['mode'],
+        'requested_settings':{k:controls.get(k) for k,_ in _SETTING_KEYS},
+        'native_body_sha256':native['native_body_sha256'],'native_controls_sha256':native['native_controls_sha256'],
+        'native_argv_sha256':native['native_argv_sha256'],'profile_sha256':native['profile_sha256'],
+        'cli_version':profile['cli_version'],'form_sha256':profile['form_sha256']}
+    return terms
+
+
+def _unknown_public(proof):
+    t=proof['terms']
+    return {**{k:t[k] for k in ('version','requested_charge','price_classification','observed_default_price',
+        'balance_observation','account_id_sha256','workspace','workspace_billing_guarantee','model','mode',
+        'native_body_sha256','profile_sha256')},
+        'evidence_id':proof['evidence_id'],'evidence_sha256':_hash(t),'provider_calls':0}
+
+
+def refresh_unknown_cost_evidence(inputs,profile,*,timeout=cli.DEFAULT_TIMEOUT,deadline=None):
+    """Explicit read-only capture under transport serialization: eligibility, native
+    preview, account identity/balance and model price. Never submits or reserves.
+
+    The requested charge stays 'unknown'; balances are unattributed observations and
+    a mismatched default price proves neither affordability nor insufficiency.
+    """
+    entry_time=time.monotonic(); timeout=cli.validate_timeout(timeout)
+    if deadline is not None and (isinstance(deadline,bool) or not isinstance(deadline,(int,float)) or not math.isfinite(deadline)):
+        _uk_fail('finite internal absolute deadline required')
+    deadline=min(entry_time+timeout,deadline) if deadline is not None else entry_time+timeout
+    jobs.validate_profile(profile,require='pre_submit')
+    controls=_controls(inputs)
+    native=jobs.prepare_native_request(controls,profile)
+    if native.get('image_upload') or native.get('native_controls',{}).get('image_url_sha256'): _uk_fail('unknown-cost route is native reference-free only')
+    remaining=lambda:cli.lock_remaining(deadline)
+    with cli.transport_lock(wait_timeout=remaining()):
+        setup.verify_current(profile,timeout=remaining())
+        preview=cli.run_readonly(native['creative_argv']+['--dry-run'],timeout=remaining())
+        current=jobs.native_request(controls,profile,dry_run={'receipt_id':preview['receipt_id'],'receipt_sha256':preview['receipt_sha256']})
+        for key in ('native_body_sha256','native_controls_sha256','native_argv_sha256','profile_sha256'):
+            if current[key]!=native[key]: _uk_fail('fresh native preview differs from approved settings','unknown_cost_evidence_changed')
+        account=cli.run_readonly(['account'],timeout=remaining())
+        cost=cli.run_readonly(cli.model_cost_argv(profile['model'],profile['mode']),timeout=remaining())
+        ce,ae,pe=_entry('unknown_cost_price',cost),_entry('unknown_cost_account',account),_entry('unknown_cost_preview',preview)
+        terms=_unknown_terms(native,profile,controls,ce,ae)
+        proof={'version':'1','kind':'openart_unknown_cost_evidence','terms':terms,
+               'cost_receipt':ce,'account_receipt':ae,'preview_receipt':pe}
+        proof['evidence_id']=_hash(proof)
+        path=_unknown_path(proof['evidence_id'],create=True)
+        data=json.dumps(proof,sort_keys=True,separators=(',',':')).encode()
+        try: cli.write_private(path,data)
+        except FileExistsError:
+            if path.read_bytes()!=data: _uk_fail('retained unknown-cost evidence changed')
+    # verify_current re-inspects version/account/form (3) + fresh preview/account/cost (3); none generate.
+    out=_unknown_public(proof); out.update(provider_calls=6,read_only_cli_calls=6,generation_calls=0)
+    return out
+
+
+def _load_unknown_evidence_proof(evidence_id):
+    """PRIVATE raw proof. Pure read: no state/dir creation, private checks, content-addressed bytes."""
+    try:
+        path=_unknown_path(evidence_id,create=False)
+        root=path.parent.parent
+        if not root.exists(): raise FileNotFoundError()
+        cli._check_private(root,True); cli._check_private(path.parent,True); cli._check_private(path,False)
+        proof=json.loads(path.read_bytes())
+        if not isinstance(proof,dict) or proof.get('version')!='1' or proof.get('kind')!='openart_unknown_cost_evidence' \
+                or proof.get('evidence_id')!=evidence_id or _hash({k:v for k,v in proof.items() if k!='evidence_id'})!=evidence_id:
+            raise ValueError()
+        return proof
+    except cli.OpenArtCLIError: _uk_fail('retained unknown-cost evidence missing or unsafe')
+    except (OSError,ValueError,KeyError,TypeError): _uk_fail('retained unknown-cost evidence missing or changed')
+
+
+def load_unknown_evidence(evidence_id):
+    """Public-safe summary of retained evidence (zero calls, creates nothing); never raw receipts."""
+    return _unknown_public(_load_unknown_evidence_proof(evidence_id))
+
+
+def classify_price_evidence(cost,profile,controls):
+    """Stable public entry: ('settings_matched'|'mismatched_default'|'missing'|'unavailable', price|None)."""
+    return _classify(cost,profile,controls)
+
+
+def get_retained_unknown_evidence(inputs,profile,evidence_id):
+    """Zero-call reverification of retained raw receipts against current native/profile."""
+    jobs.validate_profile(profile,require='pre_submit')
+    proof=_load_unknown_evidence_proof(evidence_id)
+    controls=_controls(inputs); native=jobs.prepare_native_request(controls,profile)
+    try:
+        _raw(proof['preview_receipt'],native['creative_argv']+['--dry-run'])
+        observed=jobs.native_request(controls,profile,dry_run={k:proof['preview_receipt'][k] for k in ('receipt_id','receipt_sha256')})
+    except cli.OpenArtCLIError: _uk_fail('retained unknown-cost preview invalid')
+    for key in ('native_body_sha256','native_controls_sha256','native_argv_sha256','profile_sha256'):
+        if observed[key]!=native[key]: _uk_fail('retained unknown-cost preview differs from exact native request','unknown_cost_evidence_changed')
+    try: terms=_unknown_terms(native,profile,controls,proof['cost_receipt'],proof['account_receipt'])
+    except cli.OpenArtCLIError as e:
+        if e.kind=='unknown_cost_unqualified': raise
+        _uk_fail('retained unknown-cost receipts invalid')
+    if terms!=proof['terms']: _uk_fail('retained unknown-cost evidence differs from current request/profile','unknown_cost_evidence_changed')
+    return _unknown_public(proof)
+
+
+def unknown_cost_authorization_digest(authorization):
+    return _hash({k:v for k,v in authorization.items() if k!='evidence'})
+
+
+@dataclass(frozen=True)
+class ValidatedUnknownCostAuthorization:
+    claim: ValidatedUnpricedClaim
+    purpose: str
+    evidence_id: str
+    authorization: dict
+
+    @property
+    def binding(self):
+        return self.claim.binding
+
+
+def internal_unpriced_packet(approval):
+    if not isinstance(approval,ValidatedUnknownCostAuthorization): _uk_fail('validated unknown-cost authorization required')
+    return approval.claim
+
+
+def validate_unknown_cost_authorization(project_root,authorization,*,scope,marker,inputs,profile,evidence_id,
+                                        request_sha256,occurrence_index,attempt_id):
+    """Strict explicit unknown-cost opt-in. Mirrors exact validator; never an amount.
+
+    Binds the retained human capture, current approved scope digest, exact ordered
+    occurrence request/native body/profile, observed account and fresh evidence.
+    """
+    from lib import production_execution as execution
+    import jsonschema
+    bad=lambda m:_uk_fail(m,'unknown_cost_authorization_invalid')
+    root=Path(project_root).resolve()
+    schema=Path(__file__).resolve().parents[1]/'schemas/artifacts/unknown_cost_authorization.schema.json'
+    try: jsonschema.validate(authorization,json.loads(schema.read_text()))
+    except (jsonschema.ValidationError,TypeError): bad('explicit unknown-cost authorization sidecar required')
+    a=authorization
+    if not isinstance(scope,dict) or not isinstance(marker,dict): bad('current strict scope/marker required')
+    if scope.get('credit_authorization_sha256'): bad('scope cannot authorize both exact credit and unknown cost')
+    if scope.get('unknown_cost_authorization_sha256')!=unknown_cost_authorization_digest(a):
+        bad('current approved scope does not authorize these unknown-cost terms')
+    if type(occurrence_index) is not int or occurrence_index<0: bad('exact request occurrence required')
+    if scope.get('status')!='approved' or not scope.get('approved_by') or scope.get('provider')!='openart_cli':
+        bad('matching strict approved OpenArt scope required')
+    for field,expected in [('project_root',str(root)),('project_id',marker.get('project_id')),
+        ('story_revision',marker.get('story_revision')),('scope_id',scope.get('id'))]:
+        if a[field]!=expected: bad('unknown-cost authorization project/story/scope mismatch')
+    if scope.get('project_id')!=marker.get('project_id') or scope.get('story_revision')!=marker.get('story_revision'):
+        bad('strict scope project/story mismatch')
+    governance=inputs.get('governance',{}) if isinstance(inputs,dict) else {}
+    if governance.get('scope_id')!=scope.get('id') or governance.get('shot_id')!=a['shot_id']:
+        bad('unknown-cost authorization shot/scope mismatch')
+    if a['workspace']!=UNOBSERVED_WORKSPACE: bad('unknown-cost workspace must be explicitly unobserved')
+    if a['model']!=profile.get('model') or a['mode']!=profile.get('mode'): bad('unknown-cost model/mode differs from profile')
+    raw=None
+    for index,evidence in enumerate((a['evidence'],scope.get('evidence') or {})):
+        if not evidence.get('path') or not evidence.get('sha256'): bad('retained approval evidence required')
+        try: data=_inside(root,evidence['path']).read_bytes()
+        except (OSError,cli.OpenArtCLIError): bad('retained approval evidence missing')
+        if hashlib.sha256(data).hexdigest()!=evidence['sha256']: bad('retained approval bytes changed')
+        if index==0: raw=data
+    try: captured=json.loads(raw)
+    except ValueError: bad('explicit structured unknown-cost approval capture required')
+    if captured!={'kind':UNKNOWN_EVIDENCE_KIND,'terms':{k:v for k,v in a.items() if k!='evidence'}}:
+        bad('retained approval does not bind these exact unknown-cost terms')
+    allowance=scope.get('attempts_per_shot',{}).get(a['shot_id'])
+    if type(allowance) is not int or allowance<1: bad('positive strict scope occurrence allowance required')
+    if a['count']!=len(a['occurrences']) or a['count']>allowance: bad('unknown-cost count exceeds approved attempts')
+    approved_requests=scope.get('requests',{}).get(a['shot_id'])
+    approved=approved_requests
+    if isinstance(approved,list):
+        if occurrence_index>=len(approved): bad('scope request occurrences exhausted')
+        approved=approved[occurrence_index]
+    if execution._approved_request(approved,root)!=request_sha256 or execution.planned_request_digest(inputs,project_dir=root)!=request_sha256:
+        bad('exact scope request digest mismatch')
+    ids=set(); previous=-1
+    for item in a['occurrences']:
+        index=item['index']
+        if item['id'] in ids or index<=previous or not 0<=index<allowance:
+            bad('all unknown-cost occurrences require unique ordered IDs/indices within scope allowance')
+        ids.add(item['id']); previous=index
+        if isinstance(approved_requests,list):
+            if index>=len(approved_requests): bad('unknown-cost sibling outside exact approved request list')
+            expected_request=approved_requests[index]
+        else: expected_request=approved_requests
+        if execution._approved_request(expected_request,root)!=item['request_sha256']:
+            bad('unknown-cost sibling differs from ordered approved scope request')
+    matches=[x for x in a['occurrences'] if x['index']==occurrence_index]
+    if len(matches)!=1: bad('unknown-cost exact occurrence missing/duplicated')
+    occurrence=matches[0]
+    native=jobs.prepare_native_request(_controls(inputs),profile)
+    if 'references_sha256' in occurrence or native.get('image_upload'): bad('unknown-cost route is native reference-free only')
+    for field,expected in [('request_sha256',request_sha256),('native_sha256',native['native_body_sha256']),
+                          ('profile_sha256',native['profile_sha256'])]:
+        if occurrence[field]!=expected: bad('unknown-cost authorization immutable occurrence mismatch')
+    evidence=get_retained_unknown_evidence(inputs,profile,evidence_id)
+    if a['account_id_sha256']!=evidence['account_id_sha256'] or a['account_id_sha256']!=profile.get('account_id_sha256') \
+            or evidence['workspace']!=a['workspace']:
+        bad('unknown-cost authorization observed account/workspace mismatch')
+    if execution._OPENART_COMPILED_REQUEST_CHECK is None: bad('current compilation validator unavailable')
+    execution._OPENART_COMPILED_REQUEST_CHECK(inputs,native,profile)
+    if a['purpose']=='generation':
+        jobs.load_result_proof(profile)
+    elif occurrence_index!=0 or a['count']!=1:
+        bad('result qualification requires one first original occurrence')
+    digest=unknown_cost_authorization_digest(a)
+    try:
+        binding=UnpricedBinding('openart_cli',a['account_id_sha256'],a['workspace'],str(root),attempt_id,request_sha256,
+            canonical_scope_occurrence(a,occurrence),digest,native['native_body_sha256'],native['profile_sha256'],
+            evidence['evidence_sha256'])
+        binding.validate()
+    except LedgerError as e: bad(str(e))
+    validation=_hash({'authorization':a,'evidence_id':evidence_id,'scope':scope})
+    return ValidatedUnknownCostAuthorization(ValidatedUnpricedClaim(binding,validation),a['purpose'],evidence_id,a)

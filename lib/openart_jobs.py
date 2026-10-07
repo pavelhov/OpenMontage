@@ -39,7 +39,8 @@ ALLOWED_INPUTS = ("prompt", "model", "mode", "duration", "aspect_ratio", "resolu
                   "native_dry_run_receipt_sha256")
 # Tolerated pass-through keys that never enter the native request.
 IGNORED_INPUTS = ("project_dir", "output_path", "operation", "cli_session_id",
-                  "native_dry_run_receipt_id", "native_dry_run_receipt_sha256")
+                  "native_dry_run_receipt_id", "native_dry_run_receipt_sha256",
+                  "unknown_cost_authorization_id", "unknown_cost_evidence_id")
 UNSUPPORTED_INPUTS = ("image", "image_url", "first_frame", "start_frame", "last_frame",
                       "end_frame", "last_image_path", "end_image_path", "reference_image_path",
                       "reference_image_paths", "reference_images", "audio", "audio_path", "keyframes",
@@ -1047,7 +1048,7 @@ def process_alive(identity: Optional[dict]) -> str:
 def job_dir(attempt_id: str, create: bool = True) -> Path:
     if create:
         return cli.private_dir("jobs", attempt_id)
-    return cli.state_dir() / "jobs" / cli._safe_part(attempt_id)
+    return cli.state_dir(create=False) / "jobs" / cli._safe_part(attempt_id)
 
 
 def _fsync_file(path: Path) -> None:
@@ -1226,7 +1227,8 @@ def launch_submit(project_root: Path, binding: dict, native: dict, profile: dict
                   "form_sha256": native["form_sha256"], "profile_source": profile.get("source"),
                   "profile": {k: v for k, v in profile.items()},
                   "json_paths": profile["json_paths"],
-                  "purpose": "result_contract_qualification" if qualification_attempt else "ordinary"}
+                  "purpose": "result_contract_qualification" if qualification_attempt else "ordinary",
+                  "authorization_kind":reservation.get("authorization_kind","exact_credit")}
         try:
             cli.write_private(jdir / "launch.json", _canon(launch))  # exclusive: submit-once marker
         except FileExistsError:
@@ -1432,6 +1434,23 @@ def effective_result_contract(attempt_id: str) -> dict:
             "json_paths": dict(prof["json_paths"], **proof["json_paths"])}
 
 
+def provider_refusal_code(raw: bytes):
+    """Strict original response grammar; message stays private and is never returned."""
+    def unique(pairs):
+        out={}
+        for key,value in pairs:
+            if key in out: raise ValueError()
+            out[key]=value
+        return out
+    try:
+        value=json.loads(raw.decode('utf-8'),object_pairs_hook=unique,parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
+        if not isinstance(value,dict) or set(value)!={'error'}: return None
+        error=value['error']
+        if not isinstance(error,dict) or set(error)!={'code','message'} or not isinstance(error['message'],str): return None
+        return error['code'] if error['code'] in {'insufficient_credit','unavailable_plan'} else None
+    except (ValueError,UnicodeError,TypeError): return None
+
+
 def _finish_parse(attempt_id: str, rc: Optional[int], profile: dict) -> dict:
     jdir = job_dir(attempt_id)
     stdout_path = jdir / "submit.stdout"
@@ -1442,6 +1461,11 @@ def _finish_parse(attempt_id: str, rc: Optional[int], profile: dict) -> dict:
     text = raw[: cli.MAX_STDOUT].decode("utf-8", "replace")
     job_id = parse_submit(text, profile) if len(raw) <= cli.MAX_STDOUT else None
     if job_id is None:
+        unknown=(launch_record(attempt_id) or {}).get('authorization_kind')=='unknown_cost'
+        code=provider_refusal_code(raw) if unknown and len(raw)<=cli.MAX_STDOUT else None
+        if code and type(rc) is int and rc!=0 and original_process_state(attempt_id)['state']=='exited':
+            append_event(attempt_id,{'type':'provider_refused','code':code,'returncode':rc,'stdout_sha256':hashlib.sha256(raw).hexdigest()})
+            return _launch_result(attempt_id,'provider_refused',None)
         append_event(attempt_id, {"type": "hold_unknown_job", "returncode": rc,
                                   "stdout_sha256": hashlib.sha256(text.encode()).hexdigest()})
         return _launch_result(attempt_id, "hold_unknown_job", None)
@@ -1504,6 +1528,8 @@ def recover_launch(attempt_id: str) -> dict:
     if job_id:
         return _launch_result(attempt_id, "submitted", job_id)
     events = read_events(attempt_id)
+    if launch_record(attempt_id).get("authorization_kind")=="unknown_cost" and any(e.get("type") == "provider_refused" for e in events):
+        return _launch_result(attempt_id,"provider_refused",None)
     if any(e.get("type") == "hold_unknown_job" for e in events):
         return _launch_result(attempt_id, "hold_unknown_job", None)
     state = original_process_state(attempt_id)
@@ -2057,6 +2083,7 @@ def reconcile_job(attempt_id: str) -> dict:
     state = ("collected" if evidence_sha else
              "failed_terminal" if (job_dir(aid, create=False) / _TERMINAL_FAIL_FILE).is_file() else
              "quarantined" if any(e.get("type") == "quarantined" for e in events) else
+             "provider_refused" if any(e.get("type") == "provider_refused" for e in events) else
              "hold_unknown_job" if any(e.get("type") == "hold_unknown_job" for e in events) else
              "open")
     return {"attempt_id": aid, "launched": launch is not None,
