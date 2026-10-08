@@ -6,6 +6,7 @@ checkpoints to resume pipelines and to present state at human checkpoints.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from functools import lru_cache
 from datetime import datetime, timezone
@@ -157,6 +158,7 @@ def _validate_artifacts_for_stage(
     stage: str,
     status: str,
     artifacts: dict[str, Any],
+    pipeline_type: str | None = None,
 ) -> None:
     # Valid stages come from the pipeline manifest (get_pipeline_stages), which
     # can declare stages beyond the 9 canonical ones (e.g. character-animation's
@@ -164,6 +166,11 @@ def _validate_artifacts_for_stage(
     # canonical artifact, so look it up defensively — a missing entry means the
     # stage simply has no required artifact, not a crash.
     required_artifact = CANONICAL_STAGE_ARTIFACTS.get(stage)
+    if pipeline_type == "provider-qualification":
+        required_artifact = {
+            "prepare": "provider_qualification_packet",
+            "generate": "provider_qualification_report",
+        }.get(stage)
     if (
         required_artifact is not None
         and status in {"completed", "awaiting_human"}
@@ -215,7 +222,7 @@ def validate_checkpoint(checkpoint: dict[str, Any]) -> None:
     if not isinstance(artifacts, dict):
         raise CheckpointValidationError("Checkpoint artifacts must be a dictionary")
 
-    _validate_artifacts_for_stage(stage, status, artifacts)
+    _validate_artifacts_for_stage(stage, status, artifacts, pipeline_type)
 
     try:
         jsonschema.validate(instance=checkpoint, schema=_load_checkpoint_schema())
@@ -391,7 +398,14 @@ def _enforce_stage_prerequisites(
         if _stage_requires_approval(pipeline_type, predecessor) and not checkpoint.get(
             "human_approved"
         ):
-            unapproved.append(predecessor)
+            basis = checkpoint.get("metadata", {}).get("approval_basis")
+            if basis is None:
+                unapproved.append(predecessor)
+            else:
+                _validate_policy_checkpoint(
+                    pipeline_dir / project_id, pipeline_type, predecessor,
+                    basis, checkpoint.get("review"), checkpoint["artifacts"],
+                )
 
     if incomplete or unapproved:
         details = []
@@ -404,6 +418,53 @@ def _enforce_stage_prerequisites(
             + "; ".join(details)
             + f". Pipeline order: {stages}."
         )
+
+
+def _validate_policy_checkpoint(
+    project_root: Path,
+    pipeline_type: str | None,
+    stage: str,
+    approval_basis: Any,
+    review: Any,
+    artifacts: dict[str, Any],
+) -> None:
+    """Revalidate retained policy authority and reviewed bytes without writes."""
+    try:
+        marker = json.loads(
+            (project_root / PROJECT_MARKER_FILENAME).read_text(encoding="utf-8")
+        )
+        if not isinstance(marker, dict) or marker.get("pipeline_type") != pipeline_type:
+            raise ValueError("policy checkpoint pipeline differs from the project manifest")
+        if not _stage_requires_approval(pipeline_type, stage):
+            raise ValueError("policy preauthorization requires an actual manifest gate")
+        definitions = _load_checkpoint_schema()["$defs"]
+        jsonschema.validate(approval_basis, definitions["approval_basis"])
+        if not isinstance(review, dict):
+            raise ValueError("policy preauthorization requires review.preauth")
+        preauth = review.get("preauth")
+        jsonschema.validate(preauth, definitions["preauth"])
+        from lib.production_autonomy import validate_preauth
+        validate_preauth(project_root, stage, approval_basis, preauth)
+        # Checkpoint payloads must describe the same current artifact the
+        # retained review approved, not a second caller-supplied revision.
+        artifact_name = CANONICAL_STAGE_ARTIFACTS[stage]
+        artifact_bytes = (project_root / preauth["artifact_path"]).read_bytes()
+        if hashlib.sha256(artifact_bytes).hexdigest() != preauth["artifact_sha256"]:
+            raise ValueError("canonical artifact changed during preauthorization")
+        current_artifact = json.loads(artifact_bytes)
+        if artifacts.get(artifact_name) != current_artifact:
+            raise ValueError("checkpoint canonical artifact differs from reviewed bytes")
+        review_bytes = (project_root / preauth["review_path"]).read_bytes()
+        if hashlib.sha256(review_bytes).hexdigest() != preauth["review_sha256"]:
+            raise ValueError("retained review changed during preauthorization")
+        retained_review = json.loads(review_bytes)
+        validate_artifact("review", retained_review)
+        if retained_review.get("artifact_path") != preauth["artifact_path"]:
+            raise ValueError("retained review does not bind the canonical artifact path")
+    except Exception as exc:
+        raise CheckpointValidationError(
+            f"GATE VIOLATION: stage {stage!r} policy preauthorization failed: {exc}"
+        ) from exc
 
 
 def _archive_superseded_checkpoint(path: Path, stage: str) -> None:
@@ -450,7 +511,8 @@ def _decision_log_path(pipeline_dir: Path, project_id: str) -> Path:
 
 
 def _merge_decision_log(
-    pipeline_dir: Path, project_id: str, new_log: dict[str, Any]
+    pipeline_dir: Path, project_id: str, new_log: dict[str, Any],
+    *, policy_merge: tuple[Path, dict[str, Any]] | None = None,
 ) -> None:
     """Append new decisions to the project-level decision log.
 
@@ -458,6 +520,11 @@ def _merge_decision_log(
     single cumulative file so reviewers and the bench can inspect the
     full audit trail.
     """
+    if policy_merge is not None:
+        path, existing = policy_merge
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        return
     path = _decision_log_path(pipeline_dir, project_id)
     if path.exists():
         with open(path, encoding="utf-8") as f:
@@ -479,6 +546,48 @@ def _merge_decision_log(
         json.dump(existing, f, indent=2)
 
 
+def _prepare_policy_decision_log(
+    project_root: Path, project_id: str, new_log: dict[str, Any]
+) -> tuple[Path, dict[str, Any]]:
+    """Validate the exact append and canonical locator before any mutation."""
+    try:
+        from lib.production_execution import _artifact_path
+        path = _artifact_path(project_root, "decision_log.json")
+        # Updating one of two aliases would leave conflicting authority. Keep
+        # this new path fail-closed rather than make a non-atomic double write.
+        if (project_root / "artifacts/decision_log.json").exists() and (
+            project_root / "decision_log.json"
+        ).exists():
+            raise ValueError("policy decision-log append requires one canonical log, not two aliases")
+        existing = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {
+            "version": "1.0", "project_id": project_id, "decisions": [],
+        }
+        validate_artifact("decision_log", existing)
+        validate_artifact("decision_log", new_log)
+        if existing["project_id"] != project_id or new_log.get("project_id") != project_id:
+            raise ValueError("policy decision-log append belongs to a different project")
+        projected = dict(existing, decisions=list(existing["decisions"]))
+        retained = {entry["decision_id"]: entry for entry in projected["decisions"]}
+        if len(retained) != len(projected["decisions"]):
+            raise ValueError("retained policy decision log repeats a decision_id")
+        caller_ids = set()
+        for entry in new_log["decisions"]:
+            decision_id = entry["decision_id"]
+            if decision_id in caller_ids:
+                raise ValueError("policy decision-log append repeats a caller decision_id")
+            caller_ids.add(decision_id)
+            if decision_id in retained:
+                if entry != retained[decision_id]:
+                    raise ValueError("policy decision-log append contradicts a retained decision_id")
+                continue
+            projected["decisions"].append(entry)
+        validate_artifact("decision_log", projected)
+        json.dumps(projected)
+        return path, projected
+    except Exception as exc:
+        raise CheckpointValidationError(f"GATE VIOLATION: invalid policy decision-log append: {exc}") from exc
+
+
 def write_checkpoint(
     pipeline_dir: Path,
     project_id: str,
@@ -495,6 +604,7 @@ def write_checkpoint(
     cost_snapshot: Optional[dict] = None,
     error: Optional[str] = None,
     metadata: Optional[dict] = None,
+    approval_basis: Optional[dict] = None,
 ) -> Path:
     """Write a checkpoint file for a pipeline stage."""
     # Backfill identity fields from the project marker so omitted kwargs
@@ -534,11 +644,54 @@ def write_checkpoint(
     # Enforcement happens at write time only: pre-existing checkpoints written
     # before gating (or by hand) still read as completed — deliberate
     # back-compat so in-flight and legacy projects keep resuming.
-    manifest_gate = _stage_requires_approval(pipeline_type, stage)
+    policy_requested = not human_approved and (
+        approval_basis is not None
+        or (isinstance(metadata, dict) and "approval_basis" in metadata)
+    )
+    if pipeline_type == "provider-qualification" and policy_requested:
+        raise CheckpointValidationError(
+            "GATE VIOLATION: provider qualification requires exact human approval; "
+            "retained Auto-continue policy is not authority for this pipeline"
+        )
+    try:
+        manifest_gate = _stage_requires_approval(pipeline_type, stage)
+    except CheckpointValidationError as exc:
+        if policy_requested:
+            raise CheckpointValidationError(f"GATE VIOLATION: {exc}") from exc
+        raise
     gated = bool(manifest_gate) or human_approval_required
+    policy_approved = False
+    if policy_requested:
+        if status != "completed" or not manifest_gate:
+            raise CheckpointValidationError(
+                "GATE VIOLATION: policy approval requires a completed manifest-gated stage"
+            )
+        _validate_policy_checkpoint(
+            pipeline_dir / project_id, pipeline_type, stage,
+            approval_basis, review, artifacts,
+        )
+        if metadata is not None and not isinstance(metadata, dict):
+            raise CheckpointValidationError("GATE VIOLATION: policy checkpoint metadata must be an object")
+        from lib.production_autonomy import ACTIVATION_CATEGORY, ACTIVATION_SUBJECT
+        decision_log = artifacts.get("decision_log")
+        decisions = decision_log.get("decisions") if isinstance(decision_log, dict) else None
+        if isinstance(decisions, list) and any(
+            isinstance(entry, dict)
+            and entry.get("category") == ACTIVATION_CATEGORY
+            and entry.get("subject") == ACTIVATION_SUBJECT
+            for entry in decisions
+        ):
+            raise CheckpointValidationError(
+                "GATE VIOLATION: a policy-approved checkpoint cannot change its activation decision"
+            )
+        metadata = dict(metadata or {})
+        metadata["approval_basis"] = dict(approval_basis)
+        # Retain the exact validated binding for later prerequisite checks.
+        review = dict(review, preauth=dict(review["preauth"]))
+        policy_approved = True
     if gated:
         human_approval_required = True
-        if status == "completed" and not human_approved:
+        if status == "completed" and not human_approved and not policy_approved:
             gate_source = (
                 f"human_approval_default: true in the {pipeline_type!r} manifest"
                 if manifest_gate
@@ -638,16 +791,34 @@ def write_checkpoint(
     # integrity for new writes while keeping legacy checkpoints readable.
     _validate_artifact_style_playbooks(artifacts)
 
+    # All policy checkpoint validation must be pure and complete before the
+    # decision-log merger can persist anything, even for malformed caller data.
+    policy_merge = None
+    if policy_approved:
+        try:
+            validate_checkpoint(checkpoint)
+            json.dumps(checkpoint)
+        except (CheckpointValidationError, TypeError, ValueError) as exc:
+            raise CheckpointValidationError(f"GATE VIOLATION: {exc}") from exc
+        if "decision_log" in artifacts:
+            policy_merge = _prepare_policy_decision_log(
+                pipeline_dir / project_id, project_id, artifacts["decision_log"],
+            )
+
     # Merge decision_log: if this checkpoint carries new decisions,
     # append them to the project-level decision log file, then write the
     # reference back into relevant artifacts so downstream consumers can find it.
     if "decision_log" in artifacts and isinstance(artifacts["decision_log"], dict):
-        _merge_decision_log(pipeline_dir, project_id, artifacts["decision_log"])
+        _merge_decision_log(
+            pipeline_dir, project_id, artifacts["decision_log"], policy_merge=policy_merge,
+        )
         log_ref = str(_decision_log_path(pipeline_dir, project_id))
 
         # Write decision_log_ref into proposal_packet and render_report
         # artifacts if they are present in this checkpoint.
-        for artifact_key in ("proposal_packet", "render_report"):
+        # A policy-approved canonical payload is already byte-bound to its
+        # retained review. Do not add an unreviewed decision-log reference.
+        for artifact_key in (() if policy_approved else ("proposal_packet", "render_report")):
             if artifact_key in artifacts and isinstance(artifacts[artifact_key], dict):
                 plan_or_top = artifacts[artifact_key]
                 # proposal_packet stores it under production_plan

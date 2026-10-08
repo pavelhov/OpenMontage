@@ -52,6 +52,339 @@ def _scrub_unicode_dashes(value: Any) -> Any:
     return value
 
 
+_OPENART_HELD_DEBIT = frozenset({"reserved", "unresolved"})
+_OPENART_PENDING_SLOTS = frozenset({"prepared", "ready", "submitting", "submitted", "uncertain"})
+
+
+def _openart_route(tool: BaseTool) -> dict[str, Any]:
+    """Read-only OpenArt menu row: qualification files + existing ledger snapshot.
+
+    Never calls the CLI, never constructs CreditLedger, never creates state.
+    Real profiles with inspected native controls and an effective preview count as
+    available models; full result proof remains empirical evidence, not a gate.
+    Fixtures never count as production models.
+    """
+    from lib.openart_catalog import read_observed_catalog
+    supports = dict(getattr(tool, "supports", {}))
+    errors: list[str] = []
+    try:
+        status = tool.get_status().value
+    except Exception as exc:  # pragma: no cover - defensive
+        status = "unavailable"
+        errors.append(f"status_error:{type(exc).__name__}")
+    available_models: list[dict[str, Any]] = []
+    candidates: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    try:
+        from lib import openart_jobs
+        rows = openart_jobs.list_qualifications()
+    except Exception as exc:
+        rows = []
+        errors.append(f"qualification_read_error:{type(exc).__name__}")
+    try:
+        catalog = tool._model_catalog() if hasattr(tool, "_model_catalog") else {}
+    except Exception as exc:  # pragma: no cover - adapter catalog never raises
+        catalog = {}
+        errors.append(f"model_catalog_error:{type(exc).__name__}")
+    for row in rows:
+        compact = {
+            "model": row.get("model"),
+            "mode": row.get("mode"),
+            "level": row.get("level"),
+            "production_ready": row.get("production_ready") is True,
+            "full_result_qualified": row.get("full_result_qualified") is True,
+            "empirical_result_status": row.get("empirical_result_status", "not_tested"),
+            "cli_version": row.get("cli_version"),
+            "profile_sha256": row.get("profile_sha256"),
+        }
+        if row.get("source") != "real" or row.get("error") == "fixture_profile":
+            rejected.append({**compact, "reason": "fixture_profile_never_live"})
+        elif row.get("production_ready") is True:
+            entry = ((catalog.get(row.get("model")) or {}).get("modes") or {}).get(row.get("mode"))
+            if entry and entry.get("profile_sha256") == row.get("profile_sha256"):
+                controls = {"native_controls": entry["native_controls"],
+                            "native_capabilities": entry.get("native_capabilities"),
+                            "native_controls_source": "retained_form_and_exact_preview_receipts",
+                            "required_unqualified": entry["required_unqualified"],
+                            "argv_flag_without_effective_preview":
+                                entry["argv_flag_without_effective_preview"]}
+                account = entry.get("account_id_sha256")
+            else:
+                # Production-ready row whose retained receipts could not be verified: never ready.
+                controls = {"native_controls": "unverified_receipts",
+                            "native_controls_source": "unavailable", "required_unqualified": None,
+                            "argv_flag_without_effective_preview": []}
+                account = None
+                errors.append("model_catalog_unverified")
+            available_models.append({**compact,
+                                     "result_contract_sha256": row.get("result_contract_sha256"),
+                                     "result_proof_id": row.get("result_proof_id"),
+                                     "production_ready": True,
+                                     "full_result_qualified": row.get("full_result_qualified") is True,
+                                     "empirical_result_status": row.get("empirical_result_status", "not_tested"),
+                                     "account_id_sha256": account,
+                                     "catalog_verified": account is not None,
+                                     "controls": controls})
+        elif row.get("level") in ("inspected", "pre_submit"):
+            candidates.append({**compact,
+                               "purpose": "qualification_candidate",
+                               "production_available": False,
+                               "next_stage": "pre_submit" if row.get("level") == "inspected"
+                               else "inspect_native_controls",
+                               "error": row.get("error")})
+        else:
+            rejected.append({**compact, "reason": row.get("error") or "unqualified"})
+    profile_accounts = sorted({m["account_id_sha256"] for m in available_models if m["account_id_sha256"]})
+    ledger: dict[str, Any] = {"initialized": False, "scope": "provider:openart_cli",
+                              "accounts": [], "pending": [], "holds": [],
+                              "unpriced_holds": [],
+                              "quarantine": [], "unacknowledged_outbox": 0, "error": None}
+    try:
+        from lib.provider_credit_ledger import read_existing_snapshot
+        snap = read_existing_snapshot()
+        ledger["initialized"] = bool(snap.get("initialized"))
+        attempts: set[str] = set()
+        for res in snap.get("reservations", []):
+            account = _openart_account_key(res.get("account_key"))
+            if account is None or not _in_scope(account, profile_accounts):
+                continue  # other providers'/accounts' facts never enter the OpenArt row
+            attempts.add(str(res.get("attempt_id")))
+            item = {"attempt_id": res.get("attempt_id"), "account": account,
+                    "slot_state": res.get("slot_state"),
+                    "debit_state": res.get("debit_state"),
+                    "reserved_units": res.get("reserved_units"),
+                    "charged_units": res.get("charged_units")}
+            if res.get("slot_state") in _OPENART_PENDING_SLOTS:
+                ledger["pending"].append(item)
+            if res.get("debit_state") in _OPENART_HELD_DEBIT:
+                # Debit state (billing) and slot state (job acceptance) are separate
+                # facts. An unresolved debit on a terminal/closed slot is a retained
+                # billing hold only: economics are incomplete, but it does not make
+                # the route ineligible. Unknown job acceptance is the pending-slot
+                # blocker below.
+                ledger["holds"].append({**item, "hold": "unknown_billing"
+                                        if res.get("debit_state") == "unresolved"
+                                        else "pending_reservation",
+                                        "job_acceptance_unknown":
+                                        res.get("slot_state") in _OPENART_PENDING_SLOTS})
+        unpriced_attempts: set[str] = set()
+        for res in snap.get("unpriced_reservations", []):
+            account = _openart_account_key(res.get("account_key"))
+            if account is None or not _in_scope(account, profile_accounts):
+                continue
+            unpriced_attempts.add(str(res.get("attempt_id")))
+            item = {"attempt_id": res.get("attempt_id"), "account": account,
+                    "authorization_kind": "unknown_cost", "requested_charge": "unknown",
+                    "slot_state": res.get("slot_state"), "billing_state": res.get("billing_state"),
+                    "job_acceptance_unknown": res.get("slot_state") in _OPENART_PENDING_SLOTS}
+            if item["job_acceptance_unknown"]:
+                ledger["pending"].append(item)
+            if res.get("billing_state") == "unknown":
+                ledger["unpriced_holds"].append(item)
+        for acct in snap.get("accounts", []):
+            account = _openart_account_key(acct.get("account_key"))
+            if account is None or not _in_scope(account, profile_accounts):
+                continue
+            ledger["accounts"].append({**account, "quarantined": bool(acct.get("quarantined")),
+                                       "observed_units": acct.get("observed_units"),
+                                       "balance_units": acct.get("balance_units")})
+            if acct.get("quarantined"):
+                ledger["quarantine"].append({"account": account, "reason": "account_quarantined"})
+        for q in snap.get("account_quarantine", []):
+            claim = _openart_claim_key(q.get("claim_key"))
+            if claim is not None and _in_scope(claim, profile_accounts):
+                ledger["quarantine"].append({"account": claim, "reason": q.get("reason")})
+        ledger["unacknowledged_outbox"] = sum(
+            1 for o in snap.get("outbox", []) if str(o.get("attempt_id")) in attempts) + sum(
+            1 for o in snap.get("unpriced_outbox", []) if str(o.get("attempt_id")) in unpriced_attempts)
+    except Exception as exc:
+        ledger["error"] = f"{type(exc).__name__}: {exc}"
+        errors.append("ledger_snapshot_error")
+    levels = {r.get("level") for r in available_models} | {c.get("level") for c in candidates}
+    if "full" in levels:
+        discovery = "full_profile_retained"
+    elif "pre_submit" in levels:
+        discovery = "pre_submit_profile_retained"
+    elif "inspected" in levels:
+        discovery = "inspected_profile_retained"
+    else:
+        discovery = "pending"
+    blockers: list[str] = []
+    if status != "available":
+        blockers.append(f"tool_status:{status}")
+    verified_models = [m for m in available_models if m["catalog_verified"]]
+    verified_caps = [m['controls'].get('native_capabilities') or {} for m in verified_models]
+    supports.update(first_last_frame=any(c.get('roles', {}).get('last_frame', {}).get('supported') is True for c in verified_caps),
+                    native_audio=any(c.get('params', {}).get('generateAudio', {}).get('binding') == 'flag' for c in verified_caps),
+                    multiple_reference_images=any(c.get('roles', {}).get('reference_image', {}).get('supported') is True for c in verified_caps))
+    if not available_models:
+        blockers.append("no_production_ready_real_profile")
+    elif not verified_models:
+        blockers.append("production_profile_receipts_unverified")
+    if ledger["error"]:
+        blockers.append("ledger_unreadable")
+    if ledger["pending"]:
+        blockers.append("pending_openart_attempts_need_reconciliation")
+    if any(h["job_acceptance_unknown"] for h in ledger["holds"] + ledger["unpriced_holds"]):
+        blockers.append("unknown_job_acceptance_unresolved")
+    billing_holds = [h for h in ledger["holds"] if h["hold"] == "unknown_billing"]
+    if ledger["quarantine"]:
+        blockers.append("openart_account_quarantined")
+    if ledger["unacknowledged_outbox"]:
+        blockers.append("unacknowledged_openart_outbox")
+    production_available = status == "available" and bool(verified_models)
+    return {
+        "tool": tool.name,
+        "provider": tool.provider,
+        "status": status,
+        "production_available": production_available,
+        "selection": "explicit_singleton_pin_only",
+        "operations": [op for op in ("text_to_video", "image_to_video") if supports.get(op)],
+        "models": available_models,
+        "qualification_candidates": candidates,
+        "observed_candidates": read_observed_catalog(),
+        "not_live": rejected,
+        "controls": {
+            "first_last_frame": supports.get("first_last_frame") is True,
+            "native_audio": supports.get("native_audio") is True,
+            "multiple_reference_images": supports.get("multiple_reference_images") is True,
+            # Native controls are per model/mode (models[].controls), read from
+            # retained form + exact preview receipts. Nothing route-wide is guessed.
+            "native_controls": "per_model" if verified_models else "not_yet_qualified",
+            "native_controls_source": "models[].controls" if verified_models
+            else "no_verified_production_profile",
+            "required_unqualified": ["resolution"] if not verified_models else sorted(
+                {n for m in verified_models for n in m["controls"]["required_unqualified"]}),
+        },
+        "limitations": [
+            "no end-frame pin",
+            "no native audio",
+            "single reference image only",
+            "required resolution stays unqualified until an observed form and exact preview exist; defaults never substitute",
+            "models and controls come only from observed qualification profiles",
+        ],
+        "account_stages": {
+            "account_discovery": discovery,
+            "fresh_refresh_required_before_dispatch": True,
+            "qualification_stages": ["inspected", "pre_submit", "full"],
+        },
+        "dispatch_readiness": {
+            # A qualified model is not an available account.
+            "ready": not blockers,
+            "blockers": blockers,
+            "account_scope": ({"kind": "verified_profile_accounts",
+                               "account_id_sha256": profile_accounts} if profile_accounts
+                              else "all_openart_accounts_until_verified_profile_account"),
+            "fresh_prelaunch_refresh_required": True,
+            "requires": ["fresh_account_refresh", "current_quote", "approved_credit_authorization"],
+            "unknown_cost_requires": ["fresh_account_refresh", "fresh_price_evidence",
+                                      "approved_unknown_cost_authorization", "no_enforceable_credit_ceiling_acknowledgement"],
+        },
+        "billing": {
+            "kind": "credits",
+            "billing_unit": "credits",
+            "current_quote_required": True,
+            "usd_cost_status": "unknown",
+            "estimated_cost_usd": None,
+            "authorization_modes": {
+                "exact_credit": {"default": True, "current_quote_required": True},
+                "unknown_cost": {"default": False, "recommended": False,
+                    "explicit_acknowledgement": "no_enforceable_credit_ceiling",
+                    "current_quote_required": False, "guaranteed_ceiling": False,
+                    "requested_charge": "unknown",
+                    "native_modes": sorted({m['mode'] for m in verified_models if m['mode'] in {'text2video', 'image2video'}}),
+                    "reference_mode": "reference_free_or_approved_source_bound",
+                    "source_binding_required_for_references": True,
+                    # Engine support is limited to verified exact text/single-start modes;
+                    # it never reports active policy or fresh account readiness.
+                    "auto_continue_available": any(
+                        m["mode"] in {"text2video", "image2video"} for m in verified_models),
+                    "auto_continue_requires": "active_policy_openart_unknown_cost_variant",
+                    "auto_continue_policy_active": None},
+            },
+            "holds": {
+                "pending_reservation": [h for h in ledger["holds"] if h["hold"] == "pending_reservation"],
+                "unknown_billing": billing_holds,
+                "unknown_cost": ledger["unpriced_holds"],
+            },
+            # Retained unknown-billing holds keep the route eligible but the
+            # economics incomplete: remaining allowance + a current quote decide.
+            "economics": "incomplete_unknown_billing_hold" if billing_holds else "quote_required",
+            "remaining_allowance_required": bool(billing_holds),
+            "remaining_allowance": "unknown_until_current_quote",
+        },
+        "ledger": ledger,
+        "errors": errors,
+        "recommendation": None,
+    }
+
+
+def _grok_route(tool: BaseTool) -> dict[str, Any]:
+    """Grok menu row. Unlike OpenArt metadata, get_status() runs the existing
+    read-only `grok --version` / `--help` compatibility probes (never a
+    generation). The CLI manages and does not report the media model: the pinned
+    agent model is not a video model, so no models are listed or selectable.
+    """
+    supports = dict(getattr(tool, "supports", {}))
+    try:
+        status = tool.get_status().value
+    except Exception:  # pragma: no cover - defensive
+        status = "unavailable"
+    return {
+        "tool": tool.name,
+        "provider": tool.provider,
+        "status": status,
+        "status_probe": "readonly_cli_version_and_help",
+        "selection": "explicit_singleton_pin_only",
+        "operations": list(getattr(tool, "capabilities", [])),
+        "models": [],
+        "model_policy": "cli_managed_media_unreported",
+        "model_selection": "not_supported",
+        "controls": {
+            "first_last_frame": supports.get("first_last_frame") is True,
+            "native_audio": supports.get("native_audio") is True,
+            "preset_voices": supports.get("preset_voices") is True,
+            "multiple_reference_images": supports.get("multiple_reference_images") is True,
+            "text_to_video": supports.get("text_to_video") is True,
+            "operation_specific": True,
+        },
+        "billing": {
+            "kind": "subscription_quota_unknown",
+            "billing_unit": None,
+            "usd_cost_status": "unknown",
+            "estimated_cost_usd": None,
+        },
+        "recommendation": None,
+    }
+
+
+def _in_scope(account: dict[str, Any], profile_accounts: list[str]) -> bool:
+    """Until a verified full profile names its account, every OpenArt account counts."""
+    return not profile_accounts or account.get("account_id_sha256") in profile_accounts
+
+
+def _openart_account_key(raw: Any) -> Optional[dict[str, Any]]:
+    import json
+    try:
+        parts = json.loads(raw)
+    except Exception:
+        return None
+    if isinstance(parts, list) and len(parts) == 3 and parts[0] == "openart_cli":
+        return {"account_id_sha256": parts[1], "workspace": parts[2]}
+    return None
+
+
+def _openart_claim_key(raw: Any) -> Optional[dict[str, Any]]:
+    import json
+    try:
+        parts = json.loads(raw)
+    except Exception:
+        return None
+    if isinstance(parts, list) and len(parts) == 2 and parts[0] == "openart_cli":
+        return {"account_id_sha256": parts[1], "workspace": None}
+    return None
+
+
 class ToolRegistry:
     """Central registry of all OpenMontage tools."""
 
@@ -462,6 +795,14 @@ class ToolRegistry:
             "capabilities": capabilities,
             "setup_offers": setup_offers,
             "runtime_warnings": runtime_warnings,
+            # Explicit-only CLI video routes (Grok subscription, OpenArt credits)
+            # with observed controls and billing truth. OpenArt rows are pure
+            # retained-metadata reads (zero OpenArt CLI calls, no ledger
+            # construction, no reservation, no directory creation). Grok rows
+            # reuse the existing read-only `--version`/`--help` compatibility
+            # probe and never generate media.
+            "qualified_cli_video_routes": self.qualified_cli_video_routes(),
+            "qualified_connector_video_routes": self.qualified_connector_video_routes(),
             # Keep endpoint support visible even when a provider's ordinary
             # image-to-video route is available through another billing path.
             "pinned_final_frame_routes": [
@@ -484,6 +825,42 @@ class ToolRegistry:
         # Markdown docs keep their typographic dashes; this only touches the
         # runtime-reported strings.
         return _scrub_unicode_dashes(result)
+
+    def qualified_cli_video_routes(self) -> list[dict[str, Any]]:
+        """Truthful compact menu rows for the explicit-only Grok/OpenArt CLIs.
+
+        No row is a recommendation or default; nothing here is benchmarked.
+        """
+        self.ensure_discovered()
+        routes: list[dict[str, Any]] = []
+        grok = self._tools.get("grok_cli_video")
+        if grok is not None:
+            supports = dict(getattr(grok, "supports", {}))
+            routes.append(_grok_route(grok))
+        openart = self._tools.get("openart_cli_video")
+        if openart is not None:
+            routes.append(_openart_route(openart))
+        return routes
+
+    def qualified_connector_video_routes(self) -> list[dict[str, Any]]:
+        """Observed native connector controls, separate from CLI qualification."""
+        self.ensure_discovered()
+        tool = self._tools.get('openart_mcp_video')
+        if tool is None:
+            return []
+        info = tool.get_info()
+        return [{'provider': 'openart_mcp', 'tool': tool.name,
+                 'transport': 'agent_mediated_connector',
+                 'explicit_selection_only': True,
+                 'production_available': any(mode.get('production_ready') is True
+                     for model in info.get('model_catalog', {}).values()
+                     for mode in model.get('modes', {}).values()),
+                 'model_catalog': info.get('model_catalog', {}),
+                 'qualification_status': 'model_mode_account_bound',
+                 'billing': {'kind': 'unknown_cost', 'enforceable_credit_ceiling': False},
+                 'limitations': ['Production readiness comes from the current native catalog/form/account; empirical result status is reported separately.',
+                     'Python prepares connector handoffs; the agent calls the session connector.',
+                     'CLI profiles and approvals never authorize this connector route.']}]
 
     # Post-hoc fix: narrow helper that keeps the registry output stdout-safe on
     # Windows cp1252 without imposing a new style rule on every tool author.

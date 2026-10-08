@@ -1,0 +1,143 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "review_id",
+    "reviewer",
+    "subject_sha256",
+    "status",
+    "evidence_kind",
+    "predicates"
+  ],
+  "properties": {
+    "version": {
+      "const": "1.0"
+    },
+    "review_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "reviewer": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "subject_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "status": {
+      "enum": [
+        "pass",
+        "fail",
+        "unknown"
+      ]
+    },
+    "evidence_kind": {
+      "enum": [
+        "fixture_only",
+        "reviewed"
+      ]
+    },
+    "predicates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "status",
+          "severity",
+          "evidence"
+        ],
+        "properties": {
+          "name": {
+            "enum": [
+              "coverage",
+              "reference_suitability",
+              "native_compatibility",
+              "continuity",
+              "feasibility"
+            ]
+          },
+          "status": {
+            "enum": [
+              "pass",
+              "fail",
+              "unknown"
+            ]
+          },
+          "severity": {
+            "const": "critical"
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          }
+        }
+      }
+    },
+    "composite_boards": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sha256",
+          "role",
+          "members"
+        ],
+        "properties": {
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "role": {
+            "const": "start_frame"
+          },
+          "members": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "sha256",
+                "role",
+                "cast_ids"
+              ],
+              "properties": {
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                },
+                "role": {
+                  "type": "string",
+                  "enum": [
+                    "identity_reference",
+                    "start_frame",
+                    "end_frame",
+                    "payoff_board"
+                  ]
+                },
+                "cast_ids": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openmontage.local/artifacts/preparation_review"
+}

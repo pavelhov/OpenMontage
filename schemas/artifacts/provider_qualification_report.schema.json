@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "title": "Provider qualification transport report",
+  "properties": {
+    "version": {
+      "const": "1.0"
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "purpose": {
+      "const": "result_contract_qualification"
+    },
+    "request_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "original_attempt_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "original_status": {
+      "enum": [
+        "pending",
+        "collected",
+        "failed",
+        "uncertain"
+      ]
+    },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    "billing": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "credits",
+        "usd",
+        "guaranteed_ceiling"
+      ],
+      "properties": {
+        "kind": {
+          "const": "unknown_cost"
+        },
+        "credits": {
+          "type": "null"
+        },
+        "usd": {
+          "type": "null"
+        },
+        "guaranteed_ceiling": {
+          "const": false
+        }
+      }
+    },
+    "creative_quality": {
+      "const": "not_production_reviewed"
+    },
+    "production_certified": {
+      "const": false
+    },
+    "quality_scope": {
+      "const": "transport_only"
+    },
+    "result_contract_status": {
+      "enum": [
+        "unverified",
+        "verified_from_original_receipts"
+      ]
+    }
+  },
+  "required": [
+    "version",
+    "project_id",
+    "purpose",
+    "request_sha256",
+    "original_attempt_id",
+    "original_status",
+    "outputs",
+    "billing",
+    "creative_quality",
+    "production_certified",
+    "quality_scope",
+    "result_contract_status"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "original_status": {
+            "const": "collected"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "outputs": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "result_contract_status": {
+            "const": "verified_from_original_receipts"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "original_status": {
+            "const": "collected"
+          }
+        }
+      }
+    }
+  ]
+}

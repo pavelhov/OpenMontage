@@ -9,6 +9,7 @@ from lib.production_provenance import validate_attempt_provenance
 from lib.checkpoint import init_project
 from lib.production_execution import ProductionGovernanceError
 from tests.integration.test_first_pass_workflow import Production
+from tests.lib.test_local_render_provenance import local, rendered
 
 
 def read(path):
@@ -48,6 +49,58 @@ def test_real_dispatch_and_native_receipt_pass(production):
     aid, _, output = attempt(production)
     assert check(production, aid, output)['result']['status'] == 'generated'
     assert len(production.transport.native_requests) == 1
+
+
+def test_legacy_board_backed_attempt_still_requires_input_snapshots(production):
+    aid, directory, output = attempt(production)
+    assert check(production, aid, output)['result']['status'] == 'generated'
+    request = read(directory / 'request.json')
+    request['input_assets'] = []
+    save(directory / 'request.json', request)
+    with pytest.raises(ProductionGovernanceError, match='immutable submitted inputs missing'):
+        check(production, aid, output)
+
+
+def test_reference_free_contract_cannot_certify_grok_attempt(production):
+    from tests.lib.test_shot_contract import reference_free_contract, refresh
+    from lib.production_execution import approval_plan_digest
+    from lib.shot_contract import contract_digest
+    aid, directory, output = attempt(production)
+    contract = reference_free_contract()
+    contract.update(project_id=production.contract['project_id'], story_revision=production.story['story_revision'])
+    contract['shots'][0]['duration_seconds'] = 8
+    contract['project_review']['story_revision'] = contract['story_revision']
+    contract['shots'][0]['review']['story_revision'] = contract['story_revision']
+    refresh(contract)
+    # A reference-free label on otherwise matching retained/current planning
+    # cannot turn a governed Grok original into an eligible OpenArt variant.
+    save(directory / 'shot_contract.json', contract)
+    save(production.root / 'artifacts/shot_contract.json', contract)
+    request = read(directory / 'request.json')
+    request['contract_sha256'] = contract_digest(contract)
+    request['scope']['approval_plan_sha256'] = approval_plan_digest(contract)
+    save(directory / 'request.json', request)
+    with pytest.raises(ProductionGovernanceError, match='requires OpenArt text2video'):
+        check(production, aid, output)
+
+
+def test_reference_free_contract_cannot_certify_local_render(local):
+    from tests.lib.test_shot_contract import reference_free_contract, refresh
+    from lib.production_execution import approval_plan_digest
+    from lib.shot_contract import contract_digest
+    root = local[0]
+    aid, directory, output = rendered(local)
+    contract = reference_free_contract()
+    contract['shots'][0]['duration_seconds'] = 8
+    refresh(contract)
+    save(directory / 'shot_contract.json', contract)
+    save(root / 'shot_contract.json', contract)
+    request = read(directory / 'request.json')
+    request['contract_sha256'] = contract_digest(contract)
+    request['scope']['approval_plan_sha256'] = approval_plan_digest(contract)
+    save(directory / 'request.json', request)
+    with pytest.raises(ProductionGovernanceError, match='requires OpenArt text2video'):
+        validate_attempt_provenance(root, aid, shot_id='entry', story_revision='story-1', expected_output=output)
 
 
 @pytest.mark.parametrize('field', ['version','scope','scope_id','cli_session_id','request_sha256','contract_sha256','input_assets','submitted_inputs','media_kind','scope_attempt_index','approval_evidence'])
@@ -139,3 +192,68 @@ def test_recovery_can_use_full_return_retained_in_uncertain_record(production):
     save(directory / 'result.json', {'status': 'uncertain', 'result': retained['result']})
     save(directory / 'reconciliation.json', retained)
     assert check(production, aid, output)['result']['status'] == 'generated'
+
+@pytest.mark.parametrize('change', ['account','job','native_request','profile','output_bytes','receipt'])
+def test_openart_original_evidence_negatives(tmp_path, monkeypatch, change):
+    from tests.tools.test_openart_cli_video import synthetic_openart_project
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    from lib import openart_jobs as jobs
+    from lib.production_execution import collect_openart_attempt
+    inputs, _, state = synthetic_openart_project(tmp_path,monkeypatch)
+    result = OpenArtCLIVideo().execute(inputs)
+    aid = result.data['production_attempt_id']
+    collected = collect_openart_attempt(tmp_path,aid,request_sha256=result.data['production_request_sha256'])
+    if change == 'account': state['launch'][aid]['binding']['account_id_sha256'] = 'x'*64
+    elif change == 'job': state['events'][aid][0]['job_id_sha256'] = 'wrong-job'
+    elif change == 'native_request': state['launch'][aid]['argv'] = ['altered-native-call']
+    elif change == 'profile': state['frozen'][aid]['profile']['account_id_sha256'] = 'x'*64
+    elif change == 'output_bytes': Path(inputs['output_path']).write_bytes(b'changed footage')
+    else: state['events'][aid][-1].pop('receipt_sha256')
+    with pytest.raises(ProductionGovernanceError):
+        validate_attempt_provenance(tmp_path,aid,shot_id='entry',story_revision='story-1',
+                                   expected_output=collected['output'])
+
+def test_openart_public_attempt_omits_prompt_and_private_native(tmp_path, monkeypatch):
+    from tests.tools.test_openart_cli_video import synthetic_openart_project
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    from lib.production_execution import planned_request_digest
+    from tests.lib.test_production_execution import write_scopes
+    inputs, scope, state = synthetic_openart_project(tmp_path,monkeypatch)
+    inputs['prompt'] = 'Synthetic https://media.example/clip?token=private-secret'
+    scope['requests']['entry'] = planned_request_digest(inputs,project_dir=tmp_path)
+    write_scopes(tmp_path,scope)
+    result = OpenArtCLIVideo().execute(inputs)
+    directory = tmp_path/'production_attempts'/result.data['production_attempt_id']
+    public = '\n'.join(path.read_text() for path in directory.glob('*.json'))
+    assert 'private-secret' not in public
+    assert 'https://media.example' not in public
+    assert state['submits'] == 1
+
+def test_openart_fixture_profile_never_certifies_without_explicit_test_seam(tmp_path,monkeypatch):
+    from tests.tools.test_openart_cli_video import synthetic_openart_project
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    from lib import production_provenance
+    from lib.production_execution import collect_openart_attempt
+    inputs, _, _ = synthetic_openart_project(tmp_path,monkeypatch)
+    result = OpenArtCLIVideo().execute(inputs)
+    aid = result.data['production_attempt_id']
+    collected = collect_openart_attempt(tmp_path,aid,request_sha256=result.data['production_request_sha256'])
+    monkeypatch.setattr(production_provenance,'_ALLOW_OPENART_FIXTURE_PROVENANCE',False)
+    with pytest.raises(ProductionGovernanceError,match='cannot certify live'):
+        validate_attempt_provenance(tmp_path,aid,shot_id='entry',story_revision='story-1',
+                                   expected_output=collected['output'])
+
+
+def test_fixture_source_alone_cannot_skip_frozen_preparation(tmp_path, monkeypatch):
+    """Fixture source is data, not authority to bypass immutable preparation."""
+    from tests.tools.test_openart_cli_video import synthetic_openart_project
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    from lib import production_provenance
+    from lib.production_execution import collect_openart_attempt
+    inputs, _, _ = synthetic_openart_project(tmp_path, monkeypatch)
+    result = OpenArtCLIVideo().execute(inputs)
+    aid = result.data['production_attempt_id']
+    collected = collect_openart_attempt(tmp_path, aid, request_sha256=result.data['production_request_sha256'])
+    monkeypatch.setattr(production_provenance, '_ALLOW_OPENART_COMPONENT_PREPARATION', False)
+    with pytest.raises(ProductionGovernanceError, match='preparation snapshot missing'):
+        validate_attempt_provenance(tmp_path, aid, shot_id='entry', story_revision='story-1', expected_output=collected['output'])

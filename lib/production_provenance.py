@@ -22,6 +22,9 @@ from lib.shot_contract import (
 from schemas.artifacts import load_schema
 
 
+_ALLOW_OPENART_FIXTURE_PROVENANCE = False  # module test seam, never caller-authorized
+_ALLOW_OPENART_COMPONENT_PREPARATION = False  # isolated U2 component fixtures only
+
 def _validate_attempt_provenance(
     project_dir: str | Path, attempt_id: str, *, shot_id: str,
     story_revision: str, expected_output: dict[str, str],
@@ -94,11 +97,19 @@ def _validate_attempt_provenance(
             and scope.get('story_revision') == story_revision and scope.get('phase') == request['phase'], 'scope identity/phase differs')
     local_render = request['media_kind'] == 'local_render'
     require(scope.get('phase') in ({'local_render'} if local_render else {'first_pass', 'repair'}), 'scope does not approve motion kind')
-    require(scope.get('provider') == ('hyperframes' if local_render else 'grok_cli'), 'provider has no qualified strict motion provenance adapter')
+    openart = scope.get('provider') == 'openart_cli' and not local_render
+    require(scope.get('provider') in ({'hyperframes'} if local_render else {'grok_cli','openart_cli'}), 'provider has no qualified strict motion provenance adapter')
     if local_render:
         require(request.get('tool_name') == 'hyperframes_compose', 'local render tool identity differs')
     evidence = request['approval_evidence']
-    bound_file(evidence, directory, 'preserved approval')
+    if openart:
+        from lib.production_request import load_private_approval
+        private_approval = load_private_approval(request)
+        scope = private_approval['scope']
+        evidence = private_approval['approval_evidence']
+        bound_file(evidence, private_approval['private_parent'], 'preserved private approval')
+    else:
+        bound_file(evidence, directory, 'preserved approval')
     require(isinstance(scope.get('evidence'), dict) and evidence['sha256'] == scope['evidence'].get('sha256'), 'preserved approval hash differs from frozen scope')
     index = request['scope_attempt_index']
     allowance = scope.get('attempts_per_shot', {}).get(shot_id)
@@ -136,11 +147,63 @@ def _validate_attempt_provenance(
     require(request['contract_sha256'] == digest, 'frozen contract digest differs from reservation')
     current = execution.load_shot_contract(root)
     require(contract['project_id'] == marker['project_id'] and contract['story_revision'] == story_revision, 'frozen contract story/project differs')
-    require(scope.get('approval_plan_sha256') == execution.approval_plan_digest(contract)
-            == execution.approval_plan_digest(current), 'approved planning semantics changed')
+    policy_derived = 'derived_from_policy' in scope
+    if policy_derived:
+        from lib.production_autonomy import validate_policy_attempt
+        validate_policy_attempt(root, request, scope, contract,
+                                frozen_openart=execution.load_openart_frozen(request) if openart else None)
+    else:
+        # The frozen scope must still equal its own frozen contract. A later
+        # approved repair may change another shot's own static board (which
+        # changes the global plan digest); this attempt stays eligible only
+        # when its shot-scoped planning projection is unchanged.
+        from lib import production_continuity as continuity
+        planning = contract
+        try:
+            # An authorized append-only planning revision maps the current plan
+            # back to its prior plan. Historical attempts must be named by the
+            # revision; fresh attempts dispatched after it under a prior-plan
+            # scope must use a scope (and lineage) the revision retains.
+            chain = continuity.revision_chain(root, current)
+            index = 0
+            frozen_plan = execution.approval_plan_digest(contract)
+            # Historical phase: undo newer revisions from current until it
+            # reaches this attempt's frozen plan; each must retain the attempt.
+            while index < len(chain) and execution.approval_plan_digest(current) != frozen_plan:
+                if index == 0:
+                    state = execution.load_attempt_result(root, attempt_id)
+                    output_sha = (state.get('preserved_output') or state.get('output') or {}).get('sha256')
+                continuity.require_retained_attempt(chain[index], attempt_id, shot_id, output_sha)
+                current = continuity.undo_revision(current, chain[index])
+                index += 1
+            # Fresh phase: an attempt dispatched under a prior-plan scope after
+            # older revisions; undo both frozen and current via retained scopes.
+            while index < len(chain) and scope.get('approval_plan_sha256') != execution.approval_plan_digest(planning):
+                require(execution.approval_plan_digest(planning)
+                        == execution.approval_plan_digest(chain[index]['revised']),
+                        'approved planning semantics changed')
+                continuity.require_retained_scope(chain[index], scope, shot_id)
+                planning = continuity.undo_revision(planning, chain[index])
+                current = continuity.undo_revision(current, chain[index])
+                index += 1
+            require(scope.get('approval_plan_sha256') == execution.approval_plan_digest(planning),
+                    'approved planning semantics changed')
+            # Fast path: unchanged global plan keeps the original exact rule.
+            same_shot_plan = (execution.approval_plan_digest(planning) == execution.approval_plan_digest(current)
+                              or continuity.shot_planning_digest(planning, shot_id)
+                              == continuity.shot_planning_digest(current, shot_id))
+            if 'carried_from' in scope:
+                scopes = read(root / 'production_scopes.json').get('scopes', [])
+                continuity.validate_carried_scope(root, scope, planning, scopes)
+        except (KeyError, TypeError) as exc:
+            fail(f'shot planning continuity unreadable: {exc}')
+        require(same_shot_plan, 'approved planning semantics changed')
     shots = [shot for shot in contract['shots'] if shot['id'] == shot_id]
     require(len(shots) == 1, 'reserved shot missing or duplicated in contract')
     shot = shots[0]
+    project_reference_free = contract.get('reference_mode') == 'reference_free'
+    reference_free = project_reference_free or shot.get('reference_mode') == 'reference_free'
+    require(not reference_free or openart, 'reference-free contract requires OpenArt text2video')
 
     def bound_review(review, subject, names, label, *, allow_draft=False):
         review_schema = {'$defs': schema['$defs'], '$ref': '#/$defs/review'}
@@ -160,7 +223,9 @@ def _validate_attempt_provenance(
     bound_review(shot['review'], digest, SHOT_PREDICATES, 'frozen shot review')
     assets = {asset['id']: asset for asset in contract['assets']}
     require(len(assets) == len(contract['assets']), 'duplicate frozen asset IDs')
-    required_assets = set(shot['asset_ids']) | {contract['payoff_asset_id']}
+    required_assets = set(shot['asset_ids'])
+    if not project_reference_free:
+        required_assets.add(contract['payoff_asset_id'])
     for asset in assets.values():
         if asset['role'] == 'identity_reference' and set(asset['cast_ids']) & (set(shot['cast_ids']) | set(contract['late_cast_ids'])):
             required_assets.add(asset['id'])
@@ -181,8 +246,28 @@ def _validate_attempt_provenance(
                 'upstream selection changed since this attempt')
 
     submitted = request['submitted_inputs']
+    frozen_openart = execution.load_openart_frozen(request) if openart else None
+    if openart:
+        require(request.get('tool_name') in {'openart_cli_video','video_selector'}, 'OpenArt tool identity differs')
+        submitted = frozen_openart['inputs']
+        if not reference_free and 'input_assets' in frozen_openart['native']:
+            from lib.production_request import validate_openart_asset_roles
+            try:
+                validate_openart_asset_roles({'binding': {'references': [
+                    {'id': a['id'], 'role': a['role'], 'sha256': a['sha256'], 'cast_ids': a['cast_ids']} for a in contract['assets']]},
+                    'shot': shot}, frozen_openart['native'])
+            except (ValueError, KeyError, TypeError) as exc:
+                fail('frozen OpenArt native role bindings differ: ' + str(exc))
+        if reference_free:
+            require(submitted.get('mode') == frozen_openart['native'].get('mode')
+                    == frozen_openart['profile'].get('mode') == 'text2video',
+                    'reference-free contract requires OpenArt text2video')
     bindings = request['input_assets']
-    require(isinstance(submitted, dict) and isinstance(bindings, list) and bool(bindings), 'immutable submitted inputs missing')
+    require(isinstance(submitted, dict) and isinstance(bindings, list), 'immutable submitted inputs missing')
+    if reference_free:
+        require(not bindings, 'reference-free submitted input snapshots forbidden')
+    else:
+        require(bool(bindings), 'immutable submitted inputs missing')
     remaining = iter(bindings)
 
     def restore_binding(role, path):
@@ -193,7 +278,7 @@ def _validate_attempt_provenance(
         original = inside(record.get('original_path', ''), root)
         return {'path': str(original), 'sha256': record['sha256']}
 
-    clean_submitted = copy.deepcopy(submitted)
+    clean_submitted = execution._clean(submitted)
     session = clean_submitted.pop('cli_session_id', None)
     require(session is None or session == request['cli_session_id'], 'submitted session differs')
     try:
@@ -211,9 +296,26 @@ def _validate_attempt_provenance(
     else:
         approved_digest = execution.approved_request_digest(approved, project_dir=root, selected_attempts=selected_snapshot)
     require(approved_digest == request['request_sha256'], 'submitted request differs from exact frozen approval')
-    (execution._check_local_render_inputs if local_render else execution._check_motion_inputs)(contract, shot_id, submitted, root)
+    if local_render:
+        execution._check_local_render_inputs(contract, shot_id, submitted, root)
+    else:
+        if policy_derived:
+            execution._check_motion_inputs(contract, shot_id, submitted, root, policy_composite=True)
+        else:
+            execution._check_motion_inputs(contract, shot_id, submitted, root)
     expected_hashes = {assets[asset_id]['sha256'] for asset_id in shot['asset_ids']}
     require(all(item['sha256'] in expected_hashes or (local_render and item['role'] == 'workspace_path') for item in bindings), 'submitted input outside approved shot assets')
+    if openart:
+        if 'preparation_snapshot' in request['openart']:
+            if policy_derived:
+                from lib.production_request import validate_frozen_preparation_history
+                validate_frozen_preparation_history(request, frozen_openart, root)
+            else:
+                from lib.production_request import validate_frozen_preparation
+                validate_frozen_preparation(request, frozen_openart, root)
+        elif not _ALLOW_OPENART_COMPONENT_PREPARATION:
+            fail('OpenArt immutable preparation snapshot missing')
+        return _validate_openart_result(root, directory, request, frozen_openart, expected_output, bound_file, read, require)
     if local_render:
         return _validate_local_render_result(root, directory, request, expected_output, bound_file, read, require)
 
@@ -268,6 +370,13 @@ def _validate_attempt_provenance(
     stable_receipt = {key: value for key, value in receipt.items() if key not in runtime_fields}
     require(receipt.get('request_sha256') == execution._digest(stable_receipt), 'native receipt digest differs')
     raw_path = directory / 'raw_result.json'
+    original_path = directory / 'result.json'
+    if (directory / 'local_continuation_claim.json').exists():
+        claim = execution.validate_local_grok_continuation_record(root, request)
+        require(claim['native_request_sha256'] == receipt['request_sha256'],
+                'local continuation native request differs from one-time claim')
+        raw_path = directory / 'local_continuation_raw_result.json'
+        original_path = directory / 'local_continuation_result.json'
     reconciliation = (directory / 'reconciliation.json').exists()
     if provider_path.exists() and not reconciliation:
         native_result = read(directory / 'provider_result.json')
@@ -285,7 +394,6 @@ def _validate_attempt_provenance(
     else:
         # A host interruption may precede a provider return. Recovered complete
         # native evidence is bound above to the durable prelaunch reservation.
-        original_path = directory / 'result.json'
         if original_path.exists():
             try:
                 original = read(original_path)
@@ -308,6 +416,52 @@ def _validate_attempt_provenance(
                     require({key: value for key, value in original_receipt.items() if key not in runtime_fields} == stable_receipt,
                             'reconciliation changed retained original controls')
     return {'request': request, 'result': result}
+
+
+def _validate_openart_result(root, directory, request, frozen, expected_output, bound_file, read, require):
+    """Pure local original-job proof; never calls CLI or rechecks live account."""
+    from lib import openart_jobs as jobs, production_execution as execution
+    attempt_id = request['attempt_id']
+    require(frozen['profile'].get('source') == 'real' or _ALLOW_OPENART_FIXTURE_PROVENANCE,
+            'OpenArt fixture qualification cannot certify live footage')
+    launch = jobs.launch_record(attempt_id)
+    binding = request['openart']['binding']
+    require(isinstance(launch, dict) and launch.get('binding') == binding,
+            'OpenArt original private launch binding differs')
+    native = frozen['native']
+    require(launch.get('argv') == native['argv'] + jobs.cli.GLOBAL_FLAGS,
+            'OpenArt original argv differs')
+    require(launch.get('cli_version') == native['cli_version'] and launch.get('tier') == native['tier']
+            and launch.get('form_sha256') == native['form_sha256'], 'OpenArt launch qualification differs')
+    stable = jobs.verify_collection_receipt(attempt_id, frozen['profile'])
+    require(stable.get('attempt_id') == attempt_id
+            and stable.get('binding') == binding
+            and stable.get('evidence',{}).get('snapshot_sha256') == request['openart']['snapshot']['snapshot_sha256']
+            and stable.get('job_id_sha256') and stable.get('job_record_sha256'),
+            'OpenArt stable original collection binding differs')
+    result = execution.load_attempt_result(root, attempt_id)
+    require(result.get('status') == 'generated' and (directory / 'reconciliation.json').is_file(),
+            'OpenArt original collection reconciliation missing')
+    payload = result.get('result')
+    require(isinstance(payload, dict) and payload.get('success') is True,
+            'OpenArt collection result incomplete')
+    data = payload.get('data', {})
+    expected_evidence = stable
+    require(data.get('provider') == 'openart_cli' and data.get('attempt_id') == attempt_id
+            and data.get('dispatch_status') == 'completed' and data.get('openart_evidence') == expected_evidence,
+            'OpenArt result original job/request/account evidence differs')
+    require(payload.get('cost_usd') is None and data.get('release_authorized') is False,
+            'OpenArt unresolved billing misrepresented')
+    output = result.get('output')
+    actual = bound_file(output, root, 'OpenArt collected output')
+    require(output == expected_output, 'OpenArt selected output differs')
+    require(stable.get('output', {}).get('path') == str(actual)
+            and stable.get('output', {}).get('sha256') == output['sha256'], 'OpenArt original-job output binding differs')
+    preserved = result.get('preserved_output')
+    bound_file(preserved, directory, 'OpenArt preserved output')
+    require(preserved['sha256'] == output['sha256'] and str(actual) in payload.get('artifacts', []),
+            'OpenArt preserved output/artifact differs')
+    return {'request':request, 'result':result}
 
 
 def _validate_local_render_result(root, directory, request, expected_output, bound_file, read, require):
@@ -404,6 +558,9 @@ def validate_attempt_provenance(
             if record.exists():
                 return validate_derived_edit(project_dir, record, attempt_id=attempt_id,
                     shot_id=shot_id, story_revision=story_revision, expected_output=expected_output)
+        if (Path(project_dir).resolve() / 'openart_mcp' / 'attempts' / attempt_id).is_dir():
+            return _validate_mcp_attempt(project_dir, attempt_id, shot_id=shot_id,
+                story_revision=story_revision, expected_output=expected_output)
         return _validate_attempt_provenance(
             project_dir, attempt_id, shot_id=shot_id,
             story_revision=story_revision, expected_output=expected_output,
@@ -545,3 +702,77 @@ def validate_derived_edit(project_dir, record_path, *, attempt_id, shot_id,
         raise
     except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError) as exc:
         raise execution.ProductionGovernanceError('derived edit: malformed retained evidence: ' + str(exc)) from exc
+
+
+def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, expected_output):
+    """Agent-recorded original connector provenance, never a Python remote call."""
+    from lib import production_execution as execution, production_request as preparation
+    from lib import openart_mcp as connector, openart_mcp_jobs as jobs
+    def require(condition, message):
+        if not condition:
+            execution._fail('MCP attempt provenance: ' + message)
+    root = Path(project_dir).resolve()
+    marker = execution._read(root / 'project.json')
+    require(marker.get('governance', {}).get('mode') == 'strict'
+            and marker.get('governance', {}).get('version') == '1.0'
+            and marker.get('story_revision') == story_revision, 'current Strict/story binding differs')
+    retained = jobs.provenance_record(root, attempt_id)
+    require(retained.get('provenance') == 'agent_recorded_connector' and retained.get('attempt_id') == attempt_id,
+            'original connector evidence missing')
+    native, authority, inputs = retained['native'], retained['authority'], retained['generation_inputs']
+    connector.validate_native_request(native)
+    require(native['source'] == 'real' or _ALLOW_OPENART_FIXTURE_PROVENANCE, 'fixture-only connector evidence cannot certify live production')
+    require(authority['provider'] == native['provider'] == 'openart_mcp'
+            and authority['shot_id'] == shot_id, 'exact provider/shot differs')
+    require(native['body_sha256'] == authority['native_body_sha256']
+            and native['source_binding_sha256'] == authority['source_binding_sha256']
+            and native['account_binding']['uid_sha256'] == authority['account_uid_sha256'],
+            'native/account/reference binding differs')
+    require(authority['request_sha256'] == execution.planned_request_digest(inputs, project_dir=root),
+            'original governed request/source bytes differ')
+    scopes = execution._read(root / 'production_scopes.json')['scopes']
+    current_scopes = [scope for scope in scopes if scope.get('id') == authority['scope_id']]
+    require(len(current_scopes) == 1 and preparation.digest(current_scopes[0]) == authority['scope_sha256'],
+            'scope revoked or changed after original approval')
+    scope = current_scopes[0]
+    require(scope.get('status') == 'approved' and scope.get('provider') == 'openart_mcp'
+            and scope.get('project_id') == marker['project_id']
+            and scope.get('story_revision') == story_revision, 'current scope identity/approval differs')
+    evidence = execution._inside(scope['evidence']['path'], root)
+    require(file_sha256(evidence) == scope['evidence']['sha256'], 'approval evidence bytes differ')
+    source = preparation.source_packet(root, shot_id, provider='openart_mcp', native=native)
+    require(preparation.digest(source['binding']) == authority['compiled_source_binding_sha256'],
+            'canonical reviewed source changed')
+    profile = connector.load_profile(native['model'], native['mode'], require='candidate' if retained['purpose'] == 'qualification' else 'qualified')
+    if 'derived_from_policy' in scope:
+        from lib.production_autonomy import validate_policy_mcp_attempt
+        validate_policy_mcp_attempt(root, scope, inputs=inputs, native=native, profile=profile, authority=authority['billing'])
+    proof = preparation.validate_preparation(inputs, native, profile)
+    if retained['purpose'] == 'qualification':
+        from lib.provider_qualification import validate_qualification_stage
+        validate_qualification_stage(root, inputs, authority['request_sha256'], native=native, profile=profile)
+    require(preparation.digest(proof) == preparation.digest(authority['preparation']), 'compiled preparation evidence differs')
+    from lib.openart_mcp_dispatch import validate_billing_authority
+    billing = validate_billing_authority(inputs, {'root': root, 'scope': scope, 'marker': marker,
+        'shot_id': shot_id, 'request_sha256': authority['request_sha256'],
+        'scope_attempt_index': authority['scope_attempt_index']}, native,
+        historical_authority=authority['billing'], profile=profile)
+    require(preparation.digest(billing) == preparation.digest(authority['billing']), 'fresh MCP billing approval differs')
+    require(preparation.digest(retained['begin_envelope']) == preparation.digest(
+        {'tool': 'mcp__codex_apps__openart_openart_generate_video', 'arguments': native['body']}),
+        'original generation envelope differs')
+    receipt = retained['receipt']; statuses = retained['status_observations']
+    history_id = receipt.get('historyId')
+    require(isinstance(history_id, str) and bool(history_id) and statuses, 'original history ID/status evidence absent')
+    terminal = statuses[-1]
+    require(terminal.get('historyId') == history_id and terminal.get('status') == 'COMPLETED',
+            'completed status is not bound to original history ID')
+    output = retained['output']
+    require(output == expected_output and execution._inside(output['path'], root) == execution._inside(inputs['output_path'], root)
+            and file_sha256(execution._inside(output['path'], root)) == output['sha256'], 'collected original output bytes differ')
+    request = {'attempt_id': attempt_id, 'project_id': marker['project_id'], 'story_revision': story_revision,
+               'shot_id': shot_id, 'scope_id': authority['scope_id'], 'scope': scope, 'media_kind': 'motion',
+               'submitted_inputs': inputs, 'request_sha256': authority['request_sha256'],
+               'transport': 'agent_mediated_connector', 'tool_name': 'openart_mcp_video'}
+    return {'request': request, 'result': {'status': 'generated', 'output': output},
+            'connector_provenance': retained}

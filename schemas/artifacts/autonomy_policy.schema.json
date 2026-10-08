@@ -1,0 +1,691 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "openmontage/artifacts/autonomy_policy",
+  "title": "Auto-continue Policy",
+  "description": "Optional exact approved envelope for Auto-continue. Absence, revocation or any defect means Strict.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "policy_id",
+    "mode",
+    "project_id",
+    "story_revision",
+    "providers",
+    "caps",
+    "shots",
+    "locked",
+    "flex",
+    "checkpoint_stages",
+    "evidence"
+  ],
+  "properties": {
+    "version": {
+      "const": "1.0"
+    },
+    "policy_id": {
+      "$ref": "#/$defs/id"
+    },
+    "mode": {
+      "const": "auto_continue"
+    },
+    "project_id": {
+      "$ref": "#/$defs/text"
+    },
+    "story_revision": {
+      "$ref": "#/$defs/text"
+    },
+    "model_selection_intents": {
+      "description": "Optional per-shot retained model intent (lib/video_model_selection.MODEL_SELECTION_INTENT_SCHEMA). Keys must be approved shots; every pool item must be an approved policy route. Omitted means unchanged legacy behavior and digest.",
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/model_selection_intent"
+      }
+    },
+    "providers": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 3,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/openart_cli"
+          },
+          {
+            "$ref": "#/$defs/openart_cli_unknown_cost"
+          },
+          {
+            "$ref": "#/$defs/grok_cli"
+          },
+          {
+            "$ref": "#/$defs/openart_mcp_unknown_cost"
+          }
+        ]
+      }
+    },
+    "caps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_total_attempts",
+        "max_attempts_per_shot",
+        "max_repair_attempts"
+      ],
+      "properties": {
+        "max_total_attempts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_attempts_per_shot": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_repair_attempts": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "shots": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "#/$defs/id"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/baseline"
+      }
+    },
+    "locked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cast",
+        "dialogue",
+        "sources",
+        "story_predicates",
+        "controls"
+      ],
+      "properties": {
+        "cast": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "additionalProperties": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "$ref": "#/$defs/role_bytes"
+            }
+          }
+        },
+        "dialogue": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "text_sha256",
+              "speaker_id"
+            ],
+            "properties": {
+              "text_sha256": {
+                "$ref": "#/$defs/sha"
+              },
+              "speaker_id": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          }
+        },
+        "sources": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/sha"
+          }
+        },
+        "story_predicates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "sha256"
+            ],
+            "properties": {
+              "id": {
+                "$ref": "#/$defs/id"
+              },
+              "sha256": {
+                "$ref": "#/$defs/sha"
+              }
+            }
+          }
+        },
+        "controls": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/id"
+          },
+          "additionalProperties": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "value"
+                ],
+                "properties": {
+                  "value": {
+                    "type": [
+                      "string",
+                      "number",
+                      "boolean"
+                    ]
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "value_sha256"
+                ],
+                "properties": {
+                  "value_sha256": {
+                    "$ref": "#/$defs/sha"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    "flex": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "duration_s",
+        "resolution",
+        "references"
+      ],
+      "properties": {
+        "duration_s": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          }
+        },
+        "resolution": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/text"
+          }
+        },
+        "references": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "droppable_roles",
+            "substitutes"
+          ],
+          "properties": {
+            "droppable_roles": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/asset_role"
+              }
+            },
+            "substitutes": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/role_bytes"
+              }
+            }
+          }
+        }
+      }
+    },
+    "checkpoint_stages": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "research",
+          "proposal",
+          "idea",
+          "script",
+          "scene_plan",
+          "assets",
+          "edit",
+          "compose"
+        ]
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^approvals/autonomy-policy-[0-9a-f]{64}\\.json$"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "model_selection_intent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "approved_pool"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "exact",
+            "prefer",
+            "auto"
+          ]
+        },
+        "goal": {
+          "enum": [
+            "best_value",
+            "max_clean",
+            "balanced"
+          ]
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "approved_pool": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "provider"
+            ],
+            "properties": {
+              "provider": {
+                "type": "string",
+                "minLength": 1
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1
+              },
+              "tool": {
+                "enum": [
+                  "openart_cli_video",
+                  "grok_cli_video",
+                  "openart_mcp_video"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "prefer"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "model"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "mode": {
+                "const": "exact"
+              }
+            }
+          },
+          "then": {
+            "anyOf": [
+              {
+                "required": [
+                  "model"
+                ]
+              },
+              {
+                "required": [
+                  "provider"
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "asset_role": {
+      "enum": [
+        "identity_reference",
+        "start_frame",
+        "end_frame",
+        "timed_keyframe",
+        "payoff_board",
+        "observed_outgoing_frame",
+        "voice_reference"
+      ]
+    },
+    "role_bytes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sha256",
+        "role"
+      ],
+      "properties": {
+        "sha256": {
+          "$ref": "#/$defs/sha"
+        },
+        "role": {
+          "$ref": "#/$defs/asset_role"
+        }
+      }
+    },
+    "openart_cli": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "models",
+        "billing",
+        "ceiling",
+        "account_id_sha256",
+        "workspace"
+      ],
+      "properties": {
+        "id": {
+          "const": "openart_cli"
+        },
+        "models": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/text"
+          }
+        },
+        "billing": {
+          "const": "credits"
+        },
+        "ceiling": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+        },
+        "account_id_sha256": {
+          "$ref": "#/$defs/sha"
+        },
+        "workspace": {
+          "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "openart_cli_unknown_cost": {
+      "description": "Separately approved OpenArt unknown-cost variant. No enforceable credit ceiling exists; the human acknowledgement is required and charges are reported as unknown, never zero or dollars. Only exact listed routes may be derived.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "billing",
+        "exposure_acknowledgement",
+        "account_id_sha256",
+        "workspace",
+        "routes"
+      ],
+      "properties": {
+        "id": {
+          "const": "openart_cli"
+        },
+        "billing": {
+          "const": "unknown_cost_no_ceiling"
+        },
+        "exposure_acknowledgement": {
+          "const": "no_enforceable_credit_ceiling"
+        },
+        "account_id_sha256": {
+          "$ref": "#/$defs/sha"
+        },
+        "workspace": {
+          "const": "__unobserved_workspace__"
+        },
+        "routes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "model",
+              "mode"
+            ],
+            "properties": {
+              "model": {
+                "$ref": "#/$defs/text"
+              },
+              "mode": {
+                "$ref": "#/$defs/text"
+              }
+            }
+          }
+        }
+      }
+    },
+    "grok_cli": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "model_policy",
+        "billing"
+      ],
+      "properties": {
+        "id": {
+          "const": "grok_cli"
+        },
+        "model_policy": {
+          "const": "cli_managed_media_unreported"
+        },
+        "billing": {
+          "const": "subscription_quota_unknown"
+        }
+      }
+    },
+    "baseline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "static_input_assets",
+        "upstream",
+        "approval_plan_digest",
+        "script_snapshot_sha256",
+        "dialogue_coverage_sha256",
+        "static_source_packet_sha256"
+      ],
+      "oneOf": [
+        {
+          "required": [
+            "request_sha256"
+          ]
+        },
+        {
+          "required": [
+            "planned_request_template_sha256"
+          ]
+        }
+      ],
+      "properties": {
+        "request_sha256": {
+          "$ref": "#/$defs/sha"
+        },
+        "planned_request_template_sha256": {
+          "$ref": "#/$defs/sha"
+        },
+        "static_input_assets": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "sha256",
+              "role",
+              "binding"
+            ],
+            "properties": {
+              "sha256": {
+                "$ref": "#/$defs/sha"
+              },
+              "role": {
+                "$ref": "#/$defs/asset_role"
+              },
+              "binding": {
+                "$ref": "#/$defs/text"
+              }
+            }
+          }
+        },
+        "upstream": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "shot_id",
+              "role"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^\\$upstream[A-Za-z0-9_.:-]*$"
+              },
+              "shot_id": {
+                "$ref": "#/$defs/id"
+              },
+              "role": {
+                "const": "outgoing_frame"
+              }
+            }
+          }
+        },
+        "approval_plan_digest": {
+          "$ref": "#/$defs/sha"
+        },
+        "script_snapshot_sha256": {
+          "$ref": "#/$defs/sha"
+        },
+        "dialogue_coverage_sha256": {
+          "$ref": "#/$defs/sha"
+        },
+        "static_source_packet_sha256": {
+          "$ref": "#/$defs/sha"
+        }
+      }
+    },
+    "openart_mcp_unknown_cost": {
+      "description": "Fresh separate MCP acceptance; exact qualified routes and immutable provider account/project. Attempt caps do not enforce a credit ceiling.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "billing",
+        "exposure_acknowledgement",
+        "uid_sha256",
+        "project_id",
+        "routes"
+      ],
+      "properties": {
+        "id": {
+          "const": "openart_mcp"
+        },
+        "billing": {
+          "const": "unknown_cost_no_ceiling"
+        },
+        "exposure_acknowledgement": {
+          "const": "no_enforceable_credit_ceiling"
+        },
+        "uid_sha256": {
+          "$ref": "#/$defs/sha"
+        },
+        "project_id": {
+          "$ref": "#/$defs/text"
+        },
+        "routes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "model",
+              "mode"
+            ],
+            "properties": {
+              "model": {
+                "$ref": "#/$defs/text"
+              },
+              "mode": {
+                "$ref": "#/$defs/text"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,935 @@
+{
+  "version": "1",
+  "transport": "openart_mcp",
+  "classification": "synthetic_fixture_exact_observed_forms_not_live_qualification",
+  "observed_at": "2026-10-07T22:58:14.740Z",
+  "catalog": {
+    "tool": "openart_model_list",
+    "data": {
+      "models": [
+        {
+          "id": "wan3-0",
+          "displayName": "Wan 3.0",
+          "description": "Wan 3.0 \u2014 Alibaba's newest Wan: native 30s in a single pass (no stitching), so motion, lighting and subjects stay consistent across a long shot, at 480p/720p/1080p with an output audio track. References accept video and audio as well as images, and audio is how a subject gets a voice. Two tiers on one model, chosen by the `mode` form field in params (not the top-level generate `mode`, which selects text2video / image2video / element2video): it defaults to \"standard\"; set it to \"prime\" for the higher-fidelity tier at 1.75x the credits. Pick over Wan 2.7 for length, audio, or video references; pick Wan 2.7 only for the cheaper short clip. Text-, image-, and reference/element-to-video, with start/end-frame control.",
+          "modes": {
+            "video": [
+              {
+                "mode": "text2video",
+                "description": "Text to video \u2014 generate a video from a text prompt only (no input image).",
+                "totalCredits": 100,
+                "affordable": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "pixverseV6",
+          "displayName": "PixVerse V6",
+          "description": "PixVerse V6 \u2014 stable, natural camera and shot motion; standout 3D-anime motion scenes (surpassing Seedance 2.0 in some cases); excellent cost-performance. Text-to-video and image-to-video, with start/end-frame control.",
+          "modes": {
+            "video": [
+              {
+                "mode": "text2video",
+                "description": "Text to video \u2014 generate a video from a text prompt only (no input image).",
+                "totalCredits": 50,
+                "affordable": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "fal-h3-max-turbo",
+          "displayName": "MiniMax H3 Max Turbo",
+          "description": "MiniMax H3 Max Turbo by fal is an even faster and cheaper H3 Max option. Pick it for the quickest, lowest-cost proof-of-concept iterations when a slight quality tradeoff is acceptable and reference/element-to-video is not needed. It generates 5-15s clips at 480P, 768P, or 1080P with optional first/last-frame control. Text-to-video and image-to-video.",
+          "modes": {
+            "video": [
+              {
+                "mode": "text2video",
+                "description": "Text to video \u2014 generate a video from a text prompt only (no input image).",
+                "totalCredits": 75,
+                "affordable": true
+              },
+              {
+                "mode": "image2video",
+                "description": "Image to video \u2014 animate a provided image as the literal FIRST FRAME \u2014 same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action \u2014 that is element2video. This model also accepts an optional `endFrame` beside the required `startFrame`: pass both for a start-to-end frame transition that begins on the first picture and lands on the second.",
+                "totalCredits": 75,
+                "affordable": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "minimax-h3",
+          "displayName": "MiniMax H3",
+          "description": "MiniMax H3 (Hailuo 3.0) \u2014 MiniMax's flagship: native 2K output, 5-15s clips, and strong physical realism in motion. References mix up to 9 images, 3 video clips and 3 audio clips, and audio is how a subject gets a voice. Pick over the Seedance and Wan families when 2K sharpness on a short clip matters more than clip length or cost. Text-, image-, and reference/element-to-video, with start/end-frame control.",
+          "modes": {
+            "video": [
+              {
+                "mode": "text2video",
+                "description": "Text to video \u2014 generate a video from a text prompt only (no input image).",
+                "totalCredits": 450,
+                "affordable": true
+              },
+              {
+                "mode": "image2video",
+                "description": "Image to video \u2014 animate a provided image as the literal FIRST FRAME \u2014 same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action \u2014 that is element2video. This model also accepts an optional `endFrame` beside the required `startFrame`: pass both for a start-to-end frame transition that begins on the first picture and lands on the second.",
+                "totalCredits": 450,
+                "affordable": true
+              },
+              {
+                "mode": "element2video",
+                "description": "Element to video \u2014 use provided image(s) as a subject/identity REFERENCE \u2014 generate NEW video footage featuring that subject, NOT locked to the input frame. The right choice for 'make a video of <this character/object/dog> doing X' and whenever the request changes the scene, background, or place (e.g. '<this dog> running in the jungle') \u2014 even if the user says 'animate' or 'make it move'. When unsure between this and image2video, pick element2video. This model accepts image, video, audio elements. To give a subject a VOICE, add an audio element (wav/mp3, 2-15s) and say in the prompt which subject speaks with it (e.g. \"the woman in image 1 speaks with this voice\").",
+                "elementTypes": [
+                  "image",
+                  "video",
+                  "audio"
+                ],
+                "totalCredits": 450,
+                "affordable": true
+              }
+            ]
+          }
+        },
+        {
+          "id": "smart-shot",
+          "displayName": "Smart Shot",
+          "description": "Smart Shot \u2014 automated shot planning. From a scene description plus optional subject references (characters, products, props) it writes a Shot Plan: a single production-design sheet with reference views, set design, a top-down camera floor plan, storyboard frames, and lighting notes. Use preview-shot-plan to see the plan alone; generate-shot-video to plan and render a video of the scene in one call.",
+          "modes": {
+            "image": [
+              {
+                "mode": "preview-shot-plan",
+                "description": "Preview Shot Plan \u2014 produce the Shot Plan only, as a single wide image. Fast, cheap look at how the scene would be staged before committing to video. The result carries a videoPrompt and a ready-to-submit nextStep payload for rendering that exact plan into video. Pass reference images as plain URL strings (the `url` field of what successful openart_upload_import / openart_upload_pick or accepted openart_upload_metadata_get returned), NOT the whole visualReference object: subjects go in characterReferenceImageUrls (up to 3 \u2014 characters, products, props), the location in environmentReferenceImageUrl. Both are optional \u2014 a scene description alone is a complete request.",
+                "totalCredits": 60,
+                "affordable": true
+              }
+            ],
+            "video": [
+              {
+                "mode": "generate-shot-video",
+                "description": "Generate Shot Video \u2014 plan the scene and render it in one call. Returns TWO assets: the video, plus the Shot Plan it was planned from. Costs the plan plus the video, so use preview-shot-plan first if the user is still exploring. Pass reference images as plain URL strings (the `url` field of what successful openart_upload_import / openart_upload_pick or accepted openart_upload_metadata_get returned), NOT the whole visualReference object: subjects go in characterReferenceImageUrls (up to 3 \u2014 characters, products, props), the location in environmentReferenceImageUrl. Both are optional \u2014 a scene description alone is a complete request.",
+                "totalCredits": 235,
+                "affordable": true
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "forms": [
+    {
+      "tool": "openart_model_form_get",
+      "arguments": {
+        "model": "wan3-0",
+        "mode": "text2video"
+      },
+      "data": {
+        "model": "wan3-0",
+        "mode": "text2video",
+        "media": "video",
+        "jsonSchema": {
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4500
+            },
+            "videoCount": {
+              "default": 1,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8
+            },
+            "resolution": {
+              "default": "480p",
+              "type": "string",
+              "enum": [
+                "480p",
+                "720p",
+                "1080p"
+              ]
+            },
+            "duration": {
+              "default": 5,
+              "anyOf": [
+                {
+                  "type": "number",
+                  "const": -1
+                },
+                {
+                  "type": "integer",
+                  "minimum": 2,
+                  "maximum": 30
+                }
+              ]
+            },
+            "aspectRatio": {
+              "default": "16:9",
+              "type": "string",
+              "enum": [
+                "16:9",
+                "9:16",
+                "1:1",
+                "4:3",
+                "3:4",
+                "adaptive"
+              ]
+            },
+            "audio": {
+              "default": true,
+              "type": "boolean"
+            },
+            "promptExtend": {
+              "default": true,
+              "type": "boolean"
+            },
+            "autoEnhancePrompt": {
+              "default": false,
+              "type": "boolean"
+            },
+            "seed": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 2147483647
+            },
+            "creationMode": {
+              "type": "string",
+              "const": "text"
+            },
+            "mode": {
+              "default": "standard",
+              "type": "string",
+              "enum": [
+                "standard",
+                "prime"
+              ]
+            }
+          },
+          "required": [
+            "prompt"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "tool": "openart_model_form_get",
+      "arguments": {
+        "model": "pixverseV6",
+        "mode": "text2video"
+      },
+      "data": {
+        "model": "pixverseV6",
+        "mode": "text2video",
+        "media": "video",
+        "jsonSchema": {
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 5000
+            },
+            "videoCount": {
+              "default": 1,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8
+            },
+            "duration": {
+              "default": 5,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 15
+            },
+            "resolution": {
+              "default": "540p",
+              "type": "string",
+              "enum": [
+                "360p",
+                "540p",
+                "720p",
+                "1080p"
+              ]
+            },
+            "aspectRatio": {
+              "default": "16:9",
+              "type": "string",
+              "enum": [
+                "16:9",
+                "4:3",
+                "1:1",
+                "3:4",
+                "9:16",
+                "2:3",
+                "3:2",
+                "21:9"
+              ]
+            },
+            "generateAudio": {
+              "default": false,
+              "type": "boolean"
+            },
+            "autoEnhancePrompt": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "prompt"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "tool": "openart_model_form_get",
+      "arguments": {
+        "model": "fal-h3-max-turbo",
+        "mode": "text2video"
+      },
+      "data": {
+        "model": "fal-h3-max-turbo",
+        "mode": "text2video",
+        "media": "video",
+        "jsonSchema": {
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 6000
+            },
+            "videoCount": {
+              "default": 1,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8
+            },
+            "duration": {
+              "default": 5,
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 15
+            },
+            "aspectRatio": {
+              "default": "16:9",
+              "type": "string",
+              "enum": [
+                "21:9",
+                "16:9",
+                "4:3",
+                "1:1",
+                "3:4",
+                "9:16"
+              ]
+            },
+            "resolution": {
+              "default": "480P",
+              "type": "string",
+              "enum": [
+                "480P",
+                "768P",
+                "1080P"
+              ]
+            },
+            "seed": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "promptExpansionMode": {
+              "default": "balanced",
+              "type": "string",
+              "enum": [
+                "balanced"
+              ]
+            },
+            "autoEnhancePrompt": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "prompt"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "tool": "openart_model_form_get",
+      "arguments": {
+        "model": "fal-h3-max-turbo",
+        "mode": "image2video"
+      },
+      "data": {
+        "model": "fal-h3-max-turbo",
+        "mode": "image2video",
+        "media": "video",
+        "jsonSchema": {
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 6000
+            },
+            "videoCount": {
+              "default": 1,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8
+            },
+            "duration": {
+              "default": 5,
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 15
+            },
+            "resolution": {
+              "default": "480P",
+              "type": "string",
+              "enum": [
+                "480P",
+                "768P",
+                "1080P"
+              ]
+            },
+            "startFrame": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "image"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "imageUrl": {
+                  "type": "string"
+                },
+                "thumbnailUrl": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "url",
+                "label"
+              ],
+              "additionalProperties": false
+            },
+            "endFrame": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "image"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "imageUrl": {
+                      "type": "string"
+                    },
+                    "thumbnailUrl": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "url",
+                    "label"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "seed": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "promptExpansionMode": {
+              "default": "balanced",
+              "type": "string",
+              "enum": [
+                "balanced"
+              ]
+            }
+          },
+          "required": [
+            "prompt",
+            "startFrame"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "tool": "openart_model_form_get",
+      "arguments": {
+        "model": "minimax-h3",
+        "mode": "text2video"
+      },
+      "data": {
+        "model": "minimax-h3",
+        "mode": "text2video",
+        "media": "video",
+        "jsonSchema": {
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 6000
+            },
+            "videoCount": {
+              "default": 1,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8
+            },
+            "duration": {
+              "default": 5,
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 15
+            },
+            "aspectRatio": {
+              "default": "16:9",
+              "type": "string",
+              "enum": [
+                "21:9",
+                "16:9",
+                "4:3",
+                "1:1",
+                "3:4",
+                "9:16"
+              ]
+            },
+            "resolution": {
+              "default": "2K",
+              "type": "string",
+              "enum": [
+                "768P",
+                "2K"
+              ]
+            },
+            "autoEnhancePrompt": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "prompt"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "tool": "openart_model_form_get",
+      "arguments": {
+        "model": "minimax-h3",
+        "mode": "image2video"
+      },
+      "data": {
+        "model": "minimax-h3",
+        "mode": "image2video",
+        "media": "video",
+        "jsonSchema": {
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 6000
+            },
+            "videoCount": {
+              "default": 1,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8
+            },
+            "duration": {
+              "default": 5,
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 15
+            },
+            "resolution": {
+              "default": "2K",
+              "type": "string",
+              "enum": [
+                "768P",
+                "2K"
+              ]
+            },
+            "startFrame": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "image"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "imageUrl": {
+                  "type": "string"
+                },
+                "thumbnailUrl": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "url",
+                "label"
+              ],
+              "additionalProperties": false
+            },
+            "endFrame": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "image"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "imageUrl": {
+                      "type": "string"
+                    },
+                    "thumbnailUrl": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "url",
+                    "label"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "prompt",
+            "startFrame"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "tool": "openart_model_form_get",
+      "arguments": {
+        "model": "minimax-h3",
+        "mode": "element2video",
+        "elementTypes": [
+          "image",
+          "video",
+          "audio"
+        ]
+      },
+      "data": {
+        "model": "minimax-h3",
+        "mode": "element2video",
+        "media": "video",
+        "jsonSchema": {
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 6000
+            },
+            "videoCount": {
+              "default": 1,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8
+            },
+            "duration": {
+              "default": 5,
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 15
+            },
+            "aspectRatio": {
+              "default": "16:9",
+              "type": "string",
+              "enum": [
+                "21:9",
+                "16:9",
+                "4:3",
+                "1:1",
+                "3:4",
+                "9:16"
+              ]
+            },
+            "resolution": {
+              "default": "2K",
+              "type": "string",
+              "enum": [
+                "768P",
+                "2K"
+              ]
+            },
+            "autoEnhancePrompt": {
+              "type": "boolean"
+            },
+            "visualReferences": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "type": {
+                    "type": "string"
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "additionalProperties": {}
+              },
+              "minItems": 1
+            }
+          },
+          "required": [
+            "prompt",
+            "visualReferences"
+          ],
+          "additionalProperties": false
+        }
+      }
+    },
+    {
+      "tool": "openart_model_form_get",
+      "arguments": {
+        "model": "smart-shot",
+        "mode": "generate-shot-video"
+      },
+      "data": {
+        "model": "smart-shot",
+        "mode": "generate-shot-video",
+        "media": "video",
+        "jsonSchema": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "sceneDescription": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 5000
+                },
+                "characterReferenceImageUrls": {
+                  "default": [],
+                  "maxItems": 3,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "uri"
+                  }
+                },
+                "environmentReferenceImageUrl": {
+                  "type": "string",
+                  "format": "uri"
+                },
+                "sheetQuality": {
+                  "default": "medium",
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high"
+                  ]
+                },
+                "videoAspectRatio": {
+                  "default": "16:9",
+                  "type": "string",
+                  "enum": [
+                    "16:9",
+                    "9:16",
+                    "1:1",
+                    "4:3",
+                    "3:4"
+                  ]
+                },
+                "videoResolution": {
+                  "default": "480p",
+                  "type": "string",
+                  "enum": [
+                    "480p",
+                    "720p",
+                    "1080p"
+                  ]
+                },
+                "videoQuality": {
+                  "default": "high",
+                  "type": "string",
+                  "const": "high"
+                },
+                "videoDuration": {
+                  "default": 5,
+                  "type": "integer",
+                  "minimum": 4,
+                  "maximum": 30
+                }
+              },
+              "required": [
+                "sceneDescription"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "sceneDescription": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 5000
+                },
+                "characterReferenceImageUrls": {
+                  "default": [],
+                  "maxItems": 3,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "format": "uri"
+                  }
+                },
+                "environmentReferenceImageUrl": {
+                  "type": "string",
+                  "format": "uri"
+                },
+                "sheetQuality": {
+                  "default": "medium",
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high"
+                  ]
+                },
+                "videoAspectRatio": {
+                  "default": "16:9",
+                  "type": "string",
+                  "enum": [
+                    "16:9",
+                    "9:16",
+                    "1:1",
+                    "4:3",
+                    "3:4"
+                  ]
+                },
+                "videoResolution": {
+                  "default": "480p",
+                  "type": "string",
+                  "enum": [
+                    "480p",
+                    "720p",
+                    "1080p"
+                  ]
+                },
+                "videoQuality": {
+                  "type": "string",
+                  "const": "standard",
+                  "default": "standard"
+                },
+                "videoDuration": {
+                  "default": 5,
+                  "type": "integer",
+                  "minimum": 4,
+                  "maximum": 30
+                }
+              },
+              "required": [
+                "sceneDescription"
+              ],
+              "additionalProperties": false
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

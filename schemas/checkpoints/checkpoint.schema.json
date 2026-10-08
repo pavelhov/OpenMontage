@@ -4,24 +4,61 @@
   "title": "Pipeline Checkpoint",
   "description": "Full resumable snapshot after each pipeline stage.",
   "type": "object",
-  "required": ["version", "project_id", "pipeline_type", "stage", "status", "timestamp", "artifacts"],
+  "required": [
+    "version",
+    "project_id",
+    "pipeline_type",
+    "stage",
+    "status",
+    "timestamp",
+    "artifacts"
+  ],
   "properties": {
-    "version": { "type": "string", "const": "1.0" },
-    "project_id": { "type": "string" },
+    "version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "project_id": {
+      "type": "string"
+    },
     "stage": {
       "type": "string",
-      "description": "Stage name — validated at runtime against the pipeline manifest's stage list"
+      "description": "Stage name \u2014 validated at runtime against the pipeline manifest's stage list"
     },
     "status": {
       "type": "string",
-      "enum": ["completed", "failed", "awaiting_human", "in_progress"]
+      "enum": [
+        "completed",
+        "failed",
+        "awaiting_human",
+        "in_progress"
+      ]
     },
-    "timestamp": { "type": "string", "format": "date-time" },
-    "pipeline_type": { "type": "string", "description": "Pipeline manifest name" },
-    "style_playbook": { "type": "string" },
-    "checkpoint_policy": { "type": "string", "enum": ["guided", "manual_all", "auto_noncreative"] },
-    "human_approval_required": { "type": "boolean" },
-    "human_approved": { "type": "boolean" },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "pipeline_type": {
+      "type": "string",
+      "description": "Pipeline manifest name"
+    },
+    "style_playbook": {
+      "type": "string"
+    },
+    "checkpoint_policy": {
+      "type": "string",
+      "enum": [
+        "guided",
+        "manual_all",
+        "auto_noncreative"
+      ]
+    },
+    "human_approval_required": {
+      "type": "boolean"
+    },
+    "human_approved": {
+      "type": "boolean"
+    },
     "artifacts": {
       "type": "object",
       "description": "Map of artifact name to artifact data or file path",
@@ -29,18 +66,95 @@
     },
     "review": {
       "type": "object",
-      "description": "Reviewer output for this stage, if any"
+      "description": "Reviewer output for this stage, if any",
+      "properties": {
+        "preauth": {
+          "$ref": "#/$defs/preauth"
+        }
+      }
     },
     "cost_snapshot": {
       "type": "object",
       "properties": {
-        "total_spent_usd": { "type": "number" },
-        "total_reserved_usd": { "type": "number" },
-        "budget_remaining_usd": { "type": "number" }
+        "total_spent_usd": {
+          "type": "number"
+        },
+        "total_reserved_usd": {
+          "type": "number"
+        },
+        "budget_remaining_usd": {
+          "type": "number"
+        }
       }
     },
-    "error": { "type": "string" },
-    "metadata": { "type": "object" }
+    "error": {
+      "type": "string"
+    },
+    "metadata": {
+      "type": "object",
+      "properties": {
+        "approval_basis": {
+          "$ref": "#/$defs/approval_basis"
+        }
+      }
+    }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "$defs": {
+    "approval_basis": {
+      "type": "object",
+      "required": [
+        "kind",
+        "decision_id",
+        "policy_sha256"
+      ],
+      "properties": {
+        "kind": {
+          "const": "policy"
+        },
+        "decision_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policy_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "additionalProperties": false
+    },
+    "preauth": {
+      "type": "object",
+      "required": [
+        "artifact_path",
+        "artifact_sha256",
+        "review_path",
+        "review_sha256",
+        "critical_findings"
+      ],
+      "properties": {
+        "artifact_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "artifact_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "review_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "review_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "critical_findings": {
+          "type": "array",
+          "maxItems": 0
+        }
+      },
+      "additionalProperties": false
+    }
+  }
 }

@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from lib.video_model_selection import MODEL_SELECTION_INTENT_SCHEMA
+
 from tools.base_tool import (
     BaseTool,
     ToolResult,
@@ -61,6 +63,7 @@ class VideoSelector(BaseTool):
     input_schema = {
         "type": "object",
         "properties": {
+            "model_selection_intent": MODEL_SELECTION_INTENT_SCHEMA,
             "preferred_tool": {
                 "type": "string",
                 "description": "Exact tool name; never falls back.",
@@ -111,6 +114,13 @@ class VideoSelector(BaseTool):
                 "description": "Duration hint (e.g., '5', '10'). Passed through to the selected provider.",
             },
             "image_path": {"type": "string"},
+            "native_params": {"type": "object"},
+            "input_assets": {"type": "array", "items": {"type": "object"}},
+            "end_image_upload_id": {"type": "string"},
+            "reference_image_upload_ids": {"type": "array", "items": {"type": "string"}},
+            "reference_video_upload_ids": {"type": "array", "items": {"type": "string"}},
+            "reference_audio_upload_ids": {"type": "array", "items": {"type": "string"}},
+            "reference_audio_paths": {"type": "array", "items": {"type": "string"}},
             "first_frame": {"type": "string"},
             "last_frame": {"type": "string"},
             "keyframes": {"type": "array", "items": {"type": "object"}},
@@ -359,8 +369,27 @@ class VideoSelector(BaseTool):
         from lib.scoring import rank_providers
 
         inputs = dict(inputs)
-        # Native aliases are accepted only on the explicitly locked CLI route.
-        if "last_frame" in inputs and self._is_exact_provider_pin(inputs, "grok_cli"):
+        model_selection = None
+        if "model_selection_intent" in inputs:
+            from lib.video_model_selection import plan_video_model_selection
+
+            plan_inputs = self._rank_inputs(inputs) if inputs.get("operation") == "rank" else inputs
+            plan = plan_video_model_selection(plan_inputs, self._providers())
+            if plan["status"] != "planned":
+                return ToolResult(success=False, data={"model_selection": plan, "fallback_tools": [],
+                    "fallback_attempted": False, "dispatch_status": "not_dispatched"},
+                    error="; ".join(blocker["message"] for blocker in plan["blockers"]))
+            if inputs.get("operation") == "rank":
+                return ToolResult(success=True, data={"model_selection": plan,
+                    "planned_request": plan["planned_request"], "dispatch_status": "not_dispatched"})
+            # Continue through the established singleton route in this same
+            # invocation: a second selector invocation would be a nested dispatch.
+            # Governed production approves the exact rank-mode planned_request
+            # before executing it; planning itself grants no authority.
+            inputs = plan["planned_request"]
+            model_selection = plan
+        # Native aliases are accepted only on an explicitly locked provider route.
+        if "last_frame" in inputs and any(self._is_exact_provider_pin(inputs, provider) for provider in ("grok_cli", "openart_cli")):
             if inputs.get("last_image_path") is not None and (
                 not isinstance(inputs["last_frame"], str)
                 or not isinstance(inputs["last_image_path"], str)
@@ -376,19 +405,46 @@ class VideoSelector(BaseTool):
             "last_frame", "last_frame_url", "last_frame_path", "end_frame",
             "end_frame_url", "end_frame_path", "loop", "seamless_loop",
         }
+        if self._is_exact_provider_pin(inputs, "openart_mcp"):
+            unsupported_frame_controls.discard("last_frame")
         if unsupported_frame_controls.intersection(inputs):
             return ToolResult(
                 success=False,
                 data={"fallback_tools": [], "fallback_attempted": False, "dispatch_status": "not_dispatched"},
                 error="Use last_image_url or last_image_path for a pinned final frame; no loop switch or other ending-frame alias is supported.",
             )
-        if inputs.get("endpoint_requirement_id") and not (inputs.get("last_image_url") or inputs.get("last_image_path")):
+        if inputs.get("endpoint_requirement_id") and not (inputs.get("last_image_url") or inputs.get("last_image_path")
+                or self._is_exact_provider_pin(inputs, "openart_mcp") and (inputs.get("last_frame") or any(
+                    isinstance(row, dict) and row.get("role") == "last_frame" for row in inputs.get("input_assets", [])))):
             return ToolResult(
                 success=False,
                 data={"fallback_tools": [], "fallback_attempted": False, "dispatch_status": "not_dispatched"},
                 error="An endpoint_requirement_id requires the approved last_image_url or last_image_path; resolve the ending-frame asset before generation.",
             )
         candidates = self._providers()
+
+        # Crossed scopes: a preferred explicit-only provider outside a non-empty
+        # allowed set (or an allowed set that is not exactly that provider) is a
+        # contradictory route approval. Refuse before ranking or provider calls.
+        preferred = inputs.get("preferred_provider", "auto")
+        allowed = self._allowed_provider_set(inputs)
+        if (inputs.get("operation") != "rank"
+                and preferred not in (None, "auto") and allowed and allowed != {preferred}
+                and any(t.provider == preferred and self._is_explicit_only(t) for t in candidates)):
+            frame_note = (
+                " Grok CLI pins require local last_image_path on CLI >=1.0.34; HTTPS last_image_url needs "
+                "Grok REST (separately API-billed) with explicit route approval and credentials. "
+                "No fallback was attempted."
+                if self._requires_final_frame(inputs) else "")
+            return ToolResult(
+                success=False,
+                data={"alternatives_considered": [], "fallback_tools": [], "fallback_attempted": False,
+                      "dispatch_status": "not_dispatched", "crossed_scopes": {
+                          "preferred_provider": preferred, "allowed_providers": sorted(allowed)}},
+                error=(f"preferred_provider {preferred!r} is explicit-only and needs allowed_providers "
+                       f"exactly [{preferred!r}]; got {sorted(allowed)}. No provider was called."
+                       + frame_note),
+            )
 
         # Rank mode — return scored provider rankings without generating
         if inputs.get("operation") == "rank":
@@ -439,9 +495,28 @@ class VideoSelector(BaseTool):
 
         # Normal generation — use scored selection
         task_context = self._prepare_task_context(inputs)
+        # An exact explicit-only singleton pin is decided before filtering so a
+        # missing control or unqualified model fails visibly instead of being
+        # filtered away into scoring/fallback.
+        pinned = self._exact_explicit_candidate(inputs, candidates)
+        if pinned is not None:
+            missing = self._missing_pinned_controls(inputs, pinned)
+            if missing:
+                return ToolResult(
+                    success=False,
+                    data={"alternatives_considered": [], "fallback_tools": [], "fallback_attempted": False,
+                          "dispatch_status": "not_dispatched", "missing_controls": missing},
+                    error=("The explicitly pinned provider does not support the requested "
+                           + ", ".join(missing)
+                           + ". No prompt substitute, fallback or credit reservation was attempted; "
+                           "choose a route that supports it or revise the creative request."),
+                )
         candidates = self._filter_candidates(inputs, candidates)
-        explicit_route = self._exact_explicit_candidate(inputs, candidates) is not None
-        tool, score = self._select_best_tool(inputs, candidates, task_context)
+        explicit_route = pinned is not None or self._exact_explicit_candidate(inputs, candidates) is not None
+        if pinned is not None and self._exact_explicit_candidate(inputs, candidates) is None:
+            tool, score = None, None  # pinned route filtered out: never score or fall back
+        else:
+            tool, score = self._select_best_tool(inputs, candidates, task_context)
         if tool is None:
             return ToolResult(
                 success=False,
@@ -504,12 +579,17 @@ class VideoSelector(BaseTool):
 
         # Routing-only constraints are consumed by the selector; never forward
         # them to the provider tool.
-        adapted.pop("preferred_tool", None)
-        adapted.pop("hosting_provider", None)
-        if tool.input_schema.get("additionalProperties") is False:
+        if getattr(tool, "provider", None) != "openart_mcp":
+            adapted.pop("preferred_tool", None)
+            adapted.pop("hosting_provider", None)
+        if tool.input_schema.get("additionalProperties") is False and getattr(tool, "provider", None) != "openart_mcp":
             for key in ("preferred_provider", "preferred_provider_gap", "allowed_providers", "task_context", "target_operation"):
                 adapted.pop(key, None)
         result = tool.execute(adapted)
+        if model_selection is not None:
+            result.data["model_selection"] = model_selection
+            result.data["fallback_tools"] = []
+            result.data["alternatives_considered"] = []
         if explicit_route:
             result.data["alternatives_considered"] = []
             result.data["fallback_tools"] = []
@@ -522,7 +602,7 @@ class VideoSelector(BaseTool):
             if score:
                 result.data["provider_score"] = score.to_dict()
             result.data.update(self._tool_context_payload(tool))
-            if not explicit_route:
+            if not explicit_route and model_selection is None:
                 result.data["alternatives_considered"] = [
                     t.name for t in candidates
                     if t.name != tool.name and t.get_status().value == "available"
@@ -748,6 +828,22 @@ class VideoSelector(BaseTool):
             supports = getattr(tool, "supports", {})
             props = getattr(tool, "input_schema", {}).get("properties", {})
 
+            if getattr(tool, 'provider', None) in {'openart_cli', 'openart_mcp'} and hasattr(tool, '_model_catalog'):
+                entry = tool._model_catalog().get(inputs.get('model'), {}).get('modes', {}).get(inputs.get('mode'))
+                if entry is None and getattr(tool, 'provider', None) == 'openart_mcp':
+                    matched_operation = True
+                    continue  # exact native mode is mandatory; global flags cannot admit it
+                if entry is not None:
+                    matched_operation = True
+                    if (entry.get('production_ready') is True or self._is_mcp_qualification(inputs, tool)) and not entry.get('native_capabilities', {}).get('unreachable'):
+                        caps = entry.get('native_capabilities', {})
+                        if entry.get('operation') == operation or (
+                                operation == 'first_last_frame' and caps.get('roles', {}).get('last_frame', {}).get('supported') is True
+                                and (getattr(tool, 'provider', None) != 'openart_mcp' or (inputs.get('mode') == 'image2video'
+                                    and caps.get('roles', {}).get('first_frame', {}).get('supported') is True))):
+                            filtered.append(tool)
+                    continue
+
             if operation == "first_last_frame":
                 matched_operation = True
                 if supports.get("first_last_frame") is True:
@@ -788,6 +884,47 @@ class VideoSelector(BaseTool):
         return bool(getattr(tool, "supports", {}).get("explicit_selection_only"))
 
     @staticmethod
+    def _missing_pinned_controls(inputs: dict[str, object], tool: BaseTool | None) -> list[str]:
+        """Requested controls the exact pinned tool cannot honor (fail before reserve)."""
+        if tool is None:
+            return []
+        supports = getattr(tool, "supports", {}) or {}
+        missing: list[str] = []
+        if getattr(tool, 'provider', None) in {'openart_cli', 'openart_mcp'} and hasattr(tool, '_model_catalog'):
+            entry = (tool._model_catalog().get(inputs.get('model'), {}).get('modes', {}).get(inputs.get('mode')) or {})
+            if not entry and getattr(tool, 'provider', None) == 'openart_mcp':
+                return ['exact model/mode is not an observed OpenArt MCP route']
+            if getattr(tool, 'provider', None) == 'openart_mcp' and entry.get('production_ready') is not True and not VideoSelector._is_mcp_qualification(inputs, tool):
+                missing.append('exact MCP model/mode is not a production-ready native route for this account')
+            caps = entry.get('native_capabilities')
+            if caps:
+                supports = {**supports, 'first_last_frame': caps['roles']['last_frame']['supported'],
+                            'multiple_reference_images': caps['roles']['reference_image']['supported'],
+                            'native_audio': any(caps['params'].get(field, {}).get('binding') in {'flag', 'native_param'}
+                                for field in ('generateAudio', 'generateSound', 'audio'))}
+                if caps.get('unreachable'):
+                    missing.append('native_mode: ' + str(caps.get('unreachable_reason')))
+                roles = [a.get('role') for a in inputs.get('input_assets', []) if isinstance(a, dict)]
+                for role in roles:
+                    if caps['roles'].get(role, {}).get('supported') is not True:
+                        missing.append(role + ': unsupported native transport')
+                for name in inputs.get('native_params', {}):
+                    if caps['params'].get(name, {}).get('binding') not in {'flag', 'prompt', 'native_param'}:
+                        missing.append(name + ': unsupported native transport')
+        if (inputs.get("last_image_path") or inputs.get("last_image_url")
+                or inputs.get("endpoint_requirement_id")
+                or inputs.get("operation") == "first_last_frame") and supports.get("first_last_frame") is not True:
+            missing.append("first_last_frame (end-frame pin)")
+        if (inputs.get("native_audio") or inputs.get("voices") or inputs.get("voice")
+                or inputs.get("generate_audio")) and supports.get("native_audio") is not True:
+            missing.append("native_audio")
+        refs = inputs.get("reference_image_paths") or inputs.get("reference_image_urls")
+        if (isinstance(refs, (list, tuple)) and len(refs) > 1
+                and supports.get("multiple_reference_images") is not True):
+            missing.append("multiple_reference_images")
+        return missing
+
+    @staticmethod
     def _allowed_provider_set(inputs: dict[str, object]) -> set[str]:
         values = inputs.get("allowed_providers") or []
         if not isinstance(values, (list, tuple, set, frozenset)):
@@ -823,12 +960,15 @@ class VideoSelector(BaseTool):
         operation = inputs.get("target_operation") if inputs.get("operation") == "rank" else inputs.get("operation")
         return operation == "first_last_frame" or any(
             key in inputs for key in ("last_image_url", "last_image_path", "last_frame", "endpoint_requirement_id")
-        )
+        ) or any(isinstance(row, dict) and row.get("role") == "last_frame" for row in inputs.get("input_assets", []))
 
     @staticmethod
     def _final_frame_eligible(tool: BaseTool, inputs: dict[str, object]) -> bool:
         supports = getattr(tool, "supports", {})
         props = getattr(tool, "input_schema", {}).get("properties", {})
+        if getattr(tool, 'provider', None) in {'openart_cli', 'openart_mcp'} and hasattr(tool, '_model_catalog'):
+            entry = tool._model_catalog().get(inputs.get('model'), {}).get('modes', {}).get(inputs.get('mode')) or {}
+            return (entry.get('production_ready') is True or VideoSelector._is_mcp_qualification(inputs, tool)) and entry.get('native_capabilities', {}).get('roles', {}).get('last_frame', {}).get('supported') is True
         if supports.get("first_last_frame") is False:
             return False
         models = getattr(tool, "first_last_frame_models", None)
@@ -881,9 +1021,24 @@ class VideoSelector(BaseTool):
             return False
         return tool.get_status() != ToolStatus.UNAVAILABLE
 
+    @staticmethod
+    def _is_mcp_qualification(inputs, tool):
+        """Permit explicit candidate planning only in its bounded qualification pipeline."""
+        if (getattr(tool, 'provider', None) != 'openart_mcp'
+                or inputs.get('preferred_provider') != 'openart_mcp'
+                or inputs.get('allowed_providers') != ['openart_mcp']):
+            return False
+        try:
+            from lib.production_execution import discover_project, _read
+            root = discover_project(inputs)
+            marker = _read(root / 'project.json') if root else {}
+            return marker.get('pipeline_type') == 'provider-qualification' and marker.get('governance', {}).get('mode') == 'strict'
+        except (ValueError, OSError, TypeError):
+            return False
+
     def _tool_selectable(self, tool: BaseTool, inputs: dict[str, object]) -> bool:
         """A provider is selectable if it is AVAILABLE, or if it can serve a
         caller-supplied custom workflow even while bundled models report DEGRADED."""
-        if tool.get_status() == ToolStatus.AVAILABLE:
+        if tool.get_status() == ToolStatus.AVAILABLE or self._is_mcp_qualification(inputs, tool):
             return True
         return self._custom_workflow_eligible(tool, inputs)

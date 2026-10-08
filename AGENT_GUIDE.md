@@ -101,6 +101,17 @@ Before any paid or consequential generation call, state:
 - the reason it was chosen,
 - whether it is a sample or a batch run.
 
+For Auto-continue, announce before **every** generation: “Shot <id>; route
+<provider / exact model or CLI-managed media>; reason <eligible route>; phase
+<first pass / repair and replacement IDs>; changes <explicit approved flex or
+none>; budget <OpenArt exact-quote credits against ceiling / OpenArt unknown
+cost with no enforceable credit ceiling under its separately approved variant /
+Grok subscription quota unknown>; remaining caps <total / per-shot / repair>;
+approval <policy SHA and activation decision>.” Log the route and any compromise
+before execution. Never describe unknown-cost OpenArt as free, zero-cost,
+affordable, or bounded by the attempt caps.
+Never infer Grok's media backend from its reported agent model.
+
 ### Ask Before Major Changes
 
 The agent must ask the user before changing any major production choice, including:
@@ -111,6 +122,13 @@ The agent must ask the user before changing any major production choice, includi
 - switching composition engine when that changes the output character,
 - dropping narration, music, or other approved creative elements,
 - changing from sample mode to batch mode.
+
+The sole bounded exception is a currently valid retained Auto-continue policy:
+its exact approved routes/models and declared flex may proceed after announcement
+and decision logging without another prompt. Recompute authority before each
+attempt. Anything outside that policy still requires approval; publishing,
+benchmarks, purchases and top-ups are excluded. A generic “go ahead” is not policy
+authority.
 
 Minor prompt refinements inside an already approved provider/model path do not require separate approval unless they materially change the creative direction.
 
@@ -169,6 +187,12 @@ When asking the user to choose, do not just list options. The agent should:
 ### No Unilateral Substitutions
 
 If the approved path is blocked, the agent may investigate and prepare alternatives, but may not execute those alternatives without user approval.
+
+A valid retained Auto-continue policy can preauthorize only its named eligible
+routes/models and explicit flex, after fresh preparation and announcement.
+Blocked locks, missing native controls, exhausted caps or uncertain original
+jobs stop continuation; they never authorize a substitute. All other alternatives
+still need user approval.
 
 This applies especially to:
 
@@ -257,6 +281,7 @@ If the folder has tracks, the proposal and asset stages should present them as o
 | `avatar-spokesperson` | Presenter-led avatar or lip-sync videos | production |
 | `localization-dub` | Subtitle, dub, and translated variants | beta |
 | `framework-smoke` | Test: minimal 2-stage smoke test | test |
+| `provider-qualification` | One separately approved OpenArt transport sample | beta |
 
 > **Beta pipelines** have not been fully audited. They work, but expect rough edges. Mention this when the user selects one.
 
@@ -349,6 +374,149 @@ Already Available:
 - Show what they CAN do now, then what they COULD unlock.
 - If the user declines setup, proceed with the best available path — no nagging.
 - If a tool shares an env var with others, group them (read from `dependencies` field).
+
+### CLI Video Routes (Grok CLI and OpenArt CLI)
+
+`provider_menu_summary()["qualified_cli_video_routes"]` lists the two
+subscription CLI video routes. Grok comes first, then OpenArt. For OpenArt,
+use current catalog/form evidence, current authenticated account readiness and
+exact native CLI transport support to determine production eligibility.
+`observed_candidates` lists catalog-advertised model/mode pairs with form and
+transport observations where parsing succeeds; it is schema evidence, not a
+quality claim. A prior paid/live result or quality review is optional diagnostic
+evidence, not a production gate. The October 7 retained catalog has 17 video
+model IDs and 45 mode pairs. Present the routes next to the other video
+providers, using only observed fields:
+
+- **Models.** Use exact catalog model IDs/modes with valid forms and supported
+  native bindings. `candidate` means raw observation; `supported` means native
+  schema and account readiness; `qualified` adds optional original-result
+  evidence and grants no extra production authority. `not_live` is unavailable.
+  Do not invent model IDs,
+  audio, end-frame pins, rates or defaults.
+- **Controls and limitations.** Read `controls` and `limitations`. When a
+  control is false (end-frame pin, native audio, multiple references), say it
+  is unavailable on that route. A pinned request that needs it fails before any
+  credit reservation. Never paper over it with a prompt rewrite.
+  OpenArt `native_capabilities` keeps provider form controls separate from the
+  exact local CLI transport. The October 7 official CLI 0.1.1 surface supports
+  prompt, duration, aspect ratio, resolution and one `--image` start frame for
+  image-to-video. It has no generic native parameter flag, selectable
+  element-to-video mode, end-frame pin, multi-reference, reference-video/audio
+  or native audio control. Unsupported form properties stay visible and fail
+  closed before reservation. Canonical asset inputs use
+  `input_assets: [{role, source_path, source_sha256, upload_id}]`; legacy flat
+  aliases normalize to this shape and conflicts fail. Only first-frame input
+  currently binds at the local role layer. A guarded CLI preview showed
+  `params.startFrame` with `label`, `type` and `url`, but no `id`; H3 Turbo's
+  captured form requires all four, so its helper-level binding is not a valid
+  exact native request. The official MCP integration is installed and
+  authenticated; inspected schemas cover 17 video models and 45 modes. H3
+  Turbo image-to-video requires `startFrame.type`, `id`, `url` and `label`,
+  with optional `endFrame`, and MCP `generate_video` accepts full params.
+  The MCP native route is available subject to exact form, account, request,
+  and governance checks. CLI profiles and approvals do not migrate. A required
+  resolution stays unqualified until an observed form and exact preview carry
+  it. Grok reports no video models (`model_policy:
+  cli_managed_media_unreported`), and its agent model is never a video model.
+  Approved dialogue stays in the prompt even on a route with no native audio;
+  disclose the missing guarantee.
+- **Billing.** Report the selected OpenArt billing mode. Exact-quote mode keeps
+  its current quote and ceiling requirements. The explicit unknown-cost mode
+  acknowledges that no enforceable credit ceiling exists; do not call its
+  charge zero, affordable or a USD estimate. Show Grok CLI separately as
+  subscription or usage of unknown cost. Never add them together or convert
+  either to dollars.
+- **State.** Report `account_stages`, `dispatch_readiness`, pending jobs, credit
+  holds, quarantine and `errors` as they appear. A qualified model does not make
+  the account ready: any OpenArt blocker in `dispatch_readiness` stops dispatch,
+  and every dispatch needs a fresh account refresh. Exact-quote dispatch needs
+  its current quote; unknown-cost dispatch needs its separate retained
+  authorization and explicit no-enforceable-ceiling acknowledgement.
+  Unresolved job acceptance (pending, submitting or uncertain slot) blocks.
+  An unknown-billing hold on a terminal slot does not block and does not
+  invalidate approved footage. In priced mode, economics stay incomplete and
+  require a remaining allowance plus a fresh quote; unknown-cost mode has no
+  allowance or quote arithmetic. Account status is as last observed;
+  never claim live auth without a fresh probe. The OpenArt menu part runs no
+  OpenArt CLI; Grok status runs its existing read-only `--version`/`--help` probe.
+- **Route suggestions.** Give a per-scene suggestion when the requested
+  controls, current route support, and known cost information fit. State the
+  observed empirical-result status and the basis for the suggestion. Do not
+  present a heuristic as a benchmark, promise a clean first take, or silently
+  switch providers.
+
+The October 7 optional qualification record documents one collected, reference-free
+PixVerse V6 text-to-video result at 1s, 16:9, 720p. It verifies transport and
+the collected bytes only; creative quality was not reviewed. The Free account observation applies to that test and
+does not establish general entitlement or affordability. H3 models and all
+image-to-video output remain untested. Native references, audio and output
+quality must follow exact form and transport support; a schema does not claim
+output quality. A reviewed board ending target is
+the shot's intended final composition; it does not itself demand a native frame
+pin. A declared hard `pinned_final_frame`/handoff requirement does demand an
+exact matching native control and approval, so CLI 0.1.1 cannot satisfy it.
+Current account readiness and exact native route support must still come from
+fresh retained evidence and the provider menu. Report empirical result status
+separately and accurately. See
+`docs/implementation/2026-10-07-openart-live-720p-test.md` and
+`docs/implementation/2026-10-07-openart-model-controls.md`.
+
+A boarded episode may mark an independent, text-only cutaway with
+`shot.reference_mode: "reference_free"` for OpenArt text-to-video. The shot
+cannot have local cast, visible speakers, dialogue, assets or upstream sources,
+and any required frame pin or manifest reference/handoff blocks it. Existing
+project boards, payoff and cast evidence remain required. This permits a
+separate referenced Grok shot beside the cutaway; it does not make OpenArt a
+cast/dialogue/reference replacement or fallback for that shot. See
+`docs/OPENART_CLI.md#reference-free-and-provider-qualification-paths`.
+
+### Preserve video model intent
+
+If the user names an exact video model, preference, or goal such as value or
+cleanliness, preserve that request as `model_selection_intent`. Show and approve
+the exact provider/model pool and its account, billing mode, production stages
+and attempt limits; ranking cannot expand that pool. `exact` never substitutes.
+`prefer` can choose an already-approved eligible alternative while planning;
+`auto` ranks only within the approved pool. During execution, a semantic review
+may authorize a repair route only after the original attempt is terminal and
+review names a critical defect that the alternate can address. The alternate
+must already be in that shot's approved pool, the intent must permit it (`exact`
+never changes), and the repair needs a fresh governed scope or valid retained
+Auto-continue authority, with cumulative caps, continuity locks and all other
+request checks intact. This is a reviewed repair decision, not an automatic
+retry. Transport, authentication, quota and uncertain-job errors require
+reconciliation of the original attempt; they do not grant new route authority.
+`best_value` requires comparable request-applicable costs;
+OpenArt CLI and Grok CLI costs are unknown and cannot be treated as zero or
+compared as a price. `balanced` and `max_clean` use a control-fit/transport
+heuristic, not a visual-quality or first-attempt benchmark. Preserve intent and
+the selected exact request through the usual preparation and scope approval;
+ranking grants no dispatch authority. See `docs/VIDEO_MODEL_SELECTION.md`.
+
+An unknown-cost OpenArt Auto-continue policy is a new, separately approved
+variant, with `billing: "unknown_cost_no_ceiling"`,
+`exposure_acknowledgement: "no_enforceable_credit_ceiling"`, account binding,
+exact model/mode routes and the approved attempt caps. It never migrates an
+exact-quote policy. Do not activate it based on implementation approval alone.
+Unknown cost means neither zero nor a USD estimate, and it does not establish
+affordability.
+
+Ask the user for creative choices (shot, duration, aspect ratio, reference image),
+not for job commands. Using a route requires an explicit singleton pin
+(`preferred_provider` plus `allowed_providers` set to that single provider)
+inside a strict project. Approved settings pass through unchanged. Read
+`docs/OPENART_CLI.md` and the `openart-cli` skill before any OpenArt step.
+Strict approval is the default; a strict original scope may preapprove a bounded
+batch of exact attempts. Each attempt launches once; status, collect and resolve
+repeat safely on the original attempt. Optional Auto-continue requires a retained
+user-approved policy with an active decision-log activation. Derive exact
+one-attempt scopes through `lib.production_autonomy.derive_scope`; dispatch
+rechecks retained planning, explicit flex, implicit cast/dialogue/story locks,
+native controls, named preparation, caps and normal credit authorization.
+Missing, conflicting, changed or revoked authority stops continuation. Unknown
+original jobs are never resubmitted. Grok subscription quota stays unknown; no
+paid Grok API, purchases or top-ups are authorized. Read `docs/OPENART_CLI.md`.
 
 ### Setup Offer Protocol
 
@@ -592,6 +760,66 @@ Only with explicit user authorization, a strict project may set `project.json` �
 
 Final certification remains strict and rejects provisional selections, even if a master review claims full passing AV checks. Current immutable downstream provenance also binds each upstream review hash: replacing a provisional review with a later passing review is not yet a supported automatic certification upgrade for dependent attempts. Preserve history; a future explicit monotonic review-upgrade mechanism is needed for that transition without regeneration. Record this limitation in the project's production notes; never rewrite frozen attempts or regenerate footage merely to evade it. See `tests/lib/test_draft_audio_review.py` for the offline boundary tests.
 
+### Shot-scoped continuity after an approved static-board repair
+
+An approved corrective repair that changes one shot's own start board changes the global `approval_plan_digest`. A retained attempt still needs its frozen scope to equal its frozen contract. If the global plan changed, the attempt stays eligible only when `lib.production_continuity.shot_planning_digest(contract, shot_id)` is unchanged. That digest covers global story, cast, payoff, shot order, and the shot's own semantics, duration, motion, static asset closure and identity bytes. Current upstream, byte and evidence checks still apply.
+
+Unused shots continue through explicit linked successor scopes, including after another approved board repair. Build each with `derive_carried_scope` and append it with `append_carried_scope`. Each link binds the source and repair scope digests and the frozen source contract; validation replays preserved request, input and approval bytes through the original approval. Successors copy the exact requests and allowances, and reject shots consumed in any ancestor, overlapping branches, or asset deltas outside the repair targets' own boards. Preflight counts attempts across the linked scopes together, so a carry cannot reset quotas. Never rewrite an approved digest by hand. See `tests/integration/test_repair_continuity_workflow.py`.
+
+### Planning revision for existing footage (choreography only)
+
+When the human owner has authorized it, a planning revision can update a shot's `dominant_action` and `completed_end_state` so they describe footage that already exists. Every other contract difference fails closed. That includes dialogue, duration, boards, identity, payoff, story, shot order and other shots. New boards and generic semantic waivers are not supported.
+
+Use `lib/production_continuity.append_planning_revision` to append the record to `production_revisions.json`. The record must bind:
+
+- immutable prior and revised contract snapshots inside the project
+- the consent document, account policy and activation evidence
+- a story-protection proof bound to actual retained footage
+- the exact retained scopes and their digests
+
+The story-protection proof has this shape:
+
+```json
+{
+  "version": "1.0",
+  "project_id": "<project>",
+  "story_revision": "<revision>",
+  "prior_contract_sha256": "<prior snapshot hash>",
+  "revised_contract_sha256": "<revised snapshot hash>",
+  "target_shots": ["<unique changed shot id>"],
+  "sources": [
+    {"attempt_id": "<retained attempt>", "shot_id": "<target shot>", "output_sha256": "<actual footage hash>"}
+  ],
+  "review": {
+    "review_id": "<review id>",
+    "reviewer": "<reviewer>",
+    "story_revision": "<revision>",
+    "subject_sha256": "<digest of proof without review>",
+    "status": "pass",
+    "predicates": [
+      {"name": "story_protected", "status": "pass", "severity": "critical", "evidence": "<review evidence>"}
+    ]
+  }
+}
+```
+
+`target_shots` must be the unique exact set of changed shot IDs. Each source
+must match an entry in the revision's retained attempts and name an actual
+retained attempt whose output bytes match `output_sha256`; every changed target
+shot needs at least one such source. The review must validate against
+`schemas/artifacts/shot_contract.schema.json` `$defs.review`, bind the same
+`story_revision`, and have `status: "pass"`. `subject_sha256` is the proof
+digest with `review` excluded. The review's `reviewer` must equal
+`protected_story_proof.reviewed_by` in the
+revision record. The critical `story_protected` predicate must pass, and any
+other critical predicate that is failed or unknown rejects the proof.
+
+Compute `revision_sha256` as the digest of the record without that field. Duplicate IDs, or two revisions targeting the same plan, are rejected.
+
+A changed shot needs a fresh selection review against the revised contract. The review must carry `planning_revision` set to `{revision_id, revision_sha256, contract_sha256}`. `selection_digest` includes this binding, so an old review cannot be reused. Downstream preflight rejects an upstream selection of a changed shot that lacks the binding. Unchanged shots continue only under the retained scopes, and quotas stay as they were. See `tests/integration/test_planning_revision_workflow.py`.
+
+Revisions can be linked. A later revision's prior snapshot must have the same plan as an earlier revision's revised snapshot. Its retained attempts and scopes are cumulative: list every attempt and scope that must stay eligible, including those already retained by earlier revisions. A changed shot's selection binds the newest revision that changed that shot. Two revisions targeting the same plan, a cycle, or an unlinked revision are rejected.
+
 ## Reviewer Protocol
 
 The reviewer is a meta skill (`skills/meta/reviewer.md`). Agents supply semantic judgments; the engine enforces required evidence and current bindings. Critical prerequisites block motion and final certification.
@@ -610,11 +838,46 @@ The reviewer is a meta skill (`skills/meta/reviewer.md`). Agents supply semantic
 
 The checkpoint protocol meta skill (`skills/meta/checkpoint-protocol.md`) teaches the agent when to pause:
 
-- Read `human_approval_default` from the pipeline manifest per stage. **The manifest value is binding** — never re-judge it. `lib/checkpoint.py` enforces this: a gated stage cannot be written `completed` without `human_approved=True`.
+- Read `human_approval_default` from the pipeline manifest per stage. **The manifest value is binding** — never re-judge it. `lib/checkpoint.py` requires human approval or validated retained policy preauthorization for that exact gated stage. A fresh structured review must bind the current artifact, with no critical findings; policy SHA and activation decision form the approval basis.
 - Typical gated stages: `idea`/`proposal`, `script`, `scene_plan`, **`assets`** (review the generated assets scene-by-scene — the Backlot board's filmstrip — before compose locks them in), and `publish` where the pipeline has one. Most pipelines auto-proceed on `edit` and `compose`, but not all (documentary-montage gates `edit`) — the manifest you loaded is the only authority.
-- When approval is required: write the checkpoint as `awaiting_human`, present artifact summary, review findings, and cost snapshot — then **END YOUR TURN**. Doing further pipeline work in the same response is a gate violation.
+- When approval is required and no valid retained policy preauthorizes this exact stage: write the checkpoint as `awaiting_human`, present artifact summary, review findings, and cost snapshot — then **END YOUR TURN**. Doing further pipeline work in the same response is a gate violation.
 - **Approval is per-gate.** An early "go ahead" never covers later gates; explicit full-run pre-authorization must be recorded as a `decision_log` entry (`category: "approval_policy"`) to count.
 - Wait for human to approve, request revision, or abort.
+
+### Set Up Optional Auto-continue
+
+Before activation, ask the user to choose and approve:
+
+- Strict or Auto-continue; Strict is the default.
+- Allowed provider routes and exact schema-supported OpenArt models/modes, account binding, and any per-shot model-selection intent; empirical result evidence is optional and must be reported accurately. Grok media is CLI-managed and unreported. A model preference can rank only within the approved pool.
+- Locked must-haves: cast identities, dialogue occurrences, source assets, story predicates and native controls.
+- Explicit flex: deterministic duration range, resolution options and exact noncast reference drops/substitutions.
+- OpenArt billing choice: (a) exact-quote `credits` with the approved credit ceiling, or (b) `unknown_cost_no_ceiling` with explicit `no_enforceable_credit_ceiling` acknowledgement. Grok's remaining subscription quota is unknown.
+- Total, per-shot and repair attempt caps, and the actual gated checkpoint stages to preauthorize (or none).
+
+Retain the full approved planning, templates and policy evidence before writing
+the activation decision. Do not silently approve current drift as a new baseline.
+For unknown-cost approval, bind the account identity digest and exact model/mode
+routes; no existing exact-quote policy migrates. The normal total, per-shot and
+repair attempt caps still apply. Open scopes, failed attempts and unresolved
+attempts count; these caps do not bound spend. An active unknown-cost policy
+uses fresh retained evidence and rooted derivation; callers cannot supply
+authorization IDs or objects. An invalid or revoked policy stops continuation;
+surface the reason and obtain new approval where needed. Use this budget
+explanation:
+
+> Grok CLI uses your existing subscription; its remaining quota is unknown and is not a cost ceiling. Auto-continue never uses paid Grok API calls and never buys plans, credits or top-ups.
+
+For OpenArt, exact-quote mode requires a current quote and uses the approved
+credit ceiling. The separate unknown-cost mode has no enforceable ceiling, no
+quote arithmetic and no USD value; OpenArt charges remain unknown and may exceed
+the user's acceptable exposure. Do not call this free, zero-cost or affordable.
+Offer it only as a separately approved billing choice with the explicit
+no-ceiling acknowledgement. The October 7 PixVerse V6 result verifies one
+reference-free transport/result path and collected bytes; it does not certify
+creative quality or qualify H3 models, cast references, dialogue, voices,
+multiple references or ending-frame controls. A live test does not itself
+authorize future attempts.
 
 ## Communication Protocol
 

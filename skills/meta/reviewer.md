@@ -6,6 +6,12 @@ After completing any pipeline stage's work — before checkpointing. You are the
 
 Every stage gets reviewed. No exceptions. The review quality determines whether the final video is worth watching.
 
+At a given stage/shot boundary, one owner performs one substantive semantic
+review. The production owner may rely on that current, passing review and its
+bound evidence; do not repeat the same review as a worker/parent handoff or
+create another reviewer pass by default. Re-review only when a specific defect,
+uncertainty, or changed binding requires it. Keep critical unknowns blocked.
+
 ## Critique Quality (CHAI Rules)
 
 > Findings ≠ critiques. A finding identifies a problem; a critique tells the next stage how to fix it. The CMU/Harvard CHAI study ("Building a Precise Video Language with Human-AI Oversight", arXiv 2604.21718v2) showed that critique quality, measured on three axes, directly governs downstream output quality. Apply all three to every reviewer pass.
@@ -359,7 +365,11 @@ certify a final, even if every spot check passes. Keep it inspectable as a draft
    filenames alone. Required cast, cast count, completed action, speaker/source,
    possession, transformation, outgoing boundary, payoff, and late-cast evidence
    are critical and cannot be downgraded to cosmetic.
-2. Watch **and listen to the complete composed master in synchronized playback**,
+2. For shot and asset review, inspect evidence targeted to the required
+   predicates: representative frames and focused intervals around action,
+   identity, and continuity. Do not extract or inspect every frame by default;
+   expand inspection only to resolve a concrete uncertainty or defect.
+   At final certification, watch **and listen to the complete composed master in synchronized playback**,
    including the opening, every scene/transition, dialogue, and full ending.
    Frame sampling, transcripts, duration probes, or audio-only listening cannot
    substitute for this review. If the viewing/listening facility is unavailable,
@@ -444,3 +454,30 @@ A missing endpoint, a prompt-only substitution, or unapproved CLI-to-REST switch
 is critical. Inspect sampled first/final frames and motion between them; a
 submitted endpoint is evidence of conditioning, not proof of visual success or
 correct physics. Record the outcome before the normal assets approval gate.
+
+## OpenArt named preparation review (conditional)
+
+For an explicitly approved OpenArt video route, read the OpenArt preparation
+sequence in `skills/creative/visual-development.md`. Review the actual retained
+private native body and prompt, not a planner's summary or claimed coverage count.
+Check every dialogue occurrence's exact text, speaker and visible/offscreen
+source, including duplicates, alongside the initial state, dominant action,
+completed end state, endpoint completion, cast, reference roles, prop/body
+invariants, permitted transformations, transitions and mapped script context.
+The compiler checks literal spans and hashes; agents judge story coverage,
+reference suitability, continuity and credible performance. Neither substitutes
+for the other.
+
+Write a named v1 `preparation_review-<id>.json` with matching review ID and compiled
+subject hash. Require exactly `coverage`, `reference_suitability`,
+`native_compatibility`, `continuity`, and `feasibility`, all critical and passing,
+with concrete evidence. Missing, duplicate, unknown or cosmetic-downgraded
+predicates block dispatch. Examine measured audio approval and every speech
+interval, or the explicit language/rate/count/pause assumptions; inspect action
+and completion windows, margin and overlap rationale against native duration.
+Unsupported ending, audio or rich-reference controls block the route even when a
+prompt mentions the intended result. A start URL is not evidence of an ending pin.
+Changed preparation bindings require a new matching review before launch.
+Generated attempts retain their original private passing preparation; mutable
+later sidecars cannot retrospectively approve them. Fixture-only judgments never
+qualify live media or replace selection and complete audiovisual final review.

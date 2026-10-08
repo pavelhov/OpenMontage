@@ -1,0 +1,2988 @@
+{
+  "publication_note": "Published copy redacts private account correlators and local workspace/temp paths; technical schemas, control evidence, test outcomes, and non-account provenance are retained.",
+  "version": "1.0",
+  "observed_at": "2026-10-06T23:55:52.828301+00:00",
+  "scope": "readonly_contract_discovery",
+  "binary": {
+    "expected_path": "<HOME>/.local/bin/openart",
+    "resolved_path": "<HOME>/.local/bin/openart",
+    "verified_expected_binary": true
+  },
+  "commands": [
+    {
+      "argv": [
+        "version",
+        "--json",
+        "--no-input"
+      ],
+      "receipt_id": "2026-10-06T235552-18b88a7e",
+      "receipt_sha256": "49f9c287cfe8f0b360f48f4614e4a9a72b7fcbb3db3db4847843a36be9ec5cd6",
+      "stdout_sha256": "6b19cd554851dac05355ec27cc46384f554f489f678ce7200386f10ba027ef4c",
+      "returncode": 0,
+      "shape": [
+        {
+          "path": "$",
+          "type": "object",
+          "fields": [
+            "arch",
+            "commit",
+            "date",
+            "os",
+            "userAgent",
+            "version"
+          ]
+        },
+        {
+          "path": "arch",
+          "type": "string"
+        },
+        {
+          "path": "commit",
+          "type": "string"
+        },
+        {
+          "path": "date",
+          "type": "string"
+        },
+        {
+          "path": "os",
+          "type": "string"
+        },
+        {
+          "path": "userAgent",
+          "type": "string"
+        },
+        {
+          "path": "version",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "account",
+        "--json",
+        "--no-input"
+      ],
+      "receipt_id": "2026-10-06T235552-c6bcb7d6",
+      "receipt_sha256": "2afd286e80c0be8a0a77c49006b2661e8686fc3a2c37c691d707af58b522e53a",
+      "stdout_sha256": "bf3d02f4f000c93964c399759eccbdea1081aaec93396ad708d53610f6681045",
+      "returncode": 0,
+      "shape": [
+        {
+          "path": "$",
+          "type": "object",
+          "fields": [
+            "credits",
+            "plan",
+            "user"
+          ]
+        },
+        {
+          "path": "user",
+          "type": "object",
+          "fields": [
+            "email",
+            "uid"
+          ]
+        },
+        {
+          "path": "user.uid",
+          "type": "string"
+        },
+        {
+          "path": "user.email",
+          "type": "string"
+        },
+        {
+          "path": "plan",
+          "type": "string"
+        },
+        {
+          "path": "credits",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "model",
+        "list",
+        "--json",
+        "--no-input"
+      ],
+      "receipt_id": "2026-10-06T235553-1cb695be",
+      "receipt_sha256": "65f96fad820cdf82ffd17bafb37d2f204ba7595c117f1b28b25c3a235515983d",
+      "stdout_sha256": "b28b72c81da63cb1802b80bfc0d196a1282c6ba2b3f957c1dae177f629861332",
+      "returncode": 0,
+      "shape": [
+        {
+          "path": "",
+          "type": "array",
+          "length": 29
+        },
+        {
+          "path": ".0",
+          "type": "object",
+          "fields": [
+            "description",
+            "displayName",
+            "id",
+            "modes"
+          ]
+        },
+        {
+          "path": ".0.id",
+          "type": "string"
+        },
+        {
+          "path": ".0.displayName",
+          "type": "string"
+        },
+        {
+          "path": ".0.description",
+          "type": "string"
+        },
+        {
+          "path": ".0.modes",
+          "type": "object",
+          "fields": [
+            "image"
+          ]
+        },
+        {
+          "path": ".0.modes.image",
+          "type": "array",
+          "length": 2
+        },
+        {
+          "path": ".0.modes.image.0",
+          "type": "object",
+          "fields": [
+            "description",
+            "mode"
+          ]
+        },
+        {
+          "path": ".0.modes.image.0.mode",
+          "type": "string"
+        },
+        {
+          "path": ".0.modes.image.0.description",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "model",
+        "form",
+        "fal-h3-max",
+        "text2video",
+        "--json",
+        "--no-input"
+      ],
+      "receipt_id": "2026-10-06T235649-1fb4875b",
+      "receipt_sha256": "6411bf60e207419d759210b6a15472db1f7237422a0096959c0880afb13b35bb",
+      "stdout_sha256": "5bd49c5eb585f24918316835fb07e487e7c7357772086ab368ca4ba1b16102cf",
+      "returncode": 0,
+      "shape": [
+        {
+          "path": "$",
+          "type": "object",
+          "fields": [
+            "jsonSchema",
+            "media",
+            "mode",
+            "model"
+          ]
+        },
+        {
+          "path": "model",
+          "type": "string"
+        },
+        {
+          "path": "mode",
+          "type": "string"
+        },
+        {
+          "path": "media",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema",
+          "type": "object",
+          "fields": [
+            "additionalProperties",
+            "properties",
+            "required",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties",
+          "type": "object",
+          "fields": [
+            "aspectRatio",
+            "autoEnhancePrompt",
+            "duration",
+            "prompt",
+            "promptExpansionMode",
+            "resolution",
+            "seed",
+            "videoCount"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.prompt",
+          "type": "object",
+          "fields": [
+            "maxLength",
+            "minLength",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.prompt.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.prompt.minLength",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.prompt.maxLength",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.videoCount",
+          "type": "object",
+          "fields": [
+            "default",
+            "maximum",
+            "minimum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.videoCount.default",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.videoCount.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.videoCount.minimum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.videoCount.maximum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.duration",
+          "type": "object",
+          "fields": [
+            "default",
+            "maximum",
+            "minimum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.duration.default",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.duration.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.duration.minimum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.duration.maximum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio",
+          "type": "object",
+          "fields": [
+            "default",
+            "enum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio.default",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio.enum",
+          "type": "array",
+          "length": 6
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio.enum.0",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.resolution",
+          "type": "object",
+          "fields": [
+            "default",
+            "enum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.resolution.default",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.resolution.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.resolution.enum",
+          "type": "array",
+          "length": 2
+        },
+        {
+          "path": "jsonSchema.properties.resolution.enum.0",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.seed",
+          "type": "object",
+          "fields": [
+            "maximum",
+            "minimum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.seed.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.seed.minimum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.seed.maximum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode",
+          "type": "object",
+          "fields": [
+            "default",
+            "enum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode.default",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode.enum",
+          "type": "array",
+          "length": 1
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode.enum.0",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.autoEnhancePrompt",
+          "type": "object",
+          "fields": [
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.autoEnhancePrompt.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.required",
+          "type": "array",
+          "length": 1
+        },
+        {
+          "path": "jsonSchema.required.0",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.additionalProperties",
+          "type": "boolean"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "model",
+        "cost",
+        "--model",
+        "fal-h3-max",
+        "--mode",
+        "text2video",
+        "--json",
+        "--no-input"
+      ],
+      "receipt_id": "2026-10-06T235650-57adbfd8",
+      "receipt_sha256": "7fe55f2f15ad8c05bebefbaff40e60038463c592d751ee6afbd341be61a7a425",
+      "stdout_sha256": "a9b056d179b7b83322ef3fad972848bf5f07891a2905c55944d5b977e858f8dc",
+      "returncode": 0,
+      "shape": [
+        {
+          "path": "$",
+          "type": "object",
+          "fields": [
+            "currency",
+            "items",
+            "pricingNote"
+          ]
+        },
+        {
+          "path": "currency",
+          "type": "string"
+        },
+        {
+          "path": "pricingNote",
+          "type": "string"
+        },
+        {
+          "path": "items",
+          "type": "array",
+          "length": 1
+        },
+        {
+          "path": "items.0",
+          "type": "object",
+          "fields": [
+            "config",
+            "displayName",
+            "media",
+            "mode",
+            "model",
+            "quantity",
+            "totalCredits",
+            "unitCredits"
+          ]
+        },
+        {
+          "path": "items.0.model",
+          "type": "string"
+        },
+        {
+          "path": "items.0.displayName",
+          "type": "string"
+        },
+        {
+          "path": "items.0.media",
+          "type": "string"
+        },
+        {
+          "path": "items.0.mode",
+          "type": "string"
+        },
+        {
+          "path": "items.0.config",
+          "type": "object",
+          "fields": [
+            "aspectRatio",
+            "duration",
+            "resolution",
+            "videoCount"
+          ]
+        },
+        {
+          "path": "items.0.config.aspectRatio",
+          "type": "string"
+        },
+        {
+          "path": "items.0.config.duration",
+          "type": "integer"
+        },
+        {
+          "path": "items.0.config.resolution",
+          "type": "string"
+        },
+        {
+          "path": "items.0.config.videoCount",
+          "type": "integer"
+        },
+        {
+          "path": "items.0.unitCredits",
+          "type": "integer"
+        },
+        {
+          "path": "items.0.quantity",
+          "type": "integer"
+        },
+        {
+          "path": "items.0.totalCredits",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "model",
+        "form",
+        "fal-h3-max-turbo",
+        "text2video",
+        "--json",
+        "--no-input"
+      ],
+      "receipt_id": "2026-10-06T235651-5a5e3430",
+      "receipt_sha256": "c274f3a5cbf8062b834e65b41aeb4ab92417a0322fc27bf058a733313e2c0f9e",
+      "stdout_sha256": "071815ee2cbadeeb15467c08f18440aceaa0e9b98c861cb315a55556a04e3dd3",
+      "returncode": 0,
+      "shape": [
+        {
+          "path": "$",
+          "type": "object",
+          "fields": [
+            "jsonSchema",
+            "media",
+            "mode",
+            "model"
+          ]
+        },
+        {
+          "path": "model",
+          "type": "string"
+        },
+        {
+          "path": "mode",
+          "type": "string"
+        },
+        {
+          "path": "media",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema",
+          "type": "object",
+          "fields": [
+            "additionalProperties",
+            "properties",
+            "required",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties",
+          "type": "object",
+          "fields": [
+            "aspectRatio",
+            "autoEnhancePrompt",
+            "duration",
+            "prompt",
+            "promptExpansionMode",
+            "resolution",
+            "seed",
+            "videoCount"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.prompt",
+          "type": "object",
+          "fields": [
+            "maxLength",
+            "minLength",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.prompt.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.prompt.minLength",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.prompt.maxLength",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.videoCount",
+          "type": "object",
+          "fields": [
+            "default",
+            "maximum",
+            "minimum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.videoCount.default",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.videoCount.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.videoCount.minimum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.videoCount.maximum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.duration",
+          "type": "object",
+          "fields": [
+            "default",
+            "maximum",
+            "minimum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.duration.default",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.duration.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.duration.minimum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.duration.maximum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio",
+          "type": "object",
+          "fields": [
+            "default",
+            "enum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio.default",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio.enum",
+          "type": "array",
+          "length": 6
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio.enum.0",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.resolution",
+          "type": "object",
+          "fields": [
+            "default",
+            "enum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.resolution.default",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.resolution.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.resolution.enum",
+          "type": "array",
+          "length": 3
+        },
+        {
+          "path": "jsonSchema.properties.resolution.enum.0",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.seed",
+          "type": "object",
+          "fields": [
+            "maximum",
+            "minimum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.seed.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.seed.minimum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.seed.maximum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode",
+          "type": "object",
+          "fields": [
+            "default",
+            "enum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode.default",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode.enum",
+          "type": "array",
+          "length": 1
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode.enum.0",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.autoEnhancePrompt",
+          "type": "object",
+          "fields": [
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.autoEnhancePrompt.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.required",
+          "type": "array",
+          "length": 1
+        },
+        {
+          "path": "jsonSchema.required.0",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.additionalProperties",
+          "type": "boolean"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "model",
+        "cost",
+        "--model",
+        "fal-h3-max-turbo",
+        "--mode",
+        "text2video",
+        "--json",
+        "--no-input"
+      ],
+      "receipt_id": "2026-10-06T235652-86050700",
+      "receipt_sha256": "f80cc4e71c8e718cc3d0f6b2fab5e8ad1f2581994826a08830cce96ce410df54",
+      "stdout_sha256": "f8e3db1c70a7b8280b2d35a07c5e2ec8041c109f537bf87a71dcba80afca0459",
+      "returncode": 0,
+      "shape": [
+        {
+          "path": "$",
+          "type": "object",
+          "fields": [
+            "currency",
+            "items",
+            "pricingNote"
+          ]
+        },
+        {
+          "path": "currency",
+          "type": "string"
+        },
+        {
+          "path": "pricingNote",
+          "type": "string"
+        },
+        {
+          "path": "items",
+          "type": "array",
+          "length": 1
+        },
+        {
+          "path": "items.0",
+          "type": "object",
+          "fields": [
+            "config",
+            "displayName",
+            "media",
+            "mode",
+            "model",
+            "quantity",
+            "totalCredits",
+            "unitCredits"
+          ]
+        },
+        {
+          "path": "items.0.model",
+          "type": "string"
+        },
+        {
+          "path": "items.0.displayName",
+          "type": "string"
+        },
+        {
+          "path": "items.0.media",
+          "type": "string"
+        },
+        {
+          "path": "items.0.mode",
+          "type": "string"
+        },
+        {
+          "path": "items.0.config",
+          "type": "object",
+          "fields": [
+            "aspectRatio",
+            "duration",
+            "resolution",
+            "videoCount"
+          ]
+        },
+        {
+          "path": "items.0.config.aspectRatio",
+          "type": "string"
+        },
+        {
+          "path": "items.0.config.duration",
+          "type": "integer"
+        },
+        {
+          "path": "items.0.config.resolution",
+          "type": "string"
+        },
+        {
+          "path": "items.0.config.videoCount",
+          "type": "integer"
+        },
+        {
+          "path": "items.0.unitCredits",
+          "type": "integer"
+        },
+        {
+          "path": "items.0.quantity",
+          "type": "integer"
+        },
+        {
+          "path": "items.0.totalCredits",
+          "type": "integer"
+        }
+      ]
+    },
+    {
+      "argv": [
+        "generate",
+        "video",
+        "[synthetic_discovery_prompt]",
+        "--model",
+        "fal-h3-max",
+        "--duration",
+        "5",
+        "--resolution",
+        "768p",
+        "--dry-run",
+        "--json",
+        "--no-input"
+      ],
+      "receipt_id": "2026-10-06T235728-7139ad19",
+      "receipt_sha256": "4bdab5e428c253e53aea946be8fdd10e09a827c5ff578c6283b5dee7a2615253",
+      "stdout_sha256": "f99c2a93652ef9f803f1fa7f63748bb855e9e0a60fa6fba0430eeab40111afe2",
+      "returncode": 0,
+      "purpose": "nonspending_native_preview",
+      "synthetic_prompt_used": true,
+      "argv_redacted": true
+    },
+    {
+      "argv": [
+        "generate",
+        "video",
+        "[synthetic_discovery_prompt]",
+        "--model",
+        "fal-h3-max-turbo",
+        "--duration",
+        "5",
+        "--resolution",
+        "768p",
+        "--dry-run",
+        "--json",
+        "--no-input"
+      ],
+      "receipt_id": "2026-10-06T235728-833816e7",
+      "receipt_sha256": "03cdc4c2348c1e48abfd3189d7a1468619e2540b6274ea83ac10f4d85ccb1be5",
+      "stdout_sha256": "3f27ff16687571540f12dfc2f42c98cd7fafbe25ce6e198418a697330b0b0421",
+      "returncode": 0,
+      "purpose": "nonspending_native_preview",
+      "synthetic_prompt_used": true,
+      "argv_redacted": true
+    },
+    {
+      "argv": [
+        "generate",
+        "video",
+        "[synthetic_discovery_prompt]",
+        "--model",
+        "fal-h3-max",
+        "--duration",
+        "5",
+        "--resolution",
+        "768P",
+        "--dry-run",
+        "--json",
+        "--no-input"
+      ],
+      "receipt_id": "2026-10-06T235756-4b9a8895",
+      "receipt_sha256": "f0741da829bbdbacba1c18a0b6c9da9ffb2e381f45ac595c70ed0392a18baee4",
+      "stdout_sha256": "8c181b0a4d53c37e3328db7d935b5c93822f4ce8cee2a8b8ee87e0f7b6814c86",
+      "returncode": 0,
+      "purpose": "nonspending_exact_enum_case_preview",
+      "synthetic_prompt_used": true,
+      "argv_redacted": true
+    },
+    {
+      "argv": [
+        "generate",
+        "video",
+        "[synthetic_discovery_prompt]",
+        "--model",
+        "fal-h3-max-turbo",
+        "--duration",
+        "5",
+        "--resolution",
+        "768P",
+        "--dry-run",
+        "--json",
+        "--no-input"
+      ],
+      "receipt_id": "2026-10-06T235756-714ce3ca",
+      "receipt_sha256": "32b56688a5c874f51172ea0f58b556f48008e422d2a41e39a0d3a9155345cb12",
+      "stdout_sha256": "e5660172e18a89fd844141de969e6855f83bfc6fab85ceaf616414a47b84731b",
+      "returncode": 0,
+      "purpose": "nonspending_exact_enum_case_preview",
+      "synthetic_prompt_used": true,
+      "argv_redacted": true
+    }
+  ],
+  "spending_counters": {
+    "generation_calls": 0,
+    "upload_calls": 0,
+    "purchase_calls": 0,
+    "credit_reservations": 0
+  },
+  "qualification_profiles_saved": 0,
+  "authorization": {
+    "separate_paid_benchmark_approval": false
+  },
+  "cli_version": "0.1.1",
+  "account": {
+    "command_succeeded": true,
+    "identity_candidates": [
+      {
+        "path": "user.uid",
+        "type": "string",
+        "nonempty": true,
+        "account_uid_sha256": "[redacted private account correlator]"
+      }
+    ],
+    "safe_auth_booleans": {},
+    "observed_identity_path": "user.uid",
+    "observed_tier_path": "plan",
+    "observed_balance_path": "credits",
+    "authentication_signal": "account_command_success_with_nonempty_user_uid",
+    "explicit_authenticated_boolean_observed": false,
+    "ownership_or_identity_semantics_independently_verified": false,
+    "production_identity_qualification": "not_saved",
+    "email_value_excluded": true
+  },
+  "model_list_shape": [
+    {
+      "path": "",
+      "type": "array",
+      "length": 29
+    },
+    {
+      "path": ".0",
+      "type": "object",
+      "fields": [
+        "description",
+        "displayName",
+        "id",
+        "modes"
+      ]
+    },
+    {
+      "path": ".0.id",
+      "type": "string"
+    },
+    {
+      "path": ".0.displayName",
+      "type": "string"
+    },
+    {
+      "path": ".0.description",
+      "type": "string"
+    },
+    {
+      "path": ".0.modes",
+      "type": "object",
+      "fields": [
+        "image"
+      ]
+    },
+    {
+      "path": ".0.modes.image",
+      "type": "array",
+      "length": 2
+    },
+    {
+      "path": ".0.modes.image.0",
+      "type": "object",
+      "fields": [
+        "description",
+        "mode"
+      ]
+    },
+    {
+      "path": ".0.modes.image.0.mode",
+      "type": "string"
+    },
+    {
+      "path": ".0.modes.image.0.description",
+      "type": "string"
+    }
+  ],
+  "model_catalog_candidates": [
+    {
+      "path": ".0",
+      "fields": {
+        "id": "nano-banana-2-1",
+        "displayName": "Nano Banana 2.1",
+        "modes": {
+          "keys": [
+            "image"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".1",
+      "fields": {
+        "id": "nano-banana-2",
+        "displayName": "Nano Banana 2",
+        "modes": {
+          "keys": [
+            "image"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".2",
+      "fields": {
+        "id": "nano-banana-pro",
+        "displayName": "Nano Banana Pro",
+        "modes": {
+          "keys": [
+            "image"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".3",
+      "fields": {
+        "id": "nano-banana-2-lite",
+        "displayName": "Nano Banana 2 Lite",
+        "modes": {
+          "keys": [
+            "image"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".4",
+      "fields": {
+        "id": "gpt-image-2",
+        "displayName": "GPT Image 2",
+        "modes": {
+          "keys": [
+            "image"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".5",
+      "fields": {
+        "id": "gpt-image-2-5-flare",
+        "displayName": "GPT Image 2.5 Flare",
+        "modes": {
+          "keys": [
+            "image"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".6",
+      "fields": {
+        "id": "gpt-image-2-5-sunburst",
+        "displayName": "GPT Image 2.5 Sunburst",
+        "modes": {
+          "keys": [
+            "image"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".7",
+      "fields": {
+        "id": "byte-plus-seedream-4-5",
+        "displayName": "Seedream 4.5",
+        "modes": {
+          "keys": [
+            "image"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".8",
+      "fields": {
+        "id": "byte-plus-seedream-5-pro",
+        "displayName": "Seedream 5 Pro",
+        "modes": {
+          "keys": [
+            "image"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".9",
+      "fields": {
+        "id": "byte-plus-seedream-5-lite",
+        "displayName": "Seedream 5 Lite",
+        "modes": {
+          "keys": [
+            "image"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".10",
+      "fields": {
+        "id": "wan2-7-image",
+        "displayName": "Wan 2.7 Image",
+        "modes": {
+          "keys": [
+            "image"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".11",
+      "fields": {
+        "id": "grok-imagine-image-2",
+        "displayName": "Grok Imagine Image 2.0",
+        "modes": {
+          "keys": [
+            "image"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".12",
+      "fields": {
+        "id": "grok-imagine-1-5",
+        "displayName": "Grok Imagine 1.5",
+        "modes": {
+          "keys": [
+            "video"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".13",
+      "fields": {
+        "id": "gemini-omni-flash",
+        "displayName": "Gemini Omni Flash",
+        "modes": {
+          "keys": [
+            "video"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".14",
+      "fields": {
+        "id": "gemini-omni-1-1-flash",
+        "displayName": "Gemini Omni 1.1 Flash",
+        "modes": {
+          "keys": [
+            "video"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".15",
+      "fields": {
+        "id": "veo3-1",
+        "displayName": "Veo 3.1",
+        "modes": {
+          "keys": [
+            "video"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".16",
+      "fields": {
+        "id": "fal-h3-max",
+        "displayName": "MiniMax H3 Max",
+        "modes": {
+          "keys": [
+            "video"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".17",
+      "fields": {
+        "id": "fal-h3-max-turbo",
+        "displayName": "MiniMax H3 Max Turbo",
+        "modes": {
+          "keys": [
+            "video"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".18",
+      "fields": {
+        "id": "kling-3-omni",
+        "displayName": "Kling 3 Omni",
+        "modes": {
+          "keys": [
+            "image",
+            "video"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".19",
+      "fields": {
+        "id": "kling-v3",
+        "displayName": "Kling 3.0",
+        "modes": {
+          "keys": [
+            "video"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".20",
+      "fields": {
+        "id": "byte-plus-seedance-2",
+        "displayName": "Seedance 2.0",
+        "modes": {
+          "keys": [
+            "video"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".21",
+      "fields": {
+        "id": "byte-plus-seedance-2-fast",
+        "displayName": "Seedance 2.0 Fast",
+        "modes": {
+          "keys": [
+            "video"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".22",
+      "fields": {
+        "id": "byte-plus-seedance-2-mini",
+        "displayName": "Seedance 2.0 Mini",
+        "modes": {
+          "keys": [
+            "video"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".23",
+      "fields": {
+        "id": "byte-plus-seedance-2-5",
+        "displayName": "Seedance 2.5",
+        "modes": {
+          "keys": [
+            "video"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".24",
+      "fields": {
+        "id": "wan2-7",
+        "displayName": "Wan 2.7",
+        "modes": {
+          "keys": [
+            "video"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".25",
+      "fields": {
+        "id": "minimax-h3",
+        "displayName": "MiniMax H3",
+        "modes": {
+          "keys": [
+            "video"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".26",
+      "fields": {
+        "id": "wan3-0",
+        "displayName": "Wan 3.0",
+        "modes": {
+          "keys": [
+            "video"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".27",
+      "fields": {
+        "id": "pixverseV6",
+        "displayName": "PixVerse V6",
+        "modes": {
+          "keys": [
+            "video"
+          ]
+        }
+      }
+    },
+    {
+      "path": ".28",
+      "fields": {
+        "id": "smart-shot",
+        "displayName": "Smart Shot",
+        "modes": {
+          "keys": [
+            "image",
+            "video"
+          ]
+        }
+      }
+    }
+  ],
+  "observed_video_models": [
+    {
+      "model_id": "grok-imagine-1-5",
+      "display_name": "Grok Imagine 1.5",
+      "video_modes": [
+        "text2video",
+        "image2video"
+      ]
+    },
+    {
+      "model_id": "gemini-omni-flash",
+      "display_name": "Gemini Omni Flash",
+      "video_modes": [
+        "text2video",
+        "image2video",
+        "element2video"
+      ]
+    },
+    {
+      "model_id": "gemini-omni-1-1-flash",
+      "display_name": "Gemini Omni 1.1 Flash",
+      "video_modes": [
+        "text2video",
+        "image2video",
+        "element2video"
+      ]
+    },
+    {
+      "model_id": "veo3-1",
+      "display_name": "Veo 3.1",
+      "video_modes": [
+        "text2video",
+        "image2video",
+        "element2video"
+      ]
+    },
+    {
+      "model_id": "fal-h3-max",
+      "display_name": "MiniMax H3 Max",
+      "video_modes": [
+        "text2video",
+        "image2video",
+        "element2video"
+      ]
+    },
+    {
+      "model_id": "fal-h3-max-turbo",
+      "display_name": "MiniMax H3 Max Turbo",
+      "video_modes": [
+        "text2video",
+        "image2video"
+      ]
+    },
+    {
+      "model_id": "kling-3-omni",
+      "display_name": "Kling 3 Omni",
+      "video_modes": [
+        "text2video",
+        "image2video",
+        "element2video"
+      ]
+    },
+    {
+      "model_id": "kling-v3",
+      "display_name": "Kling 3.0",
+      "video_modes": [
+        "text2video",
+        "image2video"
+      ]
+    },
+    {
+      "model_id": "byte-plus-seedance-2",
+      "display_name": "Seedance 2.0",
+      "video_modes": [
+        "text2video",
+        "image2video",
+        "element2video"
+      ]
+    },
+    {
+      "model_id": "byte-plus-seedance-2-fast",
+      "display_name": "Seedance 2.0 Fast",
+      "video_modes": [
+        "text2video",
+        "image2video",
+        "element2video"
+      ]
+    },
+    {
+      "model_id": "byte-plus-seedance-2-mini",
+      "display_name": "Seedance 2.0 Mini",
+      "video_modes": [
+        "text2video",
+        "image2video",
+        "element2video"
+      ]
+    },
+    {
+      "model_id": "byte-plus-seedance-2-5",
+      "display_name": "Seedance 2.5",
+      "video_modes": [
+        "text2video",
+        "image2video",
+        "element2video"
+      ]
+    },
+    {
+      "model_id": "wan2-7",
+      "display_name": "Wan 2.7",
+      "video_modes": [
+        "text2video",
+        "image2video",
+        "element2video"
+      ]
+    },
+    {
+      "model_id": "minimax-h3",
+      "display_name": "MiniMax H3",
+      "video_modes": [
+        "text2video",
+        "image2video",
+        "element2video"
+      ]
+    },
+    {
+      "model_id": "wan3-0",
+      "display_name": "Wan 3.0",
+      "video_modes": [
+        "text2video",
+        "image2video",
+        "element2video"
+      ]
+    },
+    {
+      "model_id": "pixverseV6",
+      "display_name": "PixVerse V6",
+      "video_modes": [
+        "text2video",
+        "image2video"
+      ]
+    },
+    {
+      "model_id": "smart-shot",
+      "display_name": "Smart Shot",
+      "video_modes": [
+        "generate-shot-video"
+      ]
+    }
+  ],
+  "bounded_candidates": [
+    {
+      "model_id": "fal-h3-max",
+      "mode": "text2video",
+      "form_receipt": {
+        "receipt_id": "2026-10-06T235649-1fb4875b",
+        "receipt_sha256": "6411bf60e207419d759210b6a15472db1f7237422a0096959c0880afb13b35bb"
+      },
+      "cost_receipt": {
+        "receipt_id": "2026-10-06T235650-57adbfd8",
+        "receipt_sha256": "7fe55f2f15ad8c05bebefbaff40e60038463c592d751ee6afbd341be61a7a425"
+      },
+      "form_shape": [
+        {
+          "path": "$",
+          "type": "object",
+          "fields": [
+            "jsonSchema",
+            "media",
+            "mode",
+            "model"
+          ]
+        },
+        {
+          "path": "model",
+          "type": "string"
+        },
+        {
+          "path": "mode",
+          "type": "string"
+        },
+        {
+          "path": "media",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema",
+          "type": "object",
+          "fields": [
+            "additionalProperties",
+            "properties",
+            "required",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties",
+          "type": "object",
+          "fields": [
+            "aspectRatio",
+            "autoEnhancePrompt",
+            "duration",
+            "prompt",
+            "promptExpansionMode",
+            "resolution",
+            "seed",
+            "videoCount"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.prompt",
+          "type": "object",
+          "fields": [
+            "maxLength",
+            "minLength",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.prompt.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.prompt.minLength",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.prompt.maxLength",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.videoCount",
+          "type": "object",
+          "fields": [
+            "default",
+            "maximum",
+            "minimum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.videoCount.default",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.videoCount.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.videoCount.minimum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.videoCount.maximum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.duration",
+          "type": "object",
+          "fields": [
+            "default",
+            "maximum",
+            "minimum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.duration.default",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.duration.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.duration.minimum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.duration.maximum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio",
+          "type": "object",
+          "fields": [
+            "default",
+            "enum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio.default",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio.enum",
+          "type": "array",
+          "length": 6
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio.enum.0",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.resolution",
+          "type": "object",
+          "fields": [
+            "default",
+            "enum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.resolution.default",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.resolution.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.resolution.enum",
+          "type": "array",
+          "length": 2
+        },
+        {
+          "path": "jsonSchema.properties.resolution.enum.0",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.seed",
+          "type": "object",
+          "fields": [
+            "maximum",
+            "minimum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.seed.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.seed.minimum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.seed.maximum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode",
+          "type": "object",
+          "fields": [
+            "default",
+            "enum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode.default",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode.enum",
+          "type": "array",
+          "length": 1
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode.enum.0",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.autoEnhancePrompt",
+          "type": "object",
+          "fields": [
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.autoEnhancePrompt.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.required",
+          "type": "array",
+          "length": 1
+        },
+        {
+          "path": "jsonSchema.required.0",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.additionalProperties",
+          "type": "boolean"
+        }
+      ],
+      "cost_shape": [
+        {
+          "path": "$",
+          "type": "object",
+          "fields": [
+            "currency",
+            "items",
+            "pricingNote"
+          ]
+        },
+        {
+          "path": "currency",
+          "type": "string"
+        },
+        {
+          "path": "pricingNote",
+          "type": "string"
+        },
+        {
+          "path": "items",
+          "type": "array",
+          "length": 1
+        },
+        {
+          "path": "items.0",
+          "type": "object",
+          "fields": [
+            "config",
+            "displayName",
+            "media",
+            "mode",
+            "model",
+            "quantity",
+            "totalCredits",
+            "unitCredits"
+          ]
+        },
+        {
+          "path": "items.0.model",
+          "type": "string"
+        },
+        {
+          "path": "items.0.displayName",
+          "type": "string"
+        },
+        {
+          "path": "items.0.media",
+          "type": "string"
+        },
+        {
+          "path": "items.0.mode",
+          "type": "string"
+        },
+        {
+          "path": "items.0.config",
+          "type": "object",
+          "fields": [
+            "aspectRatio",
+            "duration",
+            "resolution",
+            "videoCount"
+          ]
+        },
+        {
+          "path": "items.0.config.aspectRatio",
+          "type": "string"
+        },
+        {
+          "path": "items.0.config.duration",
+          "type": "integer"
+        },
+        {
+          "path": "items.0.config.resolution",
+          "type": "string"
+        },
+        {
+          "path": "items.0.config.videoCount",
+          "type": "integer"
+        },
+        {
+          "path": "items.0.unitCredits",
+          "type": "integer"
+        },
+        {
+          "path": "items.0.quantity",
+          "type": "integer"
+        },
+        {
+          "path": "items.0.totalCredits",
+          "type": "integer"
+        }
+      ],
+      "form_sha256": "4eae495efaaf145ea005985f503bb4a4e277307696e3e5fd3e285a3c3040d092",
+      "generic_model_mode_cost": {
+        "currency": "credits",
+        "pricingNote": {
+          "value_redacted": true,
+          "sha256": "771b236573adbdb288a4d523cfafba971d518ed4765303275bee87d7dffc33bb"
+        },
+        "items": [
+          {
+            "model": "fal-h3-max",
+            "displayName": "MiniMax H3 Max",
+            "media": "video",
+            "mode": "text2video",
+            "config": {
+              "aspectRatio": "16:9",
+              "duration": 5,
+              "resolution": "480P",
+              "videoCount": 1
+            },
+            "unitCredits": 125,
+            "quantity": 1,
+            "totalCredits": 125
+          }
+        ]
+      },
+      "covers_exact_settings": false,
+      "current_exact_settings_quote_qualified": false,
+      "observed_schema_path": "jsonSchema",
+      "observed_form_controls": {
+        "aspectRatio": {
+          "type": "string",
+          "enum": [
+            "21:9",
+            "16:9",
+            "4:3",
+            "1:1",
+            "3:4",
+            "9:16"
+          ],
+          "default": "16:9",
+          "required": false,
+          "default_declared": true
+        },
+        "autoEnhancePrompt": {
+          "type": "boolean",
+          "enum": null,
+          "default": null,
+          "required": false,
+          "default_declared": false
+        },
+        "duration": {
+          "type": "integer",
+          "enum": null,
+          "default": 5,
+          "required": false,
+          "default_declared": true
+        },
+        "prompt": {
+          "type": "string",
+          "enum": null,
+          "default": null,
+          "required": true,
+          "default_declared": false
+        },
+        "promptExpansionMode": {
+          "type": "string",
+          "enum": [
+            "balanced"
+          ],
+          "default": "balanced",
+          "required": false,
+          "default_declared": true
+        },
+        "resolution": {
+          "type": "string",
+          "enum": [
+            "480P",
+            "768P"
+          ],
+          "default": "480P",
+          "required": false,
+          "default_declared": true
+        },
+        "seed": {
+          "type": "integer",
+          "enum": null,
+          "default": null,
+          "required": false,
+          "default_declared": false
+        },
+        "videoCount": {
+          "type": "integer",
+          "enum": null,
+          "default": 1,
+          "required": false,
+          "default_declared": true
+        }
+      },
+      "observed_control_schema_constraints": {
+        "aspectRatio": {
+          "default": "16:9",
+          "enum": [
+            "21:9",
+            "16:9",
+            "4:3",
+            "1:1",
+            "3:4",
+            "9:16"
+          ],
+          "type": "string"
+        },
+        "autoEnhancePrompt": {
+          "type": "boolean"
+        },
+        "duration": {
+          "default": 5,
+          "maximum": 15,
+          "minimum": 5,
+          "type": "integer"
+        },
+        "prompt": {
+          "maxLength": 6000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "promptExpansionMode": {
+          "default": "balanced",
+          "enum": [
+            "balanced"
+          ],
+          "type": "string"
+        },
+        "resolution": {
+          "default": "480P",
+          "enum": [
+            "480P",
+            "768P"
+          ],
+          "type": "string"
+        },
+        "seed": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "videoCount": {
+          "default": 1,
+          "maximum": 8,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "observed_required_fields": [
+        "prompt"
+      ],
+      "observed_additional_properties": false,
+      "observed_form_defaults": {
+        "aspectRatio": "16:9",
+        "duration": 5,
+        "promptExpansionMode": "balanced",
+        "resolution": "480P",
+        "videoCount": 1
+      },
+      "target_form_fit": {
+        "duration_5_within_observed_numeric_range": true,
+        "resolution_enum_observed": [
+          "480P",
+          "768P"
+        ],
+        "literal_768p_in_observed_enum": false,
+        "literal_768P_in_observed_enum": true,
+        "native_audio_field_observed": false,
+        "end_frame_field_observed": false
+      },
+      "provider_pricing_note": "Each totalCredits is the cost of ONE job at the exact settings in `config` (unitCredits \u00d7 quantity). The price changes with the configuration \u2014 quality, resolution, duration, output count, audio, references \u2014 and is finalized at generation time; e.g. GPT Image 2 at medium quality costs very differently from high quality. ALWAYS tell the user which config (the `config` field) a price assumes, and that other settings cost differently.",
+      "native_preview": {
+        "receipt_id": "2026-10-06T235728-7139ad19",
+        "receipt_sha256": "4bdab5e428c253e53aea946be8fdd10e09a827c5ff578c6283b5dee7a2615253",
+        "endpoint": "POST /api/cli/v1/generate",
+        "body_sha256": "0b149d25b670f9fb838039e1582c8e4758cff363f8c4ca829d1ea55ba71aa79f",
+        "body": {
+          "model": "fal-h3-max",
+          "media": "video",
+          "mode": "text2video",
+          "params": {
+            "duration": 5,
+            "prompt": {
+              "value_redacted": true,
+              "sha256": "06cf9960670975031c72acd9a0ad4b10cc0c336303cbaa91368882b67369c476"
+            },
+            "resolution": "768p"
+          }
+        },
+        "duration_5_effective_in_preview": true,
+        "resolution_field_present": true,
+        "resolution_value_matches_requested": true,
+        "requested_resolution": "768p",
+        "aspect_ratio_requested": null,
+        "actual_generation_call": false,
+        "result_qualification": false,
+        "billing_quote_qualification": false
+      },
+      "exact_case_native_preview": {
+        "receipt_id": "2026-10-06T235756-4b9a8895",
+        "receipt_sha256": "f0741da829bbdbacba1c18a0b6c9da9ffb2e381f45ac595c70ed0392a18baee4",
+        "endpoint": "POST /api/cli/v1/generate",
+        "body_sha256": "ee5967d45a7aea95b217d277c38622c249da64914c1666cb3adf5c3a8bfc3fa9",
+        "model_matches": true,
+        "mode_matches": true,
+        "duration_5_effective_in_preview": true,
+        "resolution_value": "768P",
+        "resolution_matches_form_enum": true,
+        "requested_resolution": "768P",
+        "aspect_ratio_requested": null,
+        "actual_generation_call": false,
+        "result_qualification": false,
+        "billing_quote_qualification": false
+      },
+      "pre_fix_runtime_form_parser_status": "form_shape_unqualified",
+      "current_runtime_parser_post_fix_verification": "not_run_by_discovery_agent",
+      "native_cli_exposed_controls_observed_in_readonly_argv": [
+        "prompt",
+        "model",
+        "duration",
+        "resolution"
+      ],
+      "form_controls_are_not_cli_flag_guarantees": true,
+      "provider_cost_observation": {
+        "credits_are_for_returned_config_only": true,
+        "returned_config_resolution": "480P",
+        "target_resolution": "768P",
+        "target_settings_quote": "unsupported_current_readonly_grammar",
+        "final_generation_price_not_observed": true
+      },
+      "native_audio_and_end_frame_observation_limit": "No such field appeared in these text2video forms. This is not a universal provider guarantee."
+    },
+    {
+      "model_id": "fal-h3-max-turbo",
+      "mode": "text2video",
+      "form_receipt": {
+        "receipt_id": "2026-10-06T235651-5a5e3430",
+        "receipt_sha256": "c274f3a5cbf8062b834e65b41aeb4ab92417a0322fc27bf058a733313e2c0f9e"
+      },
+      "cost_receipt": {
+        "receipt_id": "2026-10-06T235652-86050700",
+        "receipt_sha256": "f80cc4e71c8e718cc3d0f6b2fab5e8ad1f2581994826a08830cce96ce410df54"
+      },
+      "form_shape": [
+        {
+          "path": "$",
+          "type": "object",
+          "fields": [
+            "jsonSchema",
+            "media",
+            "mode",
+            "model"
+          ]
+        },
+        {
+          "path": "model",
+          "type": "string"
+        },
+        {
+          "path": "mode",
+          "type": "string"
+        },
+        {
+          "path": "media",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema",
+          "type": "object",
+          "fields": [
+            "additionalProperties",
+            "properties",
+            "required",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties",
+          "type": "object",
+          "fields": [
+            "aspectRatio",
+            "autoEnhancePrompt",
+            "duration",
+            "prompt",
+            "promptExpansionMode",
+            "resolution",
+            "seed",
+            "videoCount"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.prompt",
+          "type": "object",
+          "fields": [
+            "maxLength",
+            "minLength",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.prompt.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.prompt.minLength",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.prompt.maxLength",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.videoCount",
+          "type": "object",
+          "fields": [
+            "default",
+            "maximum",
+            "minimum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.videoCount.default",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.videoCount.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.videoCount.minimum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.videoCount.maximum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.duration",
+          "type": "object",
+          "fields": [
+            "default",
+            "maximum",
+            "minimum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.duration.default",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.duration.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.duration.minimum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.duration.maximum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio",
+          "type": "object",
+          "fields": [
+            "default",
+            "enum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio.default",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio.enum",
+          "type": "array",
+          "length": 6
+        },
+        {
+          "path": "jsonSchema.properties.aspectRatio.enum.0",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.resolution",
+          "type": "object",
+          "fields": [
+            "default",
+            "enum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.resolution.default",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.resolution.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.resolution.enum",
+          "type": "array",
+          "length": 3
+        },
+        {
+          "path": "jsonSchema.properties.resolution.enum.0",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.seed",
+          "type": "object",
+          "fields": [
+            "maximum",
+            "minimum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.seed.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.seed.minimum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.seed.maximum",
+          "type": "integer"
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode",
+          "type": "object",
+          "fields": [
+            "default",
+            "enum",
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode.default",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode.enum",
+          "type": "array",
+          "length": 1
+        },
+        {
+          "path": "jsonSchema.properties.promptExpansionMode.enum.0",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.properties.autoEnhancePrompt",
+          "type": "object",
+          "fields": [
+            "type"
+          ]
+        },
+        {
+          "path": "jsonSchema.properties.autoEnhancePrompt.type",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.required",
+          "type": "array",
+          "length": 1
+        },
+        {
+          "path": "jsonSchema.required.0",
+          "type": "string"
+        },
+        {
+          "path": "jsonSchema.additionalProperties",
+          "type": "boolean"
+        }
+      ],
+      "cost_shape": [
+        {
+          "path": "$",
+          "type": "object",
+          "fields": [
+            "currency",
+            "items",
+            "pricingNote"
+          ]
+        },
+        {
+          "path": "currency",
+          "type": "string"
+        },
+        {
+          "path": "pricingNote",
+          "type": "string"
+        },
+        {
+          "path": "items",
+          "type": "array",
+          "length": 1
+        },
+        {
+          "path": "items.0",
+          "type": "object",
+          "fields": [
+            "config",
+            "displayName",
+            "media",
+            "mode",
+            "model",
+            "quantity",
+            "totalCredits",
+            "unitCredits"
+          ]
+        },
+        {
+          "path": "items.0.model",
+          "type": "string"
+        },
+        {
+          "path": "items.0.displayName",
+          "type": "string"
+        },
+        {
+          "path": "items.0.media",
+          "type": "string"
+        },
+        {
+          "path": "items.0.mode",
+          "type": "string"
+        },
+        {
+          "path": "items.0.config",
+          "type": "object",
+          "fields": [
+            "aspectRatio",
+            "duration",
+            "resolution",
+            "videoCount"
+          ]
+        },
+        {
+          "path": "items.0.config.aspectRatio",
+          "type": "string"
+        },
+        {
+          "path": "items.0.config.duration",
+          "type": "integer"
+        },
+        {
+          "path": "items.0.config.resolution",
+          "type": "string"
+        },
+        {
+          "path": "items.0.config.videoCount",
+          "type": "integer"
+        },
+        {
+          "path": "items.0.unitCredits",
+          "type": "integer"
+        },
+        {
+          "path": "items.0.quantity",
+          "type": "integer"
+        },
+        {
+          "path": "items.0.totalCredits",
+          "type": "integer"
+        }
+      ],
+      "form_sha256": "3fa50a8fbe9529c528a4e37e653bedcad4cabc0987881354c43b8f741f5b55f1",
+      "generic_model_mode_cost": {
+        "currency": "credits",
+        "pricingNote": {
+          "value_redacted": true,
+          "sha256": "771b236573adbdb288a4d523cfafba971d518ed4765303275bee87d7dffc33bb"
+        },
+        "items": [
+          {
+            "model": "fal-h3-max-turbo",
+            "displayName": "MiniMax H3 Max Turbo",
+            "media": "video",
+            "mode": "text2video",
+            "config": {
+              "aspectRatio": "16:9",
+              "duration": 5,
+              "resolution": "480P",
+              "videoCount": 1
+            },
+            "unitCredits": 75,
+            "quantity": 1,
+            "totalCredits": 75
+          }
+        ]
+      },
+      "covers_exact_settings": false,
+      "current_exact_settings_quote_qualified": false,
+      "observed_schema_path": "jsonSchema",
+      "observed_form_controls": {
+        "aspectRatio": {
+          "type": "string",
+          "enum": [
+            "21:9",
+            "16:9",
+            "4:3",
+            "1:1",
+            "3:4",
+            "9:16"
+          ],
+          "default": "16:9",
+          "required": false,
+          "default_declared": true
+        },
+        "autoEnhancePrompt": {
+          "type": "boolean",
+          "enum": null,
+          "default": null,
+          "required": false,
+          "default_declared": false
+        },
+        "duration": {
+          "type": "integer",
+          "enum": null,
+          "default": 5,
+          "required": false,
+          "default_declared": true
+        },
+        "prompt": {
+          "type": "string",
+          "enum": null,
+          "default": null,
+          "required": true,
+          "default_declared": false
+        },
+        "promptExpansionMode": {
+          "type": "string",
+          "enum": [
+            "balanced"
+          ],
+          "default": "balanced",
+          "required": false,
+          "default_declared": true
+        },
+        "resolution": {
+          "type": "string",
+          "enum": [
+            "480P",
+            "768P",
+            "1080P"
+          ],
+          "default": "480P",
+          "required": false,
+          "default_declared": true
+        },
+        "seed": {
+          "type": "integer",
+          "enum": null,
+          "default": null,
+          "required": false,
+          "default_declared": false
+        },
+        "videoCount": {
+          "type": "integer",
+          "enum": null,
+          "default": 1,
+          "required": false,
+          "default_declared": true
+        }
+      },
+      "observed_control_schema_constraints": {
+        "aspectRatio": {
+          "default": "16:9",
+          "enum": [
+            "21:9",
+            "16:9",
+            "4:3",
+            "1:1",
+            "3:4",
+            "9:16"
+          ],
+          "type": "string"
+        },
+        "autoEnhancePrompt": {
+          "type": "boolean"
+        },
+        "duration": {
+          "default": 5,
+          "maximum": 15,
+          "minimum": 5,
+          "type": "integer"
+        },
+        "prompt": {
+          "maxLength": 6000,
+          "minLength": 1,
+          "type": "string"
+        },
+        "promptExpansionMode": {
+          "default": "balanced",
+          "enum": [
+            "balanced"
+          ],
+          "type": "string"
+        },
+        "resolution": {
+          "default": "480P",
+          "enum": [
+            "480P",
+            "768P",
+            "1080P"
+          ],
+          "type": "string"
+        },
+        "seed": {
+          "maximum": 9007199254740991,
+          "minimum": -9007199254740991,
+          "type": "integer"
+        },
+        "videoCount": {
+          "default": 1,
+          "maximum": 8,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "observed_required_fields": [
+        "prompt"
+      ],
+      "observed_additional_properties": false,
+      "observed_form_defaults": {
+        "aspectRatio": "16:9",
+        "duration": 5,
+        "promptExpansionMode": "balanced",
+        "resolution": "480P",
+        "videoCount": 1
+      },
+      "target_form_fit": {
+        "duration_5_within_observed_numeric_range": true,
+        "resolution_enum_observed": [
+          "480P",
+          "768P",
+          "1080P"
+        ],
+        "literal_768p_in_observed_enum": false,
+        "literal_768P_in_observed_enum": true,
+        "native_audio_field_observed": false,
+        "end_frame_field_observed": false
+      },
+      "provider_pricing_note": "Each totalCredits is the cost of ONE job at the exact settings in `config` (unitCredits \u00d7 quantity). The price changes with the configuration \u2014 quality, resolution, duration, output count, audio, references \u2014 and is finalized at generation time; e.g. GPT Image 2 at medium quality costs very differently from high quality. ALWAYS tell the user which config (the `config` field) a price assumes, and that other settings cost differently.",
+      "native_preview": {
+        "receipt_id": "2026-10-06T235728-833816e7",
+        "receipt_sha256": "03cdc4c2348c1e48abfd3189d7a1468619e2540b6274ea83ac10f4d85ccb1be5",
+        "endpoint": "POST /api/cli/v1/generate",
+        "body_sha256": "8e94b0149dfa9d25467f91a64526129650fd41b16bb9b1b1474f3904b61e8eaa",
+        "body": {
+          "model": "fal-h3-max-turbo",
+          "media": "video",
+          "mode": "text2video",
+          "params": {
+            "duration": 5,
+            "prompt": {
+              "value_redacted": true,
+              "sha256": "06cf9960670975031c72acd9a0ad4b10cc0c336303cbaa91368882b67369c476"
+            },
+            "resolution": "768p"
+          }
+        },
+        "duration_5_effective_in_preview": true,
+        "resolution_field_present": true,
+        "resolution_value_matches_requested": true,
+        "requested_resolution": "768p",
+        "aspect_ratio_requested": null,
+        "actual_generation_call": false,
+        "result_qualification": false,
+        "billing_quote_qualification": false
+      },
+      "exact_case_native_preview": {
+        "receipt_id": "2026-10-06T235756-714ce3ca",
+        "receipt_sha256": "32b56688a5c874f51172ea0f58b556f48008e422d2a41e39a0d3a9155345cb12",
+        "endpoint": "POST /api/cli/v1/generate",
+        "body_sha256": "d57a46c00181024fc67eeb04fa3127a460796d3f019a7fa7c5426e3fe25b52fe",
+        "model_matches": true,
+        "mode_matches": true,
+        "duration_5_effective_in_preview": true,
+        "resolution_value": "768P",
+        "resolution_matches_form_enum": true,
+        "requested_resolution": "768P",
+        "aspect_ratio_requested": null,
+        "actual_generation_call": false,
+        "result_qualification": false,
+        "billing_quote_qualification": false
+      },
+      "pre_fix_runtime_form_parser_status": "form_shape_unqualified",
+      "current_runtime_parser_post_fix_verification": "not_run_by_discovery_agent",
+      "native_cli_exposed_controls_observed_in_readonly_argv": [
+        "prompt",
+        "model",
+        "duration",
+        "resolution"
+      ],
+      "form_controls_are_not_cli_flag_guarantees": true,
+      "provider_cost_observation": {
+        "credits_are_for_returned_config_only": true,
+        "returned_config_resolution": "480P",
+        "target_resolution": "768P",
+        "target_settings_quote": "unsupported_current_readonly_grammar",
+        "final_generation_price_not_observed": true
+      },
+      "native_audio_and_end_frame_observation_limit": "No such field appeared in these text2video forms. This is not a universal provider guarantee."
+    }
+  ],
+  "updated_at": "2026-10-07T00:23:26.065562+00:00",
+  "summary": {
+    "account_command_success": true,
+    "observed_identity_path": "user.uid",
+    "observed_tier_path": "plan",
+    "observed_credit_balance_path": "credits",
+    "explicit_authenticated_boolean_observed": false,
+    "observed_model_list_count": 29,
+    "bounded_model_mode_pairs": [
+      {
+        "model": "fal-h3-max",
+        "mode": "text2video"
+      },
+      {
+        "model": "fal-h3-max-turbo",
+        "mode": "text2video"
+      }
+    ],
+    "schema_wrapper": "jsonSchema",
+    "five_seconds_supported_by_observed_form_range": true,
+    "resolution_literal_observed_in_form_and_exact_case_preview": "768P",
+    "current_exact_768P_quote_qualified": false,
+    "production_profiles_saved": 0,
+    "paid_benchmark_performed": false
+  },
+  "gates": {
+    "account_identity": {
+      "state": "observed_not_promoted",
+      "evidence": "Successful actual account command, nonempty user.uid string and its SHA256; no explicit authenticated boolean or independent ownership semantics."
+    },
+    "model_ids": {
+      "state": "observed_catalog_not_production_qualified",
+      "evidence": "Actual model list advertises both exact H3 model IDs and text2video mode."
+    },
+    "form_schema": {
+      "state": "observed_wrapper_compatibility_verified",
+      "evidence": "Root actual captured form/parser checks and independently inspected/tested synthetic compiled preparation checks accept matching wrapper and enforce observed schema. No production profile was promoted."
+    },
+    "resolution": {
+      "state": "observed_form_and_readonly_preview_not_result_qualified",
+      "evidence": "768P appears literally in each form enum and exact-case dry-run params; lowercase768p preview also echoed literally but is not assumed equivalent."
+    },
+    "settings_exact_quote": {
+      "state": "unsupported_gate",
+      "evidence": "Allowed model cost argv accepts model/mode only; actual returned config quotes5s/16:9/480P/videoCount1. No current exact768P quote was obtained."
+    },
+    "async_result_contract": {
+      "state": "unqualified",
+      "evidence": "No submit, creation-get, benchmark or result inspection occurred. Future submit/result/status/URL paths were not guessed."
+    },
+    "result_billing": {
+      "state": "unqualified",
+      "evidence": "No original paid attempt or captured terminal result billing exists in this discovery."
+    },
+    "upload_billing": {
+      "state": "unsupported_gate",
+      "evidence": "No observed readonly response contains explicit nonspending and no-delayed-charge upload guarantees. No image upload occurred."
+    },
+    "native_audio": {
+      "state": "not_observed_in_bounded_forms",
+      "evidence": "Neither inspected text2video form contains a native audio field; no generation guarantee was inferred."
+    },
+    "end_frame_pin": {
+      "state": "not_observed_in_bounded_forms",
+      "evidence": "Neither inspected text2video form contains an ending frame field; no generation guarantee was inferred."
+    },
+    "exhaustive_history": {
+      "state": "unqualified",
+      "evidence": "No creation list or history completeness inspection occurred."
+    }
+  },
+  "blockers": [
+    {
+      "kind": "quote_required",
+      "source": "provider_surface_and_readonly_grammar",
+      "reason": "The observed cost commands quote480P default configurations; accepted benchmark requires768P. No exact-settings quote may be inferred or reused."
+    },
+    {
+      "kind": "generation_unqualified",
+      "source": "qualification_evidence",
+      "reason": "Full production qualification needs real original result and billing evidence, absent here. Current inspected profile validation also requires declared future job/result paths; this agent did not invent those declarations or save a profile."
+    },
+    {
+      "kind": "benchmark_not_authorized",
+      "source": "retained_authority",
+      "reason": "No separate exact paid benchmark approval exists. Twelve alternating Turbo/Max jobs remain a proposed benchmark, not authorized spending."
+    },
+    {
+      "kind": "upload_unqualified",
+      "source": "provider_evidence",
+      "reason": "Image2video is not needed for this text2video discovery. Any later first upload still requires captured explicit nonspending and no-delayed-charge guarantees."
+    }
+  ],
+  "next_qualification_steps": [
+    {
+      "step": 1,
+      "action": "Root completes and independently reviews the bounded jsonSchema parser repair using these actual observed control shapes; preserve absence of audio/end-frame guarantees.",
+      "paid": false,
+      "current_status": "implemented_committed_independently_reviewed;final repository checks green"
+    },
+    {
+      "step": 2,
+      "action": "Obtain a provider-supported readonly exact-settings quote for each5s/768P approved request. The current default480P prices do not satisfy this prerequisite.",
+      "paid": false,
+      "current_status": "blocked_by_current_quote_surface"
+    },
+    {
+      "step": 3,
+      "action": "Resolve the inspection-only staged profile path contract without guessed future job/result fields; bind only actual account/form/preview evidence.",
+      "paid": false,
+      "current_status": "no_profile_saved"
+    },
+    {
+      "step": 4,
+      "action": "After prerequisites exist, retain separate human approval for the exact original qualification benchmark purpose, model IDs, requests, quote hashes, credit ceiling and attempt allowance. Then use governed launch exactly once and qualify actual original result/billing fields.",
+      "paid": true,
+      "current_status": "not_authorized"
+    },
+    {
+      "step": 5,
+      "action": "For any future image2video reference, obtain explicit provider upload guarantees before an approved upload; do not test upload to infer price.",
+      "paid": false,
+      "current_status": "unsupported_without_guarantee"
+    }
+  ],
+  "discovery_limits": {
+    "readonly_cli_commands": 11,
+    "native_dry_run_previews": 4,
+    "real_generation_calls": 0,
+    "model_mode_form_pairs_inspected": 2,
+    "image2video_forms_inspected": 0,
+    "raw_account_values_published": false,
+    "raw_private_receipts_published": false,
+    "signed_urls_published": false,
+    "credential_files_read": false,
+    "dotenv_files_read": false,
+    "browser_login_initiated": false,
+    "git_writes": false,
+    "profiles_or_result_proofs_promoted": false,
+    "provider_post_generation_calls": 0
+  },
+  "receipt_integrity_validation": {
+    "all_success_receipt_digests_and_private_stdout_validated": true,
+    "receipts_validated": 11
+  },
+  "post_fix_runtime_parser_verification": {
+    "observed_at": "2026-10-07T00:04:10.846969+00:00",
+    "owner": "root_independent",
+    "original_discovery_report_sha256": "6ea99009deaf8fc29903a5e5094a9e66bdd4df555a90cdd1228ee517cd678eeb",
+    "method": "verified private receipt parser API; no raw account/receipt values published, no CLI calls",
+    "models": [
+      {
+        "model": "fal-h3-max",
+        "mode": "text2video",
+        "form_receipt_id": "2026-10-06T235649-1fb4875b",
+        "form_receipt_sha256": "6411bf60e207419d759210b6a15472db1f7237422a0096959c0880afb13b35bb",
+        "raw_full_form_sha256_unchanged": true,
+        "controls_extracted": 8,
+        "positive_5s_768P_matches_real_schema": true,
+        "form_negatives_rejected": {
+          "below_minimum": true,
+          "above_maximum": true,
+          "lowercase_outside_form_enum": true
+        },
+        "paid_generation_or_profile_promotion": false
+      },
+      {
+        "model": "fal-h3-max-turbo",
+        "mode": "text2video",
+        "form_receipt_id": "2026-10-06T235651-5a5e3430",
+        "form_receipt_sha256": "c274f3a5cbf8062b834e65b41aeb4ab92417a0322fc27bf058a733313e2c0f9e",
+        "raw_full_form_sha256_unchanged": true,
+        "controls_extracted": 8,
+        "positive_5s_768P_matches_real_schema": true,
+        "form_negatives_rejected": {
+          "below_minimum": true,
+          "above_maximum": true,
+          "lowercase_outside_form_enum": true
+        },
+        "paid_generation_or_profile_promotion": false
+      }
+    ],
+    "parser_source_sha256": "00cea25e5e36d9965b6e09be25be16813c81f13f38c4dd91a94d7ce33c03b929",
+    "scope_limit": "Root independently reviewed eight changed files and ran22relevant synthetic/retained-receipt cases; actual captured5s768P parser/schema proof is separate from synthetic8s compilation proof. No fullresult/quote/upload qualification or paidcalls.",
+    "compiled_validation": {
+      "source_commit": "82049506ba42f187626d1d3c2e8c39dcb5e923ec",
+      "author_checks": "277focusedpassed",
+      "independent_checks": "22passed235deselected3.43s",
+      "root_diff_review": "shared form_schema used in controls/defaults/receipt qualification/compiled native schema validation; full raw form hashes preserved; no paidgates relaxed",
+      "synthetic_positive": "8seconds768P compiled native path accepts formrange5..15",
+      "synthetic_negatives": [
+        "duration4",
+        "duration16",
+        "resolution720p",
+        "wrongmodel",
+        "wrongmedia",
+        "wrongmode",
+        "duration8abovewrappedmaximum7"
+      ],
+      "original_strict_four_outputs": "exactbyte replay unchanged after finalsource"
+    },
+    "final_repository_result": {
+      "command": "make RUN_PYTHON=.venv/bin/python test",
+      "source_commit": "82049506ba42f187626d1d3c2e8c39dcb5e923ec",
+      "exit_code": 0,
+      "result": "3910 passed,11 skipped,3 xfailed,1 subtests passed in853.80s (14:13)",
+      "log_path": "<TMP>/openmontage-final-live-wrapper-full-tg_6_az2.log",
+      "log_sha256": "36522dcf2164c42c7139c8b0ba8a0e3aeb9b998c7853b207f845cd0fb5db1d64",
+      "session_cleanup": "36110completed0"
+    }
+  }
+}

@@ -266,6 +266,8 @@ For the selected concept, design the stage-by-stage plan with specific providers
 
 Itemize all costs honestly. Cinematic tends to be more expensive than explainer (more generated clips, music, grade passes).
 
+When a route's USD cost is unknown (including subscription usage with unknown quota deduction), set that line's `estimated_usd` to `null` and provide nonempty `notes` explaining the uncertainty. If any line is unknown, set `total_estimated_usd` to `null`, include nonempty `unknown_cost_notes`, and use `budget_verdict: "unknown_cost"`. Show the tool and approved call quantity separately. Unknown means no USD estimate or budget comparison is available; never substitute zero, sum only known lines as the total, or convert subscription quota to dollars. Numeric estimates remain appropriate when supported by observed pricing; zero is reserved for a genuinely known zero cost.
+
 ### Step 8: Present and Approve
 
 Present concepts clearly. Invite the user to:

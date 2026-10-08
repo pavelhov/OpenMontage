@@ -830,3 +830,347 @@ def test_atlas_supported_plural_aliases_freeze_before_real_media_resolution(tmp_
     remote=copy.deepcopy(inputs);remote[field]=['https://synthetic.invalid/unfrozen-media']
     with pytest.raises(ProductionGovernanceError,match='local immutable asset'):
         planned_request_digest(remote,project_dir=tmp_path)
+
+
+def test_strict_dry_run_without_hook_is_unchanged(tmp_path):
+    from lib.production_execution import governed_dry_run
+    inputs,_,_ = project(tmp_path)
+    tool = ImageTool()
+    assert not hasattr(tool, 'prepare_offline')
+    assert tool.dry_run(inputs) == governed_dry_run(tool, inputs)
+    assert 'offline_preparation' not in tool.dry_run(inputs)
+    assert tool.calls == 0 and not (tmp_path/'production_attempts').exists()
+
+
+def test_strict_dry_run_offline_hook_is_pure_and_cannot_override_gate(tmp_path):
+    from tools.base_tool import in_offline_preparation
+    inputs,_,_ = project(tmp_path)
+    seen = []
+    class HookTool(ImageTool):
+        def prepare_offline(self, inputs, governed):
+            seen.append((in_offline_preparation(), governed['reservations']))
+            return {'quote': 'quote_required', 'provider_calls': 99}
+        def dry_run(self, inputs): raise AssertionError('would call network')
+    tool = HookTool()
+    result = tool.dry_run(inputs)
+    assert seen == [(True, 0)] and not in_offline_preparation()
+    assert result['provider_calls'] == 0 and result['reservations'] == 0 and result['paid_submission'] is False
+    assert result['offline_preparation'] == {'quote': 'quote_required', 'provider_calls': 99}
+    assert tool.calls == 0 and not (tmp_path/'production_attempts').exists()
+    inputs['prompt'] = 'Unapproved'
+    with pytest.raises(ProductionGovernanceError): tool.dry_run(inputs)
+    assert len(seen) == 1
+
+
+def test_offline_hook_blocks_openart_transport(tmp_path, monkeypatch):
+    from tools import _openart_cli as cli
+    inputs,_,_ = project(tmp_path)
+    monkeypatch.setenv('OPENART_CLI_PATH', '/bin/echo')
+    monkeypatch.setenv('OPENMONTAGE_OPENART_STATE_DIR', str(tmp_path.parent / (tmp_path.name + '-oa')))
+    class HookTool(ImageTool):
+        def prepare_offline(self, inputs, governed):
+            try: cli.run_readonly(['version'])
+            except cli.OpenArtCLIError as exc: return {'blocked': exc.kind}
+            return {'blocked': None}
+    assert HookTool().dry_run(inputs)['offline_preparation'] == {'blocked': 'offline_only'}
+
+# Synthetic OpenArt component seams; no account authentication or native provider.
+def test_openart_legacy_project_never_invokes(tmp_path):
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    (tmp_path/'project.json').write_text(json.dumps({'project_id':'synthetic-legacy'}))
+    with pytest.raises(ProductionGovernanceError, match='OpenArt requires strict'):
+        OpenArtCLIVideo().execute({'project_dir':str(tmp_path),'prompt':'synthetic',
+                                 'output_path':str(tmp_path/'output.mp4')})
+    assert not (tmp_path/'production_attempts').exists()
+
+@pytest.mark.parametrize('change', ['extra_control','profile'])
+def test_openart_nested_frozen_mismatch_zero_launch(tmp_path, monkeypatch, change):
+    from lib import openart_jobs as jobs
+    from tests.tools.test_openart_cli_video import synthetic_openart_project
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    inputs, scope, state = synthetic_openart_project(tmp_path, monkeypatch)
+    inputs.update(preferred_provider='openart_cli', allowed_providers=['openart_cli'])
+    scope['requests']['entry'] = planned_request_digest(inputs,project_dir=tmp_path)
+    write_scopes(tmp_path,scope)
+    class SyntheticSelector(BaseTool):
+        name='video_selector'
+        provider='selector'
+        capability='video_generation'
+        tier=ToolTier.GENERATE
+        def execute(self, submitted):
+            nested = dict(submitted)
+            nested.pop('preferred_provider')
+            nested.pop('allowed_providers')
+            if change == 'extra_control': nested['seed'] = 901
+            else:
+                from lib.production_execution import _ACTIVE
+                _ACTIVE.get()['openart_profile']['account_id_sha256'] = 'x'*64
+            return OpenArtCLIVideo().execute(nested)
+    with pytest.raises(ProductionGovernanceError, match='OpenArt'):
+        SyntheticSelector().execute(inputs)
+    assert state['submits'] == 0
+    assert len(list((tmp_path/'production_attempts').glob('*/request.json'))) == 1
+
+def test_openart_wrong_original_request_cannot_collect(tmp_path, monkeypatch):
+    from tests.tools.test_openart_cli_video import synthetic_openart_project
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    from lib.production_execution import collect_openart_attempt
+    inputs, _, state = synthetic_openart_project(tmp_path,monkeypatch)
+    result = OpenArtCLIVideo().execute(inputs)
+    with pytest.raises(ProductionGovernanceError, match='request/attempt'):
+        collect_openart_attempt(tmp_path,result.data['production_attempt_id'],request_sha256='bad')
+    assert state['collections'] == 0 and state['submits'] == 1
+    with pytest.raises(ProductionGovernanceError, match='collect_openart_attempt'):
+        reconcile_attempt(tmp_path,result.data['production_attempt_id'],result,
+                          request_sha256=result.data['production_request_sha256'])
+    assert state['submits'] == 1
+
+def test_openart_empty_reference_intent_does_not_remove_required_boards(tmp_path, monkeypatch):
+    from tests.tools.test_openart_cli_video import synthetic_openart_project
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    inputs, scope, state = synthetic_openart_project(tmp_path,monkeypatch)
+    contract = json.loads((tmp_path/'shot_contract.json').read_text())
+    contract['shots'][0]['asset_ids'] = []
+    digest = contract_digest(contract)
+    contract['project_review']['subject_sha256'] = digest
+    for shot in contract['shots']: shot['review']['subject_sha256'] = digest
+    (tmp_path/'shot_contract.json').write_text(json.dumps(contract))
+    inputs.pop('image_path')
+    inputs.update(mode='text2video',operation='text_to_video')
+    scope['requests']['entry'] = planned_request_digest(inputs,project_dir=tmp_path)
+    scope['approval_plan_sha256'] = approval_plan_digest(contract)
+    write_scopes(tmp_path,scope)
+    with pytest.raises(ProductionGovernanceError, match='asset_ids'):
+        OpenArtCLIVideo().execute(inputs)
+    assert state['submits'] == 0
+
+@pytest.mark.parametrize('change',['request','snapshot','account','process'])
+def test_openart_component_terminal_failure_binding_rejected(tmp_path,monkeypatch,change):
+    """Synthetic component failure proof must match the original frozen attempt."""
+    from tests.tools.test_openart_cli_video import synthetic_openart_project
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    from lib import openart_jobs as jobs, production_execution as execution
+    inputs,_,state=synthetic_openart_project(tmp_path,monkeypatch)
+    result=OpenArtCLIVideo().execute(inputs)
+    aid=result.data['production_attempt_id']
+    binding=copy.deepcopy(state['launch'][aid]['binding'])
+    proof={'attempt_id':aid,'binding':binding,'job_id_sha256':'synthetic-job',
+           'terminal_failure_sha256':'f'*64,'account_id_sha256':binding['account_id_sha256'],
+           'process_state':'exited','billing':'unknown','release_authorized':False}
+    if change=='request': binding['request_sha256']='wrong-request'
+    elif change=='snapshot': binding['snapshot_sha256']='wrong-snapshot'
+    elif change=='account': proof['account_id_sha256']='wrong-account'
+    else: proof['process_state']='alive'
+    monkeypatch.setattr(jobs,'collect_job',lambda *a,**kw:{'status':'failed_terminal','output':None})
+    monkeypatch.setattr(jobs,'reconcile_job',lambda *a:{'state':'failed_terminal',
+                        'binding':state['launch'][aid]['binding'],'events_sha256':'d'*64})
+    monkeypatch.setattr(jobs,'verify_terminal_failure',lambda *a:proof)
+    with pytest.raises(ProductionGovernanceError,match='OpenArt terminal'):
+        execution.collect_openart_attempt(tmp_path,aid,request_sha256=result.data['production_request_sha256'])
+    assert not (tmp_path/'production_attempts'/aid/'reconciliation.json').exists()
+    assert state['submits']==1
+
+
+def test_grok_analyze_bypasses_project_discovery_and_compatibility_probe(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from lib import production_execution as execution
+    tool = SimpleNamespace(name='synthetic_grok_analyze', provider='grok_cli',
+                           capability='video_generation', tier=ToolTier.ANALYZE)
+    inputs = {'project_dir': str(tmp_path), 'action': 'inspect', 'read_only': True,
+              'governance': {'scope_id': 'unused-diagnostic', 'shot_id': 'entry'}}
+    monkeypatch.setattr(execution, 'discover_project', lambda *a: pytest.fail('Analyze discovered production project'))
+    monkeypatch.setattr('tools._grok_cli_media.observe_grok_cli_compatibility',
+                        lambda *a, **k: pytest.fail('Analyze probed Grok executable'))
+    invoked = []
+    result = execution.execute_governed(tool, inputs, lambda clean: invoked.append(clean) or 'diagnostic-result')
+    assert result == 'diagnostic-result' and invoked == [inputs]
+    assert not list(tmp_path.iterdir())
+
+
+def test_grok_generation_unknown_project_still_fails_without_probe(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from lib import production_execution as execution
+    tool = SimpleNamespace(name='synthetic_grok_motion', provider='grok_cli',
+                           capability='video_generation', tier=ToolTier.GENERATE)
+    monkeypatch.setattr('tools._grok_cli_media.observe_grok_cli_compatibility',
+                        lambda *a, **k: pytest.fail('Unknown project probed Grok executable'))
+    with pytest.raises(ProductionGovernanceError, match='missing project.json'):
+        execution.execute_governed(tool, {'project_dir': str(tmp_path)},
+                                   lambda clean: pytest.fail('Unknown project invoked provider'))
+    assert not list(tmp_path.iterdir())
+
+
+def _qualification_marker(root):
+    marker = json.loads((root/'project.json').read_text())
+    marker['pipeline_type'] = 'provider-qualification'
+    (root/'project.json').write_text(json.dumps(marker))
+
+
+def test_provider_qualification_pipeline_rejects_non_openart_motion_route(tmp_path):
+    inputs, _, _ = project(tmp_path, motion=True)
+    _qualification_marker(tmp_path)
+    tool = MotionTool()
+    with pytest.raises(ProductionGovernanceError, match='provider-qualification'):
+        preflight(tool, inputs)
+    assert tool.calls == 0 and not (tmp_path/'production_attempts').exists()
+
+
+def test_non_qualification_pipeline_motion_preflight_unchanged(tmp_path):
+    inputs, _, _ = project(tmp_path, motion=True)
+    assert preflight(MotionTool(), inputs)['governed'] is True
+
+
+def test_provider_qualification_hook_runs_for_openart_with_native_and_profile(tmp_path, monkeypatch):
+    from tests.tools.test_openart_cli_video import synthetic_openart_project
+    from lib import provider_qualification
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    inputs, _, state = synthetic_openart_project(tmp_path, monkeypatch)
+    _qualification_marker(tmp_path)
+    seen = []
+    def gate(root, given, digest, *, native=None, profile=None):
+        seen.append((Path(root), digest, native, profile))
+        raise provider_qualification.QualificationValidationError('Provider qualification: synthetic refusal')
+    monkeypatch.setattr(provider_qualification, 'validate_qualification_stage', gate)
+    with pytest.raises(ProductionGovernanceError, match='synthetic refusal'):
+        preflight(OpenArtCLIVideo(), inputs)
+    assert len(seen) == 1 and seen[0][2] and seen[0][3]
+    assert seen[0][1] == planned_request_digest(inputs, project_dir=tmp_path)
+    assert state['submits'] == 0
+
+
+@pytest.mark.parametrize('extra', [
+    {'unknown_cost_authorization_id': 'retained'},
+    {'unknown_cost_evidence_id': 'a' * 64},
+    {'unknown_cost_authorization_id': None, 'unknown_cost_evidence_id': None},
+    {'unknown_cost_authorization_id': 'retained', 'unknown_cost_evidence_id': 'a' * 64}])
+def test_grok_cannot_carry_openart_unknown_authority(tmp_path, monkeypatch, extra):
+    from lib import production_execution as execution
+    class GrokMotion(MotionTool):
+        provider = 'grok_cli'
+    inputs, _, _ = project(tmp_path, motion=True)
+    inputs.update(extra)
+    before = {str(p.relative_to(tmp_path)): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    def forbidden(*args, **kwargs):
+        raise AssertionError('cross-route unknown authority reached OpenArt preparation')
+    monkeypatch.setattr(execution, '_openart_prepare', forbidden)
+    tool = GrokMotion()
+    with pytest.raises(ProductionGovernanceError, match='invalid_argument:.*OpenArt route'):
+        tool.execute(inputs)
+    assert tool.calls == 0
+    assert {str(p.relative_to(tmp_path)): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
+
+
+@pytest.mark.parametrize('authorization', ['../escape', 'unsafe.id', 'with space', '/absolute', ''])
+def test_openart_unknown_authorization_requires_safe_artifact_id(tmp_path, monkeypatch, authorization):
+    from lib import production_execution as execution
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+    inputs, _, _ = project(tmp_path, motion=True)
+    inputs.update(unknown_cost_authorization_id=authorization, unknown_cost_evidence_id='a' * 64)
+    def forbidden(*args, **kwargs):
+        raise AssertionError('unsafe unknown authorization reached preparation')
+    monkeypatch.setattr(execution, '_openart_prepare', forbidden)
+    with pytest.raises(ProductionGovernanceError, match='invalid_argument:'):
+        preflight(OpenArtCLIVideo(), inputs)
+    assert not (tmp_path / 'production_attempts').exists()
+
+
+def _reviewed_pin_request(tmp_path):
+    inputs, scope, contract = project(tmp_path, motion=True)
+    # Distinct native pin bytes and two cast members make role/coverage tests real.
+    for asset in contract['assets']:
+        if asset['role'] in {'start_frame', 'end_frame'}:
+            path = tmp_path / asset['path']
+            path.write_bytes(path.read_bytes() + ('<!-- ' + asset['role'] + ' -->').encode())
+            asset['sha256'] = file_sha256(path)
+            asset['review']['subject_sha256'] = asset['sha256']
+            asset['cast_ids'] = ['patient', 'doctor']
+    contract['shots'][0]['cast_ids'] = ['patient', 'doctor']
+    from tests.lib.test_shot_contract import refresh
+    refresh(contract)
+    scope['approval_plan_sha256'] = approval_plan_digest(contract)
+    (tmp_path / 'shot_contract.json').write_text(json.dumps(contract))
+    inputs.update(operation='first_last_frame', first_frame=inputs.pop('image_path'),
+                  last_frame=inputs.pop('last_image_path'))
+    inputs.pop('reference_image_paths')
+    scope['requests']['entry'] = planned_request_digest(inputs, project_dir=tmp_path)
+    write_scopes(tmp_path, scope)
+    return inputs, scope, contract
+
+
+def test_reviewed_native_pin_pair_carries_identity_without_auxiliary_refs(tmp_path):
+    inputs, _, contract = _reviewed_pin_request(tmp_path)
+    tool = MotionTool()
+    check = preflight(tool, inputs)
+    assert check['governed'] and tool.calls == 0
+    result = tool.execute(inputs)
+    assert result.success and tool.calls == 1
+    frozen = json.loads(attempt(tmp_path).read_text())
+    assert 'reference_image_paths' not in frozen['submitted_inputs']
+    assert {row['role'] for row in frozen['input_assets']} == {'first_frame', 'last_frame'}
+    # Snapshot paths differ from original board paths, but immutable bytes match.
+    from lib.production_execution import _check_motion_inputs
+    _check_motion_inputs(contract, 'entry', frozen['submitted_inputs'], tmp_path)
+
+
+@pytest.mark.parametrize('change', ['missing_first', 'missing_last', 'changed_first', 'changed_last',
+                                  'unapproved_first', 'unapproved_last', 'wrong_role',
+                                  'failed_first_review', 'failed_last_review', 'stale_first_review',
+                                  'missing_cast', 'partial_cast', 'wrong_cast'])
+def test_native_pin_identity_requires_reviewed_exact_pair_and_start_cast(tmp_path, change):
+    inputs, scope, contract = _reviewed_pin_request(tmp_path)
+    if change.startswith('missing_') and change != 'missing_cast':
+        inputs.pop('first_frame' if change == 'missing_first' else 'last_frame')
+    elif change.startswith('changed_'):
+        Path(inputs['first_frame' if change == 'changed_first' else 'last_frame']).write_bytes(b'changed board')
+    elif change.startswith('unapproved_'):
+        path = tmp_path / 'assets/unapproved.svg'; path.write_bytes(b'unapproved board')
+        inputs['first_frame' if change == 'unapproved_first' else 'last_frame'] = str(path)
+    elif change == 'wrong_role':
+        inputs['first_frame'], inputs['last_frame'] = inputs['last_frame'], inputs['first_frame']
+    else:
+        board = next(a for a in contract['assets'] if a['role'] == (
+            'end_frame' if change == 'failed_last_review' else 'start_frame'))
+        if change.startswith('failed_'): board['review']['status'] = 'fail'
+        elif change == 'stale_first_review': board['review']['subject_sha256'] = '0' * 64
+        else:
+            board['cast_ids'] = [] if change == 'missing_cast' else ['patient'] if change == 'partial_cast' else ['doctor']
+            # Fresh planning approval cannot manufacture cast identity in a board.
+            from tests.lib.test_shot_contract import refresh
+            refresh(contract)
+            scope['approval_plan_sha256'] = approval_plan_digest(contract)
+        (tmp_path / 'shot_contract.json').write_text(json.dumps(contract))
+    # Rebind this exact negative request so approval digest does not mask its
+    # missing pin, missing review, wrong native role or identity-coverage defect.
+    scope['requests']['entry'] = planned_request_digest(inputs, project_dir=tmp_path)
+    write_scopes(tmp_path, scope)
+    tool = MotionTool()
+    with pytest.raises(ProductionGovernanceError):
+        preflight(tool, inputs)
+    assert tool.calls == 0 and not (tmp_path / 'production_attempts').exists()
+
+
+@pytest.mark.parametrize('operation,guided', [('reference_to_video', False), ('first_last_frame', True)])
+def test_native_pins_do_not_replace_guided_or_reference_operation_identity_refs(tmp_path, operation, guided):
+    inputs, _, contract = _reviewed_pin_request(tmp_path)
+    inputs['operation'] = operation
+    if guided:
+        contract['shots'][0]['reference_mode'] = 'reference_guided'
+    from lib.production_execution import _check_motion_inputs
+    with pytest.raises(ProductionGovernanceError, match='identity_reference'):
+        _check_motion_inputs(contract, 'entry', inputs, tmp_path)
+
+
+def test_native_pin_identity_exemption_does_not_drop_other_reference_assets(tmp_path):
+    inputs, scope, contract = _reviewed_pin_request(tmp_path)
+    path = tmp_path / 'assets/prop.svg'; path.write_bytes(b'reviewed prop')
+    from tests.lib.test_shot_contract import refresh
+    reference = {'id': 'prop', 'role': 'reference_image', 'path': str(path),
+                 'sha256': file_sha256(path), 'cast_ids': []}
+    reference['review'] = copy.deepcopy(contract['assets'][0]['review'])
+    reference['review']['subject_sha256'] = reference['sha256']
+    contract['assets'].append(reference)
+    contract['shots'][0]['asset_ids'].append('prop')
+    refresh(contract)
+    from lib.production_execution import _check_motion_inputs
+    with pytest.raises(ProductionGovernanceError, match='reference_image prop'):
+        _check_motion_inputs(contract, 'entry', inputs, tmp_path)

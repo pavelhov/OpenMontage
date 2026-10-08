@@ -1,0 +1,800 @@
+{
+  "publication_note": "Published copy redacts private account correlators and local workspace/temp paths; technical schemas, control evidence, test outcomes, and non-account provenance are retained.",
+  "record_kind": "implementation_progress_not_return_envelope",
+  "status": "blocked",
+  "updated_at": "2026-10-07T00:23:26.065562+00:00",
+  "plan_path": "docs/plans/2026-10-05-1616-feat-openart-factory-plan.md",
+  "source_digest": "7fe34a094bee8270b0eeb2a892e5ba1920ca074073e622fd1852cbdc49491cc7",
+  "amendment_path": "docs/plans/2026-10-05-1833-openart-auto-continue-amendment.md",
+  "amendment_digest": "934a3009bc722b71e44f620aeec6cacf9ee3d407e9746b0f3c901fa2dd68c230",
+  "canonical_commits": {
+    "plan": "0a18175",
+    "U1": "c4533a7",
+    "U2": [
+      "90a131e",
+      "8f22270"
+    ],
+    "U3": "fcec5aa",
+    "U4": "4f25949",
+    "midphase_simplification": "e5f57dd",
+    "U5": "8aaa6b7",
+    "U5P": "4247fa3a96f6b86de26d4e35aaa5bcc5bb0b7637",
+    "U6": "f2d194fa868d0772e97d14ebb2bd272ab4128f0c",
+    "U5P_partial_grok": "ac6414b",
+    "U5P_partial_retime": "c801a0d",
+    "live_form_compatibility": "82049506ba42f187626d1d3c2e8c39dcb5e923ec"
+  },
+  "current_units": {
+    "U5": "Accepted and canonical: actual mixed Grok\u2192OpenArt serial handoff/real FFmpeg master +7E2E cases, source qualification original counted once; root stable full567regression pass.",
+    "U5P": "Local implementation accepted, independently reviewed and canonical at4247fa3; pure Grok and retime partial commits ac6414b/c801a0d. Final complete repository checks green.",
+    "R18": "Always-on same-shot duplicate video guard and production-kind isolation accepted and included in4247fa3; private unpublished outbox counted, no authority enlarged.",
+    "U6": "Offlinebenchmark implementation accepted atf2d194f and current3910whole-suite proof. Live benchmark incomplete: exactquote/result/upload/AV and separatepaidapproval gates remain.",
+    "checkpoint": "Accepted genuine policy checkpoint matrix:198passed1skipped24.77s; source and final full suite green; canonical4247fa3.",
+    "completion_report": "Accepted actual fake CLI OpenArt/mixed route fixtures and authority corruption boundaries:42passed107.32s plus5mixed/runtime cases30.18s; canonical4247fa3; synthetic AV explicitly not live evidence.",
+    "U1": "Local transport/discovery accepted, including actualjsonSchema envelope correction8204950 and final current3910test suite. Fresh actual account/catalog/form/preview receipts captured; no paidreadiness inferred.",
+    "U2": "Local staged qualification/jobs/provenance accepted, including raw-form wrapper metadata/defaults verification8204950; no realresult qualification completed.",
+    "U3": "Local request/preparation accepted, including actualwrapped-schema nativefield bounds enforcement8204950; rootprivate-receipt22cases and4Strictcanonicalbytes matched."
+  },
+  "verification": {
+    "U4": {
+      "author": "553 passed in 260.17s (canonical10module)",
+      "root": "13 safeguards passed in 18.14s; diff--check and py_compile green",
+      "independent": "priorOpus117 accepted, narrow3P3repairs actualreds confirmed/root reviewed"
+    },
+    "root_existing_regressions": "299 passed in 40.10s: productionreview/provenance/draftaudio/firstpass/Grokmedia/conditioning/diagnostics/compatibility",
+    "midphase": {
+      "status": "complete",
+      "reuse": "Three exact hash helpers considered; skipped cross-private-module coupling for three-line helpers; preserve ensure_ascii variants.",
+      "efficiency": "Two same-evidence single fresh byte-buffer reads applied.",
+      "quality": "Prospective 20:08 UTC Cursor deadline expired without durable results. Root completed full quality rubric inline using source/diff, AST import/parameter/nesting scan and structural call-site search. Removed verified unused uuid4 import; retained durable authority state, public legacy hooks, explicit authority parameters, and security checks.",
+      "applied_files": [
+        "lib/openart_credit.py",
+        "lib/openart_jobs.py"
+      ],
+      "verification": "149 passed in 78.13s: test_openart_credit.py + test_openart_jobs.py; diff--check green",
+      "canonical_commit": "e5f57dd9f83407ee39d4b1dbe0afeba764a6ae02"
+    },
+    "U5_metadata": "66 passed12.43 before enumfix; current contract enumfix included root212pass aggregate",
+    "U6": {
+      "author": "203 passed in 325.47s: tests/lib/test_provider_benchmark.py + tests/integration/test_provider_benchmark_runtime.py, stable files",
+      "independent": "Fresh Opus core accepted with P2; root reviewed mechanical P2 fix and public fixture, root212 benchmark unit/menu contracts passed15.87s",
+      "actual_red": "1failed51.07s pre-fix wrong original duration raises BenchmarkError; focused2passed118.59s after fix",
+      "live_calls": 0,
+      "canonical_commit": "f2d194fa868d0772e97d14ebb2bd272ab4128f0c"
+    },
+    "R18": {
+      "author": "55 passed in34.97s",
+      "independent": "Opus54passed32.24s; root reviewed final narrow fix",
+      "actual_red": "Old strict preflight characterized allowing running same-shot cross-provider video. Actual other-shot ready-journal tamper1failed3.20s before independence fix.",
+      "integration_author": "232 passed45.50: integration28 + frozen guard55 + existing execution",
+      "integration_root": "28 passed16.91; exact preflight/locked-race/privateoutbox/phase isolation diff independently reviewed",
+      "integration_independent": "Opus adversarial read no blocker; 113 passed57.86 across guard/integration/current pure autonomy. Legacy missing-kind attempts fail closed as accepted; no migration path invented."
+    },
+    "checkpoint": {
+      "author_reported": "90 passed in15.64s: checkpoint preauth/prerequisites/Backlot/final production_review; current placeholder-baseline fixture not accepted yet",
+      "root_review": "Real checkpoint diff reviewed. Pure pre-merge checkpoint validation and rejection of same-write activation mutations requested and author reports fixed. Need rerun with real full-baseline retained evidence and canonical decision_id log.",
+      "resumed_author": "Current existing checkpoint/prerequisite/noncanonical-stage/review/phase0/Backlot139passed1skipped; both schemas check_schema pass. Authentic policy fixture pending.",
+      "latest_legacy_regression": "50passed5.59s after policy-only unknown pipeline GATE wrapping: checkpoint_prerequisites/noncanonical_stage/phase0contracts; authentic policy matrix still pending.",
+      "absent_project_rejection": "1passed: invalid policy creates no project/output directories; forward-authored.",
+      "independent_structural": "Fresh Opus no structural P1/P2;1302passed7skip legacy/contracts; pending genuine matrix7passed46fixturemissing-script failures not checkpointassertions.",
+      "audit_id_repair": "Policy-only conflicting retained ID/repeatedcaller IDs/retainedduplicates reject all before writes. Sol actual3failed1pass ->4pass; actualhumanlegacycheckpoint dedupe regression additionallypassed. Fresh Opus6offlineprojectionprobes filebytesunchanged +4tests passed, root exactdiff reviewed. Genuine activation matrix stillpending.",
+      "final_authentic": "198passed1skipped24.77s across7paths including59genuine cases; currentfullscript/staticasset actualdriftreds repaired bycore owner; checkpoint4files released."
+    },
+    "pre_final_repository_checks": {
+      "contracts": "1293 passed7skipped34.74s before finalU5Pcore integration",
+      "lint": "make lint passed; explicit py_compile5new/changed modules passed; git diff--check clean"
+    },
+    "U5": {
+      "author_reported": "7E2E cases pass; broad566passed1failed selector error-text regression, fixed; affected127passed. Whole567 not rerun by author after fix.",
+      "root": "567passed268.91s across16 declaredmodules after final selector fix; substantive menu/selector/catalog/native profile/real E2E diff reviewed; git diff--check clean.",
+      "actual_reds": "E2E missingoutputdir, incorrect async success assertion, incorrect retry return-vs-raise were fixture bugs corrected. Selector pinned-frame message actual code regression fixed. Other negatives and enum adversary forward-authored, no claimed preimplementation red.",
+      "semantic_limitation": "Synthetic clearly-labelled AV/story judgments; actual local FFmpeg frames/hash/duration/master; executable fake CLIs; narrow HTTPS fake only. No real quality qualification claimed.",
+      "canonical_commit": "8aaa6b7",
+      "real_provider_calls": 0
+    },
+    "Strict_default_replay": {
+      "owner": "root",
+      "snapshot_path": "<TMP>/openart-u5p-replay-a4pnwuk1/root-byte-baseline.json",
+      "snapshot_sha256": "a4ffdc390b9182c450cf56bc3c495ffc009a69413def7875f42f6fa1896692d3",
+      "captured": "Original default OpenArt source_packet,compile_prompt,compiled_request,native plus SAME replayinputs/profile context; no real provider calls.",
+      "status": "Finalstable root replay all4exactcanonicalJSON bytesmatch; CLIforbidden; acceptedoriginalcontext",
+      "harness_path": "<TMP>/openart-strict-byte-replay-20261006.py",
+      "harness_pre_refactor_sanity": "Root independently rebuilt native/source/prompt/compiled_request from same saved inputs/profile; all4canonical JSON byte SHA matches, no CLI permitted. Post-U5P replay still pending.",
+      "post_refactor_root": "4 exactcanonicalJSON byte matches via independentroot harness, CLIforbidden, originalsameprofile/inputcontext: source_packet,prompt,native,compiled_request; run22:31UTC.",
+      "reviewed_file_sha256": {
+        "lib/production_request.py": "c9c655004e29ba266e4381c57e1aae0cf837f9079e651d6c960af04b3dbcf686",
+        "lib/production_execution.py": "240b7ad06016a1c58432988c641a76c0a41f89ff1319c638bd34147ca7cefb3c"
+      },
+      "final_root": "Sourcepacket/prompt/native/compiledrequest exactSHA matches original baseline; .venv independentharness finalstable run22:48UTC"
+    },
+    "U5P_current": {
+      "status": "Accepted at4247fa3 after fresh Opus review and complete green repository checks; prior pending entries below are chronological history, superseded by final acceptance.",
+      "author_pre_fix": "Author reported combined39failed36passed characterization; fixture/interface failures not interpreted as39 independent defects. Explicit saved probes confirm schema-invalid activation log, hash-descriptor-only baselines, conflicting legacy alias accepted, ungated compose accepted.",
+      "probe_path": "<TMP>/u5p_receipts/prefix_probes.txt",
+      "probe_sha256": "b912e08fb51ccf5145cd717a5616c276d66c0a00e2c523c04b1224b5fff381a7",
+      "baseline_design": "Retain full projection/planned template/script/coverage/approval-plan bytes, recompute policy.shots descriptors, compare current projection allowing only deterministic approved flex.",
+      "root_scope_corrections": "Empty checkpoint_stages remains valid provider-only envelope; real existing artifact locator reads sole valid legacy/equal aliases and rejects conflicting aliases. Writers may refuse dual aliases before writes.",
+      "independent_design_review": "Fresh Sol identified omitted late_cast_ids/payoff_speaker_ids/payoff_asset_id plus implicit identity assets; global contract.shots/scene_plan.scenes/script.sections order; actual asset.upstream_source vs old incidental source/origin test; retain exact upstream producer/role/layout/pointer/index while excluding future bindings. Actual dialogue has no line ID: preserve ordered repeated-text occurrences and source pointers. Report sent to Opus, implementation acceptance pending.",
+      "prospective_checkpoint_gate": {
+        "communicated_at": "2026-10-06T21:48:18Z",
+        "deadline": "2026-10-06T22:05:00Z",
+        "required": "Preserve full-baseline helper/install patch even if partial, report persisted API/testing state; never claim whole feature complete or weaken authority",
+        "conditional_recovery": "If no durable core at gate, preserve existing work and deliberately transfer unfinished implementation to Sol with focused independent review. Wait timeouts remain neutral."
+      },
+      "author_final": {
+        "command": "env -u OPENMONTAGE_ALLOW_NETWORK -u HYPERFRAMES_QA -u HYPERFRAMES_QA_RENDER .venv/bin/python -m pytest -q tests/lib/test_production_autonomy.py tests/integration/test_openart_auto_continue.py tests/lib/test_production_execution.py tests/lib/test_production_request.py tests/lib/test_checkpoint_policy_preauth.py",
+        "result": "314passed17.55s",
+        "coverage": "Actual2Grokregistry/native dispatches, composite-onlycast,6explicitlocknegatives, later-shotretime/stalenativeprep/legalorderedpartialnoncastrefdrop withoriginalpool preserved, bothselections/currentv2syntheticcert/generatedhistoryreport, capstatuses/unknownkind, failedoutputreview+wrongsubject/duplicate/wrongshot, revoked/ownshot/native/review/nullhistoricalprovenancenegatives",
+        "limitations": "FakeCLI/syntheticAV; no realquality/model/pricing qualification; destructiveoriginalsourcechangefailsStrict"
+      },
+      "stable_file_sha256": {
+        "lib/production_autonomy.py": "c7035378526e77a1ad3fb656177ec36cb88ea7ba3f1d9340db7a7b2c7244ae78",
+        "lib/production_execution.py": "240b7ad06016a1c58432988c641a76c0a41f89ff1319c638bd34147ca7cefb3c",
+        "lib/production_provenance.py": "1d65b09e8f0350ce920acd9f4b7348f60477fe08145d0a0f6ecf4026b552a5d1",
+        "lib/production_request.py": "c9c655004e29ba266e4381c57e1aae0cf837f9079e651d6c960af04b3dbcf686",
+        "lib/production_autonomy_report.py": "13ea6131a096a8a5bf6d65586fc8ce961e1fc0bff0b7de8652ab74e2f4e7facb",
+        "lib/checkpoint.py": "3f78c20c93b955d39868edaed406544ae7d885b0e7025e13f72e9b66bcb48220",
+        "schemas/artifacts/preparation_review.schema.json": "76a8c77c054178d239848b7a33307453d065bf8e9e4cb879bdf3c278a14f89eb",
+        "tests/lib/test_production_autonomy.py": "339e3b8b47a65d23fb17fb6b404d5deb95e3b63422c59d006ec135a0a4d4d20a",
+        "tests/integration/test_openart_auto_continue.py": "76a5fb400a19e195954e53c38116123e7e0ed61f892e48d80ab036b78a683f22",
+        "tests/lib/test_production_autonomy_report.py": "51cf975d9448c05921f058bfffc318c429b02736a769b4956beeb3c3c466fe3c",
+        "tests/lib/test_production_execution.py": "12d2cd66801b299d25670727a33b7c2591ab87953a442628f2fbde2071fa70eb"
+      }
+    },
+    "U5P_Grok_builder": {
+      "author": "Fresh Sol medium native worker, exact three-file explicit ownership released by Opus then worker released after checks",
+      "files": [
+        "tools/_grok_cli_media.py",
+        "tools/video/grok_cli_video.py",
+        "tests/tools/test_grok_cli_video_builder.py"
+      ],
+      "checks": [
+        "287 focused Grok tests passed0.66s",
+        "212 production/provenance/first-pass tests passed23.35s",
+        "Owned diff--check green"
+      ],
+      "golden": "8 original/current full execute JSON byte-identical cases; conditioning receipts/arguments/hash/endpoint included",
+      "golden_sha256": "08fe1669650488e2695f4c9676af0ca87adb487bab66588e9e38cd62a66d070d",
+      "baseline_paths": [
+        "<TMP>/openmontage-grok-native-before.json",
+        "<TMP>/openmontage-grok-native-after.json",
+        "<TMP>/grok_native_baseline_capture.py"
+      ],
+      "red": "Forward-authored boundary tests. Initial collection reserved-fixture-name error corrected; no pre-fix behavioral red claimed.",
+      "root": "Substantive exact moved-validation/native-profile/version-gate/observer diff reviewed; no P1/P2 identified",
+      "independent": "Accepted freshOpus302Grokofflinepass0.64s, observerP2actualredgreen; canonicalac6414b",
+      "canonical_commit": "ac6414b"
+    },
+    "grok_native_independent_review": {
+      "reviewer": "Fresh Opus medium, actual served model unverified",
+      "checks": "297 offline Grok tests passed0.75s; original8case canonical execute result files read, exact21050byte equality and sha confirmed",
+      "finding": "P2 closed by narrow observer resolution repair; actual pre-fix3failed2passed retained SHA91e1fb7437bd53fb335ae1f9ef25fe7bc3c9ecfe2826fab630c72c3138cc79b3",
+      "other_findings": "No other P1/P2; P3 profile global mutable (actual validators independent) optional isolation repair",
+      "scope": "Only Grok helper extraction, not full U5P",
+      "post_fix": "Fresh Opus6observer/302Grok tests passed0.64s; full original execute8case golden still exact SHA08fe1669650488e2695f4c9676af0ca87adb487bab66588e9e38cd62a66d070d; root reviewed narrow resolution fix/diffcheck/index ownership",
+      "canonical_commit": "ac6414b"
+    },
+    "completion_report": {
+      "author": "Sol13tests pass0.16s; actualunknownbaselineprovider red1failed11pass fixed, freshledgerreserved-state assertion mistake separatelydisclosed",
+      "scope": "Two newfiles only, released; root read source/tests; no canonicalcommit or independent acceptance yet",
+      "pending": "Opus focused review +immutable historicalpreparation accessor +genuine mixed/OpenArt runtimeintegration",
+      "independent": "Fresh Opus13tests noP1; P2 historicalaccessor/templatechanged/typedmalformed/creditstatelabels plusmissingactualOpenArt/mixedpositive; fixesassignedSolreportowner.",
+      "latest_author": "18reporttests pass; actual5red13green for malformedauthority/templatecomparison fixed; immutablehistoricalaccessor andexplicitcreditstatetotals/read-snapshotrecheck added. RealnormalpathOpenArt/mixed integration pending.",
+      "latest_authentic": "GenuinepublicOpenArtderivedscope nowdispatches; sample->FULL qualification/terminal+settlement->separateproject/policy. ActualmixedfailedOpenArtterminalproof->Grokrepair generatedprovenance passedbeforelatestinputdelta. 37cases:36passed1failed65.20s atnewCoreproviderdryrunselectorsdelta, remainingrepairmainowned; report2filesstable forindependentre-review.",
+      "final_author": "40passed87.85s beforelastnarrowprovider bindingfix; targeted6passed39.62s and3typedassertionspassed19.41s after2newtests;42total finalrootfullsuitepending",
+      "actual_reds_latest": "Otherpolicy/Strictmatchingreservation existingjournal tests actual2failed16.01s DIDNOTRAISE ->2passed15.15s. Providercontradiction alreadyfailedclosedviaKeyError(path) beforefix, nowtypedAutonomyError beforebranch; no successfulpublicationbypass claimed.",
+      "root": "Reviewed exact reservation-provider require beforebranch, existingpolicyjournal inclusion/privateequality andprepublicationabsencecheck; targeted6+exact3normal-path corruption/race tests green. No successfulpublicationbypass on provider probe (priorKeyError alreadyblocked). Finalrepo42casesqueued.",
+      "final_author_current": "42 passed in 107.32s; mixed report plus four boundary cases five passed in 30.18s; syntax and whitespace clean."
+    },
+    "U5P_baseline_progress": {
+      "owner": "Fresh Sol medium /root/autonomy_implementation",
+      "durable_first": "Actual retained-baseline authority+genuine installer saved22:08; first positive reader-no-writes test passed",
+      "hardening": "Actual fullscript.title authority drift red observed by root and checkpoint writer; repaired using full sanitized contract/scene snapshots +fullscript. Real planned_request_template absolutepaths preserved; currentstatic implicit cast/payoff/reference bytehashes rechecked. 46unit baseline tests and57U3 default tests authorreportedgreen.",
+      "checkpoint": "59genuine policy checkpoint cases included in final198passed1skipped24.77s; source/schema/diffcheckgreen; workerreleased4files",
+      "independent": "Originalretimegap P2 andsolemappedunequalbounds P2 closed bypuremodule+actualintegratedprobes; Opus157core/checkpoint/retimepass. Fullnative/derived/caps reviewpending.",
+      "remaining": "Actual root-bound nativeprep/lockproof/derivedscope/caps/allowance/dispatch/decisions/mixedreport integration and fullrepository checks; knownoldcaller-authoritystubs notaccepted",
+      "actual_native_progress": "Author47core/integration tests afterremovedlegacydeclaredlockhelper; genuine2shot normalToolRegistry/GrokCLIVideo dispatch andrecord_selection/current syntheticcert aftersecond8->6 contiguoustotal14. Additionalexplicitlocks nowimplemented, template/inputflex replayunfinished andfocusedOpusreviewpending."
+    },
+    "U5P_retime": {
+      "author": "Puretimeline51passed; actualpre-fix solebounds3failed2passed; originalintegratedgap P2 actualprobe",
+      "root": "Entire pureplanner/tests independentlyread;51passed0.04s; stagedonly2files/diffcheckgreen",
+      "independent": "Opus157core/checkpoint/retime pass5.41s +5sole/unequaltests; originalgapclosed/contiguousactive andunequalboundsrejectactualprobes",
+      "canonical_commit": "c801a0d",
+      "limits": "Puremodule only; no production authority granted; core/native/caps fullU5P notaccepted"
+    },
+    "U5P_input_flex_review": {
+      "independent": "Opus currentcoreSHAprefixb19449334a95ec18:47core/integration tests pass; authentic3prefixprobe accepted unapprovedresolution480p/extraPNG/AR9:16 beforefix, nowall3reject",
+      "root": "Read fullrequestdelta function+rootlockproof; flaggedremainingpartialrefdrops/approvedsubstitutions andunknownkindcaps; mainfinishing",
+      "limits": "Explicitnewlockcheck reviewedstructurallyonly; caps/repair/provenance/credit/fullmatrixoutofscope; notU5Pacceptance"
+    },
+    "U5P_boundaries": {
+      "owner": "Luna medium native worker; actualservedidentityunverified",
+      "file": "tests/integration/test_autonomy_runtime_boundaries.py",
+      "result": "4passed14.65s",
+      "proof": "Genuineopenpolicyscope count1; actualprivateledgerpreparedoutboxcount1 andsamerequestblock; rehashedauthorization cannot enlargeactivepolicyceiling; publicrealSQLite distinctauthorizationdigests share allowance",
+      "limitation": "Budget evidence is compositional (normalpolicycapture/replay +distinct-digestledgeraggregation); not2derivedOpenArtdispatchE2E",
+      "root": "Read entire4case file; realSQLite aggregation withdistinctauthorization digests plus genuinepublicpolicycapture validates sharedallowance composition. Testhelper constantauthorizationSHA deficiency explicitly corrected innew4thcase; no2derivedOpenArtE2Eclaim."
+    },
+    "final_repository_checks": {
+      "source_commit": "82049506ba42f187626d1d3c2e8c39dcb5e923ec",
+      "full_suite": {
+        "command": "make RUN_PYTHON=.venv/bin/python test",
+        "source_commit": "82049506ba42f187626d1d3c2e8c39dcb5e923ec",
+        "exit_code": 0,
+        "result": "3910 passed,11 skipped,3 xfailed,1 subtests passed in853.80s (14:13)",
+        "log_path": "<TMP>/openmontage-final-live-wrapper-full-tg_6_az2.log",
+        "log_sha256": "36522dcf2164c42c7139c8b0ba8a0e3aeb9b998c7853b207f845cd0fb5db1d64",
+        "session_cleanup": "36110completed0"
+      },
+      "contracts": {
+        "command": "make RUN_PYTHON=.venv/bin/python test-contracts",
+        "source_commit": "82049506ba42f187626d1d3c2e8c39dcb5e923ec",
+        "exit_code": 0,
+        "result": "1293passed7skipped33.40s",
+        "log_path": "<TMP>/openmontage-final-live-wrapper-contracts-ldaf_q0b.log",
+        "log_sha256": "c8aacadb9d765d84c88a6e10c4c849b7ef6b2a9cbf6ccc4bef23511b30a43458",
+        "session_cleanup": "16227completed0"
+      },
+      "lint": "make RUN_PYTHON=.venv/bin/python lint passed; explicitpy_compile all8final repair source/testfiles passed",
+      "diff": "git diff --check/cached checks green;final documentation-only check follows",
+      "strict_default_bytes": "Original same-context source packet,prompt,native,compiledrequest four exactcanonicalbytes after finalsource edits;CLI/networkforbidden",
+      "u4_unchanged": "No diff from e5f57dd for lib/openart_credit.py,lib/provider_credit_ledger.py,lib/openart_dispatch.py",
+      "cleanup": "All known root verification sessions completed; no detached externalengine run; author process IDs unretained where explicitly stated."
+    },
+    "U5P_final_independent_review": {
+      "route": "Native existingOpusmedium reviewer; servedidentityunverified",
+      "result": "3P2 blockers;53core/boundary/integration pass beforelastfilechange;100report/checkpointpass1mixedswitchfail currentfile",
+      "actual_red": "Isolated genuine mixed OpenArt->Grok repair failed ValidationError reason missing in supersededoptions_considered",
+      "unit_probes": "Repairjournal phase vs embedded scope contradiction givesrepair0, max1 permitsnextrepair; actorvoice_reference cast_ids overlap implicitcast notconflicted/locked. Reviewerprobesstubbedjournal/ledger, notauthenticE2E; mainaddinggenuinecases.",
+      "other_scope": "NoP1/P2 on normalcaps/outbox/openScopes/repairreplay/historicalnative/Strict/unchangedU4 creditpaths, withinreviewedstablefiles",
+      "status": "accepted on final stable hashes",
+      "repair_progress": {
+        "focused_result": "318 passed in 23.66s; five genuine mixed and boundary cases passed in 29.18s.",
+        "actual_reds": "Two retained actor-voice drop/substitute activation cases, a genuine fresh-native/prep actor-voice omission, and a genuine third Grok repair journal phase corruption accepted before repair and rejected afterward.",
+        "remaining": "Independent narrow acceptance and final full repository run."
+      },
+      "end_reference_reconciliation": "Only end_frame board-member role added; genuine reviewed reference identity passes, absent actual native locked end_frame fails, voice_reference image-board enum rejected. No native-control guard loosened.",
+      "final_receipt": {
+        "reviewer": "Opus medium via native collaboration; served identity unverified",
+        "result": "Three P2s closed; no remaining P1/P2 within bounded repair review",
+        "stable_checks": "6 passed, 47 deselected in 12.17s; genuine core/integration filter; prior broader 99 tests partly overlapped file changes and is not final stable evidence",
+        "phase_probe": "Original stubbed repair-phase probe now rejects exact retained-scope contradiction; author additionally ran genuine third normal Grok generation corruption regression",
+        "scope_limits": "No live provider/quality/model/quota qualification; board native-end-pin test passed, enum read, test not deeply read by reviewer; root read the full test independently."
+      }
+    },
+    "full_suite_repairs": {
+      "actual_failures": [
+        "test_hyperframes_compose.py::test_provider_menu_summary_returns_expected_shape: old exact-key assertion lacks accepted U5 qualified_cli_video_routes",
+        "test_openart_account.py::test_status_collect_and_verify_target_original_attempt: new compatibility wrapper discovers project before original Analyze bypass",
+        "test_openart_cli_transport.py::test_account_quote_requires_explicit_read_only_and_exact_argv: same genuine read-only regression"
+      ],
+      "reconciliation": "Root initially briefed all three as test fixes, then source inspection identified new wrapper ordering as actual runtime regression. Cursor account-file edits stopped before any showed in status; original failing account inputs stay unchanged. Sol main owns narrow execution wrapper restoration; Cursor owns HyperFrames contract test only. Opus will independently verify wrapper.",
+      "status": "All source and narrow test repairs accepted/staged26 files; fresh full required suite running.",
+      "source_receipt": {
+        "author": "Sol medium; requested native selector, served identity unverified",
+        "actual_red": "Two original unchanged Analyze account nodes: 2 failed in 0.26s at premature discover_project",
+        "green": "Original nodes plus two meaningful no-probe/unknown-generation checks 4 passed0.79s; combined322 passed22.16s",
+        "independent": "Opus medium accepted stable wrapper and meaningful tests; original account files unchanged; 161 passed28.2s including production execution, actual Grok integration and four runtime boundary cases",
+        "source_sha256": "240b7ad06016a1c58432988c641a76c0a41f89ff1319c638bd34147ca7cefb3c",
+        "tests_sha256": "12d2cd66801b299d25670727a33b7c2591ab87953a442628f2fbde2071fa70eb",
+        "strict_byte_replay": "All four original source packet, prompt, native and compiled request byte snapshots still exact after wrapper fix."
+      },
+      "menu_test": {
+        "owner": "Root inline after scope reduced to one small contract assertion; Cursor requested native route produced no saved changes or test receipt before preserved deliberate transfer. No failed route/model inferred from timeouts.",
+        "recovery_path": "<TMP>/openmontage-menu-test-recovery-u5iq3pme",
+        "preserved_sha256": "3b10eb14f9039752d607571381e2122853fed91d4760be3545a99b2e4d7dfbb5",
+        "saved_diff_bytes": 0,
+        "changed": "Expected sixth summary key and ordered Grok/OpenArt list with list-valued model fields; stale guide-line-number comment removed. Original account test files unchanged.",
+        "actual_red": "Final full run old exact-key assertion failed with qualified_cli_video_routes extra key.",
+        "green": "All three affected test files:153 passed in 13.55s; syntax and cached diff check pass.",
+        "sha256": "5a5bc6511e13947319440d286d8acd50a9e9335df613c91bb0111f6ea68d33d4"
+      }
+    },
+    "final_full_regression_reconciliation": {
+      "prior_completed_run": "3failed3886passed11skipped3xfailed1subtests934.67s; original HyperFrames expected menu keys and two original Analyze account cases failed.",
+      "runtime_fix": "Original two Analyze tests untouched. Narrow wrapper guard restored original diagnostic path; actual2failed0.26s then4passed0.79s includingtwo new discovery/no-write boundaries. Sol combined322passed22.16s; fresh Opus161passed28.2s on released hashes, noP1/P2.",
+      "menu_fix": "Root updated the old key assertion for accepted qualified_cli_video_routes, checked ordered Grok/OpenArt rows and model lists;153affected-file cases passed13.55s. Test-only patch after deliberate Cursor scope reduction/ownership transfer, not timeout failure.",
+      "cursor_recovery": "<TMP>/openmontage-menu-test-recovery-u5iq3pme;original SHA3b10eb14f9039752d607571381e2122853fed91d4760be3545a99b2e4d7dfbb5,empty owned diff preserved, root verified bytes before tiny assertion edit.",
+      "final": "All three actual failures closed; whole suite EXIT0; original account files unchanged in final repair."
+    },
+    "live_form_adapter": {
+      "status": "accepted committed8204950;final whole repository andcontractchecksexit0",
+      "requested_route": "native collaboration Luna medium",
+      "actual_served_model": "unverified",
+      "initial_characterization": "Synthetic fake-CLI jsonSchema setup reached old form_controls and raised form_shape_unqualified before edits; pytest expected the rejection and passed1, not an actual failed pytest trace.",
+      "author_first_checks": "212passed across account/video/transport/setup/qualification; py_compile/diffcheckgreen",
+      "root_parser_receipt_checks": "Actual captured two real forms preserve full raw hash and accept5s768P; DraftValidator rejects4s/16s/lowercase768p; no CLI calls or profilepromotion.",
+      "additional_confirmed_defect": "production_request real form branch still unwraps onlyschemaorroot: DraftValidator sees unknown jsonSchema keyword and misses actual fieldbounds. Assigned correction before acceptance.",
+      "author_final_checks": "277passed acrossproductionrequest/account/video/transport/setup/qualification; syntax8files anddiffgreen",
+      "root_independent_checks": "22passed235deselected3.43s across4affectedmodules; all8source/testfiles independentlyread; noP1/P2",
+      "native_validator_characterization": "Before production_request fix, synthetic real-profile retained form withjsonSchema maximum7 allowed actual compiled native duration8. Characterization assertion expected success and pytestpassed1. After fix same originalcase expects native form rejects duration; no actualfailedpytest claimed.",
+      "files_sha256": {
+        "tools/_openart_cli.py": "00cea25e5e36d9965b6e09be25be16813c81f13f38c4dd91a94d7ce33c03b929",
+        "lib/openart_setup.py": "669d851d5cf5fc27f8585bfd2b713c172ef62f9c3164da12d6beee5b8f402a1b",
+        "lib/openart_qualification.py": "199a440f1a7fbde3b50b6a6eea23008feace058a3967c6b13846eacdfbe0fadb",
+        "lib/production_request.py": "5429b470df5c49ae810a5a0ac8f1d13637fd313707dda98e83483f0f158e6aba",
+        "tests/tools/test_openart_cli_transport.py": "ffebfa6321b20ce1ee75a63927aa638a40e4a2d6914d0208df7816269995dcf2",
+        "tests/lib/test_openart_setup.py": "5fc7b2864094e3f2ccf93dcff31dac16b167635b2db32bbdb7eb685417cd63a8",
+        "tests/lib/test_openart_qualification.py": "6576380b129a3c340bc332b3de459af36ad0d9f07c4e85d269940c1d6179306d",
+        "tests/lib/test_production_request.py": "a75f8f4b18c00e28326084a0c27479a3e738c80fd7327c5d83cdc4fa749f150b"
+      },
+      "original_strict_replay_after_all_four_source_edits": "4exactbytesmatches original source_packet/prompt/native/compiledrequest; network/CLIforbidden",
+      "final_full_suite": {
+        "session_id": 36110,
+        "wrapper_pid": 29260,
+        "log_path": "<TMP>/openmontage-final-live-wrapper-full-tg_6_az2.log",
+        "command": "make RUN_PYTHON=.venv/bin/python test",
+        "source_commit": "82049506ba42f187626d1d3c2e8c39dcb5e923ec",
+        "exit_code": 0,
+        "result": "3910 passed,11 skipped,3 xfailed,1 subtests passed in853.80s (14:13)",
+        "log_sha256": "36522dcf2164c42c7139c8b0ba8a0e3aeb9b998c7853b207f845cd0fb5db1d64",
+        "session_cleanup": "36110completed0"
+      }
+    },
+    "post_live_form_full_interruption": {
+      "log_path": "<TMP>/openmontage-post-live-form-full-i7ojigdf.log",
+      "session_id": 52868,
+      "wrapper_exit_code": 130,
+      "reason": "Root confirmed remaining compiled native schema extraction bug after accepting initial pure parser; deliberately stopped checks to fix source before final whole-suite proof; not timeout or model failure.",
+      "log_sha256": "2ffea49ba675b0c15af2f2b1cf572d0600589d71c2b35bda2461695eb26b59be",
+      "cleanup": "Wrapper session52868 closed130; no remaining exact full make/pytest process in owner audit before restart."
+    },
+    "official_quote_surface": {
+      "primary_release_url": "https://github.com/OpenArt-AI/cli/releases/tag/v0.1.1",
+      "primary_versioned_docs_url": "https://github.com/OpenArt-AI/cli/blob/v0.1.1/README.md",
+      "requested_research_route": "native Luna low",
+      "actual_served_model": "unverified",
+      "documentation_finding": "Versioned README documents nonspending model cost bymodel/mode only; no settingsflags, taggedrepo has no commandimplementation source. Documentation inference does not rule out hiddenbehavior.",
+      "root_actual_help_audit": {
+        "command": [
+          "<HOME>/.local/bin/openart",
+          "model",
+          "cost",
+          "--help"
+        ],
+        "operation": "read_only_help_audit_outside_production",
+        "transport_lock": true,
+        "filtered_child_env": true,
+        "returncode": 0,
+        "stdout_sha256": "b5d772205ce077ffc252c5795ea00678a6563ee8c65bf1407683db7188e426d3",
+        "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "observed_command_specific_flags": [
+          "--model",
+          "--mode",
+          "--help"
+        ],
+        "settings_quote_flags_observed": false,
+        "real_generation_calls": 0,
+        "real_upload_calls": 0,
+        "scope_limit": "Audit help bypasses readOnly grammar only for nonspending --help, no cost/generation execution or credential access."
+      }
+    },
+    "post_live_form_contracts": {
+      "command": "make RUN_PYTHON=.venv/bin/python lint and make RUN_PYTHON=.venv/bin/python test-contracts",
+      "exit_code": 0,
+      "result": "1293passed7skipped36.38s",
+      "scope": "Parser finalpatch, before additional one-line compilation extraction; final whole suite includes allcontracts after that extraction."
+    },
+    "final_live_wrapper_contracts": {
+      "command": "make RUN_PYTHON=.venv/bin/python test-contracts",
+      "source_commit": "82049506ba42f187626d1d3c2e8c39dcb5e923ec",
+      "exit_code": 0,
+      "result": "1293passed7skipped33.40s",
+      "log_path": "<TMP>/openmontage-final-live-wrapper-contracts-ldaf_q0b.log",
+      "log_sha256": "c8aacadb9d765d84c88a6e10c4c849b7ef6b2a9cbf6ccc4bef23511b30a43458",
+      "session_cleanup": "16227completed0"
+    },
+    "repository_checks_before_live_discovery": {
+      "lint": "make RUN_PYTHON=.venv/bin/python lint passed",
+      "syntax": "explicitpy_compile13changed/new source/test files passed",
+      "diff": "git diff --check green",
+      "contracts": "make RUN_PYTHON=.venv/bin/python test-contracts EXIT0;1293passed7skipped35.32s",
+      "full_tests": "make RUN_PYTHON=.venv/bin/python test EXIT0;3891passed11skipped3xfailed1subtests passed929.85s",
+      "contracts_log": "<TMP>/openmontage-final-contracts-x6ei427s.log",
+      "contracts_log_sha256": "b7d1e35c4241eaea7a6646f910eb4a949be1619bc17b69930ceb7cdd275b99c3",
+      "full_log": "<TMP>/openmontage-final-full-tests-5m59wl9w.log",
+      "interrupted_full_log_sha256": "26e1d5d0e25999fb1b559789cbc922d0f0e2f64f686c77a15f55e0c62df58412",
+      "strict_byte_replay_latest": "2026-10-06T23:03:37Z: original retained source packet, compiled prompt, native and compiled request all exact canonical bytes; network/provider subprocess forbidden.",
+      "u4_unchanged": "git diff e5f57dd -- lib/openart_credit.py lib/provider_credit_ledger.py lib/openart_dispatch.py is empty; earlier midphase same-buffer evidence simplification remains canonical.",
+      "full_failed_log_sha256": "4c663b051848098b7d679a204eed500b271adb3deecc502b506b020e3fb9c34b",
+      "full_failed_log": "<TMP>/openmontage-final-full-tests-ey7skjdf.log",
+      "full_log_sha256": "1c576d62e23dd5139de12683a8ea26d4827434e9e8fb52595371c60469caae94",
+      "process_cleanup": "Root full session36383, contracts62618 and readonly account83834 completed; no detached root test process retained.",
+      "network_policy": "OPENMONTAGE_ALLOW_NETWORK, HYPERFRAMES_QA and HYPERFRAMES_QA_RENDER unset for checks; executable fake CLI calls expected, real generation/upload/purchase0.",
+      "canonical_implementation_head": "f2d194fa868d0772e97d14ebb2bd272ab4128f0c"
+    }
+  },
+  "route_disclosure": {
+    "requested_routes": "native Codex collaboration tools; Sol, Opus, Luna and Cursor Auto according to live roster",
+    "actual_route": "native tool dispatch accepted; no external engine run ID",
+    "actual_served_model": "unverified; selectors are requests, not provider-signed served identity receipts",
+    "fallback": "Cursor quality pass prospective deadline expired; root applied the full same rubric inline, with no model-family substitution claimed",
+    "additional_unavailable_delegation": "Narrow Grok prep-seam explorer spawn rejected: agent thread limit reached. Root performed read-only exact source/API lookup inline; no substitute model claimed.",
+    "resumption": "Oct6 interruption ended child sessions; list_agents showed root only. Saved diffs preserved. Fresh native workers requested exact live Opus medium and Sol medium selectors; actual served identity unverified."
+  },
+  "blockers": [
+    {
+      "kind": "exact_settings_quote",
+      "evidence": "Actual model/mode cost responses cover5s16:9 480P oneoutput(Max125,Turbo75). Liveforms/preview support768P but no exact768P quote or conservative maximum contract observed; prices finalized atgeneration."
+    },
+    {
+      "kind": "live_qualification",
+      "evidence": "No real original results/billing, productionprofile, upload nonspending/nodelayed guarantee or real AV benchmark qualification."
+    },
+    {
+      "kind": "separate_paid_authorization",
+      "evidence": "Exact twelve-attempt paid comparison approval absent; proposed1800credits not authority."
+    }
+  ],
+  "real_generation_calls": 0,
+  "real_upload_calls": 0,
+  "purchases": 0,
+  "standalone_shipping_skipped": true,
+  "next_actions": [
+    "Obtain provider-supported exactsettings pricing/maximum and required account/quantum/billing/upload contracts; currentCLI observations do not supply them",
+    "After prerequisites, demonstrate realAVreview capability and retain exact twelve-original-attempt benchmark approval; proposed1800credits is not authority",
+    "Only then execute governed original qualification attempts,collect/review/qualify actualresults and retain complete comparison or an honest partialreport",
+    "Push/PR/publication/purchases remain separately gated and were not performed"
+  ],
+  "entry_point": "Installed OpenMontage plugin skill uses this live checkout and its .venv; no opaque plugin-cache engine copy. Skill read Oct6.",
+  "receipt_inventory": {
+    "source": "Fresh Luna low, native read-only worker report Oct6; inventory only, no historical test/red results inferred from diff",
+    "accepted_commit_map": {
+      "plan": "0a18175",
+      "U1": "c4533a7",
+      "U2": [
+        "90a131e",
+        "8f22270"
+      ],
+      "U3": "fcec5aa",
+      "U4": "4f25949",
+      "midphase_simplification": "e5f57dd",
+      "U5": "8aaa6b7",
+      "U5P": "4247fa3a96f6b86de26d4e35aaa5bcc5bb0b7637",
+      "U6": "f2d194fa868d0772e97d14ebb2bd272ab4128f0c",
+      "U5P_partial_grok": "ac6414b",
+      "U5P_partial_retime": "c801a0d",
+      "live_form_compatibility": "82049506ba42f187626d1d3c2e8c39dcb5e923ec"
+    },
+    "U1_test_modules": [
+      "tests/tools/test_openart_cli_transport.py",
+      "tests/lib/test_production_execution.py"
+    ],
+    "U2_test_modules": [
+      "tests/lib/test_openart_download.py",
+      "tests/lib/test_openart_jobs.py",
+      "tests/lib/test_openart_qualification.py",
+      "tests/lib/test_openart_setup.py",
+      "tests/tools/test_openart_account.py",
+      "tests/tools/test_openart_cli_video.py",
+      "tests/tools/test_openart_transport_lock.py",
+      "tests/lib/test_production_execution.py",
+      "tests/lib/test_production_provenance.py"
+    ],
+    "U3_test_modules": [
+      "tests/lib/test_production_request.py",
+      "tests/lib/test_production_provenance.py",
+      "tests/tools/test_openart_cli_video.py"
+    ],
+    "U4_test_modules": [
+      "tests/lib/test_provider_credit_ledger.py",
+      "tests/integration/test_openart_dispatch_recovery.py",
+      "tests/lib/test_openart_credit.py",
+      "tests/lib/test_openart_jobs.py",
+      "tests/lib/test_openart_qualification.py",
+      "tests/tools/test_openart_cli_video.py"
+    ],
+    "U5_test_modules": [
+      "tests/contracts/test_openart_cli_contract.py",
+      "tests/integration/test_openart_first_pass_workflow.py",
+      "tests/tools/test_video_selector_routing.py"
+    ],
+    "private_tracked_path_check": "No apparent runtime-state or credential payload path; .env.example and tools/google_credentials.py are existing credential-adjacent engine paths, content not inspected."
+  },
+  "U5P_recovery_snapshot": {
+    "path": "<TMP>/openmontage-u5p-recovery-bs727ils",
+    "reason": "Preserve current engine files before prospective durable-core checkpoint and any deliberate ownership transfer. No credentials/runtime account state.",
+    "manifest": [
+      {
+        "path": "lib/production_autonomy.py",
+        "sha256": "f935f2d2369034acf64a3a2ae923476b752c7c09ade1c50cfd3a52960080a996",
+        "bytes": 28824
+      },
+      {
+        "path": "tests/lib/test_production_autonomy.py",
+        "sha256": "946c02e2f9ed6151252d6ba3a25a84efdc59f49a85cc63bb07c105d7b73df2b1",
+        "bytes": 17093
+      },
+      {
+        "path": "schemas/artifacts/autonomy_policy.schema.json",
+        "sha256": "00618f0d7207b2b3f39a2c6f23e473e750bce83359a3c0ec43c9d86d4ea83f78",
+        "bytes": 7172
+      },
+      {
+        "path": "lib/production_request.py",
+        "sha256": "14f7baa48ba98154efc4f01f9558d1bea89451fe3bab19b57ac5eb459d7a8b91",
+        "bytes": 31918
+      },
+      {
+        "path": "lib/production_execution.py",
+        "sha256": "a6af40ce2b79a377db3598658f822bb434c875e3c4a99bd4c95727145665a545",
+        "bytes": 80541
+      }
+    ]
+  },
+  "U5P_ownership_transfer": {
+    "checkpoint": "Prospective22:05UTC durable-core checkpoint passed; root22:05:13 verification found source byte-identical to preserved594line phaseone SHA f935f2d2369034acf64a3a2ae923476b752c7c09ade1c50cfd3a52960080a996",
+    "preservation": "Engine5file recovery snapshot retained; oldmain stopped using native interruption after deliberate replacement notice; no reverted work",
+    "new_implementer": "Fresh Sol medium /root/autonomy_implementation; actual served model unverified; full self-contained brief and explicit initial saved baseline/helper/fixture checkpoint",
+    "old_implementer": "Opus /root/u5p_finish now READ-ONLY focused reviewer of external Sol report slice",
+    "reason": "Prospectively communicated durable artifact gate plus preserved deliberate replacement, not neutral wait timeout"
+  },
+  "return_evidence_draft": [
+    {
+      "unit": "U1",
+      "behavior_changed": true,
+      "existing_tests_inspected": {
+        "receipt": "Historical worker module inventory preserved; detailed inspection transcript is not retained here. Current parent inspected the substantive integration diffs and failure traces.",
+        "modules": [
+          "tests/tools/test_openart_cli_transport.py",
+          "tests/lib/test_production_execution.py"
+        ]
+      },
+      "tests_added_or_changed": [
+        "tests/lib/test_production_execution.py",
+        "tests/tools/test_openart_cli_transport.py"
+      ],
+      "tests_used_unchanged": [
+        "tests/lib/test_shot_contract.py",
+        "tests/lib/test_production_review.py",
+        "tests/lib/test_draft_audio_review.py",
+        "tests/tools/test_grok_cli_media.py",
+        "tests/integration/test_first_pass_workflow.py"
+      ],
+      "red_failure_or_characterization": "Historical preimplementation red traces are not retained for U1-U3; no red is reconstructed from the diff. U4/U5 observed worker and root receipts are in verification[unit]. U5 selector error-text regression was actually observed and fixed.",
+      "verification_commands_results": "Final repository command receipts and unit-specific retained verification entries provide current evidence; final full suite3891passed11skipped3xfailed1subtests929.85s.",
+      "exception_reason": "Historical red/inspection detail absent on resumed U1-U3; exact current Strict byte replay plus current complete suite are used without inventing prior observations."
+    },
+    {
+      "unit": "U2",
+      "behavior_changed": true,
+      "existing_tests_inspected": {
+        "receipt": "Historical worker module inventory preserved; detailed inspection transcript is not retained here. Current parent inspected the substantive integration diffs and failure traces.",
+        "modules": [
+          "tests/lib/test_openart_download.py",
+          "tests/lib/test_openart_jobs.py",
+          "tests/lib/test_openart_qualification.py",
+          "tests/lib/test_openart_setup.py",
+          "tests/tools/test_openart_account.py",
+          "tests/tools/test_openart_cli_video.py",
+          "tests/tools/test_openart_transport_lock.py",
+          "tests/lib/test_production_execution.py",
+          "tests/lib/test_production_provenance.py"
+        ]
+      },
+      "tests_added_or_changed": [
+        "tests/lib/test_openart_download.py",
+        "tests/lib/test_openart_jobs.py",
+        "tests/lib/test_openart_qualification.py",
+        "tests/lib/test_openart_setup.py",
+        "tests/lib/test_production_execution.py",
+        "tests/lib/test_production_provenance.py",
+        "tests/tools/test_openart_account.py",
+        "tests/tools/test_openart_cli_video.py",
+        "tests/tools/test_openart_transport_lock.py"
+      ],
+      "tests_used_unchanged": [
+        "tests/lib/test_shot_contract.py",
+        "tests/lib/test_production_review.py",
+        "tests/lib/test_draft_audio_review.py",
+        "tests/tools/test_grok_cli_media.py",
+        "tests/integration/test_first_pass_workflow.py"
+      ],
+      "red_failure_or_characterization": "Historical preimplementation red traces are not retained for U1-U3; no red is reconstructed from the diff. U4/U5 observed worker and root receipts are in verification[unit]. U5 selector error-text regression was actually observed and fixed.",
+      "verification_commands_results": "Final repository command receipts and unit-specific retained verification entries provide current evidence; final full suite3891passed11skipped3xfailed1subtests929.85s.",
+      "exception_reason": "Historical red/inspection detail absent on resumed U1-U3; exact current Strict byte replay plus current complete suite are used without inventing prior observations."
+    },
+    {
+      "unit": "U3",
+      "behavior_changed": true,
+      "existing_tests_inspected": {
+        "receipt": "Historical worker module inventory preserved; detailed inspection transcript is not retained here. Current parent inspected the substantive integration diffs and failure traces.",
+        "modules": [
+          "tests/lib/test_production_request.py",
+          "tests/lib/test_production_provenance.py",
+          "tests/tools/test_openart_cli_video.py"
+        ]
+      },
+      "tests_added_or_changed": [
+        "tests/lib/test_production_provenance.py",
+        "tests/lib/test_production_request.py",
+        "tests/tools/test_openart_cli_video.py"
+      ],
+      "tests_used_unchanged": [
+        "tests/lib/test_shot_contract.py",
+        "tests/lib/test_production_review.py",
+        "tests/lib/test_draft_audio_review.py",
+        "tests/tools/test_grok_cli_media.py",
+        "tests/integration/test_first_pass_workflow.py"
+      ],
+      "red_failure_or_characterization": "Historical preimplementation red traces are not retained for U1-U3; no red is reconstructed from the diff. U4/U5 observed worker and root receipts are in verification[unit]. U5 selector error-text regression was actually observed and fixed.",
+      "verification_commands_results": "Final repository command receipts and unit-specific retained verification entries provide current evidence; final full suite3891passed11skipped3xfailed1subtests929.85s.",
+      "exception_reason": "Historical red/inspection detail absent on resumed U1-U3; exact current Strict byte replay plus current complete suite are used without inventing prior observations."
+    },
+    {
+      "unit": "U4",
+      "behavior_changed": true,
+      "existing_tests_inspected": {
+        "receipt": "Historical worker module inventory preserved; detailed inspection transcript is not retained here. Current parent inspected the substantive integration diffs and failure traces.",
+        "modules": [
+          "tests/lib/test_provider_credit_ledger.py",
+          "tests/integration/test_openart_dispatch_recovery.py",
+          "tests/lib/test_openart_credit.py",
+          "tests/lib/test_openart_jobs.py",
+          "tests/lib/test_openart_qualification.py",
+          "tests/tools/test_openart_cli_video.py"
+        ]
+      },
+      "tests_added_or_changed": [
+        "tests/integration/test_openart_dispatch_recovery.py",
+        "tests/lib/test_openart_credit.py",
+        "tests/lib/test_openart_jobs.py",
+        "tests/lib/test_openart_qualification.py",
+        "tests/lib/test_provider_credit_ledger.py",
+        "tests/tools/test_openart_cli_video.py"
+      ],
+      "tests_used_unchanged": [
+        "tests/lib/test_shot_contract.py",
+        "tests/lib/test_production_review.py",
+        "tests/lib/test_draft_audio_review.py",
+        "tests/tools/test_grok_cli_media.py",
+        "tests/integration/test_first_pass_workflow.py"
+      ],
+      "red_failure_or_characterization": "Historical preimplementation red traces are not retained for U1-U3; no red is reconstructed from the diff. U4/U5 observed worker and root receipts are in verification[unit]. U5 selector error-text regression was actually observed and fixed.",
+      "verification_commands_results": "Final repository command receipts and unit-specific retained verification entries provide current evidence; final full suite3891passed11skipped3xfailed1subtests929.85s.",
+      "exception_reason": null
+    },
+    {
+      "unit": "U5",
+      "behavior_changed": true,
+      "existing_tests_inspected": {
+        "receipt": "Historical worker module inventory preserved; detailed inspection transcript is not retained here. Current parent inspected the substantive integration diffs and failure traces.",
+        "modules": [
+          "tests/contracts/test_openart_cli_contract.py",
+          "tests/integration/test_openart_first_pass_workflow.py",
+          "tests/tools/test_video_selector_routing.py"
+        ]
+      },
+      "tests_added_or_changed": [
+        "tests/contracts/test_openart_cli_contract.py",
+        "tests/integration/test_openart_first_pass_workflow.py",
+        "tests/tools/test_video_selector_routing.py"
+      ],
+      "tests_used_unchanged": [
+        "tests/lib/test_shot_contract.py",
+        "tests/lib/test_production_review.py",
+        "tests/lib/test_draft_audio_review.py",
+        "tests/tools/test_grok_cli_media.py",
+        "tests/integration/test_first_pass_workflow.py"
+      ],
+      "red_failure_or_characterization": "Historical preimplementation red traces are not retained for U1-U3; no red is reconstructed from the diff. U4/U5 observed worker and root receipts are in verification[unit]. U5 selector error-text regression was actually observed and fixed.",
+      "verification_commands_results": "Final repository command receipts and unit-specific retained verification entries provide current evidence; final full suite3891passed11skipped3xfailed1subtests929.85s.",
+      "exception_reason": null
+    },
+    {
+      "unit": "U5P",
+      "behavior_changed": true,
+      "existing_tests_inspected": [
+        "tests/lib/test_production_execution.py",
+        "tests/lib/test_production_request.py",
+        "tests/lib/test_checkpoint_prerequisites.py",
+        "tests/lib/test_production_provenance.py",
+        "tests/tools/test_grok_cli_media.py",
+        "tests/tools/test_openart_account.py",
+        "tests/tools/test_openart_cli_transport.py",
+        "tests/tools/test_hyperframes_compose.py"
+      ],
+      "tests_added_or_changed": [
+        "tests/lib/test_production_autonomy.py",
+        "tests/lib/test_production_autonomy_report.py",
+        "tests/lib/test_checkpoint_policy_preauth.py",
+        "tests/lib/test_production_retime.py",
+        "tests/lib/test_production_video_guard.py",
+        "tests/lib/test_production_video_guard_integration.py",
+        "tests/integration/test_openart_auto_continue.py",
+        "tests/integration/test_autonomy_runtime_boundaries.py",
+        "tests/tools/test_grok_cli_video_builder.py",
+        "tests/lib/test_production_execution.py",
+        "tests/tools/test_hyperframes_compose.py"
+      ],
+      "tests_used_unchanged": [
+        "tests/tools/test_openart_account.py",
+        "tests/tools/test_openart_cli_transport.py",
+        "tests/lib/test_production_request.py",
+        "tests/lib/test_production_provenance.py"
+      ],
+      "red_failure_or_characterization": "Actual worker/root reds retained: full-script/static-byte drift; original retime gap and unequal mapped bounds; unapproved request resolution/aspect/reference changes; actor-voice drop/substitute/omission; genuine repair phase undercount; mixed provider superseded reason; report authority corruption; original two Analyze account failures; exact old menu-key assertion. See verification for individual authentic vs stubbed limits.",
+      "verification_commands_results": "Author322 passed22.16s; fresh Opus161 passed28.2s for final wrapper; report42 passed107.32s; original affected files153 passed13.55s; original Strict four outputs exact bytes; final full suite3891passed11skipped3xfailed1subtests929.85s.",
+      "exception_reason": "Fake CLIs and synthetic AV are explicit. Shared allowance proof composes actual policy capture/replay with distinct-authorization SQLite aggregation; it is not two derived OpenArt dispatches end to end."
+    },
+    {
+      "unit": "U6",
+      "behavior_changed": true,
+      "existing_tests_inspected": [
+        "tests/lib/test_provider_benchmark.py",
+        "tests/integration/test_provider_benchmark_runtime.py",
+        "tests/lib/test_provider_credit_ledger.py",
+        "tests/lib/test_production_review.py"
+      ],
+      "tests_added_or_changed": [
+        "tests/lib/test_provider_benchmark.py",
+        "tests/integration/test_provider_benchmark_runtime.py"
+      ],
+      "tests_used_unchanged": [
+        "tests/lib/test_provider_credit_ledger.py",
+        "tests/lib/test_production_review.py"
+      ],
+      "red_failure_or_characterization": "Actual wrong original duration case failed before repair (1 failed51.07s), then two focused runtime cases passed118.59s. Author203 passed325.47s and root212 unit/menu passed15.87s; no real benchmark results.",
+      "verification_commands_results": "Retained offline worker/independent/root receipts plus final whole suite3891passed11skipped3xfailed1subtests929.85s.",
+      "exception_reason": "Live account capability/quote/result qualification, real AV review and exact separately approved paid twelve-attempt benchmark remain unperformed."
+    },
+    {
+      "unit": "midphase_simplification",
+      "behavior_changed": false,
+      "existing_tests_inspected": [
+        "tests/lib/test_openart_credit.py",
+        "tests/lib/test_openart_jobs.py"
+      ],
+      "tests_added_or_changed": [],
+      "tests_used_unchanged": [
+        "tests/lib/test_openart_credit.py",
+        "tests/lib/test_openart_jobs.py"
+      ],
+      "red_failure_or_characterization": "Semantics-preserving same-buffer evidence decoding and removal of verified unused import; no new behavioral red required.",
+      "verification_commands_results": "149 passed78.13s; canonical e5f57dd; full quality rubric completed inline after recorded prospective Cursor gate.",
+      "exception_reason": "No standalone shipping simplify/review phase ran; this was required mid-implementation cleanup."
+    }
+  ],
+  "fresh_account_probe": {
+    "observed_at": "2026-10-06T23:51:39.295628+00:00",
+    "operation": "official_cli_readonly_account",
+    "real_generation_calls": 0,
+    "real_upload_calls": 0,
+    "succeeded": true,
+    "authentication_required": false,
+    "qualification": "account_response_not_yet_qualified",
+    "receipt_id": "2026-10-06T235139-62ab2d1e",
+    "receipt_sha256": "0a1274061608af5d534930d75b1751e77ad520d340c9d512e153337e31c89e84",
+    "authentication_indicator_source": "Derived from successfulcommand return, not an explicitprovider authenticationboolean; later actualaccountidentity inspection supersedes readiness interpretation."
+  },
+  "local_implementation_acceptance": {
+    "status": "accepted_with_live_qualification_blocker",
+    "U1_U5P": "complete",
+    "U6_offline": "accepted",
+    "U6_live": "incomplete",
+    "standalone_shipping_tail": "not run",
+    "pushes": 0,
+    "pull_requests_created": 0,
+    "new_live_form_repair": "accepted8204950;current whole suite3910pass andcontracts1293pass"
+  },
+  "live_discovery": {
+    "report": "docs/implementation/2026-10-06-openart-live-contracts.json",
+    "report_sha256": "cead71e4bfc353929f144eef2cb54e1cb8909c47544787c1598ee92b70ba0a5a",
+    "actual_account_identity_observed": true,
+    "identity_path": "user.uid",
+    "tier_path": "plan",
+    "explicit_authentication_boolean_observed": false,
+    "candidate_models": [
+      "fal-h3-max",
+      "fal-h3-max-turbo"
+    ],
+    "candidate_mode": "text2video",
+    "literal_resolution": "768P",
+    "duration": 5,
+    "production_profiles_saved": 0,
+    "real_generation_calls": 0,
+    "real_upload_calls": 0,
+    "purchases": 0,
+    "raw_private_values_published": false
+  }
+}

@@ -22,6 +22,13 @@ manifest, production scope, approval evidence, or any bytes bound to the
 current request. Candidate preparation is not a reviewed frame or an observed
 shot result.
 
+Preparation for a declared independent later shot may overlap the current
+reviewed shot's generation when it leaves that request and its dependency
+closure unchanged. Keep one production owner for the active request and reuse
+its current passing review; a second reviewer pass is needed only for a concrete
+uncertainty, defect, or changed binding. The later shot still needs its own
+current review and exact authority before promotion or dispatch.
+
 ## Operator sequence
 
 1. Name the already approved target and identify later candidate work that does

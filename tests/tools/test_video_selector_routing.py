@@ -566,3 +566,179 @@ def test_explicit_video_failure_is_terminal_and_reports_no_fallbacks(monkeypatch
     assert public.execute_calls == 0
     assert result.data["alternatives_considered"] == []
     assert result.data["fallback_tools"] == []
+
+
+# ---------------------------------------------------------------------------
+# U5: explicit OpenArt singleton pin preserves approved settings, never falls
+# through to scoring/fallback, and missing controls fail before any dispatch.
+# ---------------------------------------------------------------------------
+
+def _openart_stub(**kwargs: Any) -> _StubTool:
+    tool = _StubTool("openart_cli_video", "openart_cli", explicit_only=True, **kwargs)
+    tool.supports.update(first_last_frame=False, native_audio=False, multiple_reference_images=False)
+    tool.input_schema = {"type": "object", "additionalProperties": False, "properties": {
+        "prompt": {}, "model": {"type": "string"}, "duration": {"type": "integer"},
+        "aspect_ratio": {}, "resolution": {}, "image_path": {}, "operation": {}}}
+    base_info = tool.get_info
+    tool.get_info = lambda: {**base_info(), "model_catalog": {"qualified-model": {"level": "full"}}}  # type: ignore[method-assign]
+    return tool
+
+
+def _no_scoring(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "lib.scoring.rank_providers",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("explicit pin must not score")),
+    )
+
+
+def _selector_body(selector: VideoSelector, inputs: dict[str, Any]):
+    """Run the selector routing body without the strict-governance wrapper.
+
+    The governed wrapper separately refuses ungoverned OpenArt pins (see
+    test_ungoverned_openart_pin_is_refused_before_any_provider_call)."""
+    fn = VideoSelector.execute
+    while hasattr(fn, "__wrapped__"):
+        fn = fn.__wrapped__
+    return fn(selector, inputs)
+
+
+def _openart_pin(**extra: Any) -> dict[str, Any]:
+    return {"prompt": "courier hands the parcel over", "preferred_provider": "openart_cli",
+            "allowed_providers": ["openart_cli"], "model": "qualified-model", "duration": "5",
+            "aspect_ratio": "16:9", "resolution": "720p", **extra}
+
+
+def test_openart_pin_preserves_exact_approved_settings(monkeypatch):
+    _no_scoring(monkeypatch)
+    openart, public = _openart_stub(), _StubTool("public_video", "public", cost=0.0)
+    selector = VideoSelector()
+    selector._providers = lambda: [public, openart]  # type: ignore[assignment]
+
+    result = _selector_body(selector, _openart_pin())
+
+    assert result.success is True and public.execute_calls == 0
+    sent = openart.last_execute_inputs
+    assert sent == {"prompt": "courier hands the parcel over", "model": "qualified-model",
+                    "duration": 5, "aspect_ratio": "16:9", "resolution": "720p"}
+    assert result.data["fallback_tools"] == [] and result.data["alternatives_considered"] == []
+
+
+@pytest.mark.parametrize("model", ["unqualified-model", "fixture-model"])
+def test_openart_pin_unknown_model_never_falls_through(monkeypatch, model):
+    _no_scoring(monkeypatch)
+    openart, public = _openart_stub(), _StubTool("public_video", "public")
+    selector = VideoSelector()
+    selector._providers = lambda: [public, openart]  # type: ignore[assignment]
+
+    result = _selector_body(selector, _openart_pin(model=model))
+
+    assert result.success is False
+    assert openart.execute_calls == 0 and public.execute_calls == 0
+    assert result.data["dispatch_status"] == "not_dispatched" and result.data["fallback_tools"] == []
+
+
+def test_openart_pin_unavailable_never_falls_through_to_higher_provider(monkeypatch):
+    _no_scoring(monkeypatch)
+    openart = _openart_stub(status=ToolStatus.UNAVAILABLE)
+    public = _StubTool("public_video", "public")
+    selector = VideoSelector()
+    selector._providers = lambda: [public, openart]  # type: ignore[assignment]
+
+    result = _selector_body(selector, _openart_pin())
+
+    assert result.success is False
+    assert openart.execute_calls == 0 and public.execute_calls == 0
+    assert result.data["fallback_tools"] == []
+
+
+@pytest.mark.parametrize(("extra", "missing"), [
+    ({"endpoint_requirement_id": "payoff-end", "last_image_path": "/tmp/end.png"}, "first_last_frame"),
+    ({"native_audio": True}, "native_audio"),
+    ({"voices": ["courier"]}, "native_audio"),
+    ({"reference_image_paths": ["/tmp/a.png", "/tmp/b.png"]}, "multiple_reference_images"),
+])
+def test_openart_pin_missing_controls_fail_visibly_before_dispatch(monkeypatch, extra, missing):
+    _no_scoring(monkeypatch)
+    openart, grok = _openart_stub(), _StubTool("grok_cli_video", "grok_cli", explicit_only=True)
+    selector = VideoSelector()
+    selector._providers = lambda: [grok, openart]  # type: ignore[assignment]
+
+    result = _selector_body(selector, _openart_pin(**extra))
+
+    assert result.success is False
+    assert openart.execute_calls == 0 and grok.execute_calls == 0
+    assert result.data["dispatch_status"] == "not_dispatched"
+    assert any(item.startswith(missing) for item in result.data["missing_controls"]) and missing in result.error
+    assert result.data["fallback_tools"] == []
+    # No prompt substitute: the selector never rewrites the creative prompt.
+    assert "prompt" not in result.data
+
+
+@pytest.mark.parametrize(("preferred", "allowed"), [
+    ("openart_cli", ["grok_cli"]),
+    ("grok_cli", ["openart_cli"]),
+    ("openart_cli", ["openart_cli", "grok_cli"]),
+])
+def test_crossed_provider_scopes_fail_before_any_provider_call(monkeypatch, preferred, allowed):
+    _no_scoring(monkeypatch)
+    openart = _openart_stub()
+    grok = _StubTool("grok_cli_video", "grok_cli", explicit_only=True)
+    public = _StubTool("public_video", "public")
+    selector = VideoSelector()
+    selector._providers = lambda: [public, grok, openart]  # type: ignore[assignment]
+
+    result = _selector_body(selector, _openart_pin(preferred_provider=preferred, allowed_providers=allowed))
+
+    assert result.success is False
+    assert openart.execute_calls == grok.execute_calls == public.execute_calls == 0
+    assert result.data["dispatch_status"] == "not_dispatched" and result.data["fallback_tools"] == []
+    assert result.data["crossed_scopes"]["preferred_provider"] == preferred
+
+
+def test_real_openart_adapter_exact_model_pin_seam(monkeypatch, tmp_path):
+    """The real adapter's get_info()['model_catalog'] is the only exact-model seam:
+    absent catalog entry -> safe rejection; catalogued model -> exact pass-through."""
+    from tools.video.openart_cli_video import OpenArtCLIVideo
+
+    _no_scoring(monkeypatch)
+    monkeypatch.setenv("OPENMONTAGE_OPENART_STATE_DIR", str(tmp_path.resolve() / "absent-state"))
+    adapter = OpenArtCLIVideo()
+    monkeypatch.setattr(adapter, "get_status", lambda: ToolStatus.AVAILABLE)
+    calls: list[Any] = []
+    monkeypatch.setattr(adapter, "execute",
+                        lambda inputs: calls.append(dict(inputs)) or ToolResult(success=True, data={}))
+    selector = VideoSelector()
+    selector._providers = lambda: [adapter]  # type: ignore[assignment]
+
+    assert adapter.get_info()["model_catalog"] == {}
+    assert not (tmp_path / "absent-state").exists()
+    result = _selector_body(selector, _openart_pin())
+    assert calls == []
+    assert result.success is False and result.data["dispatch_status"] == "not_dispatched"
+
+    monkeypatch.setattr(OpenArtCLIVideo, "_model_catalog",
+                        staticmethod(lambda: {"qualified-model": {"provider": "openart_cli", "modes": {}}}))
+    result = _selector_body(selector, _openart_pin())
+    assert result.success is True and len(calls) == 1
+    # Exact approved settings pass through; the integer duration is the
+    # adapter schema's declared form of the approved "5".
+    expected = {k: v for k, v in _openart_pin().items()
+                if k not in ("preferred_provider", "allowed_providers")}
+    expected["duration"] = 5
+    for key, value in expected.items():
+        assert calls[0][key] == value
+
+
+def test_ungoverned_openart_pin_is_refused_before_any_provider_call(monkeypatch, tmp_path):
+    from lib.production_execution import ProductionGovernanceError
+
+    monkeypatch.chdir(tmp_path)
+    _no_scoring(monkeypatch)
+    openart, public = _openart_stub(), _StubTool("public_video", "public")
+    selector = VideoSelector()
+    selector._providers = lambda: [public, openart]  # type: ignore[assignment]
+    monkeypatch.setattr("subprocess.Popen", lambda *a, **k: (_ for _ in ()).throw(AssertionError("Popen")))
+
+    with pytest.raises(ProductionGovernanceError, match="strict enrollment"):
+        selector.execute(_openart_pin())
+    assert openart.execute_calls == 0 and public.execute_calls == 0

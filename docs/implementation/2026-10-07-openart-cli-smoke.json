@@ -1,0 +1,258 @@
+{
+  "publication_note": "Published copy redacts private account correlators and local workspace/temp paths; technical schemas, control evidence, test outcomes, and non-account provenance are retained.",
+  "observed_at": "2026-10-07T12:52:12.558906+00:00",
+  "route": "registered_OpenMontage_adapter_to_official_OpenArt_CLI",
+  "registered_tools": {
+    "account": "openart_account",
+    "video": "openart_cli_video"
+  },
+  "expected_binary_verified": true,
+  "actions": [
+    {
+      "action": "inspect",
+      "success": true,
+      "generation_enabled": false,
+      "paid_submission": false,
+      "reservations": 0
+    },
+    {
+      "action": "form",
+      "success": true,
+      "generation_enabled": false,
+      "paid_submission": false,
+      "reservations": 0
+    },
+    {
+      "action": "quote",
+      "success": true,
+      "generation_enabled": false,
+      "paid_submission": false,
+      "reservations": 0
+    },
+    {
+      "action": "native_dry_run",
+      "success": true,
+      "generation_enabled": false,
+      "paid_submission": false,
+      "reservations": 0
+    },
+    {
+      "action": "readiness",
+      "success": true,
+      "generation_enabled": false,
+      "paid_submission": false,
+      "reservations": 0
+    }
+  ],
+  "generation_calls": 0,
+  "uploads": 0,
+  "purchases": 0,
+  "reservations": 0,
+  "profile_promotions": 0,
+  "repository_edits": 0,
+  "inspect": {
+    "version": "0.1.1",
+    "plan": "Free",
+    "credits": 40,
+    "identity_present": true,
+    "qualification": "unqualified_account_identity",
+    "receipts": [
+      {
+        "argv": [
+          "version",
+          "--json",
+          "--no-input"
+        ],
+        "receipt_id": "2026-10-07T125212-fcfe92aa",
+        "receipt_sha256": "45ccaf1e4367ba06b4094e25a9c6b3d20a4d10edfb0b133e3852ea9d5ef81a2d",
+        "stdout_sha256": "6b19cd554851dac05355ec27cc46384f554f489f678ce7200386f10ba027ef4c"
+      },
+      {
+        "argv": [
+          "account",
+          "--json",
+          "--no-input"
+        ],
+        "receipt_id": "2026-10-07T125212-10700a48",
+        "receipt_sha256": "84692e8e2e9acff45c1562117845f9d5c817bbf4c9770b2e2b972495f286cb8f",
+        "stdout_sha256": "bf3d02f4f000c93964c399759eccbdea1081aaec93396ad708d53610f6681045"
+      }
+    ]
+  },
+  "form": {
+    "model": "pixverseV6",
+    "mode": "text2video",
+    "form_shape": "json_schema",
+    "receipt": {
+      "argv": [
+        "model",
+        "form",
+        "pixverseV6",
+        "text2video",
+        "--json",
+        "--no-input"
+      ],
+      "receipt_id": "2026-10-07T125213-53e99aa1",
+      "receipt_sha256": "6acf57c81377f5a34ce609e0269a2ae8587a75f283c5e41c44164bf6b99ddbda",
+      "stdout_sha256": "e8a2284b8140b30e9bf1d1045324c11fac1a0a584c5718f4e55aa543c4476690"
+    },
+    "duration_schema": {
+      "default": 5,
+      "maximum": 15,
+      "minimum": 1,
+      "type": "integer"
+    },
+    "resolution_schema": {
+      "default": "540p",
+      "enum": [
+        "360p",
+        "540p",
+        "720p",
+        "1080p"
+      ],
+      "type": "string"
+    },
+    "aspect_ratio_schema": {
+      "default": "16:9",
+      "enum": [
+        "16:9",
+        "4:3",
+        "1:1",
+        "3:4",
+        "9:16",
+        "2:3",
+        "3:2",
+        "21:9"
+      ],
+      "type": "string"
+    },
+    "required": [
+      "prompt"
+    ],
+    "controls_recognized": true
+  },
+  "quote": {
+    "receipt": {
+      "argv": [
+        "model",
+        "cost",
+        "--model",
+        "pixverseV6",
+        "--mode",
+        "text2video",
+        "--json",
+        "--no-input"
+      ],
+      "receipt_id": "2026-10-07T125214-efb23d39",
+      "receipt_sha256": "da31965b183d2686624b4e7bfbebb0801fb6fef20e9e1f590996e3b37198afb4",
+      "stdout_sha256": "9f095612175705d4b16d5c9fa5752aec64be6e52e3970f75d4b14f88957a2b43"
+    },
+    "currency": "credits",
+    "items": [
+      {
+        "model": "pixverseV6",
+        "mode": "text2video",
+        "media": "video",
+        "config": {
+          "aspectRatio": "16:9",
+          "duration": 5,
+          "generateAudio": false,
+          "resolution": "540p",
+          "videoCount": 1
+        },
+        "unitCredits": 50,
+        "quantity": 1,
+        "totalCredits": 50
+      }
+    ],
+    "covers_settings": false,
+    "qualification": "unqualified_for_dispatch",
+    "requested_1s_720p_price": "unknown",
+    "default_price_affordable_with_current_balance": false
+  },
+  "native_preview": {
+    "receipt": {
+      "argv": [
+        "generate",
+        "video",
+        "OpenMontage CLI connectivity test.",
+        "--model",
+        "pixverseV6",
+        "--duration",
+        "1",
+        "--aspect-ratio",
+        "16:9",
+        "--resolution",
+        "720p",
+        "--dry-run",
+        "--json",
+        "--no-input"
+      ],
+      "receipt_id": "2026-10-07T125215-1a1def5b",
+      "receipt_sha256": "b7d8fa15a14bf3628adc60360bf73b3e34adeebd3a2247235ae65127dfb0b0a8",
+      "stdout_sha256": "a12a14912015f7d9a766ca47f682703d99e8870775772aad933dbea6f439fe12"
+    },
+    "endpoint": "POST /api/cli/v1/generate",
+    "body_sha256": "6f5ef535b25d02a35e81c5ce229a752aa1a56f4bd43f5e94f24e4e175c68a669",
+    "model": "pixverseV6",
+    "media": "video",
+    "mode": "text2video",
+    "duration": 1,
+    "aspect_ratio": "16:9",
+    "resolution": "720p",
+    "diagnostic_prompt_sha256": "2f9cab5be6f174e4798695c92f26e58adfeb7f9974bf456c5c8436bd5287e267",
+    "schema_validation": "pass_against_actual_provider_form_via_cli_form_schema_and_Draft202012Validator",
+    "qualification": "unqualified_for_dispatch",
+    "actual_render_submitted": false
+  },
+  "account_readiness": {
+    "generation_enabled": false,
+    "gates": {
+      "account_identity": "unqualified",
+      "model_ids": "unqualified",
+      "form_schema": "unqualified",
+      "settings_exact_quote": "unqualified",
+      "async_result_contract": "unqualified",
+      "upload_billing": "unqualified",
+      "exhaustive_history": "unqualified",
+      "native_audio": "unqualified",
+      "end_frame_pin": "unqualified",
+      "reference_images": "unqualified"
+    },
+    "binary_available": true
+  },
+  "video_adapter_dry_run": {
+    "returned": false,
+    "error_type": "ProductionGovernanceError",
+    "error_kind": null,
+    "message": "production governance: OpenArt requires strict enrollment and a governed attempt",
+    "provider_calls": 0,
+    "reservations": 0
+  },
+  "video_adapter_status": "unavailable",
+  "receipt_integrity_validation": "all_five_provider_receipts_validated",
+  "actual_render_blockers": [
+    "requested_1s_720p_exact_quote_and_conservative_credit_ceiling_absent",
+    "real_model_pre_submit_and_original_result_qualification_absent",
+    "normal_strict_project_scope_preparation_and_credit_authorization_absent"
+  ],
+  "runtime": {
+    "successful_interpreter": "<HOME>/tools/openmontage/.venv/bin/python",
+    "default_shell_python_missing_jsonschema": true,
+    "failed_default_python_attempt_started_provider_calls": 0,
+    "dependency_installations": 0
+  },
+  "adapter_findings": {
+    "tested_readonly_actions": "all_pass",
+    "current_live_form_wrapper_recognized": true,
+    "native_request_params_validate_against_actual_form": true,
+    "readonly_adapter_bug_observed": false,
+    "normal_generation_dry_run_failure": "expected_strict_governance_gate_without_project_authority",
+    "source_level_later_preparation_limit": {
+      "file": "lib/production_request.py",
+      "behavior": "closed-shot compilation requires an approved start board and rejects text2video",
+      "live_execution_attempted": false,
+      "classification": "existing_supported-scope_limitation_not_a_readonly_transport_failure"
+    }
+  }
+}

@@ -250,13 +250,53 @@ def _govern_execute(fn: Callable) -> Callable:
     return wrapper
 
 
+import contextlib as _contextlib
+import contextvars as _contextvars
+
+_OFFLINE_PREPARATION = _contextvars.ContextVar("openmontage_offline_preparation", default=False)
+
+
+@_contextlib.contextmanager
+def offline_preparation():
+    """Mark the current context as pure offline preparation.
+
+    Provider transports that honour it (e.g. tools._openart_cli) refuse to spawn
+    any process while it is active, so dry-run hooks cannot call or reserve.
+    """
+    token = _OFFLINE_PREPARATION.set(True)
+    try:
+        yield
+    finally:
+        _OFFLINE_PREPARATION.reset(token)
+
+
+def in_offline_preparation() -> bool:
+    return _OFFLINE_PREPARATION.get()
+
+
+def _governed_dry_run_with_hook(tool, inputs):
+    """Strict governed dry-run plus an optional pure ``prepare_offline`` hook.
+
+    Tools without the hook get the governed result unchanged. Hook evidence is
+    nested under ``offline_preparation`` and cannot alter the governance keys.
+    """
+    from lib.production_execution import governed_dry_run
+    result = governed_dry_run(tool, inputs)
+    hook = getattr(tool, "prepare_offline", None)
+    if not callable(hook):
+        return result
+    with offline_preparation():
+        evidence = hook(inputs, dict(result))
+    return {**result, "offline_preparation": evidence}
+
+
 def _govern_dry_run(fn: Callable) -> Callable:
     @functools.wraps(fn)
     def wrapper(self, inputs, *args, **kwargs):
-        from lib.production_execution import governed_dry_run, preflight
+        from lib.production_execution import preflight
         checked = preflight(self, inputs)
         if checked["governed"]:
-            return governed_dry_run(self, inputs)
+            return _governed_dry_run_with_hook(self, inputs)
         return fn(self, inputs, *args, **kwargs)
     return wrapper
 
@@ -439,9 +479,9 @@ class BaseTool(ABC):
 
     def dry_run(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """Preflight check without side effects. Override for paid/publishing tools."""
-        from lib.production_execution import governed_dry_run, preflight
+        from lib.production_execution import preflight
         if preflight(self, inputs)["governed"]:
-            return governed_dry_run(self, inputs)
+            return _governed_dry_run_with_hook(self, inputs)
         from tools.provider_pricing import PriceQuoteRequired
 
         quote_error = None

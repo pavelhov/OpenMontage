@@ -28,7 +28,7 @@ from typing import Any
 
 from lib.shot_contract import contract_digest, file_sha256, validate_shot_contract
 
-GOVERNANCE_KEYS = {'governance', 'project_dir', 'shot_id', 'scope_id', 'production_phase', 'shot_contract_path'}
+GOVERNANCE_KEYS = {'governance', 'project_dir', 'shot_id', 'scope_id', 'production_phase', 'shot_contract_path', 'compiled_request_id', 'preparation_review_id', 'credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256', 'unknown_cost_authorization_id', 'unknown_cost_evidence_id'}
 INPUT_PATH_KEYS = {'image', 'image_path', 'image_paths', 'reference_image_path', 'reference_image_paths',
                    'first_frame', 'last_frame', 'last_image_path', 'images', 'audio_path',
                    'reference_audio_path', 'reference_audio_paths', 'video_path', 'reference_video_path',
@@ -53,6 +53,8 @@ STRICT_UNENCODED_NATIVE_KEYS = {'image_urls', 'image_input', 'image_uri', 'last_
                                 'mask_url', 'audio_uri', 'audio_url', 'target_audio_url',
                                 'video_uri', 'file', 'file_url', 'web_url', 'link'}
 _ACTIVE = contextvars.ContextVar('production_execution', default=None)
+_GROK_COMPATIBILITY = contextvars.ContextVar('production_grok_compatibility', default=None)
+_MCP_REVALIDATING = contextvars.ContextVar('production_mcp_revalidating', default=None)
 
 
 class ProductionGovernanceError(ValueError):
@@ -184,6 +186,27 @@ def _paths(inputs, root, visitor, *, allow_upstream=False):
         if key in STRICT_UNENCODED_NATIVE_KEYS:
             _fail(f'{key}: strict production cannot bind native provider media fields that are '
                   'sent unencoded; use canonical image_path/image_paths/last_image_path/mask_path')
+        if key == 'input_assets':
+            if not isinstance(value, list):
+                _fail('input_assets must be ordered local role bindings')
+            names = {'first_frame': 'first_frame', 'last_frame': 'last_frame',
+                     'reference_image': 'reference_image_paths', 'reference_video': 'reference_video_paths',
+                     'reference_audio': 'reference_audio_paths',
+                     'environment_reference': 'reference_image_paths', 'character_reference': 'reference_image_paths'}
+            result = []
+            for item in value:
+                if not isinstance(item, dict) or item.get('role') not in names or not item.get('source_path'):
+                    _fail('input_assets requires an explicit supported role and local source_path')
+                source = _inside(item['source_path'], root)
+                if not source.is_file():
+                    _fail('input_assets source bytes missing from role binding')
+                source_sha = _input_sha256(source)
+                if 'source_sha256' in item and source_sha != item['source_sha256']:
+                    _fail('input_assets source bytes differ from role binding')
+                if 'upload_id' in item and 'reference_id' in item and item['upload_id'] != item['reference_id']:
+                    _fail('input_assets has conflicting upload_id and reference_id aliases')
+                result.append({**copy.deepcopy(item), 'source_path': visitor(names[item['role']], source), 'source_sha256': source_sha})
+            return result
         if key in INPUT_PATH_KEYS:
             if allow_upstream and isinstance(value, dict) and '$upstream' in value:
                 _upstream_binding(value)
@@ -340,7 +363,7 @@ def _check_local_render_inputs(contract, shot_id, inputs, root):
     shot = next(item for item in contract['shots'] if item['id'] == shot_id)
     if inputs.get('operation') != 'render_existing' or inputs.get('strict_check') is not True or inputs.get('skip_contrast'):
         _fail('local render requires render_existing and complete strict checks')
-    if inputs.get('duration') != shot['duration_seconds']:
+    if explicit_motion_duration(inputs) != shot['duration_seconds']:
         _fail('submitted duration differs from shot contract')
     workspace = _inside(inputs.get('workspace_path', ''), root)
     manifest = workspace_manifest(workspace)
@@ -428,6 +451,24 @@ def approved_request_digest(value, *, project_dir, selected_attempts=None):
             if not record.get('path') or not record.get('sha256'):
                 _fail('dynamic upstream request lacks matching selected bytes')
             return {'path':str(_inside(record['path'], root)), 'sha256':record['sha256']}
+        if key == 'input_assets':
+            names = {'first_frame': 'first_frame', 'last_frame': 'last_frame',
+                     'reference_image': 'reference_image_paths', 'reference_video': 'reference_video_paths',
+                     'reference_audio': 'reference_audio_paths',
+                     'environment_reference': 'reference_image_paths', 'character_reference': 'reference_image_paths'}
+            if not isinstance(item, list):
+                _fail('template input_assets must be ordered canonical role bindings')
+            result = []
+            for row in item:
+                if not isinstance(row, dict) or row.get('role') not in names or not row.get('source_path'):
+                    _fail('template input_assets requires supported role and source_path')
+                source = resolve(row['source_path'], names[row['role']])
+                if 'source_sha256' in row and source['sha256'] != row['source_sha256']:
+                    _fail('template canonical source bytes differ from frozen role binding')
+                if 'upload_id' in row and 'reference_id' in row and row['upload_id'] != row['reference_id']:
+                    _fail('template has conflicting upload/reference aliases')
+                result.append({**copy.deepcopy(row), 'source_path': source, 'source_sha256': source['sha256']})
+            return result
         if key in INPUT_PATH_KEYS:
             if isinstance(item, list):
                 return [resolve(child, key) for child in item]
@@ -480,47 +521,222 @@ def _approved_request(value, root):
 
 
 def _attempts(root):
-    return [_read(path) for path in sorted((root / 'production_attempts').glob('*/request.json'))]
+    rows = [_read(path) for path in sorted((root / 'production_attempts').glob('*/request.json'))]
+    try:
+        from lib.openart_mcp_jobs import list_attempts
+    except ImportError:
+        return rows
+    rows.extend(list_attempts(root))
+    own = _MCP_REVALIDATING.get()
+    return [row for row in rows if row.get('attempt_id') != own]
 
 
 def _state(root, attempt):
+    if attempt.get('provider') == 'openart_mcp':
+        return _mcp_state(root, attempt['attempt_id'])
     directory = root / 'production_attempts' / attempt['attempt_id']
     reconciled = directory / 'reconciliation.json'
-    result = directory / 'result.json'
+    claim = directory / 'local_continuation_claim.json'
+    continued = directory / 'local_continuation_result.json'
+    if claim.exists():
+        validate_local_grok_continuation_record(root, attempt)
+        if not continued.exists() and not reconciled.exists():
+            raw = directory / 'local_continuation_raw_result.json'
+            return {'status': 'uncertain', 'result': _read(raw) if raw.exists() else None}
+    result = continued if claim.exists() else directory / 'result.json'
     try:
-        return _read(reconciled if reconciled.exists() else result) if result.exists() or reconciled.exists() else {'status': 'uncertain'}
+        state = _read(reconciled if reconciled.exists() else result) if result.exists() or reconciled.exists() else {'status': 'uncertain'}
+        if state.get('status') == 'uncertain':
+            from lib.openart_dispatch import existing_terminal_state
+            terminal = existing_terminal_state(root, attempt['attempt_id'])
+            if terminal is not None: return terminal
+        return state
     except ProductionGovernanceError as exc:
         # An old/incomplete journal remains consumed and recoverable, never retryable.
         return {'status':'uncertain', 'journal_error':str(exc)}
 
 
-def _check_motion_inputs(contract, shot_id, inputs, root):
+def explicit_motion_duration(inputs):
+    """One explicit native duration, without defaults or output-goal coercion."""
+    import math
+    params = inputs.get('native_params', {})
+    if not isinstance(params, dict):
+        _fail('native_params must be an exact object')
+    values = []
+    if 'duration' in inputs:
+        values.append(inputs['duration'])
+    for key in ('duration', 'videoDuration'):
+        if key in params:
+            if key == 'videoDuration' and inputs.get('model') != 'smart-shot':
+                _fail('videoDuration requires the explicit SmartShot model')
+            values.append(params[key])
+    if len(values) != 1:
+        _fail('exactly one explicit motion duration is required; duplicate aliases are ambiguous')
+    value = values[0]
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+        _fail('motion duration must be a positive finite JSON number')
+    return value
+
+
+def _check_motion_inputs(contract, shot_id, inputs, root, *, policy_composite=False):
     shot = next(item for item in contract['shots'] if item['id'] == shot_id)
     assets = {item['id']: item for item in contract['assets']}
     actual = []
     _paths(inputs, root, lambda key, path: actual.append((key, _input_sha256(path))) or str(path))
     role_keys = {'start_frame': {'first_frame','image_path','reference_image_path'},
                  'end_frame': {'last_frame','last_image_path'},
-                 'identity_reference': {'reference_image_paths','images'}}
-    for asset_id in shot['asset_ids']:
+                 'identity_reference': {'reference_image_paths','images'},
+                 'reference_image': {'reference_image_paths','images'},
+                 'reference_video': {'reference_video_paths','reference_video_path'},
+                 'reference_audio': {'reference_audio_paths','reference_audio_path'}}
+    guided = shot.get('reference_mode', contract.get('reference_mode')) == 'reference_guided'
+    # Eligibility has already validated these boards' bytes, cast-identity
+    # reviews and upstream provenance. Only an exact native pair can carry
+    # identity in place of auxiliary reference submissions on a boarded route.
+    local_assets = [assets[aid] for aid in shot['asset_ids']]
+    pin_boards = {
+        role: [a for a in local_assets if a['role'] == role]
+        for role in ('start_frame', 'end_frame')
+    }
+    reviewed_pin_pair = not guided and inputs.get('operation') == 'first_last_frame'
+    for role, boards in pin_boards.items():
+        reviewed_pin_pair = reviewed_pin_pair and len(boards) == 1 and any(
+            key in role_keys[role] and digest == boards[0]['sha256'] for key, digest in actual)
+    start_cast = set(pin_boards['start_frame'][0]['cast_ids']) if reviewed_pin_pair else set()
+    submitted_asset_ids = set(shot['asset_ids'])
+    submitted_asset_ids.update(a['id'] for a in contract['assets'] if a['role'] == 'identity_reference'
+                               and set(a['cast_ids']).intersection(shot['cast_ids']))
+    for asset_id in submitted_asset_ids:
         asset = assets[asset_id]
         keys = role_keys.get(asset['role'])
-        if asset['role'] == 'end_frame' and not (inputs.get('operation') == 'first_last_frame' or inputs.get('endpoint_requirement_id') or inputs.get('last_frame') or inputs.get('last_image_path')):
-            keys = None
-        if asset['role'] == 'identity_reference' and inputs.get('operation') == 'image_to_video':
+        if guided and asset['role'] in {'start_frame', 'end_frame'}:
+            keys = None  # explicit reviewed targets; required native pins validate at preparation
+        if asset['role'] == 'end_frame' and not (
+                inputs.get('operation') == 'first_last_frame' or inputs.get('endpoint_requirement_id')
+                or inputs.get('last_frame') or inputs.get('last_image_path')):
+            keys = None  # reviewed ending target; canonical required native pins validate separately
+        if asset['role'] == 'identity_reference' and policy_composite:
+            keys = None  # rooted named prep/actual board proof already validated every member
+        if asset['role'] == 'identity_reference' and not guided and inputs.get('operation') == 'image_to_video':
             keys = None  # approved single-image method carries identity through reviewed start board
+        if (asset['role'] == 'identity_reference' and reviewed_pin_pair
+                and set(asset['cast_ids']).intersection(shot['cast_ids']).issubset(start_cast)):
+            keys = None  # exact reviewed native start/end pins carry the declared cast
         if keys and not any(key in keys and digest == asset['sha256'] for key, digest in actual):
             _fail(f'shot {shot_id}: submitted inputs omit or change {asset["role"]} {asset_id}')
-    approved_hashes = {assets[item]['sha256'] for item in shot['asset_ids']}
+    approved_hashes = {assets[item]['sha256'] for item in submitted_asset_ids}
     if any(digest not in approved_hashes for key, digest in actual):
         _fail('submitted inputs contain an unapproved asset')
-    if inputs.get('duration') != shot['duration_seconds']:
+    if explicit_motion_duration(inputs) != shot['duration_seconds']:
         _fail('submitted duration differs from shot contract')
 
 
-def preflight(tool, inputs):
+# U3 installs a pure compiled-request validator; no transport/ledger work here.
+def _compiled_request_check(inputs, native, profile):
+    from lib.production_request import validate_preparation
+    from jsonschema.exceptions import ValidationError
+    try:
+        return validate_preparation(inputs, native, profile)
+    except (ValueError, OSError, KeyError, TypeError, ValidationError) as exc:
+        _fail('OpenArt preparation: ' + str(exc))
+
+
+_OPENART_COMPILED_REQUEST_CHECK = _compiled_request_check
+
+
+def _is_openart(tool):
+    return getattr(tool, 'provider', None) == 'openart_cli'
+
+
+def _openart_controls(inputs):
+    controls = _clean(inputs)
+    for canonical, aliases in {'image_path': ('first_frame', 'reference_image_path'),
+                               'last_image_path': ('last_frame',)}.items():
+        for alias in aliases:
+            if alias not in controls:
+                continue
+            if canonical in controls and Path(controls[canonical]).expanduser().resolve() != Path(controls[alias]).expanduser().resolve():
+                _fail('conflicting OpenArt ' + canonical + ' and ' + alias)
+            controls[canonical] = controls.pop(alias)
+    for key in ('preferred_tool','hosting_provider','preferred_provider','preferred_provider_gap',
+                'allowed_providers','task_context','target_operation'):
+        controls.pop(key, None)
+    return controls
+
+
+def _openart_mcp_controls(inputs):
+    """Explicit connector control alias; shares canonical local role/path rules."""
+    result = _openart_controls(inputs)
+    result.pop('attempt_id', None)
+    if inputs.get('project_dir'):
+        result['project_dir'] = str(Path(inputs['project_dir']).resolve())
+    return result
+
+
+def _openart_prepare(inputs):
+    from lib import openart_jobs as jobs
+    profile = jobs.load_qualification(model=inputs.get('model'), mode=inputs.get('mode'), require='pre_submit')
+    native = jobs.prepare_native_request(_openart_controls(inputs), profile)
+    if _OPENART_COMPILED_REQUEST_CHECK is None:
+        _fail('OpenArt compiled-request preparation validator is not installed (U3)')
+    _OPENART_COMPILED_REQUEST_CHECK(inputs, native, profile)
+    return profile, native
+
+
+def active_openart_dispatch(inputs):
+    """Adapter entry cannot accept caller-supplied reservation/context authority."""
+    from lib import openart_jobs as jobs
+    active = _ACTIVE.get()
+    if not active or active['provider'] != 'openart_cli' or not active.get('openart_binding'):
+        _fail('OpenArt requires strict active governed dispatch and ledger reservation')
+    native = jobs.native_request(_openart_controls(inputs), active['openart_profile'],
+                                 dry_run=active['openart_native'].get('dry_run'))
+    if native != active['openart_native'] or _openart_controls(inputs) != _openart_controls(active['submitted_inputs']):
+        _fail('OpenArt native request differs from frozen approved dispatch')
+    reservation = jobs.get_active_reservation(active['root'], active['session_id'],
+                                              active['openart_binding']['request_sha256'])
+    if reservation['reservation_id'] != active['openart_binding']['reservation_id']:
+        _fail('OpenArt reservation changed')
+    return active
+
+
+def preflight(tool, inputs, *, _local_continuation=None):
     """Perform the same factual checks used by dispatch, without writing or calling."""
+    if _local_continuation is None and isinstance(inputs.get('governance'), dict) and 'continue_local_attempt_id' in inputs['governance']:
+        return _check_local_grok_continuation(tool, inputs)['checked']
+    mcp = tool.provider == 'openart_mcp' or (tool.provider == 'selector' and inputs.get('preferred_provider') == 'openart_mcp')
+    unknown_keys = ('unknown_cost_authorization_id', 'unknown_cost_evidence_id')
+    if mcp:
+        if inputs.get('preferred_provider', 'openart_mcp') != 'openart_mcp' or ('allowed_providers' in inputs and inputs['allowed_providers'] != ['openart_mcp']):
+            _fail('OpenArt MCP requires its exact explicit provider route')
+        if inputs.get('preferred_tool', 'openart_mcp_video') != 'openart_mcp_video' or inputs.get('hosting_provider', 'openart_mcp') != 'openart_mcp':
+            _fail('OpenArt MCP cannot use a foreign tool or hosting provider')
+        if any(key in inputs for key in ('credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256', 'unknown_cost_evidence_id')):
+            _fail('OpenArt MCP cannot reuse CLI billing or evidence authority')
+    elif any(key in inputs for key in unknown_keys):
+        if any(key in inputs for key in ('credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256')):
+            _fail('invalid_argument: unknown-cost and exact credit authorization are mutually exclusive')
+        if not (mcp or _is_openart(tool) or (tool.provider == 'selector' and inputs.get('preferred_provider') == 'openart_cli')):
+            _fail('invalid_argument: unknown-cost authorization requires an OpenArt route')
+        if any(not isinstance(inputs.get(key), str) or not inputs[key] for key in unknown_keys):
+            _fail('invalid_argument: unknown-cost authorization and evidence IDs are required together')
+        from lib.production_request import _id
+        try:
+            _id(inputs['unknown_cost_authorization_id'])
+        except ValueError:
+            _fail('invalid_argument: unknown-cost authorization ID must be an opaque safe ID')
+        evidence_id = inputs['unknown_cost_evidence_id']
+        if len(evidence_id) != 64 or any(c not in '0123456789abcdef' for c in evidence_id):
+            _fail('invalid_argument: unknown-cost evidence ID must be a lowercase SHA-256 digest')
     kind = _kind(tool, inputs)
+    if mcp or _is_openart(tool) or (tool.provider == 'selector' and inputs.get('preferred_provider') == 'openart_cli'):
+        root = discover_project(inputs)
+        if root is None or _read(root / 'project.json').get('governance', {}).get('mode') != 'strict':
+            _fail('OpenArt requires strict enrollment and a governed attempt')
+        if kind != 'motion':
+            _fail('OpenArt requires strict video-generation dispatch')
+        if tool.name not in {'openart_cli_video', 'openart_mcp_video', 'video_selector'}:
+            _fail('OpenArt requires canonical video adapter')
     if kind is None:
         return {'governed': False, 'label': 'ungoverned_diagnostic'}
     root = discover_project(inputs)
@@ -533,6 +749,10 @@ def preflight(tool, inputs):
         return {'governed': False, 'label': 'ungoverned_legacy'}
     if marker['governance'].get('version') != '1.0':
         _fail('unsupported governance version')
+    qualification = marker.get('pipeline_type') == 'provider-qualification'
+    if qualification and (kind != 'motion' or not (mcp or _is_openart(tool) or (
+            tool.provider == 'selector' and inputs.get('preferred_provider') == 'openart_cli'))):
+        _fail('provider-qualification pipeline admits only canonical OpenArt strict video generation')
     if kind == 'avatar':
         # Avatar generation/resume has no shot-contract, scope phase or attempt
         # provenance binding yet. Fail closed in strict projects rather than
@@ -549,6 +769,14 @@ def preflight(tool, inputs):
         _fail('strict governance cannot resume provider jobs as new attempts; '
               'reconcile the original attempt (unsupported for this provider)')
     scope_id, shot_id = context['scope_id'], context['shot_id']
+    # This read-only early check is repeated by execute_governed under the
+    # project lock, before attempt directories or provider reservations exist.
+    # Private unpublished reservations take precedence over public journals.
+    from lib.production_video_guard import read_video_duplicate_blocks, classify_production_kind
+    if kind == 'motion':
+        blockers = read_video_duplicate_blocks(root, shot_id)
+        if blockers:
+            _fail('; '.join(blockers))
     scopes = _read(root / 'production_scopes.json')
     if scopes.get('version') != '1.0':
         _fail('unsupported approval scopes version')
@@ -556,6 +784,8 @@ def preflight(tool, inputs):
     if len(matches) != 1:
         _fail('approval scope must exist exactly once')
     scope = matches[0]
+    if 'derived_from_policy' in scope and not isinstance(scope['derived_from_policy'], dict):
+        _fail('malformed derived_from_policy')
     if scope.get('status') != 'approved' or not scope.get('approved_by'):
         _fail('scope lacks explicit approval provenance')
     evidence = scope.get('evidence', {})
@@ -571,8 +801,32 @@ def preflight(tool, inputs):
         _fail('provider differs from approved locked route')
     if tool.provider == 'selector' and inputs.get('preferred_provider') != provider:
         _fail('selector requires the exact approved preferred_provider')
+    if provider in {'openart_cli', 'openart_mcp'} and tool.provider == 'selector' and inputs.get('allowed_providers') != [provider]:
+        _fail('OpenArt selector requires singleton exact allowed_providers')
+    if mcp:
+        if 'derived_from_policy' in scope:
+            if 'unknown_cost_authorization_id' in inputs:
+                _fail('MCP policy scope cannot accept caller billing authorization IDs')
+        else:
+            from lib.production_request import _id
+            try:
+                _id(inputs.get('unknown_cost_authorization_id'))
+            except ValueError:
+                _fail('OpenArt MCP requires its distinct retained billing authorization ID')
     attempts = _attempts(root)
-    scope_used = sum(item['scope_id'] == scope_id and item['shot_id'] == shot_id for item in attempts)
+    # A carried scope shares quota lineage with its source first-pass scope so a
+    # carry-forward can never reset a shot already consumed under the original.
+    lineage = {scope_id}
+    carried = scope.get('carried_from')
+    if carried is not None:
+        if not isinstance(carried, dict) or not isinstance(carried.get('scope_id'), str):
+            _fail('malformed carried_from')
+        lineage.add(carried['scope_id'])
+    scope_used = sum(item['scope_id'] in lineage and item['shot_id'] == shot_id for item in attempts)
+    # The reserved occurrence is counted permanently; only its frozen request
+    # index is replayed instead of selecting a new batch entry.
+    if _local_continuation is not None:
+        scope_used -= 1
     approved_request = scope.get('requests', {}).get(shot_id)
     if isinstance(approved_request, list):
         if scope_used >= len(approved_request):
@@ -587,41 +841,109 @@ def preflight(tool, inputs):
     if output.exists():
         _fail('output already exists; reconcile the original attempt instead of file-size reuse')
     contract = None
+    policy_validated = False
     if kind in {'motion','local_render'}:
         contract = _read(_artifact_path(root, 'shot_contract.json'))
         if contract.get('project_id') != marker.get('project_id'):
             _fail('shot contract project mismatch')
+        scoped_shot = next((shot for shot in contract.get('shots', []) if shot.get('id') == shot_id), {})
+        if scoped_shot.get('reference_mode', contract.get('reference_mode')) == 'reference_guided' and provider != 'openart_mcp':
+            _fail('reference-guided production requires its explicit OpenArt MCP route')
         checked = validate_shot_contract(contract, project_dir=root, shot_id=shot_id,
             story_revision=marker['story_revision'], selected_upstream=load_selected_attempts(root))
         if not checked['eligible']:
             _fail('; '.join(checked['errors']))
-        if scope.get('approval_plan_sha256') != approval_plan_digest(contract):
+        effective = contract
+        if kind == 'motion':
+            # A prior-plan scope continues only through an authorized revision
+            # that names this exact scope (and its carry lineage); upstream
+            # selections of revised shots must be fresh reviews of the revision.
+            from lib.production_continuity import (revision_chain, undo_revision, require_retained_scope,
+                                                   require_revised_upstream)
+            chain = revision_chain(root, contract)
+            if chain:
+                require_revised_upstream(chain, contract, shot_id, load_selected_attempts(root))
+            for revision in chain:
+                if scope.get('approval_plan_sha256') == approval_plan_digest(effective):
+                    break
+                require_retained_scope(revision, scope, shot_id)
+                effective = undo_revision(effective, revision)
+        if carried is not None:
+            from lib.production_continuity import validate_carried_scope
+            if validate_carried_scope(root, scope, effective, scopes.get('scopes', [])) != carried['scope_id']:
+                _fail('carried scope lineage differs')
+        elif scope.get('approval_plan_sha256') != approval_plan_digest(effective):
             _fail('approval scope has a stale contract binding')
+        if 'derived_from_policy' in scope:
+            from lib.production_autonomy import validate_derived_scope
+            try:
+                validate_derived_scope(root, scope, inputs=inputs, observation=_GROK_COMPATIBILITY.get())
+            except (ValueError, KeyError, TypeError, OSError) as exc:
+                _fail('derived policy dispatch refused: ' + str(exc))
+            policy_validated = True
         if kind == 'local_render':
             _check_provisioned_local_runtime()
-        (_check_local_render_inputs if kind == 'local_render' else _check_motion_inputs)(contract, shot_id, _clean(inputs), root)
+            _check_local_render_inputs(contract, shot_id, _clean(inputs), root)
+        else:
+            if policy_validated:
+                _check_motion_inputs(contract, shot_id, _clean(inputs), root, policy_composite=True)
+            else:
+                _check_motion_inputs(contract, shot_id, _clean(inputs), root)
     allowance = scope.get('attempts_per_shot', {}).get(shot_id)
     if isinstance(allowance, bool) or not isinstance(allowance, int) or allowance < 1:
         _fail('scope lacks a positive exact shot allowance')
-    previous = [item for item in attempts if item['shot_id'] == shot_id]
+    previous = []
+    for item in attempts:
+        if item.get('shot_id') != shot_id:
+            continue
+        if _local_continuation is not None and item['attempt_id'] == _local_continuation['attempt_id']:
+            continue  # this occurrence is resumed, never a new reservation
+        prior_kind = classify_production_kind(item)
+        if prior_kind is None:
+            _fail('an original attempt has missing or unclassifiable media kind')
+        if prior_kind == kind:
+            previous.append(item)
     if any(_state(root, item)['status'] == 'uncertain' for item in previous):
         _fail('an original job is uncertain; reconcile it before another attempt')
+    if any(item.get('provider') == 'openart_mcp' and _state(root, item)['status'] in {'prepared', 'submitted', 'awaiting_original_result'} for item in previous):
+        _fail('an original OpenArt MCP job is reserved or pending; resolve that original before another attempt')
     if phase == 'first_pass' and previous:
         _fail('first-pass ceiling never authorizes a corrective reroll; approve an exact repair scope')
     if phase == 'repair':
         replaces = scope.get('replaces_attempt_ids')
         authorized_shots = set(scope.get('requests', {})) & set(scope.get('attempts_per_shot', {}))
-        eligible = {item['attempt_id'] for item in attempts if item['shot_id'] in authorized_shots}
+        eligible = {item['attempt_id'] for item in attempts if item['shot_id'] in authorized_shots
+                    and classify_production_kind(item) == kind}
         if (not isinstance(replaces, list) or not replaces or not set(replaces).issubset(eligible)
                 or not set(replaces).intersection(item['attempt_id'] for item in previous)):
             _fail('repair scope must name existing exact attempts to replace')
-    if sum(item['scope_id'] == scope_id and item['shot_id'] == shot_id for item in attempts) >= allowance:
+    used = sum(item['scope_id'] in lineage and item['shot_id'] == shot_id for item in attempts)
+    if used > allowance or (used == allowance and _local_continuation is None):
         _fail('approved attempt allowance exhausted')
-    if any(_inside(item.get('submitted_inputs', {}).get('output_path', ''), root) == output for item in attempts):
+    if any(_inside(item.get('submitted_inputs', {}).get('output_path', ''), root) == output
+           for item in attempts if _local_continuation is None or item['attempt_id'] != _local_continuation['attempt_id']):
         _fail('output path already reserved; reconcile the original attempt')
-    return {'governed': True, 'root': root, 'marker': marker, 'scope': scope,
+    if mcp:
+        from lib import openart_mcp as connector
+        profile = connector.load_profile(inputs.get('model'), inputs.get('mode'), require='candidate' if qualification else 'supported')
+        native = connector.prepare_native_request(_openart_mcp_controls(inputs), profile)
+        _compiled_request_check(inputs, native, profile)
+        openart = (profile, native)
+    else:
+        openart = _openart_prepare(inputs) if _is_openart(tool) or provider == 'openart_cli' else None
+    if qualification:
+        # The generic gate above applies to every route; this pipeline additionally
+        # requires the current human-approved packet bound to actual native/profile.
+        if provider not in {'openart_cli', 'openart_mcp'} or openart is None:
+            _fail('provider-qualification pipeline admits only canonical OpenArt strict video generation')
+        from lib.provider_qualification import validate_qualification_stage
+        try:
+            validate_qualification_stage(root, inputs, digest, native=openart[1], profile=openart[0])
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            _fail(str(exc))
+    return {'openart':openart, 'governed': True, 'root': root, 'marker': marker, 'scope': scope,
             'shot_id': shot_id, 'kind': kind, 'contract': contract, 'request_sha256': digest,
-            'scope_attempt_index':scope_used}
+            'scope_attempt_index':scope_used, 'policy_validated': policy_validated}
 
 
 @contextlib.contextmanager
@@ -675,9 +997,9 @@ def _preserve_output(source, target, digest):
     target.chmod(0o444)
 
 
-def _save_result(directory, result=None, error=None):
+def _save_result(directory, result=None, error=None, *, prefix=""):
     if result is not None:
-        _write_new(directory / 'raw_result.json', asdict(result))
+        _write_new(directory / (prefix + 'raw_result.json'), asdict(result))
     request = _read(directory / 'request.json')
     output_path = Path(request['submitted_inputs']['output_path'])
     status = 'uncertain'
@@ -693,15 +1015,242 @@ def _save_result(directory, result=None, error=None):
         target = directory / ('output' + output_path.suffix)
         _preserve_output(output_path, target, output['sha256'])
         preserved = {'path':str(target),'sha256':output['sha256']}
+    public_error = repr(error) if error is not None else None
+    if request.get('openart') and error is not None:
+        public_error = 'OpenArt execution error: ' + str(getattr(error, 'kind', type(error).__name__))
     record = {'preserved_output':preserved,'status': status, 'result': asdict(result) if result is not None else None,
-              'output': output, 'exception': repr(error) if error is not None else None}
-    _write_new(directory / 'result.json', record)
+              'output': output, 'exception': public_error}
+    _write_new(directory / (prefix + 'result.json'), record)
     return record
 
 
+
+_LOCAL_PIN_ERROR = 'Grok CLI invalid_argument error: reference_to_video requires between 1 and 14 local image path(s)'
+_LOCAL_CONTINUATION_FILES = ('request.json', 'result.json', 'raw_result.json',
+                             'shot_contract.json', 'selected_attempts.json')
+
+
+def _local_grok_failure(directory, request):
+    """Recognize only the retained pre-CLI empty-optional-reference defect."""
+    prior = _read(directory / 'result.json')
+    raw = _read(directory / 'raw_result.json')
+    data = raw.get('data', {})
+    expected = {'provider': 'grok_cli', 'cli_version': None,
+                'session_id': request['attempt_id'], 'dispatch_session_id': request['attempt_id'],
+                'error_category': 'invalid_argument', 'dispatch_status': 'not_dispatched',
+                'retry_attempted': False, 'fallback_attempted': False}
+    allowed = set(expected) | {'model', 'agent_model', 'model_role', 'media_model', 'media_model_status'}
+    if (prior.get('status') != 'failed' or prior.get('result') != raw
+            or any(prior.get(k) is not None for k in ('output', 'preserved_output', 'exception'))
+            or raw.get('success') is not False or raw.get('artifacts') != []
+            or raw.get('error') != _LOCAL_PIN_ERROR or not isinstance(data, dict)
+            or set(data) - allowed or any(data.get(k) != v for k, v in expected.items())):
+        _fail('local continuation requires the exact pre-CLI empty-reference failure')
+    submitted = request.get('submitted_inputs', {})
+    if (submitted.get('operation') != 'first_last_frame' or submitted.get('reference_image_paths') != []
+            or submitted.get('cli_session_id') != request['attempt_id']):
+        _fail('local continuation requires the exact frozen empty-reference native pin pair')
+    return raw
+
+
+def validate_local_grok_continuation_record(project_dir, request):
+    """Replay immutable continuation authority without permitting another dispatch."""
+    root = Path(project_dir).resolve()
+    directory = _inside(Path('production_attempts') / request['attempt_id'], root)
+    claim = _read(directory / 'local_continuation_claim.json')
+    expected = {'version', 'attempt_id', 'request_sha256', 'submitted_inputs_sha256',
+                'original_sha256', 'native_request_sha256'}
+    if (not isinstance(claim, dict) or set(claim) != expected or claim.get('version') != '1.0'
+            or claim['attempt_id'] != request['attempt_id']
+            or claim['request_sha256'] != request['request_sha256']
+            or claim['submitted_inputs_sha256'] != _digest(request['submitted_inputs'])
+            or set(claim.get('original_sha256', {})) != set(_LOCAL_CONTINUATION_FILES)):
+        _fail('local continuation claim does not bind the reserved occurrence')
+    for name, digest in claim['original_sha256'].items():
+        if file_sha256(directory / name) != digest:
+            _fail('local continuation original evidence changed: ' + name)
+    _local_grok_failure(directory, request)
+    return claim
+
+
+def _local_grok_inputs(root, request):
+    """Restore original approved locations while verifying every preserved byte."""
+    bindings = iter(request['input_assets'])
+    def restore(role, path):
+        record = next(bindings, None)
+        if (not isinstance(record, dict) or record.get('role') != role or record.get('path') != str(path)
+                or file_sha256(path) != record.get('sha256')):
+            _fail('local continuation frozen input bytes/roles changed')
+        _inside(path, root / 'production_attempts' / request['attempt_id'] / 'inputs')
+        return str(_inside(record['original_path'], root))
+    submitted = _clean(request['submitted_inputs'])
+    submitted.pop('cli_session_id', None)
+    restored = _paths(submitted, root, restore)
+    if next(bindings, None) is not None or planned_request_digest(restored, project_dir=root) != request['request_sha256']:
+        _fail('local continuation request differs from frozen reservation')
+    return dict(restored, project_dir=str(root), governance={'scope_id': request['scope_id'], 'shot_id': request['shot_id']})
+
+
+def _check_local_grok_continuation(tool, inputs):
+    """Read-only exact defect qualification, followed by normal factual preflight."""
+    from tools.video.grok_cli_video import GrokCLIVideo, build_native_video_request
+    import re
+    import os
+    context = inputs.get('governance', {})
+    aid = context.get('continue_local_attempt_id')
+    digest = context.get('continue_local_request_sha256')
+    if (type(tool) is not GrokCLIVideo or tool.name != 'grok_cli_video' or tool.provider != 'grok_cli'
+            or not isinstance(aid, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', aid)
+            or not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest)):
+        _fail('local continuation requires a canonical Grok video attempt and exact request hash')
+    root = discover_project(inputs)
+    if root is None:
+        _fail('local continuation requires its enrolled project')
+    directory = _inside(Path('production_attempts') / aid, root)
+    request = _read(directory / 'request.json')
+    if (request.get('version') != '1.0' or type(request.get('scope_attempt_index')) is not int
+            or request.get('attempt_id') != aid or request.get('cli_session_id') != aid
+            or request.get('request_sha256') != digest or request.get('tool_name') != tool.name
+            or request.get('media_kind') != 'motion' or request.get('scope', {}).get('provider') != 'grok_cli'
+            or 'derived_from_policy' in request.get('scope', {})
+            or context.get('scope_id') != request.get('scope_id') or context.get('shot_id') != request.get('shot_id')):
+        _fail('local continuation reserved route/request/scope differs')
+    for name in ('local_continuation_claim.json', 'local_continuation_result.json',
+                 'local_continuation_raw_result.json', 'reconciliation.json', 'provider_request.json',
+                 'provider_result.json', 'output.mp4'):
+        if (directory / name).exists() or (directory / name).is_symlink():
+            _fail('local continuation already claimed or has prior dispatch/output evidence')
+    _local_grok_failure(directory, request)
+    output = _inside(request['submitted_inputs']['output_path'], root)
+    if output.exists():
+        _fail('local continuation output already exists')
+    sessions_root = Path(tool._sessions_root or os.environ.get('GROK_SESSIONS_ROOT') or Path.home() / '.grok/sessions').expanduser()
+    # A captured original session is never classified as a local validation miss.
+    session_roots = {sessions_root, Path.home() / '.grok/sessions'}
+    if os.environ.get('GROK_SESSIONS_ROOT'):
+        session_roots.add(Path(os.environ['GROK_SESSIONS_ROOT']).expanduser())
+    if any((base / aid).exists() or (base / aid).is_symlink()
+           or any(base.glob('*/' + aid)) for base in session_roots):
+        _fail('local continuation original CLI session already exists')
+    restored = _local_grok_inputs(root, request)
+    if _clean(inputs) != _clean(restored) or set(context) != {
+            'scope_id', 'shot_id', 'continue_local_attempt_id', 'continue_local_request_sha256'}:
+        _fail('local continuation inputs differ from reserved frozen request')
+    scopes = _read(root / 'production_scopes.json')['scopes']
+    matches = [s for s in scopes if s.get('id') == request['scope_id']]
+    if len(matches) != 1 or matches[0] != request['scope']:
+        _fail('local continuation original approval scope changed')
+    frozen = _read(directory / 'shot_contract.json')
+    current = load_shot_contract(root)
+    if (contract_digest(frozen) != request['contract_sha256']
+            or approval_plan_digest(current) != request['scope']['approval_plan_sha256']
+            or approval_plan_digest(frozen) != approval_plan_digest(current)):
+        _fail('local continuation contract plan changed')
+    if load_selected_attempts(root) != _read(directory / 'selected_attempts.json'):
+        _fail('local continuation selected upstream evidence changed')
+    evidence = request.get('approval_evidence', {})
+    if file_sha256(_inside(evidence.get('path', ''), directory)) != request['scope']['evidence']['sha256']:
+        _fail('local continuation preserved approval changed')
+    # Both original and preserved inputs are validated; the exact frozen [] is
+    # retained. The fixed builder omits only the empty optional native images.
+    native = build_native_video_request(request['submitted_inputs'], adapter_version=tool.version)
+    if not {'first_frame', 'last_frame'}.issubset(native['arguments']):
+        _fail('local continuation requires valid native first and last pins')
+    checked = preflight(tool, restored, _local_continuation=request)
+    if checked['scope_attempt_index'] != request['scope_attempt_index']:
+        _fail('local continuation reserved allowance index changed')
+    return {'root': root, 'directory': directory, 'request': request, 'inputs': restored,
+            'checked': checked, 'native': native}
+
+
+def continue_local_grok_attempt(tool, project_dir, attempt_id, *, request_sha256, dry_run=True):
+    """Normal wrapper entry for one defect-specific already-reserved occurrence."""
+    root = Path(project_dir).resolve()
+    directory = _inside(Path('production_attempts') / attempt_id, root)
+    request = _read(directory / 'request.json')
+    inputs = _local_grok_inputs(root, request)
+    inputs['governance'].update(continue_local_attempt_id=attempt_id,
+                                continue_local_request_sha256=request_sha256)
+    if dry_run:
+        checked = _check_local_grok_continuation(tool, inputs)
+        return {'tool': tool.name, 'governed': True, 'would_execute': True,
+                'paid_submission': False, 'provider_calls': 0, 'reservations': 0,
+                'attempt_id': attempt_id, 'request_sha256': checked['request']['request_sha256'],
+                'label': 'same_reserved_local_grok_continuation'}
+    return tool.execute(inputs)
+
+
+def _execute_local_grok_continuation(tool, inputs, invoke):
+    """Claim atomically once; execute instrumented implementation without re-reserving."""
+    if _ACTIVE.get() is not None:
+        _fail('local continuation cannot enter from a nested provider dispatch')
+    root = discover_project(inputs)
+    if root is None:
+        _fail('local continuation requires its enrolled project')
+    with _lock(root):
+        qualified = _check_local_grok_continuation(tool, inputs)
+        directory, request = qualified['directory'], qualified['request']
+        claim = {'version': '1.0', 'attempt_id': request['attempt_id'],
+                 'request_sha256': request['request_sha256'],
+                 'submitted_inputs_sha256': _digest(request['submitted_inputs']),
+                 'native_request_sha256': qualified['native']['request_sha256'],
+                 'original_sha256': {name: file_sha256(directory / name) for name in _LOCAL_CONTINUATION_FILES}}
+        _write_new(directory / 'local_continuation_claim.json', claim)
+    try:
+        result = invoke(copy.deepcopy(request['submitted_inputs']))
+    except BaseException as exc:
+        _save_result(directory, error=exc, prefix='local_continuation_')
+        raise
+    else:
+        _save_result(directory, result=result, prefix='local_continuation_')
+        result.data['production_attempt_id'] = request['attempt_id']
+        result.data['production_request_sha256'] = request['request_sha256']
+        return result
+
+
 def execute_governed(tool, inputs, invoke):
+    """Fresh Grok observation occurs outside project/ledger locks for policy dispatch."""
+    if isinstance(inputs, dict) and isinstance(inputs.get("governance"), dict) and "continue_local_attempt_id" in inputs["governance"]:
+        return _execute_local_grok_continuation(tool, inputs, invoke)
+    observation = None
+    if (not _ACTIVE.get() and isinstance(inputs, dict) and _kind(tool, inputs) == 'motion'
+            and (tool.provider == 'grok_cli' or
+                 tool.provider == 'selector' and inputs.get('preferred_provider') == 'grok_cli')):
+        context = inputs.get('governance')
+        root = None
+        if isinstance(context, dict) and context.get('scope_id') and context.get('shot_id'):
+            root = discover_project(inputs)
+        marker = _read(root / 'project.json') if root is not None else {}
+        if (root is not None and marker.get('governance', {}).get('mode') == 'strict'
+                and marker.get('governance', {}).get('version') == '1.0'
+                and (root / 'production_scopes.json').exists()):
+            scopes = _read(root / 'production_scopes.json').get('scopes', [])
+            selected = [s for s in scopes if s.get('id') == context.get('scope_id')]
+            if len(selected) == 1 and 'derived_from_policy' in selected[0] and selected[0].get('provider') == 'grok_cli':
+                from tools._grok_cli_media import observe_grok_cli_compatibility, DEFAULT_GROK_PATH
+                import os
+                configured = getattr(tool, '_grok_path', None) or os.environ.get('GROK_CLI_PATH', DEFAULT_GROK_PATH)
+                observation = observe_grok_cli_compatibility(configured, cwd=inputs.get('cwd') or root)
+    token = _GROK_COMPATIBILITY.set(observation or _GROK_COMPATIBILITY.get())
+    try:
+        return _execute_governed(tool, inputs, invoke)
+    finally:
+        _GROK_COMPATIBILITY.reset(token)
+
+
+def _execute_governed(tool, inputs, invoke):
     """Invoke exactly once after durable reservation; nesting cannot reserve/fallback."""
-    if not isinstance(inputs, dict) or _kind(tool, inputs) is None:
+    if tool.provider == 'openart_mcp' or (tool.provider == 'selector' and isinstance(inputs, dict) and inputs.get('preferred_provider') == 'openart_mcp'):
+        # The connector adapter reserves at prepare and emits one envelope at
+        # begin. Python cannot execute this session-owned connector itself.
+        if _ACTIVE.get():
+            _fail('nested dispatch cannot enter the OpenArt MCP handoff')
+        return invoke(inputs)
+    if not isinstance(inputs, dict):
+        if _is_openart(tool): _fail('OpenArt requires strict request object')
+        return invoke(inputs)
+    if _kind(tool, inputs) is None:
+        if _is_openart(tool): preflight(tool, inputs)
         return invoke(inputs)
     active = _ACTIVE.get()
     if active:
@@ -715,7 +1264,10 @@ def execute_governed(tool, inputs, invoke):
         if any(path not in active['snapshot_paths'] for path in assets):
             _fail('nested dispatch introduced an unsnapshotted input')
         if active['contract']:
-            _check_motion_inputs(active['contract'], active['shot_id'], cleaned, active['root'])
+            if active.get('policy_validated'):
+                _check_motion_inputs(active['contract'], active['shot_id'], cleaned, active['root'], policy_composite=True)
+            else:
+                _check_motion_inputs(active['contract'], active['shot_id'], cleaned, active['root'])
         for key in ('prompt','negative_prompt','duration','resolution','aspect_ratio','voices','endpoint_requirement_id','seed','model','model_name'):
             expected = active['submitted_inputs'].get(key)
             actual = cleaned.get(key)
@@ -723,17 +1275,42 @@ def execute_governed(tool, inputs, invoke):
                 expected = int(expected)
             if expected is not None and actual != expected:
                 _fail('nested dispatch changed approved control: ' + key)
-        _write_new(active['directory'] / 'provider_request.json', cleaned)
+        if active['provider'] == 'openart_cli':
+            from lib import openart_jobs as jobs
+            if jobs.native_request(_openart_controls(cleaned), active['openart_profile'],
+                                   dry_run=active['openart_native'].get('dry_run')) != active['openart_native']:
+                _fail('nested OpenArt dispatch changed frozen native request')
+            if _openart_controls(cleaned) != _openart_controls(active['submitted_inputs']):
+                _fail('nested OpenArt dispatch changed frozen provider inputs')
+        else:
+            _write_new(active['directory'] / 'provider_request.json', cleaned)
         result = invoke(cleaned)
         _write_new(active['directory'] / 'provider_result.json', asdict(result))
         return result
+    import time
+    from tools import _openart_cli as cli
+    dispatch_deadline = time.monotonic()+cli.MAX_TIMEOUT
     checked = preflight(tool, inputs)
     if not checked['governed']:
         return invoke(inputs)
     root = checked['root']
+    openart_prepared = None
+    session_id = str(uuid.uuid4())
+    if checked.get('openart'):
+        import time
+        from lib import openart_dispatch as credit_dispatch
+        from tools import _openart_cli as cli
+        openart_prepared = credit_dispatch.prepare_dispatch(inputs, checked, session_id, dispatch_deadline)
     with _lock(root):
         checked = preflight(tool, inputs)  # allowance and source hashes rechecked under lock
-        session_id = str(uuid.uuid4())
+        openart_binding = None
+        if checked.get('openart'):
+            from lib import openart_jobs as jobs
+            profile, native = checked['openart']
+            openart_binding = {'attempt_id':session_id, 'request_sha256':checked['request_sha256'],
+                               'reservation_id':session_id,
+                               **{key:native[key] for key in ('native_controls_sha256', 'native_argv_sha256',
+                                  'profile_sha256', 'account_id_sha256', 'native_body_sha256')}}
         directory = root / 'production_attempts' / session_id
         (directory / 'inputs').mkdir(parents=True)
         asset_records = []
@@ -756,7 +1333,13 @@ def execute_governed(tool, inputs, invoke):
         submitted = _paths(_clean(inputs), root, snapshot)
         submitted['output_path'] = str(_inside(inputs['output_path'], root))
         if checked['contract']:
-            (_check_local_render_inputs if checked['kind'] == 'local_render' else _check_motion_inputs)(checked['contract'], checked['shot_id'], submitted, root)
+            if checked['kind'] == 'local_render':
+                _check_local_render_inputs(checked['contract'], checked['shot_id'], submitted, root)
+            else:
+                if checked.get('policy_validated'):
+                    _check_motion_inputs(checked['contract'], checked['shot_id'], submitted, root, policy_composite=True)
+                else:
+                    _check_motion_inputs(checked['contract'], checked['shot_id'], submitted, root)
         # Rebind actual submitted snapshot bytes to ORIGINAL approved locations.
         # Rereading original files alone is insufficient if they changed then reverted.
         bindings = iter(asset_records)
@@ -769,6 +1352,10 @@ def execute_governed(tool, inputs, invoke):
         if _digest(snapshot_request) != checked['request_sha256']:
             _fail('input changed during reservation')
         submitted = _provider_inputs(tool, submitted, session_id)
+        if openart_binding:
+            for key in ('compiled_request_id', 'preparation_review_id', 'credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256', 'unknown_cost_authorization_id', 'unknown_cost_evidence_id'):
+                if key in inputs:
+                    submitted[key] = inputs[key]
         scope = checked['scope']
         request = {'version':'1.0', 'attempt_id':session_id, 'cli_session_id':session_id,
             'project_id':checked['marker']['project_id'], 'story_revision':checked['marker']['story_revision'],
@@ -778,19 +1365,56 @@ def execute_governed(tool, inputs, invoke):
                                  'sha256':scope['evidence']['sha256']},
             'request_sha256':checked['request_sha256'], 'contract_sha256':contract_digest(checked['contract']) if checked['contract'] else None,
             'scope':scope, 'submitted_inputs':submitted, 'input_assets':asset_records}
+        if openart_binding:
+            native = jobs.native_request(_openart_controls(submitted), profile, dry_run=checked['openart'][1].get('dry_run'))
+            if native != checked['openart'][1]:
+                _fail('OpenArt native request changed during snapshotting')
+            preparation_snapshot = None
+            if _OPENART_COMPILED_REQUEST_CHECK is _compiled_request_check:
+                from lib.production_request import freeze_preparation
+                preparation_snapshot = freeze_preparation(session_id, inputs, native, profile)
+            frozen = jobs.freeze_request(session_id, submitted, native, profile)
+            openart_binding['snapshot_sha256'] = frozen['snapshot_sha256']
+            from lib.production_request import freeze_approval, public_scope
+            approval_snapshot = freeze_approval(session_id, scope, _inside(scope['evidence']['path'], root).read_bytes())
+            request['openart'] = {'binding':openart_binding, 'snapshot':frozen, 'approval_snapshot':approval_snapshot}
+            if preparation_snapshot:
+                request['openart']['preparation_snapshot'] = preparation_snapshot
+            request['scope'] = public_scope(scope)
+            request['approval_evidence'] = {'snapshot_id':session_id, 'sha256':scope['evidence']['sha256']}
+            request['submitted_inputs'] = _openart_public_inputs(submitted)
+        if openart_prepared:
+            credit_dispatch.reserve_dispatch(openart_prepared, checked, request, frozen)
+        if 'derived_from_policy' in scope and scope['provider'] == 'grok_cli':
+            from lib import production_request as preparation
+            from lib.production_autonomy import current_projection
+            native_policy = preparation.prepare_grok_native(inputs, _GROK_COMPATIBILITY.get())
+            compiled_policy = preparation._read(root, 'compiled_request-' + preparation._id(inputs['compiled_request_id']) + '.json')
+            review_policy = preparation._read(root, 'preparation_review-' + preparation._id(inputs['preparation_review_id']) + '.json')
+            payload = {'compiled': compiled_policy, 'review': review_policy,
+                       'source_packet': preparation.source_packet(root, checked['shot_id'], provider='grok_cli'),
+                       'native': native_policy, 'projection': current_projection(root, checked['shot_id'])}
+            snapshot_path = directory / 'autonomy_preparation.json'
+            _write_new(snapshot_path, payload)
+            request['autonomy_preparation'] = {'path': str(snapshot_path), 'sha256': file_sha256(snapshot_path)}
         _write_new(directory / 'request.json', request)
         evidence_path = _inside(scope['evidence']['path'], root)
         evidence_copy = directory / ('approval-evidence' + evidence_path.suffix)
-        evidence_copy.write_bytes(evidence_path.read_bytes())
-        evidence_copy.chmod(0o444)
-        if file_sha256(evidence_copy) != scope['evidence']['sha256']:
-            _fail('approval evidence changed during reservation')
+        if not openart_binding:
+            evidence_copy.write_bytes(evidence_path.read_bytes())
+            evidence_copy.chmod(0o444)
+            if file_sha256(evidence_copy) != scope['evidence']['sha256']:
+                _fail('approval evidence changed during reservation')
         if checked['contract']:
             _write_new(directory / 'shot_contract.json', checked['contract'])
         _write_new(directory / 'selected_attempts.json', load_selected_attempts(root))
+        if openart_prepared:
+            credit_dispatch.journal_ready(session_id)
     active = {'provider':scope['provider'], 'provider_called':tool.provider != 'selector',
         'session_id':session_id,'root':root,'directory':directory,'submitted_inputs':submitted,
-        'snapshot_paths':{item['path'] for item in asset_records}, 'contract':checked['contract'],'shot_id':checked['shot_id']}
+        'policy_validated': checked.get('policy_validated', False), 'snapshot_paths':{item['path'] for item in asset_records}, 'contract':checked['contract'],'shot_id':checked['shot_id']}
+    if openart_binding:
+        active.update(openart_binding=openart_binding, openart_profile=profile, openart_native=native, openart_deadline=openart_prepared['deadline'] if openart_prepared else None)
     token = _ACTIVE.set(active)
     try:
         result = invoke(submitted)
@@ -881,6 +1505,8 @@ def reconcile_attempt(project_dir, attempt_id, result, *, request_sha256):
     directory = _inside(Path('production_attempts') / attempt_id, root)
     with _lock(root):
         request = _read(directory / 'request.json')
+        if request['scope']['provider'] == 'openart_cli':
+            _fail('OpenArt reconciliation requires collect_openart_attempt on the original attempt')
         if _state(root, request)['status'] != 'uncertain':
             _fail('only an uncertain original attempt can be reconciled')
         if request_sha256 != request['request_sha256'] or result.data.get('session_id') != request['cli_session_id']:
@@ -1020,8 +1646,28 @@ def load_shot_contract(project_dir):
     return _read(_artifact_path(Path(project_dir).resolve(), 'shot_contract.json'))
 
 
+def _mcp_state(root, attempt_id):
+    """Canonical MCP original state: raw 'collected' is generated only after the
+    retained history/resource/download/output chain and current bytes verify."""
+    from lib import openart_mcp_jobs as jobs
+    state = jobs.attempt_state(root, attempt_id)
+    if state['status'] != 'collected':
+        return state
+    retained = jobs.provenance_record(root, attempt_id)
+    output = retained['output']
+    if file_sha256(_inside(output['path'], root)) != output['sha256']:
+        _fail('OpenArt MCP collected original output bytes differ')
+    return {'attempt_id': attempt_id, 'status': 'generated', 'output': copy.deepcopy(output),
+            'history_id': state.get('history_id'),
+            'submission_evidence': 'agent_recorded_connector',
+            'transport': 'agent_mediated_connector'}
+
+
 def load_attempt_result(project_dir, attempt_id):
     root = Path(project_dir).resolve()
+    connector_directory = _inside(Path('openart_mcp') / 'attempts' / attempt_id, root)
+    if connector_directory.is_dir():
+        return _mcp_state(root, attempt_id)
     directory = _inside(Path('production_attempts') / attempt_id, root)
     return _state(root, _read(directory / 'request.json'))
 
@@ -1122,7 +1768,9 @@ def record_selection(project_dir, shot_id, selection):
         if not isinstance(attempt_id, str):
             _fail('selection requires an attempt_id')
         directory = _inside(Path('production_attempts') / attempt_id, root)
-        request = _read(directory / 'request.json')
+        connector_directory = _inside(Path('openart_mcp') / 'attempts' / attempt_id, root)
+        if connector_directory.is_dir():
+            directory = connector_directory
         marker = _read(root / 'project.json')
         from lib.production_provenance import validate_attempt_provenance
         validated = validate_attempt_provenance(root, attempt_id, shot_id=shot_id,
@@ -1157,6 +1805,13 @@ def record_selection(project_dir, shot_id, selection):
                 or any(item['status'] != 'pass' and not (provisional and name == 'speaker_source' and item['status'] == 'unknown')
                        for name, item in predicates.items() if item.get('severity','critical') == 'critical' or name in UPSTREAM_PREDICATES)):
             _fail('selection has missing/failed critical predicates')
+        # A shot changed by an authorized planning revision needs a fresh
+        # selection bound to that revision and the current contract bytes.
+        from lib.production_continuity import revision_chain, require_selection_binding
+        current_contract = load_shot_contract(root)
+        chain = revision_chain(root, current_contract)
+        if chain:
+            require_selection_binding(chain, selection, current_contract, shot_id)
         selected = load_selected_attempts(root)
         selected[shot_id] = copy.deepcopy(selection)
         history = root / 'production_selections'
@@ -1180,15 +1835,200 @@ def record_rejection(project_dir, attempt_id, review):
     from schemas.artifacts import load_schema
     from jsonschema import Draft202012Validator
     root = Path(project_dir).resolve()
+    schema = load_schema('shot_contract')
+    validator = Draft202012Validator({'$defs':schema['$defs'],'$ref':'#/$defs/review'})
+    connector_directory = _inside(Path('openart_mcp') / 'attempts' / attempt_id, root)
+    if connector_directory.is_dir():
+        # MCP originals live in the connector journal; the review binds to the frozen
+        # authority scope and the intact collected original, never a fresh request.
+        from lib import openart_mcp_jobs as mcp_jobs
+        from lib.production_provenance import validate_attempt_provenance
+        from lib.production_request import digest as request_digest
+        with _lock(root):
+            frozen = mcp_jobs.frozen_request(root, attempt_id)
+            authority = frozen['authority']
+            scope = authority['scope']
+            if (request_digest(scope) != authority['scope_sha256'] or scope.get('provider') != 'openart_mcp'
+                    or authority.get('provider') != 'openart_mcp'):
+                _fail('MCP rejection original scope identity differs')
+            state = load_attempt_result(root, attempt_id)
+            if state['status'] != 'generated':
+                _fail('rejection requires a named failed review bound to the generated output')
+            validate_attempt_provenance(root, attempt_id, shot_id=authority['shot_id'],
+                story_revision=scope['story_revision'], expected_output=state['output'])
+            invalid = list(validator.iter_errors(review))
+            if (invalid or review.get('status') != 'fail'
+                    or review.get('subject_sha256') != state['output']['sha256']
+                    or review.get('story_revision') != scope['story_revision']):
+                _fail('rejection requires a named failed review bound to the generated output')
+            reviews = connector_directory / 'rejections'
+            reviews.mkdir(exist_ok=True)
+            _write_new(reviews / (str(uuid.uuid4()) + '.json'), review)
+            return copy.deepcopy(review)
     directory = _inside(Path('production_attempts') / attempt_id, root)
     with _lock(root):
         request = _read(directory / 'request.json')
         state = _state(root, request)
-        schema = load_schema('shot_contract')
-        invalid = list(Draft202012Validator({'$defs':schema['$defs'],'$ref':'#/$defs/review'}).iter_errors(review))
+        invalid = list(validator.iter_errors(review))
         if invalid or state['status'] != 'generated' or review.get('status') != 'fail' or review.get('subject_sha256') != state['output']['sha256'] or review.get('story_revision') != request['story_revision']:
             _fail('rejection requires a named failed review bound to the generated output')
         reviews = directory / 'rejections'
         reviews.mkdir(exist_ok=True)
         _write_new(reviews / (str(uuid.uuid4()) + '.json'), review)
         return copy.deepcopy(review)
+
+
+def _openart_public_inputs(inputs):
+    from tools._openart_cli import redact
+    public = redact(copy.deepcopy(inputs))
+    public['prompt'] = '<private OpenArt prompt>'
+    return public
+
+
+def load_openart_frozen(request):
+    """Pure private snapshot replay; public journal never carries native secrets."""
+    from lib import openart_jobs as jobs
+    from lib.production_request import load_private_approval
+    load_private_approval(request)
+    frozen = jobs.load_frozen_request(request['attempt_id'])
+    if frozen['snapshot_sha256'] != request['openart']['snapshot']['snapshot_sha256']:
+        _fail('OpenArt private request snapshot changed')
+    if _openart_public_inputs(frozen['inputs']) != request['submitted_inputs']:
+        _fail('OpenArt public/private input binding differs')
+    native = jobs.native_request(_openart_controls(frozen['inputs']), frozen['profile'],
+                                 dry_run=frozen['native'].get('dry_run'))
+    if native != frozen['native']:
+        _fail('OpenArt frozen native request differs')
+    binding = request['openart']['binding']
+    if binding['attempt_id'] != request['attempt_id'] or binding['request_sha256'] != request['request_sha256']:
+        _fail('OpenArt original attempt/request binding differs')
+    for key in ('native_controls_sha256','native_argv_sha256','profile_sha256','account_id_sha256','native_body_sha256'):
+        if binding[key] != native[key]:
+            _fail('OpenArt original native/profile/account binding differs')
+    return frozen
+
+
+def collect_openart_attempt(project_dir, attempt_id, *, request_sha256, timeout=30):
+    """Recover/collect only the original launch; all CLI work is outside project locks."""
+    from lib import openart_jobs as jobs
+    from tools.base_tool import ToolResult
+    root = Path(project_dir).resolve()
+    directory = _inside(Path('production_attempts') / attempt_id, root)
+    with _lock(root):
+        request = _read(directory / 'request.json')
+        if request.get('attempt_id') != attempt_id or request.get('request_sha256') != request_sha256:
+            _fail('OpenArt collection original request/attempt differs')
+        if request['scope']['provider'] != 'openart_cli':
+            _fail('OpenArt collection requires original OpenArt attempt')
+        frozen = load_openart_frozen(request)
+        if (directory / 'reconciliation.json').exists():
+            retained = _read(directory / 'reconciliation.json')
+            stable = (jobs.verify_collection_receipt(attempt_id, frozen['profile'])
+                      if retained.get('status') == 'generated' else
+                      jobs.verify_terminal_failure(attempt_id, frozen['profile']))
+            if retained.get('result',{}).get('data',{}).get('openart_evidence') != stable:
+                _fail('OpenArt retained reconciliation differs from terminal receipt')
+            return retained
+        launch = jobs.launch_record(attempt_id)
+        if not launch or launch.get('binding') != request['openart']['binding']:
+            _fail('OpenArt private original launch binding differs')
+        output = _inside(frozen['inputs']['output_path'], root)
+    jobs.recover_launch(attempt_id)
+    collected = jobs.collect_job(attempt_id, output_path=output, output_root=root,
+                                 profile=frozen['profile'], timeout=timeout)
+    evidence = jobs.reconcile_job(attempt_id)
+    with _lock(root):
+        if _read(directory / 'request.json') != request:
+            _fail('OpenArt request changed during collection')
+        if (directory / 'reconciliation.json').exists():
+            return _read(directory / 'reconciliation.json')
+        events = directory / 'collection_events'
+        events.mkdir(exist_ok=True)
+        public_event = {key:collected.get(key) for key in ('status','billing','release_authorized')}
+        public_event['events_sha256'] = evidence.get('events_sha256')
+        _write_new(events / (str(uuid.uuid4()) + '.json'), public_event)
+        if collected.get('status') not in {'collected','failed_terminal'}:
+            return public_event
+        if evidence.get('binding') != request['openart']['binding'] or evidence.get('state') != collected['status']:
+            _fail('OpenArt terminal job evidence differs')
+        stable = (jobs.verify_collection_receipt(attempt_id, frozen['profile'])
+                  if collected['status']=='collected' else
+                  jobs.verify_terminal_failure(attempt_id, frozen['profile']))
+        proof_snapshot = (stable.get('evidence',{}).get('snapshot_sha256')
+                          if collected['status']=='collected' else stable.get('binding',{}).get('snapshot_sha256'))
+        if (stable.get('attempt_id') != attempt_id or stable.get('binding') != request['openart']['binding']
+                or proof_snapshot != request['openart']['snapshot']['snapshot_sha256']
+                or not stable.get('job_id_sha256')):
+            _fail('OpenArt terminal collection snapshot/profile/account differs')
+        if collected['status']=='failed_terminal' and (not stable.get('terminal_failure_sha256')
+                or stable.get('account_id_sha256') != request['openart']['binding']['account_id_sha256']
+                or stable.get('process_state') not in {'exited','dead'}):
+            _fail('OpenArt terminal failure lacks original account/job/process evidence')
+        data = {'provider':'openart_cli','attempt_id':attempt_id,
+                'dispatch_status':'completed' if collected['status']=='collected' else 'failed',
+                'openart_evidence':stable,
+                'billing':'unknown', 'release_authorized':False}
+        result = ToolResult(success=collected['status']=='collected', data=data, cost_usd=None,
+                            model=frozen['inputs'].get('model'))
+        record = {'status':'failed','result':None,'output':None,'preserved_output':None}
+        if result.success:
+            got = collected.get('output')
+            if not isinstance(got,dict) or stable.get('output') != got:
+                _fail('OpenArt collected output differs from original-job terminal receipt')
+            output = _inside(got['path'], root)
+            digest = file_sha256(output)
+            if digest != got['sha256']:
+                _fail('OpenArt collected output bytes changed')
+            preserved = directory / ('output' + output.suffix)
+            if not preserved.exists(): _preserve_output(output, preserved, digest)
+            if file_sha256(preserved) != digest: _fail('OpenArt preserved output differs')
+            record.update(status='generated',output={'path':str(output),'sha256':digest},
+                          preserved_output={'path':str(preserved),'sha256':digest})
+            result.artifacts = [str(output)]
+        record['result'] = asdict(result)
+        _write_new(directory / 'reconciliation.json', record)
+        return record
+
+
+def _approved_openart_upload(project_root, upload_id, source_sha256):
+    from lib.production_request import approved_upload_lookup
+    return approved_upload_lookup(project_root, upload_id, source_sha256)
+
+
+from lib import openart_jobs as _openart_jobs
+_openart_jobs.register_upload_approval_lookup(_approved_openart_upload)
+
+
+def prepare_openart_mcp_handoff(inputs, *, attempt_id=None):
+    """Rooted Strict authority for connector prepare and its one original begin.
+
+    This returns factual bindings only after rereading retained project approval;
+    callers cannot provide an authority object to grant themselves dispatch.
+    """
+    from types import SimpleNamespace
+    from lib.production_request import digest, validate_preparation
+    tool = SimpleNamespace(provider='openart_mcp', name='openart_mcp_video', capability='video_generation', tier=None)
+    token = _MCP_REVALIDATING.set(attempt_id)
+    try:
+        checked = preflight(tool, inputs)
+        if not checked.get('governed'):
+            _fail('OpenArt MCP requires rooted Strict governance')
+        profile, native = checked['openart']
+        proof = validate_preparation(inputs, native, profile)
+        from lib.openart_mcp_dispatch import validate_billing_authority
+        billing = validate_billing_authority(inputs, checked, native)
+        return {'provider': 'openart_mcp', 'scope_sha256': digest(checked['scope']),
+                'scope': copy.deepcopy(checked['scope']),
+                'scope_id': checked['scope']['id'], 'shot_id': checked['shot_id'],
+                'scope_attempt_index': checked['scope_attempt_index'],
+                'request_sha256': checked['request_sha256'],
+                'account_uid_sha256': native['account_binding']['uid_sha256'],
+                'model': native['model'], 'mode': native['mode'],
+                'purpose': 'qualification' if checked['marker'].get('pipeline_type') == 'provider-qualification' else 'production',
+                'native_body_sha256': native['body_sha256'],
+                'source_binding_sha256': native['source_binding_sha256'],
+                'compiled_source_binding_sha256': digest(_read(_artifact_path(checked['root'], 'compiled_request-' + inputs['compiled_request_id'] + '.json'))['source_binding']),
+                'preparation': proof, 'billing': billing,
+                'output_path': str(_inside(inputs['output_path'], checked['root']))}
+    finally:
+        _MCP_REVALIDATING.reset(token)

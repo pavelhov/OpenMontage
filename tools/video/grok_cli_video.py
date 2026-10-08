@@ -19,6 +19,7 @@ from typing import Any
 from lib.shot_contract import file_sha256
 from tools._grok_cli_media import (
     DEFAULT_GROK_PATH,
+    _REFERENCE_ASPECT_RATIOS,
     FRAME_PIN_MIN_CLI_VERSION,
     MIN_CLI_VERSION,
     PINNED_MODEL,
@@ -44,7 +45,6 @@ from tools.base_tool import (
 )
 
 
-_REFERENCE_ASPECT_RATIOS = {"1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"}
 _PINNED_FRAME_OPERATIONS = frozenset({"reference_to_video", "first_last_frame"})
 _UNSUPPORTED_FRAME_ALIASES = frozenset({
     "last_frame_url",
@@ -56,6 +56,219 @@ _UNSUPPORTED_FRAME_ALIASES = frozenset({
     "seamless_loop",
 })
 _URL_FINAL_FRAME_KEYS = frozenset({"last_image_url"})
+
+
+def build_native_video_request(
+    inputs: dict[str, Any], *, adapter_version: str, provider: str = "grok_cli",
+) -> dict[str, Any]:
+    """Prepare exact native arguments and provenance without dispatch or CLI discovery.
+
+    Only local image validation and hashing touch the filesystem. Execution
+    controls are accepted for caller compatibility but remain execute concerns.
+    """
+    try:
+        unsupported = _UNSUPPORTED_FRAME_ALIASES.intersection(inputs)
+        if unsupported:
+            raise GrokCLIContractError(
+                "capability",
+                "Use last_image_path / last_frame for a local final frame; "
+                "no loop switch or other ending-frame alias is supported: "
+                + ", ".join(sorted(unsupported)),
+            )
+        if _URL_FINAL_FRAME_KEYS.intersection(inputs):
+            raise GrokCLIContractError(
+                "capability",
+                "Grok CLI pinned frames accept local filesystem paths only; "
+                "use last_image_path, or choose REST grok_video with "
+                "model=grok-imagine-video-1.5 after explicit route approval",
+            )
+        if any(key in inputs for key in ("model", "model_name")):
+            raise GrokCLIContractError("capability", "Grok CLI video does not expose Imagine model selection")
+
+        unexpected = set(inputs) - GrokCLIVideo.input_schema["properties"].keys()
+        if unexpected:
+            raise GrokCLIContractError("capability", "Unsupported Grok CLI video controls: " + ", ".join(sorted(unexpected)))
+        if "endpoint_requirement_id" in inputs and (
+            not isinstance(inputs["endpoint_requirement_id"], str) or not inputs["endpoint_requirement_id"].strip()
+        ):
+            raise GrokCLIContractError("invalid_argument", "endpoint_requirement_id must be non-empty")
+
+        prompt = validate_prompt(inputs.get("prompt"))
+        operation = str(inputs.get("operation") or "image_to_video")
+        if operation not in {"image_to_video", "reference_to_video", "first_last_frame"}:
+            raise GrokCLIContractError(
+                "capability",
+                "Grok CLI video supports only image_to_video, reference_to_video, and first_last_frame; "
+                f"direct {operation}, video editing, and upscaling are unavailable",
+            )
+
+        unsupported_voice = {
+            key for key in inputs
+            if ("voice" in key or "audio" in key) and key != "voices"
+        }
+        if unsupported_voice:
+            raise GrokCLIContractError(
+                "capability",
+                "Unsupported voice/audio parameters: " + ", ".join(sorted(unsupported_voice)),
+            )
+        voices = inputs.get("voices", [])
+        if not isinstance(voices, list) or len(voices) > 3 or any(
+            not isinstance(voice, str) or not voice.strip() or voice != voice.strip()
+            for voice in voices
+        ):
+            raise GrokCLIContractError(
+                "invalid_argument",
+                "voices must be a list of at most 3 non-empty preset identifiers without surrounding whitespace",
+            )
+        if "voices" in inputs and operation not in _PINNED_FRAME_OPERATIONS:
+            raise GrokCLIContractError(
+                "capability",
+                "voices is supported only for reference_to_video and first_last_frame",
+            )
+
+        resolution = str(inputs.get("resolution", "480p"))
+        if resolution not in {"480p", "720p"}:
+            raise GrokCLIContractError("capability", "Grok CLI video supports only 480p and 720p")
+        raw_duration = inputs.get("duration", 6)
+        if isinstance(raw_duration, str) and raw_duration.isdecimal():
+            raw_duration = int(raw_duration)
+        if isinstance(raw_duration, bool) or not isinstance(raw_duration, int):
+            raise GrokCLIContractError("invalid_argument", "duration must be integral seconds")
+        duration = raw_duration
+
+        arguments: dict[str, Any] = {
+            "prompt": prompt,
+            "duration": duration,
+            "resolution_name": resolution,
+        }
+        native_tool = operation
+
+        if operation == "image_to_video":
+            pin_keys = {
+                "first_frame",
+                "last_image_path",
+                "last_frame",
+                "keyframes",
+                "reference_image_paths",
+                "endpoint_requirement_id",
+                "aspect_ratio",
+            }.intersection(inputs)
+            if pin_keys:
+                raise GrokCLIContractError(
+                    "capability",
+                    "image_to_video does not accept pinned last frames or keyframes; "
+                    "use operation=first_last_frame or reference_to_video: "
+                    + ", ".join(sorted(pin_keys)),
+                )
+            if duration not in {6, 10}:
+                raise GrokCLIContractError(
+                    "invalid_argument",
+                    "image_to_video duration must be exactly 6 or 10 seconds",
+                )
+            image_path = GrokCLIVideo._resolve_single_path(
+                inputs,
+                keys=("image_path", "reference_image_path"),
+                field="image_to_video",
+            )
+            if image_path is None:
+                raise GrokCLIContractError(
+                    "invalid_argument",
+                    "image_to_video requires image_path or reference_image_path",
+                )
+            arguments["image"] = image_path
+        else:
+            if not 1 <= duration <= 15:
+                raise GrokCLIContractError(
+                    "invalid_argument",
+                    f"{operation} duration must be between 1 and 15 seconds",
+                )
+            aspect_ratio = str(inputs.get("aspect_ratio", "16:9"))
+            if aspect_ratio not in _REFERENCE_ASPECT_RATIOS:
+                raise GrokCLIContractError(
+                    "invalid_argument",
+                    f"unsupported aspect_ratio: {aspect_ratio}",
+                )
+            arguments["aspect_ratio"] = aspect_ratio
+
+            first_frame = GrokCLIVideo._resolve_single_path(
+                inputs,
+                keys=("first_frame", "image_path", "reference_image_path"),
+                field="first_frame",
+            )
+            last_frame = GrokCLIVideo._resolve_single_path(
+                inputs,
+                keys=("last_frame", "last_image_path"),
+                field="last_frame",
+            )
+            if (operation == "first_last_frame" or "endpoint_requirement_id" in inputs) and last_frame is None:
+                raise GrokCLIContractError(
+                    "invalid_argument",
+                    "first_last_frame / endpoint_requirement_id requires last_image_path or last_frame",
+                )
+
+            references = inputs.get("reference_image_paths")
+            images: list[str] | None = None
+            empty_optional_pair = (references == [] and operation == "first_last_frame"
+                                   and first_frame is not None and last_frame is not None)
+            if references is not None and not empty_optional_pair:
+                images = validate_local_image_paths(
+                    references,
+                    field="reference_to_video",
+                    minimum=1,
+                    maximum=14,
+                )
+
+            keyframes: list[dict[str, Any]] | None = None
+            if "keyframes" in inputs:
+                keyframes = GrokCLIVideo._normalize_keyframes(inputs.get("keyframes"), duration=duration)
+
+            if first_frame is not None:
+                arguments["first_frame"] = first_frame
+            if last_frame is not None:
+                arguments["last_frame"] = last_frame
+            if images is not None:
+                arguments["images"] = images
+            if keyframes:
+                arguments["keyframes"] = keyframes
+            if voices:
+                arguments["voices"] = voices
+
+            if not any(key in arguments for key in ("images", "voices", "first_frame", "last_frame", "keyframes")):
+                raise GrokCLIContractError(
+                    "invalid_argument",
+                    f"{operation} requires images, voices, first_frame, last_frame, and/or keyframes",
+                )
+            native_tool = "reference_to_video"
+
+        input_assets: list[dict[str, Any]] = []
+
+        def record(path: str, role: str, **extra: Any) -> None:
+            input_assets.append({"role": role, "path": path,
+                "sha256": file_sha256(path), **extra})
+
+        for key in ("image", "first_frame", "last_frame"):
+            if key in arguments:
+                record(arguments[key], "first_frame" if key == "image" else key)
+        for index, path in enumerate(arguments.get("images", [])):
+            record(path, "reference", index=index)
+        for index, frame in enumerate(arguments.get("keyframes", [])):
+            record(frame["image"], "keyframe", index=index, timestamp_s=frame["timestamp_s"])
+        receipt = {
+            "version": "1.0", "provider": provider, "native_tool": native_tool,
+            "adapter_version": adapter_version, **MODEL_PROVENANCE,
+            "requirement_id": inputs.get("endpoint_requirement_id"),
+            "submitted_arguments": arguments, "input_assets": input_assets,
+        }
+        receipt["request_sha256"] = hashlib.sha256(
+            json.dumps(receipt, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        ).hexdigest()
+        return {
+            "native_tool": native_tool, "operation": operation, "arguments": arguments,
+            "input_assets": input_assets, "requirement_id": inputs.get("endpoint_requirement_id"),
+            "receipt": receipt, "request_sha256": receipt["request_sha256"],
+        }
+    except (TypeError, ValueError, OSError) as exc:
+        raise GrokCLIContractError("invalid_argument", str(exc)) from exc
 
 
 class GrokCLIVideo(BaseTool):
@@ -351,177 +564,11 @@ class GrokCLIVideo(BaseTool):
                 if inputs["cli_session_id"] is None:
                     raise GrokCLIContractError("invalid_argument", "cli_session_id must be a safe token, not null")
                 session_id = validate_session_id(inputs["cli_session_id"])
-            unsupported = _UNSUPPORTED_FRAME_ALIASES.intersection(inputs)
-            if unsupported:
-                raise GrokCLIContractError(
-                    "capability",
-                    "Use last_image_path / last_frame for a local final frame; "
-                    "no loop switch or other ending-frame alias is supported: "
-                    + ", ".join(sorted(unsupported)),
-                )
-            if _URL_FINAL_FRAME_KEYS.intersection(inputs):
-                raise GrokCLIContractError(
-                    "capability",
-                    "Grok CLI pinned frames accept local filesystem paths only; "
-                    "use last_image_path, or choose REST grok_video with "
-                    "model=grok-imagine-video-1.5 after explicit route approval",
-                )
-            if any(key in inputs for key in ("model", "model_name")):
-                raise GrokCLIContractError("capability", "Grok CLI video does not expose Imagine model selection")
-
-            unexpected = set(inputs) - self.input_schema["properties"].keys()
-            if unexpected:
-                raise GrokCLIContractError("capability", "Unsupported Grok CLI video controls: " + ", ".join(sorted(unexpected)))
-            if "endpoint_requirement_id" in inputs and (
-                not isinstance(inputs["endpoint_requirement_id"], str) or not inputs["endpoint_requirement_id"].strip()
-            ):
-                raise GrokCLIContractError("invalid_argument", "endpoint_requirement_id must be non-empty")
-
-            prompt = validate_prompt(inputs.get("prompt"))
-            operation = str(inputs.get("operation") or "image_to_video")
-            if operation not in {"image_to_video", "reference_to_video", "first_last_frame"}:
-                raise GrokCLIContractError(
-                    "capability",
-                    "Grok CLI video supports only image_to_video, reference_to_video, and first_last_frame; "
-                    f"direct {operation}, video editing, and upscaling are unavailable",
-                )
-
-            unsupported_voice = {
-                key for key in inputs
-                if ("voice" in key or "audio" in key) and key != "voices"
-            }
-            if unsupported_voice:
-                raise GrokCLIContractError(
-                    "capability",
-                    "Unsupported voice/audio parameters: " + ", ".join(sorted(unsupported_voice)),
-                )
-            voices = inputs.get("voices", [])
-            if not isinstance(voices, list) or len(voices) > 3 or any(
-                not isinstance(voice, str) or not voice.strip() or voice != voice.strip()
-                for voice in voices
-            ):
-                raise GrokCLIContractError(
-                    "invalid_argument",
-                    "voices must be a list of at most 3 non-empty preset identifiers without surrounding whitespace",
-                )
-            if "voices" in inputs and operation not in _PINNED_FRAME_OPERATIONS:
-                raise GrokCLIContractError(
-                    "capability",
-                    "voices is supported only for reference_to_video and first_last_frame",
-                )
-
-            resolution = str(inputs.get("resolution", "480p"))
-            if resolution not in {"480p", "720p"}:
-                raise GrokCLIContractError("capability", "Grok CLI video supports only 480p and 720p")
-            raw_duration = inputs.get("duration", 6)
-            if isinstance(raw_duration, str) and raw_duration.isdecimal():
-                raw_duration = int(raw_duration)
-            if isinstance(raw_duration, bool) or not isinstance(raw_duration, int):
-                raise GrokCLIContractError("invalid_argument", "duration must be integral seconds")
-            duration = raw_duration
-
-            arguments: dict[str, Any] = {
-                "prompt": prompt,
-                "duration": duration,
-                "resolution_name": resolution,
-            }
-            native_tool = operation
-
-            if operation == "image_to_video":
-                pin_keys = {
-                    "first_frame",
-                    "last_image_path",
-                    "last_frame",
-                    "keyframes",
-                    "reference_image_paths",
-                    "endpoint_requirement_id",
-                    "aspect_ratio",
-                }.intersection(inputs)
-                if pin_keys:
-                    raise GrokCLIContractError(
-                        "capability",
-                        "image_to_video does not accept pinned last frames or keyframes; "
-                        "use operation=first_last_frame or reference_to_video: "
-                        + ", ".join(sorted(pin_keys)),
-                    )
-                if duration not in {6, 10}:
-                    raise GrokCLIContractError(
-                        "invalid_argument",
-                        "image_to_video duration must be exactly 6 or 10 seconds",
-                    )
-                image_path = self._resolve_single_path(
-                    inputs,
-                    keys=("image_path", "reference_image_path"),
-                    field="image_to_video",
-                )
-                if image_path is None:
-                    raise GrokCLIContractError(
-                        "invalid_argument",
-                        "image_to_video requires image_path or reference_image_path",
-                    )
-                arguments["image"] = image_path
-            else:
-                if not 1 <= duration <= 15:
-                    raise GrokCLIContractError(
-                        "invalid_argument",
-                        f"{operation} duration must be between 1 and 15 seconds",
-                    )
-                aspect_ratio = str(inputs.get("aspect_ratio", "16:9"))
-                if aspect_ratio not in _REFERENCE_ASPECT_RATIOS:
-                    raise GrokCLIContractError(
-                        "invalid_argument",
-                        f"unsupported aspect_ratio: {aspect_ratio}",
-                    )
-                arguments["aspect_ratio"] = aspect_ratio
-
-                first_frame = self._resolve_single_path(
-                    inputs,
-                    keys=("first_frame", "image_path", "reference_image_path"),
-                    field="first_frame",
-                )
-                last_frame = self._resolve_single_path(
-                    inputs,
-                    keys=("last_frame", "last_image_path"),
-                    field="last_frame",
-                )
-                if (operation == "first_last_frame" or "endpoint_requirement_id" in inputs) and last_frame is None:
-                    raise GrokCLIContractError(
-                        "invalid_argument",
-                        "first_last_frame / endpoint_requirement_id requires last_image_path or last_frame",
-                    )
-
-                references = inputs.get("reference_image_paths")
-                images: list[str] | None = None
-                if references is not None:
-                    images = validate_local_image_paths(
-                        references,
-                        field="reference_to_video",
-                        minimum=1,
-                        maximum=14,
-                    )
-
-                keyframes: list[dict[str, Any]] | None = None
-                if "keyframes" in inputs:
-                    keyframes = self._normalize_keyframes(inputs.get("keyframes"), duration=duration)
-
-                if first_frame is not None:
-                    arguments["first_frame"] = first_frame
-                if last_frame is not None:
-                    arguments["last_frame"] = last_frame
-                if images is not None:
-                    arguments["images"] = images
-                if keyframes:
-                    arguments["keyframes"] = keyframes
-                if voices:
-                    arguments["voices"] = voices
-
-                if not any(key in arguments for key in ("images", "voices", "first_frame", "last_frame", "keyframes")):
-                    raise GrokCLIContractError(
-                        "invalid_argument",
-                        f"{operation} requires images, voices, first_frame, last_frame, and/or keyframes",
-                    )
-                native_tool = "reference_to_video"
-
+            request = build_native_video_request(inputs, adapter_version=self.version, provider=self.provider)
+            native_tool = request["native_tool"]
+            arguments = request["arguments"]
+            input_assets = request["input_assets"]
+            receipt = request["receipt"]
             output_path = str(inputs.get("output_path") or "")
             cwd = str(inputs.get("cwd") or (Path(output_path).expanduser().parent if output_path else Path.cwd()))
             grok_path = str(self._grok_path or os.environ.get("GROK_CLI_PATH", DEFAULT_GROK_PATH))
@@ -540,28 +587,6 @@ class GrokCLIVideo(BaseTool):
                     "spending_approval",
                     "Grok CLI media pricing is unknown; set allow_unknown_cost=true only after explicit approval",
                 )
-            input_assets: list[dict[str, Any]] = []
-
-            def record(path: str, role: str, **extra: Any) -> None:
-                input_assets.append({"role": role, "path": path,
-                    "sha256": file_sha256(path), **extra})
-
-            for key in ("image", "first_frame", "last_frame"):
-                if key in arguments:
-                    record(arguments[key], "first_frame" if key == "image" else key)
-            for index, path in enumerate(arguments.get("images", [])):
-                record(path, "reference", index=index)
-            for index, frame in enumerate(arguments.get("keyframes", [])):
-                record(frame["image"], "keyframe", index=index, timestamp_s=frame["timestamp_s"])
-            receipt = {
-                "version": "1.0", "provider": self.provider, "native_tool": native_tool,
-                "adapter_version": self.version, **MODEL_PROVENANCE,
-                "requirement_id": inputs.get("endpoint_requirement_id"),
-                "submitted_arguments": arguments, "input_assets": input_assets,
-            }
-            receipt["request_sha256"] = hashlib.sha256(
-                json.dumps(receipt, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
-            ).hexdigest()
         except GrokCLIContractError as exc:
             return self._error_result(exc, session_id)
         except (TypeError, ValueError, OSError) as exc:

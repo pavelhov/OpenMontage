@@ -1,0 +1,717 @@
+{
+  "publication_note": "Published copy redacts private account correlators and local workspace/temp paths; technical schemas, control evidence, test outcomes, and non-account provenance are retained.",
+  "status": "complete",
+  "plan_path": "docs/plans/2026-10-07-feat-openart-unknown-cost-plan.md",
+  "source_kind": "plan",
+  "source_digest": "56147e99da7e9bb84c1d6d4723510cbe921d7a09dd7440cb5ccff07b1aad2416",
+  "u_ids_attempted": [
+    "U1",
+    "U2",
+    "U3",
+    "U4",
+    "U5"
+  ],
+  "u_ids_completed": [
+    "U1",
+    "U2",
+    "U3",
+    "U4",
+    "U5"
+  ],
+  "implementation_engine_binding": null,
+  "requested_route": {
+    "target": "native",
+    "harness": "CodexCommander collaboration"
+  },
+  "actual_route": {
+    "target": "native",
+    "harness": "CodexCommander collaboration"
+  },
+  "requested_model": "native default; explicit delegated selectors recorded in unit receipts",
+  "actual_model": "unverified",
+  "fallback_reason": "U1 initial Opus worker returned: Selected model is at capacity. Please try a different model. Landed changes preserved; remaining dispatch implemented by a fresh Sol worker. No timeout-based escalation.",
+  "run_id": null,
+  "plan_checkpoint": "4c4f44e",
+  "blockers": [],
+  "recovery_path": null,
+  "settled_decision_conflicts": [],
+  "behavior_change": true,
+  "standalone_shipping_skipped": true,
+  "verification_evidence": [
+    {
+      "unit": "U1",
+      "behavior_changed": true,
+      "existing_tests_inspected": [
+        "tests/lib/test_provider_credit_ledger.py",
+        "tests/lib/test_openart_credit.py",
+        "tests/lib/test_openart_jobs.py",
+        "tests/integration/test_openart_dispatch_recovery.py"
+      ],
+      "tests_added_or_changed": [
+        "tests/lib/test_provider_credit_ledger_unpriced.py",
+        "tests/lib/test_openart_unknown_cost.py",
+        "tests/integration/test_openart_unknown_dispatch.py"
+      ],
+      "tests_used_unchanged": [
+        "tests/lib/test_provider_credit_ledger.py",
+        "tests/lib/test_openart_credit.py",
+        "tests/lib/test_openart_jobs.py",
+        "tests/integration/test_openart_dispatch_recovery.py"
+      ],
+      "red_or_characterization": "Worker-returned red observations: cross-mode attempt/evidence affinity and raw billing proof gaps; private_prepared crash lacked a repairable claim; malformed amount/settings/envelope became an estimate; direct malformed IDs accepted; legacy exact refusal changed; revoked qualification human gate or changed packet after reservation launched once. Each received a bounded fix and regression. Final current authority is checked both before and after fresh observations.",
+      "verification": [
+        {
+          "result": "98 passed in 2.73s",
+          "scope": "parent ledger and unpriced guard after final affinity fix"
+        },
+        {
+          "result": "107 passed in 101.29s",
+          "command": ".venv/bin/python -m pytest tests/lib/test_openart_unknown_cost.py tests/integration/test_openart_unknown_dispatch.py tests/integration/test_openart_unknown_cost_workflow.py tests/lib/test_openart_credit.py -q --tb=short",
+          "owner": "core completion worker"
+        },
+        {
+          "result": "197 passed in 247.53s",
+          "scope": "worker existing jobs/exact-dispatch/unknown-evidence"
+        },
+        {
+          "result": "2 passed, 23 deselected in 2.49s",
+          "scope": "worker final refusal verifier after origin strengthening"
+        },
+        {
+          "result": "3 meaningful red failures;3 focused green;112 relevant passed66.83s; parent canonical582 passed",
+          "scope": "v1 durable replay and mixed authority rejection"
+        }
+      ],
+      "exception_reason": null
+    },
+    {
+      "unit": "U2",
+      "behavior_changed": true,
+      "existing_tests_inspected": [
+        "tests/lib/test_shot_contract.py",
+        "tests/lib/test_production_request.py"
+      ],
+      "tests_added_or_changed": [
+        "tests/lib/test_shot_contract.py",
+        "tests/lib/test_production_request.py"
+      ],
+      "tests_used_unchanged": [
+        "legacy I2V and Grok compiler cases"
+      ],
+      "red_or_characterization": "Compiler worker observed reference_free schema refusal and KeyError on absent payoff_asset_id before implementation; legacy image/Grok compiled bytes compared unchanged.",
+      "verification": [
+        {
+          "result": "144 passed in 4.10s",
+          "owner": "compiler worker"
+        },
+        {
+          "result": "227 passed in 6.82s",
+          "command": ".venv/bin/python -m pytest tests/lib/test_shot_contract.py tests/lib/test_production_request.py tests/integration/test_provider_qualification_pipeline.py tests/lib/test_production_video_guard_unpriced.py -q",
+          "owner": "parent"
+        },
+        {
+          "result": "273 passed63.05s worker; parent582 final canonical subset passed",
+          "scope": "reference-free selection/final provenance and legacy/native/source/current-byte refusals"
+        }
+      ],
+      "exception_reason": null
+    },
+    {
+      "unit": "U3",
+      "behavior_changed": true,
+      "existing_tests_inspected": [
+        "tests/lib/test_production_execution.py",
+        "tests/lib/test_production_autonomy.py",
+        "tests/lib/test_production_autonomy_report.py",
+        "tests/contracts/test_openart_cli_contract.py",
+        "tests/tools/test_openart_account.py"
+      ],
+      "tests_added_or_changed": [
+        "tests/lib/test_production_execution.py",
+        "tests/lib/test_production_autonomy.py",
+        "tests/lib/test_production_autonomy_report.py",
+        "tests/contracts/test_openart_cli_contract.py",
+        "tests/tools/test_openart_unknown_cost_tools.py",
+        "tests/lib/test_production_video_guard_unpriced.py"
+      ],
+      "tests_used_unchanged": [
+        "tests/tools/test_openart_account.py",
+        "existing exact report, menu and Auto cases"
+      ],
+      "red_or_characterization": "Guard worker observed prepared private unpriced claim not blocking another launch; new readonly account action absent from READ_ONLY_ACTIONS; runtime lone/mixed authority fields reached forbidden provider preparation. Parent corrected schema-v2 fixture lacking additive tables. Typed report tests include corrupted bindings and safe refusal proof.",
+      "verification": [
+        {
+          "result": "109 passed in 57.45s",
+          "scope": "worker existing/new guard cases"
+        },
+        {
+          "result": "225 passed in 1.81s",
+          "command": ".venv/bin/python -m pytest tests/tools/test_openart_unknown_cost_tools.py tests/lib/test_production_execution.py tests/tools/test_openart_account.py -q",
+          "owner": "parent"
+        },
+        {
+          "result": "80 passed in 14.11s",
+          "scope": "parent Auto/menu after v2 fixture repair"
+        },
+        {
+          "result": "19 passed in 0.80s",
+          "scope": "parent latest unknown report subset"
+        },
+        {
+          "result": "92 passed13.90s parent; fresh reviewer applicability finding fixed;55 overlapping independent executions passed; parent canonical582 passed",
+          "scope": "mode-aware tool/profile discovery, supported native variant only"
+        }
+      ],
+      "exception_reason": "Documentation-only companion edits use source/contract review and diff check, without separate mirrored tests."
+    },
+    {
+      "unit": "U4",
+      "behavior_changed": true,
+      "existing_tests_inspected": [
+        "tests/integration/test_provider_qualification_pipeline.py",
+        "tests/integration/test_openart_dispatch_recovery.py"
+      ],
+      "tests_added_or_changed": [
+        "tests/integration/test_provider_qualification_pipeline.py",
+        "tests/integration/test_openart_unknown_cost_workflow.py",
+        "tests/contracts/test_runtime_presentation_contract.py"
+      ],
+      "tests_used_unchanged": [
+        "existing checkpoint and pipeline schema contracts"
+      ],
+      "red_or_characterization": "Qualification pipeline worker added red checks for selected artifact IDs and exact scope/purpose binding. Rehearsal first failed on absent refresh_unknown_cost_evidence API, then exercised real integrated components. Full run found planning-skill runtime tripwire incorrectly including a pipeline with no composition; its documented exclusion was applied and independently accepted.",
+      "verification": [
+        {
+          "result": "12 passed in 18.51s",
+          "command": ".venv/bin/python -m pytest tests/integration/test_openart_unknown_cost_workflow.py -q --tb=short",
+          "owner": "rehearsal worker"
+        },
+        {
+          "result": "106 focused and 125 Phase0/3 tests passed",
+          "owner": "qualification pipeline worker"
+        },
+        {
+          "result": "26 passed in 0.33s",
+          "command": ".venv/bin/python -m pytest tests/contracts/test_runtime_presentation_contract.py -q --tb=short",
+          "owner": "parent"
+        },
+        {
+          "result": "actual retained sample packet/schema/current preparation/native bindings valid, no changes, zero calls; no active scope, unknown-cost sidecar, attempts or output",
+          "owner": "parent"
+        }
+      ],
+      "exception_reason": "Transport executable replies, synthetic HTTPS bytes and semantic/human approval are explicit fixtures. The actual account/profile/preview preparation used registered readonly calls. They are different evidence, never a live generation claim."
+    },
+    {
+      "unit": "U5",
+      "behavior_changed": false,
+      "existing_tests_inspected": [
+        "changed U1-U4 tests and mandatory regressions"
+      ],
+      "tests_added_or_changed": [],
+      "tests_used_unchanged": [
+        "full tests/ suite"
+      ],
+      "red_or_characterization": "Fresh independent reviewer reproduced revoked human approval with one original generation; after fix the same reproduction refused with zero. Malformed price envelope finding fixed. Runtime-test exception and final refusal-origin helper independently reviewed.",
+      "verification": [
+        {
+          "result": "no remaining actionable findings; no settled-decision conflicts",
+          "owner": "fresh independent Sol reviewer"
+        },
+        {
+          "result": "180 passed in 65.38s; final authority/dispatch 63 passed in 45.75s; late refresh revocations 2 passed in 4.02s",
+          "owner": "independent reviewer"
+        },
+        {
+          "result": "make lint passed; all 30 changed Python modules compiled; git diff --check passed",
+          "owner": "parent"
+        },
+        {
+          "result": "no actionable findings in bounded independent security/automation source and regression-evidence review; no provider calls or new test execution",
+          "owner": "independent requested Astra route; served identity unverified",
+          "scope": "bounded source and regression evidence review"
+        },
+        {
+          "command": ".venv/bin/python -m pytest tests/ -q",
+          "result": "passed",
+          "passed": 4222,
+          "skipped": 11,
+          "xfailed": 3,
+          "subtests_passed": 1,
+          "duration_seconds": 1200.46,
+          "source_commit": "d5c924e",
+          "owner": "parent"
+        },
+        {
+          "result": "26 passed in 0.33s; runtime-test exclusion independently accepted; first failed full run interrupted, replaced by completed full run",
+          "scope": "documented no-compose pipeline exception"
+        },
+        {
+          "result": "fresh final-fix review: no remaining actionable findings; parent582 passed277.06s isolated canonical source; lint/compile passed",
+          "scope": "review fixes and source isolation"
+        }
+      ],
+      "exception_reason": "Read-only review adds no redundant tests; meaningful defects received regression coverage under U1/U4."
+    }
+  ],
+  "unit_receipts": [
+    {
+      "unit": "U1",
+      "route": "native collaboration",
+      "model": {
+        "requested": [
+          "anthropic/claude-opus-5-5",
+          "gpt-6.1-sol"
+        ],
+        "actual": "unverified"
+      },
+      "detached_process": "none",
+      "integration": "parent inspected and accepted actual diff; fresh U5 review completed",
+      "verification": "focused passed; parent full passed: 4222 / 11 skipped / 3 xfailed / 1 subtest",
+      "canonical_commits": [
+        "32c622c",
+        "f233a7b",
+        "d817f25",
+        "cb03215"
+      ],
+      "cleanup": "no detached process or isolated checkout"
+    },
+    {
+      "unit": "U2",
+      "route": "native collaboration",
+      "model": {
+        "requested": "not retained in current receipt",
+        "actual": "unverified"
+      },
+      "detached_process": "none",
+      "integration": "parent actual-diff review and integrated checks passed",
+      "verification": "144 worker / 227 parent checks passed",
+      "canonical_commits": [
+        "00d6826",
+        "cb03215"
+      ],
+      "cleanup": "no detached process or isolated checkout"
+    },
+    {
+      "unit": "U3",
+      "route": "native collaboration plus parent integration",
+      "model": {
+        "requested": [
+          "gpt-6.1-sol",
+          "gpt-6-luna"
+        ],
+        "actual": "unverified"
+      },
+      "detached_process": "none",
+      "integration": "parent accepted tools/guards, integrated reports/Auto, fresh review",
+      "verification": "focused passed; parent full passed: 4222 / 11 skipped / 3 xfailed / 1 subtest",
+      "canonical_commits": [
+        "32c622c",
+        "d817f25",
+        "a00053a",
+        "cb03215"
+      ],
+      "cleanup": "no detached process or isolated checkout"
+    },
+    {
+      "unit": "U4",
+      "route": "native collaboration plus parent exact-packet acceptance",
+      "model": {
+        "requested": "gpt-6.1-sol",
+        "actual": "unverified"
+      },
+      "detached_process": "none",
+      "integration": "parent accepted pipeline and real packet bindings; rehearsal chain accepted",
+      "verification": "12 registered workflow cases passed; real preparation zero generation",
+      "canonical_commits": [
+        "2348282",
+        "d817f25",
+        "d5c924e"
+      ],
+      "cleanup": "ignored project retained for separate human approval; no live authority"
+    },
+    {
+      "unit": "U5",
+      "route": "native fresh independent review plus parent",
+      "model": {
+        "requested": "gpt-6.1-sol",
+        "actual": "unverified"
+      },
+      "detached_process": "none",
+      "integration": "reviewer is not feature implementer; consequential findings fixed and reverified",
+      "verification": "parent full passed: 4222 / 11 skipped / 3 xfailed / 1 subtest",
+      "canonical_commits": [
+        "f233a7b",
+        "d5c924e",
+        "cb03215"
+      ],
+      "cleanup": "no external run or shipping action"
+    }
+  ],
+  "sample": {
+    "project": "projects/openart-720p-qualification",
+    "packet_path": "projects/openart-720p-qualification/artifacts/provider_qualification_packet.json",
+    "packet_sha256": "34694b6b02bfd5f599248246a84593e5994c635cbb9300cb3bb07b98b83b355c",
+    "request_sha256": "2d08aa9b5f46a7f076f3ab0637c90fdde174514e719d8352fa0d64d0634c82a8",
+    "model": "pixverseV6",
+    "mode": "text2video",
+    "duration": 1,
+    "resolution": "720p",
+    "aspect_ratio": "16:9",
+    "reference_count": 0,
+    "attempt_cap": 1,
+    "repair_cap": 0,
+    "purpose": "result_contract_qualification",
+    "quality_scope": "transport_only",
+    "authorization_status": "proposed",
+    "live_authority": "absent",
+    "result_contract": "unqualified",
+    "generation_calls": 0,
+    "uploads": 0,
+    "purchases": 0,
+    "topups": 0,
+    "readonly_observation": {
+      "started_at": "2026-10-07T14:31:01.426897Z",
+      "finished_at": "2026-10-07T14:31:07.549203Z",
+      "read_only_cli_calls": 6,
+      "balance_credits": "40",
+      "balance_label": "unattributed_observation",
+      "price_classification": "mismatched_default",
+      "default_price_credits": "50",
+      "default_duration": 5,
+      "default_resolution": "540p",
+      "requested_charge": "unknown",
+      "free_entitlement": "unknown"
+    },
+    "prepare_checkpoint": "caller-owned final awaiting_human gate; no live approval",
+    "prepare_checkpoint_at_receipt": "in_progress; final awaiting_human transition is the caller's last pipeline action"
+  },
+  "implementation_reconciliation": "U4 adds a beta/custom prepare+generate provider-qualification pipeline because cinematic adds unrelated production stages and framework-smoke has no generation. This supplies canonical human gate/registered CLI within R9 without expanding live authority.",
+  "superseded_full_run": {
+    "status": "interrupted after a reproduced failure",
+    "failure": "tests/contracts/test_runtime_presentation_contract.py::test_planning_skill_mentions_runtime_contract[provider-qualification]",
+    "fix": "documented no-compose pipeline exclusion, focused 26 passed; independently accepted; fresh full run required",
+    "interruption": "owned pytest process received SIGINT after confirmed failure; temporary fixture teardown KeyError during interruption, not accepted as a passing suite"
+  },
+  "independent_second_opinion": {
+    "requested_model": "gpt-6-astra",
+    "actual_model": "unverified",
+    "route": "native collaboration",
+    "scope": "unknown authority freshness, consumed-occurrence replay, refusal release",
+    "result": "no actionable findings",
+    "verification": "source and regression test inspection; no new tests/provider calls",
+    "limitations": "existing private-state trust boundary and project serialization"
+  },
+  "changed_files": [
+    ".agents/skills/openart-cli/SKILL.md",
+    "AGENT_GUIDE.md",
+    "docs/OPENART_CLI.md",
+    "lib/checkpoint.py",
+    "lib/openart_credit.py",
+    "lib/openart_dispatch.py",
+    "lib/openart_jobs.py",
+    "lib/production_autonomy.py",
+    "lib/production_autonomy_report.py",
+    "lib/production_execution.py",
+    "lib/production_request.py",
+    "lib/production_video_guard.py",
+    "lib/provider_credit_ledger.py",
+    "lib/provider_qualification.py",
+    "lib/shot_contract.py",
+    "pipeline_defs/provider-qualification.yaml",
+    "schemas/artifacts/__init__.py",
+    "schemas/artifacts/compiled_request.schema.json",
+    "schemas/artifacts/provider_qualification_packet.schema.json",
+    "schemas/artifacts/provider_qualification_report.schema.json",
+    "schemas/artifacts/shot_contract.schema.json",
+    "schemas/artifacts/unknown_cost_authorization.schema.json",
+    "schemas/tools/openart_account.schema.json",
+    "schemas/tools/openart_cli_video.schema.json",
+    "skills/creative/prompting/openart-prompting.md",
+    "skills/pipelines/provider-qualification/generate-director.md",
+    "skills/pipelines/provider-qualification/prepare-director.md",
+    "tests/contracts/test_openart_cli_contract.py",
+    "tests/contracts/test_runtime_presentation_contract.py",
+    "tests/integration/test_openart_unknown_cost_workflow.py",
+    "tests/integration/test_openart_unknown_dispatch.py",
+    "tests/integration/test_provider_qualification_pipeline.py",
+    "tests/lib/test_openart_unknown_cost.py",
+    "tests/lib/test_production_autonomy.py",
+    "tests/lib/test_production_autonomy_report.py",
+    "tests/lib/test_production_execution.py",
+    "tests/lib/test_production_request.py",
+    "tests/lib/test_production_video_guard_unpriced.py",
+    "tests/lib/test_provider_credit_ledger_unpriced.py",
+    "tests/lib/test_shot_contract.py",
+    "tests/tools/test_openart_unknown_cost_tools.py",
+    "tools/openart_account.py",
+    "tools/tool_registry.py",
+    "tools/video/openart_cli_video.py",
+    "docs/implementation/2026-10-07-openart-unknown-cost-rehearsal.md",
+    "docs/implementation/2026-10-07-openart-unknown-cost-work-return.json",
+    "lib/production_provenance.py",
+    "tests/lib/test_openart_credit.py",
+    "tests/integration/test_openart_dispatch_recovery.py",
+    "tests/lib/test_production_provenance.py",
+    "tests/integration/test_openart_reference_free_selection.py"
+  ],
+  "verification_results": [
+    {
+      "command": ".venv/bin/python -m pytest tests/ -q",
+      "result": "passed",
+      "passed": 4222,
+      "skipped": 11,
+      "xfailed": 3,
+      "subtests_passed": 1,
+      "duration_seconds": 1200.46,
+      "source_commit": "d5c924e",
+      "owner": "parent",
+      "source_context": "Owned task code frozen at d5c924e; out-of-scope concurrent working-tree edits are not accepted or claimed as tested by this receipt."
+    },
+    {
+      "command": "make lint",
+      "result": "passed",
+      "owner": "parent"
+    },
+    {
+      "command": "py_compile changed Python paths",
+      "result": "passed",
+      "modules": 30,
+      "owner": "parent"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed",
+      "owner": "parent"
+    },
+    {
+      "status": "passed",
+      "passed": 582,
+      "duration_seconds": 277.06,
+      "source_tree": "2b08cc4c6754f1992260defe925c0bec7b078952",
+      "source_scope": "isolated canonical owned index tree; all concurrent WIP excluded",
+      "lint": "passed using .venv/bin/python",
+      "compile": "10 final changed Python modules passed",
+      "command": ".venv/bin/python -m pytest -q tests/lib/test_provider_credit_ledger.py tests/lib/test_provider_credit_ledger_unpriced.py tests/lib/test_openart_credit.py tests/integration/test_openart_dispatch_recovery.py tests/integration/test_openart_unknown_cost_workflow.py tests/integration/test_openart_reference_free_selection.py tests/lib/test_production_provenance.py tests/lib/test_local_render_provenance.py tests/lib/test_shot_contract.py tests/lib/test_production_request.py tests/tools/test_openart_unknown_cost_tools.py tests/tools/test_openart_cli_video.py tests/contracts/test_openart_cli_contract.py tests/integration/test_provider_qualification_pipeline.py --tb=short",
+      "source_commit": "cb03215e1856e58e1ee6f10b6e0ebf43e186ac6f",
+      "owner": "parent"
+    },
+    {
+      "command": "make lint RUN_PYTHON=.venv/bin/python BASE_PYTHON=.venv/bin/python VENV_DIR=.venv",
+      "result": "passed",
+      "source_tree": "2b08cc4c6754f1992260defe925c0bec7b078952",
+      "owner": "parent",
+      "runtime": ".venv/bin/python"
+    },
+    {
+      "command": "py_compile final changed Python paths",
+      "result": "passed",
+      "modules": 10,
+      "source_tree": "2b08cc4c6754f1992260defe925c0bec7b078952",
+      "owner": "parent"
+    },
+    {
+      "command": "git diff --cached --check",
+      "result": "passed",
+      "source_tree": "2b08cc4c6754f1992260defe925c0bec7b078952",
+      "owner": "parent"
+    }
+  ],
+  "full_verification_source_commit": "d5c924e",
+  "preserved_out_of_scope_changes": {
+    "scope": "concurrent uncommitted edits only; previously committed task-owned changes on overlapping paths remain in this receipt",
+    "paths": [
+      "AGENT_GUIDE.md",
+      "backlot/ui/board.js",
+      "lib/production_execution.py",
+      "lib/production_provenance.py",
+      "lib/production_continuity.py",
+      "schemas/artifacts/proposal_packet.schema.json",
+      "skills/pipelines/cinematic/proposal-director.md",
+      "tests/contracts/test_proposal_unknown_cost.py",
+      "tests/integration/test_repair_continuity_workflow.py"
+    ],
+    "reason": "Preserved and excluded from final review, index tree, canonical tests and task commits."
+  },
+  "lfg_tail": {
+    "plan": "complete",
+    "work": "complete",
+    "doc_review": {
+      "status": "skipped",
+      "reason": "skill_unreachable recorded by planning caller; no doc-review run claimed"
+    },
+    "simplify": {
+      "status": "complete",
+      "applied": {
+        "reuse": 0,
+        "quality": 1,
+        "efficiency": 0
+      },
+      "skipped": 2,
+      "scope": "owned task code from 4c4f44e through working tree, excluding concurrent WIP",
+      "details": [
+        "Shared ack_outbox transaction; distinct constant tables and typed validators preserved.",
+        "Skipped low-value repeated currency predicate.",
+        "Skipped caching ledger instance: constructor rechecks ancestor symlinks/schema version absent from method transaction; exact safety equivalence not established."
+      ],
+      "verification": {
+        "command": ".venv/bin/python -m pytest tests/lib/test_provider_credit_ledger.py tests/lib/test_provider_credit_ledger_unpriced.py tests/integration/test_openart_unknown_cost_workflow.py tests/integration/test_openart_dispatch_recovery.py -q",
+        "passed": 131,
+        "seconds": 197.91,
+        "lint": "passed",
+        "compile": "passed",
+        "diff_check": "passed",
+        "typecheck": "No Python-wide typecheck configuration/target exists in this repo; project lint is py_compile."
+      }
+    },
+    "code_review_and_fixes": {
+      "status": "complete",
+      "formal_review_run_id": "20261007-114027-3aa41d70",
+      "formal_review_status": "complete",
+      "formal_review_verdict": "Ready with fixes",
+      "actionable_finding_ids": [
+        1,
+        2,
+        4,
+        6
+      ],
+      "applied": [
+        {
+          "id": 1,
+          "summary": "Exact v1 outbox replay preserves original publication bytes; unknown tag stays distinct.",
+          "red": "3 regression tests failed in 7.15s (shared with #4)",
+          "green": "3 passed in 5.96s; relevant112 passed66.83s"
+        },
+        {
+          "id": 2,
+          "summary": "Explicit schema-valid reference-free OpenArt text2video can select and certify with no asset bindings; other variants retain all prerequisites.",
+          "red": "1 failed2.34s at record_selection: payoff_asset_id KeyError",
+          "green": "273 passed63.05s, source/provenance/legacy/current-byte/native cases"
+        },
+        {
+          "id": 4,
+          "summary": "Exact-credit scope rejects contradictory unknown-cost digest before claim or submission.",
+          "red": "otherwise valid exact authority failed to refuse",
+          "green": "unit and integration regressions pass"
+        },
+        {
+          "id": 6,
+          "summary": "Tool and per-profile discovery label exact default and separate unknown text2video/reference_free applicability.",
+          "red": "initial metadata test1failed0.10s; fresh applicability review2failed4.56s",
+          "green": "final92passed13.90s"
+        }
+      ],
+      "independent_fix_review": {
+        "requested_model": "gpt-6.1-sol",
+        "actual_model": "unverified",
+        "report": "<TMP>/compound-engineering-501/ce-code-review/20261007-114027-3aa41d70/final-fix-review.md",
+        "result": "No remaining actionable findings; parent's isolated canonical-tree 582-test run completed successfully.",
+        "tests": "73 initial tests;55 final post-fix executions, overlapping counts",
+        "additional_issue": "Unsupported image2video unknown-cost discovery found and resolved; no dispatch bypass."
+      },
+      "formal_peer": {
+        "requested_route": "cursor",
+        "requested_model": "auto",
+        "actual_model": "unverified",
+        "serving_family": "unknown",
+        "independence_verified": false,
+        "receipt_supported": false,
+        "status": "done_and_consumed_job_cleaned"
+      },
+      "validation": {
+        "dropped_candidates": [
+          3,
+          5
+        ],
+        "reason": "#3 fake paid counter is invocation, not provider acceptance; #5 unknown authority freezes no exact price/balance ceiling.",
+        "validator_clarification_retained": true
+      },
+      "residual_actionable": [],
+      "settled_conflict_stamps": [],
+      "settled_decision_conflicts": [],
+      "advisory_limitations": [
+        "Explicit refreshed-evidence timeout coverage was noted as a nonblocking testing gap; related transport timeout and authority refusal tests remain."
+      ],
+      "source_tree": "2b08cc4c6754f1992260defe925c0bec7b078952",
+      "stage7_browser": "pending_after_review_fix_commit",
+      "shipping": "local_only_R9; no push, PR or CI watch",
+      "canonical_verification": {
+        "status": "passed",
+        "passed": 582,
+        "duration_seconds": 277.06,
+        "source_tree": "2b08cc4c6754f1992260defe925c0bec7b078952",
+        "source_scope": "isolated canonical owned index tree; all concurrent WIP excluded",
+        "lint": "passed using .venv/bin/python",
+        "compile": "10 final changed Python modules passed",
+        "command": ".venv/bin/python -m pytest -q tests/lib/test_provider_credit_ledger.py tests/lib/test_provider_credit_ledger_unpriced.py tests/lib/test_openart_credit.py tests/integration/test_openart_dispatch_recovery.py tests/integration/test_openart_unknown_cost_workflow.py tests/integration/test_openart_reference_free_selection.py tests/lib/test_production_provenance.py tests/lib/test_local_render_provenance.py tests/lib/test_shot_contract.py tests/lib/test_production_request.py tests/tools/test_openart_unknown_cost_tools.py tests/tools/test_openart_cli_video.py tests/contracts/test_openart_cli_contract.py tests/integration/test_provider_qualification_pipeline.py --tb=short"
+      },
+      "commit": "cb03215e1856e58e1ee6f10b6e0ebf43e186ac6f"
+    },
+    "residual_handoff": {
+      "status": "not_required",
+      "unapplied_actionable": [],
+      "settled_conflicts": [],
+      "settled_decision_conflicts": []
+    },
+    "browser": {
+      "skill": "compound-engineering:ce-test-browser",
+      "mode": "pipeline",
+      "status": "skip",
+      "reason": "No browser-rendered routes changed in this task's owned scope. The implementation changes registered CLI tools, local Python governance, artifact schemas and pipeline skills. Concurrent Backlot/proposal UI changes are outside this task and preserved.",
+      "scope_base": "4c4f44e",
+      "scope_head": "cb03215e1856e58e1ee6f10b6e0ebf43e186ac6f",
+      "affected_routes": [],
+      "pages_tested": 0,
+      "console_inspection": "not_performed",
+      "eligible_driver": "host-native CUA",
+      "driver_initialized": false,
+      "external_flows": "live OpenArt generation and account entitlement remain untested under R9"
+    },
+    "shipping": {
+      "mode": "local_only",
+      "authority": "approved plan R9",
+      "remotes_observed_once": [
+        "origin",
+        "upstream"
+      ],
+      "push": false,
+      "pr": false,
+      "ci_watch": false
+    },
+    "status": "complete_local_engineering; final human prepare gate is caller-owned"
+  },
+  "final_acceptance": {
+    "scope": "local implementation only",
+    "units": [
+      "U1",
+      "U2",
+      "U3",
+      "U4",
+      "U5"
+    ],
+    "requirements": [
+      "R1",
+      "R2",
+      "R3",
+      "R4",
+      "R5",
+      "R6",
+      "R7",
+      "R8",
+      "R9",
+      "R10",
+      "R11",
+      "R12"
+    ],
+    "status": "met_for_local_scope",
+    "live_generation": "unexecuted; separate approval required",
+    "production_quality": "unqualified",
+    "unknown_cost_auto_continue": "deferred"
+  },
+  "final_commit_scope": {
+    "code_commit": "cb03215e1856e58e1ee6f10b6e0ebf43e186ac6f",
+    "tree": "2b08cc4c6754f1992260defe925c0bec7b078952",
+    "paths": 10,
+    "method": "Named owned files staged; overlapping provenance staged as canonical blob only. Commit guarded by exact staged-path set and verified index tree to preserve foreign working-file edits."
+  }
+}

@@ -1,0 +1,201 @@
+{
+  "type": "object",
+  "required": [
+    "project_dir",
+    "governance",
+    "model",
+    "mode",
+    "prompt"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "project_dir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "governance": {
+      "type": "object",
+      "required": [
+        "scope_id",
+        "shot_id",
+        "stage"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "scope_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "shot_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "stage": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "operation": {
+      "type": "string",
+      "enum": [
+        "text_to_video",
+        "image_to_video",
+        "first_last_frame",
+        "reference_to_video",
+        "shot_video"
+      ]
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prompt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "duration": {
+      "type": [
+        "integer",
+        "number",
+        "string"
+      ]
+    },
+    "aspect_ratio": {
+      "type": "string"
+    },
+    "resolution": {
+      "type": "string"
+    },
+    "native_params": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "input_assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "role",
+          "source_path"
+        ],
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "first_frame",
+              "last_frame",
+              "reference_image",
+              "reference_video",
+              "reference_audio",
+              "character_reference",
+              "environment_reference"
+            ]
+          },
+          "source_path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "source_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "upload_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reference_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "openart_project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "first_frame": {
+      "type": "string"
+    },
+    "last_frame": {
+      "type": "string"
+    },
+    "output_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "compiled_request_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "preparation_review_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "unknown_cost_authorization_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attempt_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "first_last_frame"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "required": [
+          "mode",
+          "input_assets"
+        ],
+        "properties": {
+          "mode": {
+            "const": "image2video"
+          },
+          "input_assets": {
+            "contains": {
+              "properties": {
+                "role": {
+                  "const": "first_frame"
+                }
+              },
+              "required": [
+                "role"
+              ]
+            },
+            "allOf": [
+              {
+                "contains": {
+                  "properties": {
+                    "role": {
+                      "const": "last_frame"
+                    }
+                  },
+                  "required": [
+                    "role"
+                  ]
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ]
+}

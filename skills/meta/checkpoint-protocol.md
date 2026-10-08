@@ -24,6 +24,14 @@ Read the current stage's configuration from the pipeline manifest:
 | true | false | Checkpoint + proceed automatically |
 | false | * | Skip checkpoint entirely (rare) |
 
+An active user-approved Auto-continue policy can preauthorize only its listed
+actual manifest-gated stages. Use the rooted policy SHA and activation decision
+ID as the approval basis, and retain a fresh schema-valid structured review of
+the current artifact with no critical findings. An empty stage list grants no
+checkpoint preauthorization. Missing, drifted, revoked or conflicting policy
+means the human gate remains required. Publish and benchmark gates are excluded.
+Policy preauthorization never upgrades uncertain AV review or final certification.
+
 ### Step 2: Prepare Checkpoint Data
 
 Gather everything needed for the checkpoint:

@@ -209,3 +209,15 @@ This stage gates on human approval (`human_approval_default: true`). After revie
 checkpoint with `status="awaiting_human"`, present the summary (the Backlot board renders
 the artifact), and **END YOUR TURN**. Do not start the next stage in the same response.
 Approval is per-gate — an earlier "go ahead" does not cover this gate.
+
+
+## Conditional OpenArt motion preparation
+
+When the approved production plan explicitly selects OpenArt video, follow the
+OpenArt request preparation sequence in `skills/creative/visual-development.md`
+and the named preparation review in `skills/meta/reviewer.md` before dispatch.
+Keep reviewed start/end boards, every dialogue occurrence, explicit timing and
+current upstream continuity. Unsupported ending pins, audio inputs or rich
+references block this route and require a separately approved alternative.
+Preserve the exact selected model/settings and private approval evidence; an
+offline fixture is not live compatibility or production certification.

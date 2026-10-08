@@ -82,6 +82,22 @@ to the closed `scenes[]` item.
 - overlays are summarized in canonical `overlay_notes`; optional structured details live in the matching shot-card sidecar, never inside depth/framing or an arbitrary scene field,
 - the visual language stays consistent across the piece.
 
+### 6b. Preserve video model intent per shot
+
+Carry a creator's exact video model, preference, or selection goal into the
+approved planning context for the affected shot. Define the eligible provider
+and model pool before ranking; do not silently widen it or force a provider mix.
+The `video_selector` `model_selection_intent` ranks only within that approved
+pool. `exact` is a lock; `prefer` permits only a planned alternative already in
+the pool. Execution failure never automatically picks a replacement. A
+terminal failed result can use only an explicitly approved repair occurrence
+within policy caps; an unresolved original attempt remains held. Record and
+approve the resulting exact per-shot request through normal preparation and
+scope authorization. Model ranking establishes route/control fit, not visual
+quality or a clean-first-attempt guarantee. Do not invent fields in the closed
+`scenes[]` artifact; use the supported planning/policy context. See
+`docs/VIDEO_MODEL_SELECTION.md`.
+
 ## Common Pitfalls
 
 - Using title cards as filler.

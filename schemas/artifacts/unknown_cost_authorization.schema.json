@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "title": "Explicit retained OpenArt unknown-cost authorization",
+  "description": "Strict explicit opt-in for an OpenArt generation whose credit cost is unknown. There is no enforceable credit ceiling, quote, allowance or USD amount; exposure is acknowledged, never zero. Must match current approved scope unknown_cost_authorization_sha256; retained evidence is the trusted local human capture boundary.",
+  "properties": {
+    "version": {
+      "const": "1"
+    },
+    "kind": {
+      "const": "openart_unknown_cost"
+    },
+    "status": {
+      "const": "approved"
+    },
+    "approved_by": {
+      "type": "string",
+      "minLength": 1
+    },
+    "exposure_acknowledgement": {
+      "const": "no_enforceable_credit_ceiling"
+    },
+    "provider": {
+      "const": "openart_cli"
+    },
+    "project_root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "story_revision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "shot_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "account_id_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "workspace": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workspace_observed": {
+      "const": false
+    },
+    "workspace_billing_guarantee": {
+      "const": "unverified"
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "type": "string",
+      "minLength": 1
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "purpose": {
+      "enum": [
+        "generation",
+        "result_contract_qualification"
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "occurrences": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "index",
+          "request_sha256",
+          "native_sha256",
+          "profile_sha256"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "request_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "native_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "profile_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "references_sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "version",
+    "kind",
+    "status",
+    "approved_by",
+    "exposure_acknowledgement",
+    "provider",
+    "project_root",
+    "project_id",
+    "story_revision",
+    "scope_id",
+    "shot_id",
+    "account_id_sha256",
+    "workspace",
+    "workspace_observed",
+    "workspace_billing_guarantee",
+    "model",
+    "mode",
+    "count",
+    "purpose",
+    "evidence",
+    "occurrences"
+  ]
+}

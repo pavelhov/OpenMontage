@@ -1,0 +1,541 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "title": "Proposed provider qualification packet",
+  "properties": {
+    "version": {
+      "const": "1.0"
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "purpose": {
+      "const": "result_contract_qualification"
+    },
+    "authorization_status": {
+      "const": "proposed"
+    },
+    "governance_mode": {
+      "const": "strict"
+    },
+    "tool": {
+      "enum": [
+        "openart_cli_video",
+        "openart_mcp_video"
+      ]
+    },
+    "prompt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "prompt_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "request_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "native_binding": {
+      "oneOf": [
+        {
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "native_controls_sha256",
+            "native_argv_sha256",
+            "native_body_sha256",
+            "profile_sha256"
+          ],
+          "properties": {
+            "native_controls_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "native_argv_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "native_body_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "profile_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "native_capabilities_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "transport",
+            "native_controls_sha256",
+            "native_body_sha256",
+            "profile_sha256",
+            "form_sha256",
+            "account_id_sha256",
+            "references_sha256",
+            "model",
+            "mode",
+            "source",
+            "schema_observation_sha256",
+            "account_observation_sha256"
+          ],
+          "properties": {
+            "native_controls_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "native_body_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "profile_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "form_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "account_id_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "references_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "provider": {
+              "const": "openart_mcp"
+            },
+            "transport": {
+              "const": "agent_mediated_connector"
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "type": "string",
+              "minLength": 1
+            },
+            "source": {
+              "enum": [
+                "real",
+                "fixture"
+              ]
+            },
+            "schema_observation_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "account_observation_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        }
+      ]
+    },
+    "compiled_request": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "preparation_review": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "path",
+          "sha256"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          }
+        }
+      }
+    },
+    "unknown_exposure": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "credits",
+        "usd",
+        "guaranteed_ceiling"
+      ],
+      "properties": {
+        "kind": {
+          "const": "unknown_cost"
+        },
+        "credits": {
+          "type": "null"
+        },
+        "usd": {
+          "type": "null"
+        },
+        "guaranteed_ceiling": {
+          "const": false
+        }
+      }
+    },
+    "attempt_cap": {
+      "const": 1
+    },
+    "repair_cap": {
+      "const": 0
+    },
+    "quality_scope": {
+      "const": "transport_only"
+    },
+    "story_revision": {
+      "type": "string",
+      "minLength": 1
+    },
+    "scope_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "shot_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "unknown_cost_authorization_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "provider": {
+      "enum": [
+        "openart_cli",
+        "openart_mcp"
+      ]
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "type": "string",
+      "minLength": 1
+    },
+    "duration": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "aspect_ratio": {
+      "type": "string",
+      "minLength": 1
+    },
+    "resolution": {
+      "type": "string",
+      "minLength": 1
+    },
+    "native_no_reference": {
+      "type": "boolean"
+    },
+    "input_assets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "role",
+          "path",
+          "sha256",
+          "upload_id"
+        ],
+        "properties": {
+          "role": {
+            "enum": [
+              "first_frame",
+              "last_frame",
+              "reference_image",
+              "reference_video",
+              "reference_audio"
+            ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "upload_id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "native_settings": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "version",
+    "project_id",
+    "purpose",
+    "authorization_status",
+    "governance_mode",
+    "tool",
+    "prompt",
+    "prompt_sha256",
+    "request_sha256",
+    "native_binding",
+    "compiled_request",
+    "preparation_review",
+    "sources",
+    "unknown_exposure",
+    "attempt_cap",
+    "repair_cap",
+    "quality_scope",
+    "story_revision",
+    "scope_id",
+    "shot_id",
+    "unknown_cost_authorization_id",
+    "provider",
+    "model",
+    "mode",
+    "native_no_reference"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "native_no_reference": {
+            "const": false
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "input_assets"
+        ]
+      },
+      "else": {
+        "properties": {
+          "mode": {
+            "const": "text2video"
+          }
+        },
+        "not": {
+          "required": [
+            "input_assets"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "provider": {
+            "const": "openart_mcp"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "tool": {
+            "const": "openart_mcp_video"
+          },
+          "native_binding": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "provider",
+              "transport",
+              "native_controls_sha256",
+              "native_body_sha256",
+              "profile_sha256",
+              "form_sha256",
+              "account_id_sha256",
+              "references_sha256",
+              "model",
+              "mode",
+              "source",
+              "schema_observation_sha256",
+              "account_observation_sha256"
+            ],
+            "properties": {
+              "native_controls_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "native_body_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "profile_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "form_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "account_id_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "references_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "provider": {
+                "const": "openart_mcp"
+              },
+              "transport": {
+                "const": "agent_mediated_connector"
+              },
+              "model": {
+                "type": "string",
+                "minLength": 1
+              },
+              "mode": {
+                "type": "string",
+                "minLength": 1
+              },
+              "source": {
+                "enum": [
+                  "real",
+                  "fixture"
+                ]
+              },
+              "schema_observation_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "account_observation_sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          }
+        },
+        "required": [
+          "native_settings"
+        ]
+      },
+      "else": {
+        "properties": {
+          "tool": {
+            "const": "openart_cli_video"
+          },
+          "native_settings": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "duration": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "aspect_ratio": {
+                "type": "string",
+                "minLength": 1
+              },
+              "resolution": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
+  "oneOf": [
+    {
+      "required": [
+        "duration",
+        "aspect_ratio",
+        "resolution"
+      ],
+      "not": {
+        "required": [
+          "native_settings"
+        ]
+      }
+    },
+    {
+      "required": [
+        "native_settings"
+      ],
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "duration"
+            ]
+          },
+          {
+            "required": [
+              "aspect_ratio"
+            ]
+          },
+          {
+            "required": [
+              "resolution"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

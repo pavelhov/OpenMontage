@@ -319,3 +319,65 @@ Before a generation request leaves the assets stage, verify:
   finalized contract with one change, repeated preserve list, constraints, and
   explicit source/output asset lineage;
 - all rich records live in top-level metadata sidecars keyed by existing IDs.
+
+## OpenArt request preparation (conditional)
+
+Apply this only after the approved route explicitly selects `openart_cli_video`.
+The CLI route's qualified controls and billing remain separate from other providers.
+A reviewed ending board expresses the completed state; it does not imply that a
+native ending-frame pin is supported. Required ending pins, audio inputs and rich
+reference controls block an unsupported OpenArt route; prompt wording cannot
+replace them. Image-to-video carries one approved start-board upload. Its cast
+identity and ending-state suitability still require named semantic review. Current
+`params.image` handling is an observed qualification requirement, not a claim of
+live compatibility from offline fixtures.
+
+Authoring order, without a digest cycle:
+
+1. Complete `artifacts/shot_contract.json` with reviewed start and end boards.
+   Map each existing scene to an existing script section with `script_section_id`.
+   Preserve every dialogue occurrence, including repeated identical utterances,
+   with its speaker, visible/offscreen source and approved interval.
+2. Call `lib.production_request.compile_prompt(project_dir, shot_id)` to build a
+   readable literal prompt and source coverage. Script context is labeled apart
+   from spoken dialogue. Agents remain responsible for story and visual meaning;
+   structural span checks do not establish semantic understanding. Review any
+   intended paraphrase separately; this compiler currently requires literal source
+   fragments and does not silently accept paraphrases.
+3. Before a nonspending reference upload, retain
+   `artifacts/upload_approval-<upload_id>.json` with exactly `version: "1.0"`,
+   `upload_id`, `asset_id`, `shot_id`, `source_sha256`, `source_binding` (from
+   `source_packet`), `approved_by`, `evidence_path`, and `evidence_sha256`.
+   The installed upload lookup checks current reviewed reference roles, cast,
+   bytes, contract planning and upstream evidence. This preliminary approval does
+   not depend on a post-upload native preview or compilation review.
+4. Set explicit duration, aspect ratio, resolution and qualified model/mode;
+   capture and retain the actual private CLI native dry-run preview through the
+   existing read-only account workflow. Pass its opaque receipt ID and SHA.
+5. Call `prepare_compiled_request(inputs, native, profile, coverage=..., timing=...)`.
+   Retain its closed v1 sidecar at `artifacts/compiled_request-<id>.json`. Timing
+   declares language, safety margin, source-bound dominant-action and completion
+   windows, and an explicit serial/parallel overlap judgment. For every utterance,
+   declare language, word count, speech rate, pauses and rationale, or use approved
+   measured audio with a bound measurement and approval covering every exact
+   dialogue/speaker/source occurrence. No default language or rate is inferred.
+6. A named reviewer examines the actual prompt/body, boards, references,
+   continuity and timing. Retain `artifacts/preparation_review-<id>.json` with
+   `version: "1.0"`, matching `review_id`, `reviewer`, `subject_sha256` (the
+   compiled sidecar's `production_request.digest`), `status`, `evidence_kind`
+   (`reviewed`, or `fixture_only` for offline tests), and exactly the five critical
+   predicates: `coverage`, `reference_suitability`, `native_compatibility`,
+   `continuity`, `feasibility`. Each has `status`, `severity: "critical"` and
+   concrete `evidence`. Every predicate must pass; unknowns remain blocking.
+7. Inputs select `compiled_request_id` and `preparation_review_id`. Those two
+   IDs are governance metadata, excluded from native controls and the planned
+   request digest. Obtain the exact scope/attempt approval using the existing
+   digest or explicit `$upstream` template. Preflight is pure and spends nothing.
+
+Changes to prompt, body, controls, native defaults, CLI version, account tier,
+form, reference bytes/reviews, current upstream selections/reviews or timing
+invalidate preparation. Dispatch rechecks and privately freezes the complete
+compiled request, named review, full scope and approval evidence. Public attempt
+records contain opaque IDs, hashes and redacted counterparts. No signed URLs,
+tokens, native argv or private receipt paths belong in public production notes.
+Offline synthetic evidence never establishes live provider compatibility.

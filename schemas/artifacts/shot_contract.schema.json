@@ -51,7 +51,7 @@
       "items": {
         "$ref": "#/$defs/asset"
       },
-      "minItems": 1,
+      "minItems": 0,
       "uniqueItems": true
     },
     "project_review": {
@@ -89,6 +89,13 @@
       },
       "minItems": 1,
       "uniqueItems": true
+    },
+    "reference_mode": {
+      "enum": [
+        "reference_free",
+        "reference_guided"
+      ],
+      "description": "Explicit reference_free is text-only; reference_guided uses reviewed boards as targets and separate native references, without temporal frame pins. Absence retains literal boarded prerequisites."
     }
   },
   "required": [
@@ -100,7 +107,6 @@
     "project_review",
     "late_cast_ids",
     "payoff_speaker_ids",
-    "payoff_asset_id",
     "shots"
   ],
   "additionalProperties": false,
@@ -235,7 +241,10 @@
             "timed_keyframe",
             "payoff_board",
             "observed_outgoing_frame",
-            "voice_reference"
+            "voice_reference",
+            "reference_image",
+            "reference_video",
+            "reference_audio"
           ]
         },
         "path": {
@@ -453,6 +462,12 @@
     "shot": {
       "type": "object",
       "properties": {
+        "reference_mode": {
+          "enum": [
+            "reference_free",
+            "reference_guided"
+          ]
+        },
         "id": {
           "type": "string",
           "minLength": 1,
@@ -540,7 +555,7 @@
             "minLength": 1,
             "pattern": "\\S"
           },
-          "minItems": 1,
+          "minItems": 0,
           "uniqueItems": true
         },
         "review": {
@@ -573,5 +588,108 @@
       ],
       "additionalProperties": false
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "reference_mode"
+        ],
+        "properties": {
+          "reference_mode": {
+            "const": "reference_free"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "assets": {
+            "maxItems": 0
+          },
+          "late_cast_ids": {
+            "maxItems": 0
+          },
+          "payoff_speaker_ids": {
+            "maxItems": 0
+          },
+          "shots": {
+            "items": {
+              "properties": {
+                "cast_ids": {
+                  "maxItems": 0
+                },
+                "required_visible_speakers": {
+                  "maxItems": 0
+                },
+                "dialogue": {
+                  "maxItems": 0
+                },
+                "asset_ids": {
+                  "maxItems": 0
+                },
+                "upstream": {
+                  "maxItems": 0
+                }
+              }
+            }
+          }
+        },
+        "not": {
+          "required": [
+            "payoff_asset_id"
+          ]
+        }
+      },
+      "else": {
+        "required": [
+          "payoff_asset_id"
+        ],
+        "properties": {
+          "assets": {
+            "minItems": 1
+          },
+          "shots": {
+            "items": {
+              "if": {
+                "required": [
+                  "reference_mode"
+                ],
+                "properties": {
+                  "reference_mode": {
+                    "const": "reference_free"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "cast_ids": {
+                    "maxItems": 0
+                  },
+                  "required_visible_speakers": {
+                    "maxItems": 0
+                  },
+                  "dialogue": {
+                    "maxItems": 0
+                  },
+                  "asset_ids": {
+                    "maxItems": 0
+                  },
+                  "upstream": {
+                    "maxItems": 0
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "asset_ids": {
+                    "minItems": 1
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

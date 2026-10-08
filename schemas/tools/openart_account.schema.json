@@ -1,0 +1,288 @@
+{
+  "type": "object",
+  "required": [
+    "action",
+    "read_only"
+  ],
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "inspect",
+        "quote",
+        "form",
+        "catalog",
+        "native_surface",
+        "cli_help",
+        "transport_surface_probe",
+        "native_dry_run",
+        "readiness",
+        "status",
+        "collect",
+        "verify",
+        "upload",
+        "qualifications",
+        "resolve_attempt",
+        "submit",
+        "qualify_inspection",
+        "qualify_upload",
+        "qualify_preview",
+        "recover_original_submit",
+        "qualify_result",
+        "qualify_quote",
+        "refresh_quote",
+        "refresh_unknown_cost_evidence",
+        "repair_outbox",
+        "qualify_resolution_contract"
+      ],
+      "description": "No action submits generation or reserves credits. collect requires the original attempt, project directory and frozen request digest. upload is allowed only after internal nonspending qualification and approval lookup. resolve_attempt repairs only original evidence; submit remains unavailable. refresh_unknown_cost_evidence retains observations only: unknown requested charge never means zero, a USD estimate, or a cost ceiling."
+    },
+    "read_only": {
+      "const": true,
+      "description": "Must be explicitly true."
+    },
+    "model": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+    },
+    "mode": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+    },
+    "form_receipt_id": {
+      "type": "string"
+    },
+    "form_receipt_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "cli_version_receipt_id": {
+      "type": "string"
+    },
+    "cli_version_receipt_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "prompt": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8000
+    },
+    "duration": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 120
+    },
+    "aspect_ratio": {
+      "type": "string",
+      "pattern": "^[0-9]{1,2}:[0-9]{1,2}$"
+    },
+    "resolution": {
+      "type": "string"
+    },
+    "probe": {
+      "type": "boolean",
+      "description": "readiness only: run `openart version`."
+    },
+    "timeout_seconds": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 300
+    },
+    "attempt_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+    },
+    "project_dir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "project_root": {
+      "type": "string",
+      "minLength": 1
+    },
+    "request_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "upload_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+    },
+    "source_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "image_upload_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+    },
+    "request": {
+      "type": "object"
+    },
+    "quote_contract": {
+      "type": "object"
+    },
+    "billing_contract": {
+      "type": "object"
+    },
+    "billing_proof_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "qualification_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "quote_id": {
+      "type": "string"
+    },
+    "json_paths": {
+      "type": "object"
+    },
+    "guarantee": {
+      "type": "object"
+    },
+    "url_hosts": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "native_surface"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "model",
+          "mode",
+          "form_receipt_id",
+          "form_receipt_sha256",
+          "cli_version_receipt_id",
+          "cli_version_receipt_sha256"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "qualify_inspection"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "model",
+          "mode",
+          "json_paths"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "qualify_upload"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "model",
+          "mode",
+          "json_paths",
+          "guarantee",
+          "url_hosts"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "qualify_preview"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "model",
+          "mode",
+          "prompt"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "qualify_result"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "attempt_id",
+          "json_paths"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "recover_original_submit"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "attempt_id",
+          "json_paths"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "refresh_unknown_cost_evidence"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "request"
+        ],
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "quote_contract"
+              ]
+            },
+            {
+              "required": [
+                "qualification_sha256"
+              ]
+            },
+            {
+              "required": [
+                "quote_id"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

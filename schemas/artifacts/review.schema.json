@@ -4,32 +4,166 @@
   "title": "Stage Review",
   "description": "Structured review findings and stage-agent dispositions from the Reviewer.",
   "type": "object",
-  "required": ["version", "stage", "findings"],
+  "required": [
+    "version",
+    "stage",
+    "findings"
+  ],
   "properties": {
-    "version": { "type": "string", "const": "1.0" },
-    "stage": { "type": "string", "enum": ["idea", "script", "scene_plan", "assets", "edit", "compose", "publish"] },
-    "round": { "type": "integer", "minimum": 1, "maximum": 2 },
+    "version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "stage": {
+      "type": "string",
+      "enum": [
+        "idea",
+        "script",
+        "scene_plan",
+        "assets",
+        "edit",
+        "compose",
+        "publish",
+        "research",
+        "proposal"
+      ]
+    },
+    "round": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 2
+    },
     "findings": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["id", "severity", "description"],
+        "required": [
+          "id",
+          "severity",
+          "description"
+        ],
         "properties": {
-          "id": { "type": "string" },
-          "severity": { "type": "string", "enum": ["critical", "suggestion", "nitpick"] },
-          "category": { "type": "string" },
-          "description": { "type": "string" },
+          "id": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "suggestion",
+              "nitpick"
+            ]
+          },
+          "category": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          },
           "disposition": {
             "type": "string",
-            "enum": ["accepted", "rejected", "pending"],
+            "enum": [
+              "accepted",
+              "rejected",
+              "pending"
+            ],
             "default": "pending"
           },
-          "agent_response": { "type": "string" }
+          "agent_response": {
+            "type": "string"
+          }
         },
         "additionalProperties": false
       }
     },
-    "metadata": { "type": "object" }
+    "metadata": {
+      "type": "object"
+    },
+    "artifact_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "artifact_sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "critical_findings": {
+      "type": "array",
+      "items": {
+        "type": [
+          "string",
+          "object"
+        ]
+      }
+    }
   },
-  "additionalProperties": false
+  "additionalProperties": false,
+  "dependentRequired": {
+    "artifact_path": [
+      "artifact_path",
+      "artifact_sha256",
+      "critical_findings"
+    ],
+    "artifact_sha256": [
+      "artifact_path",
+      "artifact_sha256",
+      "critical_findings"
+    ],
+    "critical_findings": [
+      "artifact_path",
+      "artifact_sha256",
+      "critical_findings"
+    ]
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "critical_findings"
+        ],
+        "properties": {
+          "critical_findings": {
+            "maxItems": 0
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "findings": {
+            "not": {
+              "contains": {
+                "properties": {
+                  "severity": {
+                    "const": "critical"
+                  }
+                },
+                "required": [
+                  "severity"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "stage": {
+            "enum": [
+              "research",
+              "proposal"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "artifact_path",
+          "artifact_sha256",
+          "critical_findings"
+        ]
+      }
+    }
+  ]
 }
