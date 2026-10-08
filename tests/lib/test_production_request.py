@@ -780,3 +780,19 @@ def test_legacy_board_contract_still_refuses_text2video(package):
     authored = request.compile_prompt(root,'entry')
     with pytest.raises(ValueError, match='needs approved start board'):
         request.prepare_compiled_request(candidate,native,profile,coverage=authored['coverage'],timing=compiled['timing'])
+
+
+def test_preboard_packet_does_not_waive_reviewed_motion_boards(package):
+    from lib import production_images as images
+    root, *_ = package
+    story = root/'artifacts/script.json'
+    approval = root/'image-approval.txt'; approval.write_text('Synthetic approval of current story for board preparation.')
+    packet = images.build_preboard_packet(root,story={'path':'artifacts/script.json','sha256':file_sha256(story)},
+        approval={'path':'image-approval.txt','sha256':file_sha256(approval),'approved_by':'synthetic-fixture'},
+        references=[],board_slots=[{'id':'missing-start','shot_id':'entry','role':'start_frame','status':'unresolved'}])
+    assert packet['kind'] == 'pre_board'
+    contract = json.loads((root/'artifacts/shot_contract.json').read_text())
+    start = next(a for a in contract['assets'] if a['id']=='start')
+    (root/start['path']).unlink()
+    with pytest.raises(ValueError):
+        request.build_static_source_packet(root,'entry',provider='grok_cli')

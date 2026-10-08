@@ -1,0 +1,716 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openmontage.dev/schemas/artifacts/production_image_calls.schema.json",
+  "title": "Canonical native board-image calls",
+  "description": "Native host journal. Existing Grok provider sessions share admission and accounting without duplicate counters.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": "1.0"
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "calls": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/call"
+      },
+      "minItems": 0
+    }
+  },
+  "required": [
+    "version",
+    "project_id",
+    "calls"
+  ],
+  "$defs": {
+    "call": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "call_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+        },
+        "slot_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "route": {
+          "const": "native_imagegen"
+        },
+        "tool_name": {
+          "const": "image_gen.imagegen"
+        },
+        "state": {
+          "enum": [
+            "reserved",
+            "submitted",
+            "uncertain",
+            "returned",
+            "imported",
+            "failed",
+            "never_submitted"
+          ]
+        },
+        "project_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "story_revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "scope_attempt_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "request_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "packet": {
+          "$ref": "#/$defs/packet"
+        },
+        "host_arguments": {
+          "$ref": "#/$defs/arguments"
+        },
+        "submitted_arguments": {
+          "$ref": "#/$defs/arguments"
+        },
+        "output_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "enum": [
+                  "packet_ready",
+                  "reserved",
+                  "submitted",
+                  "uncertain",
+                  "never_submitted",
+                  "tool_return",
+                  "imported",
+                  "failed"
+                ]
+              },
+              "observed_at": {
+                "type": "string",
+                "minLength": 1
+              },
+              "details": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "packet_sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "used": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "limit": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "arguments_sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "receipt_sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "error": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "output_sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                }
+              }
+            },
+            "required": [
+              "kind",
+              "observed_at",
+              "details"
+            ]
+          },
+          "minItems": 1
+        },
+        "never_submitted_proof": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "canonical_envelope_not_emitted"
+            },
+            "request_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "reason": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "request_sha256",
+            "reason"
+          ]
+        },
+        "host_receipt": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "path",
+            "sha256"
+          ]
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "agent_recorded_host_return"
+            },
+            "tool_name": {
+              "const": "image_gen.imagegen"
+            },
+            "arguments_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "receipt_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "host_tool_call_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "tool_name",
+            "arguments_sha256",
+            "receipt_sha256"
+          ]
+        },
+        "error": {
+          "type": "string",
+          "minLength": 1
+        },
+        "output": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "preserved_path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "media_type": {
+              "enum": [
+                "image/png",
+                "image/jpeg",
+                "image/webp",
+                "image/gif"
+              ]
+            },
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "kind": {
+                  "enum": [
+                    "data_uri",
+                    "local_artifact"
+                  ]
+                },
+                "field": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "kind",
+                "field"
+              ]
+            }
+          },
+          "required": [
+            "path",
+            "preserved_path",
+            "sha256",
+            "media_type",
+            "source"
+          ]
+        }
+      },
+      "required": [
+        "call_id",
+        "slot_id",
+        "route",
+        "tool_name",
+        "state",
+        "project_id",
+        "story_revision",
+        "scope_id",
+        "scope_sha256",
+        "scope_attempt_index",
+        "request_sha256",
+        "packet",
+        "host_arguments",
+        "output_path",
+        "events"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "imported"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "submitted_arguments",
+              "host_receipt",
+              "provenance",
+              "output"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "failed"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "submitted_arguments",
+              "host_receipt",
+              "provenance",
+              "error"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "never_submitted"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "never_submitted_proof"
+            ],
+            "not": {
+              "required": [
+                "submitted_arguments"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "packet": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "version": {
+          "const": "1.0"
+        },
+        "kind": {
+          "const": "pre_board"
+        },
+        "project_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "story_revision": {
+          "type": "string",
+          "minLength": 1
+        },
+        "project_dir": {
+          "type": "string",
+          "minLength": 1
+        },
+        "story": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "path",
+            "sha256"
+          ]
+        },
+        "approval": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "approved_by": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "approved_by"
+          ]
+        },
+        "references": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "role": {
+                "type": "string",
+                "minLength": 1
+              },
+              "path": {
+                "type": "string",
+                "minLength": 1
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "review": {
+                "$ref": "#/$defs/review"
+              },
+              "applicability": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "story_revision": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "roles": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "minItems": 1
+                  }
+                },
+                "required": [
+                  "story_revision",
+                  "roles"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "role",
+              "path",
+              "sha256",
+              "applicability"
+            ]
+          },
+          "minItems": 0
+        },
+        "board_slots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "shot_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "role": {
+                "type": "string",
+                "minLength": 1
+              },
+              "status": {
+                "const": "unresolved"
+              }
+            },
+            "required": [
+              "id",
+              "shot_id",
+              "role",
+              "status"
+            ]
+          },
+          "minItems": 1
+        },
+        "prepared_at": {
+          "type": "string",
+          "minLength": 1
+        },
+        "packet_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      },
+      "required": [
+        "version",
+        "kind",
+        "project_id",
+        "story_revision",
+        "project_dir",
+        "story",
+        "approval",
+        "references",
+        "board_slots",
+        "prepared_at",
+        "packet_sha256"
+      ]
+    },
+    "arguments": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "referenced_image_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "minItems": 1
+        },
+        "transparent_background": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "prompt"
+      ]
+    },
+    "review": {
+      "type": "object",
+      "properties": {
+        "review_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "reviewer": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "story_revision": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "subject_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "unknown",
+            "provisional"
+          ]
+        },
+        "predicates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/predicate"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "draft_policy_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "creator_draft_exception": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        }
+      },
+      "required": [
+        "review_id",
+        "reviewer",
+        "story_revision",
+        "subject_sha256",
+        "status",
+        "predicates"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "provisional"
+              }
+            }
+          },
+          "then": {
+            "anyOf": [
+              {
+                "required": [
+                  "draft_policy_sha256"
+                ]
+              },
+              {
+                "required": [
+                  "creator_draft_exception"
+                ]
+              }
+            ]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "draft_policy_sha256"
+                  ]
+                },
+                {
+                  "required": [
+                    "creator_draft_exception"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "predicate": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "unknown"
+          ]
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "severity": {
+          "enum": [
+            "critical",
+            "cosmetic"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "status",
+        "evidence"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

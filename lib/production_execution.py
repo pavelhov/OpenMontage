@@ -1343,6 +1343,10 @@ def _execute_governed(tool, inputs, invoke):
         openart_prepared = credit_dispatch.prepare_dispatch(inputs, checked, session_id, dispatch_deadline)
     with _lock(root):
         checked = preflight(tool, inputs)  # allowance and source hashes rechecked under lock
+        if checked['kind'] == 'image' and checked['scope']['provider'] == 'grok_cli':
+            from lib.production_images import check_grok_image_admission
+            check_grok_image_admission(root, scope=checked['scope'],
+                shot_id=checked['shot_id'], request_sha256=checked['request_sha256'])
         openart_binding = None
         if checked.get('openart'):
             from lib import openart_jobs as jobs
