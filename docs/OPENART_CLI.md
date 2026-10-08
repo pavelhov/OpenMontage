@@ -372,14 +372,14 @@ strings and all URL query strings, which covers signed URLs.
 - `native_dry_run`: `generate video ... --dry-run`, returning `{endpoint, body_sha256, body}`.
 - `readiness`: gate table, plus an optional `version` probe.
 - `status`: reconcile one original attempt from its durable OpenArt event/job receipt.
-- `recover_original_submit`: only for the original real staged
-  `result_contract_qualification` attempt held because the tentative submit path
+- `recover_original_submit`: for an original real staged production or optional
+  `result_contract_qualification` attempt held because the frozen submit path
   missed the observed response field (for example `historyId`). Pass `attempt_id`
   and `json_paths: {"submit_job_id": "historyId"}` only when that top-level field
   was observed in the original response; this compatibility repair accepts no
   other submit path. The tool extracts the candidate internally,
-  checks the successful original process, frozen request, authorization marker
-  and original ledger reservation, then reads the current account and that
+  checks the successful original process, frozen request and matching original
+  ledger authority (plus the marker for a diagnostic qualification), then reads the current account and that
   original creation. It returns safe field paths/types, recognized status enums,
   URL hostnames and receipt hashes; no job ID or URL is returned. A unique returned
   eligible identifier-field match establishes its path. Otherwise it keeps the
@@ -391,8 +391,10 @@ strings and all URL query strings, which covers signed URLs.
   The immutable private recovery proof binds the canonical original acknowledgement
   without rewriting the profile, launch or approved request. Repeating the action
   reads the same original creation for current safe shape and repairs interrupted
-  acknowledgement publication. Conflicting declarations fail closed. Use
-  `qualify_result` with the observed terminal result paths and hosts afterward.
+  acknowledgement publication. Conflicting declarations fail closed. Ordinary
+  collection uses the verified identifier paths for that same attempt without
+  result promotion; its status, URL and native-control declarations stay frozen.
+  The optional diagnostic route keeps `qualify_result` for strict result promotion.
   Recovery never resubmits, settles billing, releases the slot, supplies a credit
   ceiling or establishes creative quality.
 - `collect`: call only `collect_openart_attempt(project_dir, attempt_id, request_sha256, timeout)`;

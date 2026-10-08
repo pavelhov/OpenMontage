@@ -23,6 +23,9 @@ D = 'a' * 64
 def unknown_original(tmp_path, monkeypatch):
     root = tmp_path / 'project'
     root.mkdir()
+    (root / 'project.json').write_text(json.dumps({
+        'project_id': 'offline-unpriced-guard', 'story_revision': 'story-1',
+    }))
     private = tmp_path / 'private'
     monkeypatch.setenv('OPENMONTAGE_OPENART_STATE_DIR', str(private))
     ledger = CreditLedger(private)
@@ -64,6 +67,18 @@ def publish_ready(original):
     path.write_text(json.dumps(manifest['journal_records']['request.json']))
     ledger.mark_unpriced(binding, 'ready', hashlib.sha256(path.read_bytes()).hexdigest())
     return path
+
+
+def test_video_guard_refuses_unrooted_project(tmp_path, monkeypatch):
+    root = tmp_path / 'unrooted'
+    root.mkdir()
+    private = tmp_path / 'isolated-private'
+    monkeypatch.setenv('OPENMONTAGE_OPENART_STATE_DIR', str(private))
+
+    reasons = guard.read_video_duplicate_blocks(root, 'entry')
+
+    assert len(reasons) == 1
+    assert 'rooted project marker required' in reasons[0]
 
 
 def test_unknown_private_prepared_publication_crash_blocks(unknown_original):
@@ -202,6 +217,9 @@ def test_unknown_verified_other_project_is_independent(unknown_original):
     root, _, _, _, _ = unknown_original
     other = root.parent / 'other-project'
     other.mkdir()
+    (other / 'project.json').write_text(json.dumps({
+        'project_id': 'offline-other-project', 'story_revision': 'story-1',
+    }))
     assert guard.read_video_duplicate_blocks(other, 'entry') == []
 
 

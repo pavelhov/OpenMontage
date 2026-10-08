@@ -309,6 +309,27 @@ def _effective_paths(profile: dict) -> dict:
     return dict(profile["json_paths"], **proof["json_paths"])
 
 
+def _attempt_paths(attempt_id: str, profile: dict) -> dict:
+    """Attempt-bound paths: effective profile paths, plus the verified immutable original
+    submit recovery ID paths for an ordinary launch.
+
+    The recovered ID binding belongs to this one original attempt, so it applies whether or
+    not a global optional result proof exists. Only submit_job_id/result_job_id may differ;
+    status, URL and host paths stay the effective profile/proof paths. Diagnostic
+    qualification launches keep the strict promotion boundary.
+    """
+    paths = _effective_paths(profile)
+    aid = cli._safe_part(attempt_id)
+    if not _is_staged(profile) \
+            or not os.path.lexists(job_dir(aid, create=False) / _SUBMIT_RECOVERY_FILE):
+        return paths
+    launch = launch_record(aid) or {}
+    if launch.get("purpose") != "ordinary" or launch.get("profile") != profile:
+        return paths
+    recovery, _, _ = _load_submit_recovery(aid, "collection_receipt_invalid")
+    return dict(paths, **recovery["json_paths"])
+
+
 def _has_result_proof(profile: dict) -> bool:
     """True when a result proof file exists (valid or not) for this staged profile."""
     if not _is_staged(profile):
@@ -1671,8 +1692,11 @@ def _recovery_origin(aid: str, kind: str, *, job_id: Optional[str] = None) -> tu
         launch = _strict_json(raw_launch, kind)
         prof, binding = launch["profile"], launch["binding"]
         origin = prof["profile_sha256"]
+        # The launch sha binds the frozen purpose; the reservation authority must match it.
+        purpose = launch.get("purpose")
+        qual = purpose == QUALIFICATION_PURPOSE
         if _canon(launch) != raw_launch or launch.get("attempt_id") != aid \
-                or binding.get("attempt_id") != aid or launch.get("purpose") != QUALIFICATION_PURPOSE \
+                or binding.get("attempt_id") != aid or purpose not in (QUALIFICATION_PURPOSE, "ordinary") \
                 or prof.get("source") != "real" or not _is_staged(prof) \
                 or sha256_json({k: v for k, v in prof.items() if k != "profile_sha256"}) != origin \
                 or binding.get("profile_sha256") != origin \
@@ -1718,7 +1742,7 @@ def _recovery_origin(aid: str, kind: str, *, job_id: Optional[str] = None) -> tu
             rows = [r for r in snapshot["unpriced_reservations" if dispatch._unpriced(credit_binding)
                                         else "reservations"] if r["attempt_id"] == aid]
             if len(rows) != 1 or rows[0]["binding_json"] != json.dumps(cb, sort_keys=True, separators=(",", ":")) \
-                    or manifest["purpose"] != QUALIFICATION_PURPOSE \
+                    or manifest["purpose"] != (QUALIFICATION_PURPOSE if qual else "generation") \
                     or Path(credit_binding.project_root) != root \
                     or credit_binding.request_sha256 != binding["request_sha256"] \
                     or credit_binding.native_sha256 != binding["native_body_sha256"] \
@@ -1734,22 +1758,25 @@ def _recovery_origin(aid: str, kind: str, *, job_id: Optional[str] = None) -> tu
             dispatch_sha = hashlib.sha256(_private_bounded(dispatch._manifest_path(aid), kind)).hexdigest()
         else:  # Existing registered internal test seam; never selected by caller data.
             reservation = get_active_reservation(root, aid, binding["request_sha256"])
-            if reservation.get("purpose") != QUALIFICATION_PURPOSE \
+            if reservation.get("purpose") != purpose \
                     or reservation["reservation_id"] != binding["reservation_id"]:
                 raise ValueError
             authority_sha, dispatch_sha = sha256_json(reservation), None
-        marker = (cli.state_dir(create=False) / "qualification" / cli._safe_part(prof["model"])
-                  / cli._safe_part(prof["mode"]) / "attempts"
-                  / (_marker_key(prof, reservation, prof["account_id_sha256"]) + ".json"))
-        marker_raw = _private_bounded(marker, kind)
-        marker_value = _strict_json(marker_raw, kind)
-        expected_marker = {"marker_key": _marker_key(prof, reservation, prof["account_id_sha256"]),
-                           "authorization_occurrence_id": reservation["authorization_occurrence_id"],
-                           "reservation_id": binding["reservation_id"], "attempt_id": aid,
-                           "account_id_sha256": prof["account_id_sha256"], "model": prof["model"],
-                           "mode": prof["mode"], "origin_profile_sha256": origin}
-        if marker_value != expected_marker or _canon(marker_value) != marker_raw:
-            raise ValueError
+        marker_sha = None
+        if qual:  # Diagnostic qualification launches keep their one-shot marker binding.
+            marker = (cli.state_dir(create=False) / "qualification" / cli._safe_part(prof["model"])
+                      / cli._safe_part(prof["mode"]) / "attempts"
+                      / (_marker_key(prof, reservation, prof["account_id_sha256"]) + ".json"))
+            marker_raw = _private_bounded(marker, kind)
+            marker_value = _strict_json(marker_raw, kind)
+            expected_marker = {"marker_key": _marker_key(prof, reservation, prof["account_id_sha256"]),
+                               "authorization_occurrence_id": reservation["authorization_occurrence_id"],
+                               "reservation_id": binding["reservation_id"], "attempt_id": aid,
+                               "account_id_sha256": prof["account_id_sha256"], "model": prof["model"],
+                               "mode": prof["mode"], "origin_profile_sha256": origin}
+            if marker_value != expected_marker or _canon(marker_value) != marker_raw:
+                raise ValueError
+            marker_sha = hashlib.sha256(marker_raw).hexdigest()
         evidence = {"attempt_id": aid, "launch_sha256": hashlib.sha256(raw_launch).hexdigest(),
                     "snapshot_sha256": frozen["snapshot_sha256"], "origin_profile_sha256": origin,
                     "account_id_sha256": prof["account_id_sha256"],
@@ -1757,12 +1784,16 @@ def _recovery_origin(aid: str, kind: str, *, job_id: Optional[str] = None) -> tu
                     "submit_stderr_sha256": hashlib.sha256(stderr).hexdigest(),
                     "original_events_sha256": sha256_json(events[:events.index(holds[0]) + 1]),
                     "reservation_binding_sha256": authority_sha, "dispatch_sha256": dispatch_sha,
-                    "qualification_marker_sha256": hashlib.sha256(marker_raw).hexdigest()}
+                    "qualification_marker_sha256": marker_sha}
+        if not qual:
+            # Ordinary recovery proofs bind purpose explicitly; diagnostic qualification
+            # evidence keeps its existing v1 shape so retained recovery proofs stay valid.
+            evidence["purpose"] = purpose
         return launch, raw, evidence
     except OpenArtCLIError:
         raise
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        raise OpenArtCLIError(kind, "original qualification launch, process or reservation evidence differs") from None
+        raise OpenArtCLIError(kind, "original launch, process or reservation evidence differs") from None
 
 
 def _response_fields(value: Any) -> list[tuple[str, Any]]:
@@ -1941,8 +1972,10 @@ def recover_original_submit(attempt_id: str, *, json_paths: dict,
                             timeout: float = cli.DEFAULT_TIMEOUT) -> dict:
     """Read-only original-job recovery; path declarations never supply a job identifier.
 
-    Only the original real staged qualification launch with a successful retained waitpid proof
-    can be recovered. A fresh account and `creation get` prove the candidate correlation before
+    Only the original real staged launch (ordinary production or diagnostic qualification, with
+    reservation purpose equal to the frozen launch purpose) with a successful retained waitpid
+    proof can be recovered. Ordinary recovery only adapts the original submit/result ID paths for
+    this one attempt; it never grants qualification, changes the profile or resubmits. A fresh account and `creation get` prove the candidate correlation before
     an immutable recovery proof and canonical parsed acknowledgement are published. A response
     without a unique matching ID stays held and returns only safe observed shape. No reservation,
     profile, launch, request, settlement or slot is changed. Replay repairs interrupted publication.
@@ -1971,8 +2004,9 @@ def recover_original_submit(attempt_id: str, *, json_paths: dict,
             launch, raw, origin = _recovery_origin(aid, bad)
             if os.path.lexists(job_dir(aid, create=False) / "job_id") \
                     or any(e.get("type") == "parsed" for e in read_events(aid)) \
-                    or os.path.lexists(result_proof_path(launch["profile"]["model"], launch["profile"]["mode"],
-                                                       origin["origin_profile_sha256"])):
+                    or (launch["purpose"] == QUALIFICATION_PURPOSE
+                        and os.path.lexists(result_proof_path(launch["profile"]["model"], launch["profile"]["mode"],
+                                                              origin["origin_profile_sha256"]))):
                 raise OpenArtCLIError(bad, "prior original job or result proof prevents submit recovery")
             candidate = _recovery_candidate(raw, launch, json_paths["submit_job_id"], bad)
             acct, got, rec = _recovery_observation(launch, candidate, deadline, bad)
@@ -2094,18 +2128,29 @@ def effective_result_contract(attempt_id: str) -> dict:
 
     Independent of later catalog/profile updates. Legacy full profiles return
     result_contract_sha256=None; supported staged profiles without (valid) optional proof
-    likewise return None with the frozen profile-declared json_paths.
+    likewise return None with the frozen profile-declared json_paths for ordinary
+    production launches. An explicit diagnostic QUALIFICATION_PURPOSE launch of a staged
+    profile keeps the strict promotion boundary: its result parser is only bound once a
+    valid result proof exists, so it raises result_contract_unqualified before promotion
+    (never exposing the unbound frozen parser). This is an optional diagnostic tool
+    boundary, not an ordinary production qualification gate.
     """
     aid = cli._safe_part(attempt_id)
     launch = launch_record(aid)
     if launch is None:
         raise OpenArtCLIError("result_contract_unqualified", "attempt was never launched")
     prof = launch["profile"]
-    proof = _proof_or_none(prof)
+    if launch.get("purpose") == QUALIFICATION_PURPOSE and _is_staged(prof):
+        proof = load_result_proof(prof)
+        paths = dict(prof["json_paths"], **proof["json_paths"])
+    else:
+        proof = _proof_or_none(prof)
+        # Ordinary original-only recovery: the verified immutable recovery ID paths.
+        paths = _attempt_paths(aid, prof)
     return {"profile_sha256": prof.get("profile_sha256"),
             "result_contract_sha256": proof["result_contract_sha256"],
             "result_proof_id": proof["result_proof_id"],
-            "json_paths": dict(prof["json_paths"], **proof["json_paths"])}
+            "json_paths": paths}
 
 
 def provider_refusal_code(raw: bytes):
@@ -2186,7 +2231,9 @@ def _verify_raw_submit(attempt_id: str, launch: dict, job_id: str, kind: str,
             raise OpenArtCLIError(kind, "recovered original job differs from launch binding")
     proof_exists = os.path.lexists(result_proof_path(
         launch["profile"]["model"], launch["profile"]["mode"], launch["binding"]["profile_sha256"]))
-    if recovery is not None and not proof_exists:
+    # Ordinary launches always use their own verified recovery ID binding (as _attempt_paths);
+    # no optional proof is consulted on this branch, so it cannot recurse.
+    if recovery is not None and (not proof_exists or launch.get("purpose") == "ordinary"):
         paths = dict(launch["profile"]["json_paths"], **recovery["json_paths"])
     elif proven and launch.get("purpose") == QUALIFICATION_PURPOSE and _is_staged(launch["profile"]) \
             and _proof_or_none(launch["profile"])["result_contract_sha256"] is None:
@@ -2400,11 +2447,12 @@ def _evidence_path(attempt_id: str) -> Path:
     return job_dir(attempt_id, create=False) / _EVIDENCE_FILE
 
 
-def _check_status_receipt(rec: dict, job_id: str, profile: dict) -> tuple[Any, Optional[str]]:
+def _check_status_receipt(rec: dict, job_id: str, profile: dict,
+                          paths: Optional[dict] = None) -> tuple[Any, Optional[str]]:
     """Return (status, single url) from a raw `creation get` receipt bound to job_id."""
     if rec.get("argv") != ["creation", "get", job_id] + cli.GLOBAL_FLAGS:
         raise OpenArtCLIError("collection_receipt_invalid", "status receipt argv differs from original job")
-    paths = _effective_paths(profile)
+    paths = _effective_paths(profile) if paths is None else paths
     parsed = rec.get("parsed")
     if lookup_path(parsed, paths["result_job_id"]) != job_id:
         raise OpenArtCLIError("collection_receipt_invalid", "status receipt does not correlate to original job")
@@ -2493,6 +2541,7 @@ def collect_job(attempt_id: str, *, output_path: Path, output_root: Path, profil
         return _collect_status(aid, "hold", reason="snapshot_changed")
     try:
         submit = _verify_raw_submit(aid, launch, job_id, "raw_submit_invalid")
+        paths = _attempt_paths(aid, profile)
     except OpenArtCLIError as exc:
         return _collect_status(aid, "hold", reason=exc.kind)
     deadline = time.monotonic() + cli.validate_timeout(timeout)  # one budget: account+status+download
@@ -2507,13 +2556,12 @@ def collect_job(attempt_id: str, *, output_path: Path, output_root: Path, profil
     try:
         got = cli.run_readonly(["creation", "get", job_id], timeout=cli.lock_remaining(deadline))
         rec = _load_receipt(got["receipt_id"], got["receipt_sha256"], "collection_receipt_invalid")
-        status, url = _check_status_receipt(rec, job_id, profile)
+        status, url = _check_status_receipt(rec, job_id, profile, paths)
     except OpenArtCLIError as exc:
         if exc.kind == "collection_receipt_invalid":
             append_event(aid, {"type": "hold_wrong_job"})
             return _collect_status(aid, "hold", reason="result_job_mismatch")
         return _collect_status(aid, "pending", reason=exc.kind)
-    paths = _effective_paths(profile)
     append_event(aid, {"type": "status", "receipt_id": got["receipt_id"],
                        "receipt_sha256": got["receipt_sha256"], "status_sha256": _sha(str(status))})
     if status == paths["status_terminal_fail"]:
@@ -2652,8 +2700,11 @@ def verify_collection_receipt(attempt_id: str, profile: dict) -> dict:
     if "result_contract_sha256" not in ev or ev["result_contract_sha256"] not in (contract, None):
         raise OpenArtCLIError(bad, "collection evidence result contract differs")
     srec = _load_receipt(ev.get("status_receipt_id"), ev.get("status_receipt_sha256"), bad)
-    status, url = _check_status_receipt(srec, job_id, profile)
-    paths = _effective_paths(profile)
+    try:
+        paths = _attempt_paths(aid, profile)
+    except OpenArtCLIError:
+        raise OpenArtCLIError(bad, "original submit recovery proof differs")
+    status, url = _check_status_receipt(srec, job_id, profile, paths)
     if status != paths["status_terminal_ok"] or url is None or _sha(url) != ev.get("url_sha256") \
             or not _url_host_ok(url, list(paths["url_hosts"])) \
             or ev.get("source_host") not in list(paths["url_hosts"]) \
@@ -2749,12 +2800,13 @@ def verify_terminal_failure(attempt_id: str, profile: dict) -> dict:
         arec = _load_receipt(rec.get("account_receipt_id"), rec.get("account_receipt_sha256"), bad)
         account = _check_account_receipt(arec, profile)
         srec = _load_receipt(rec.get("status_receipt_id"), rec.get("status_receipt_sha256"), bad)
-        status, _ = _check_status_receipt(srec, job_id, profile)
+        paths = _attempt_paths(aid, profile)
+        status, _ = _check_status_receipt(srec, job_id, profile, paths)
     except OpenArtCLIError as exc:
         raise OpenArtCLIError(bad, exc.message if hasattr(exc, "message") else str(exc))
     if account != rec.get("account_id_sha256") or account != rec["binding"].get("account_id_sha256"):
         raise OpenArtCLIError(bad, "account receipt differs from bound account")
-    if status != _effective_paths(profile)["status_terminal_fail"]:
+    if status != paths["status_terminal_fail"]:
         raise OpenArtCLIError(bad, "status receipt does not prove terminal failure")
     proc = original_process_state(aid)
     if proc["state"] not in ("exited", "dead"):

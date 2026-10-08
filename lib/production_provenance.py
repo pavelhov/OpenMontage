@@ -370,6 +370,13 @@ def _validate_attempt_provenance(
     stable_receipt = {key: value for key, value in receipt.items() if key not in runtime_fields}
     require(receipt.get('request_sha256') == execution._digest(stable_receipt), 'native receipt digest differs')
     raw_path = directory / 'raw_result.json'
+    original_path = directory / 'result.json'
+    if (directory / 'local_continuation_claim.json').exists():
+        claim = execution.validate_local_grok_continuation_record(root, request)
+        require(claim['native_request_sha256'] == receipt['request_sha256'],
+                'local continuation native request differs from one-time claim')
+        raw_path = directory / 'local_continuation_raw_result.json'
+        original_path = directory / 'local_continuation_result.json'
     reconciliation = (directory / 'reconciliation.json').exists()
     if provider_path.exists() and not reconciliation:
         native_result = read(directory / 'provider_result.json')
@@ -387,7 +394,6 @@ def _validate_attempt_provenance(
     else:
         # A host interruption may precede a provider return. Recovered complete
         # native evidence is bound above to the durable prelaunch reservation.
-        original_path = directory / 'result.json'
         if original_path.exists():
             try:
                 original = read(original_path)

@@ -536,7 +536,14 @@ def _state(root, attempt):
         return _mcp_state(root, attempt['attempt_id'])
     directory = root / 'production_attempts' / attempt['attempt_id']
     reconciled = directory / 'reconciliation.json'
-    result = directory / 'result.json'
+    claim = directory / 'local_continuation_claim.json'
+    continued = directory / 'local_continuation_result.json'
+    if claim.exists():
+        validate_local_grok_continuation_record(root, attempt)
+        if not continued.exists() and not reconciled.exists():
+            raw = directory / 'local_continuation_raw_result.json'
+            return {'status': 'uncertain', 'result': _read(raw) if raw.exists() else None}
+    result = continued if claim.exists() else directory / 'result.json'
     try:
         state = _read(reconciled if reconciled.exists() else result) if result.exists() or reconciled.exists() else {'status': 'uncertain'}
         if state.get('status') == 'uncertain':
@@ -693,8 +700,10 @@ def active_openart_dispatch(inputs):
     return active
 
 
-def preflight(tool, inputs):
+def preflight(tool, inputs, *, _local_continuation=None):
     """Perform the same factual checks used by dispatch, without writing or calling."""
+    if _local_continuation is None and isinstance(inputs.get('governance'), dict) and 'continue_local_attempt_id' in inputs['governance']:
+        return _check_local_grok_continuation(tool, inputs)['checked']
     mcp = tool.provider == 'openart_mcp' or (tool.provider == 'selector' and inputs.get('preferred_provider') == 'openart_mcp')
     unknown_keys = ('unknown_cost_authorization_id', 'unknown_cost_evidence_id')
     if mcp:
@@ -814,6 +823,10 @@ def preflight(tool, inputs):
             _fail('malformed carried_from')
         lineage.add(carried['scope_id'])
     scope_used = sum(item['scope_id'] in lineage and item['shot_id'] == shot_id for item in attempts)
+    # The reserved occurrence is counted permanently; only its frozen request
+    # index is replayed instead of selecting a new batch entry.
+    if _local_continuation is not None:
+        scope_used -= 1
     approved_request = scope.get('requests', {}).get(shot_id)
     if isinstance(approved_request, list):
         if scope_used >= len(approved_request):
@@ -883,6 +896,8 @@ def preflight(tool, inputs):
     for item in attempts:
         if item.get('shot_id') != shot_id:
             continue
+        if _local_continuation is not None and item['attempt_id'] == _local_continuation['attempt_id']:
+            continue  # this occurrence is resumed, never a new reservation
         prior_kind = classify_production_kind(item)
         if prior_kind is None:
             _fail('an original attempt has missing or unclassifiable media kind')
@@ -902,9 +917,11 @@ def preflight(tool, inputs):
         if (not isinstance(replaces, list) or not replaces or not set(replaces).issubset(eligible)
                 or not set(replaces).intersection(item['attempt_id'] for item in previous)):
             _fail('repair scope must name existing exact attempts to replace')
-    if sum(item['scope_id'] in lineage and item['shot_id'] == shot_id for item in attempts) >= allowance:
+    used = sum(item['scope_id'] in lineage and item['shot_id'] == shot_id for item in attempts)
+    if used > allowance or (used == allowance and _local_continuation is None):
         _fail('approved attempt allowance exhausted')
-    if any(_inside(item.get('submitted_inputs', {}).get('output_path', ''), root) == output for item in attempts):
+    if any(_inside(item.get('submitted_inputs', {}).get('output_path', ''), root) == output
+           for item in attempts if _local_continuation is None or item['attempt_id'] != _local_continuation['attempt_id']):
         _fail('output path already reserved; reconcile the original attempt')
     if mcp:
         from lib import openart_mcp as connector
@@ -980,9 +997,9 @@ def _preserve_output(source, target, digest):
     target.chmod(0o444)
 
 
-def _save_result(directory, result=None, error=None):
+def _save_result(directory, result=None, error=None, *, prefix=""):
     if result is not None:
-        _write_new(directory / 'raw_result.json', asdict(result))
+        _write_new(directory / (prefix + 'raw_result.json'), asdict(result))
     request = _read(directory / 'request.json')
     output_path = Path(request['submitted_inputs']['output_path'])
     status = 'uncertain'
@@ -1003,12 +1020,198 @@ def _save_result(directory, result=None, error=None):
         public_error = 'OpenArt execution error: ' + str(getattr(error, 'kind', type(error).__name__))
     record = {'preserved_output':preserved,'status': status, 'result': asdict(result) if result is not None else None,
               'output': output, 'exception': public_error}
-    _write_new(directory / 'result.json', record)
+    _write_new(directory / (prefix + 'result.json'), record)
     return record
+
+
+
+_LOCAL_PIN_ERROR = 'Grok CLI invalid_argument error: reference_to_video requires between 1 and 14 local image path(s)'
+_LOCAL_CONTINUATION_FILES = ('request.json', 'result.json', 'raw_result.json',
+                             'shot_contract.json', 'selected_attempts.json')
+
+
+def _local_grok_failure(directory, request):
+    """Recognize only the retained pre-CLI empty-optional-reference defect."""
+    prior = _read(directory / 'result.json')
+    raw = _read(directory / 'raw_result.json')
+    data = raw.get('data', {})
+    expected = {'provider': 'grok_cli', 'cli_version': None,
+                'session_id': request['attempt_id'], 'dispatch_session_id': request['attempt_id'],
+                'error_category': 'invalid_argument', 'dispatch_status': 'not_dispatched',
+                'retry_attempted': False, 'fallback_attempted': False}
+    allowed = set(expected) | {'model', 'agent_model', 'model_role', 'media_model', 'media_model_status'}
+    if (prior.get('status') != 'failed' or prior.get('result') != raw
+            or any(prior.get(k) is not None for k in ('output', 'preserved_output', 'exception'))
+            or raw.get('success') is not False or raw.get('artifacts') != []
+            or raw.get('error') != _LOCAL_PIN_ERROR or not isinstance(data, dict)
+            or set(data) - allowed or any(data.get(k) != v for k, v in expected.items())):
+        _fail('local continuation requires the exact pre-CLI empty-reference failure')
+    submitted = request.get('submitted_inputs', {})
+    if (submitted.get('operation') != 'first_last_frame' or submitted.get('reference_image_paths') != []
+            or submitted.get('cli_session_id') != request['attempt_id']):
+        _fail('local continuation requires the exact frozen empty-reference native pin pair')
+    return raw
+
+
+def validate_local_grok_continuation_record(project_dir, request):
+    """Replay immutable continuation authority without permitting another dispatch."""
+    root = Path(project_dir).resolve()
+    directory = _inside(Path('production_attempts') / request['attempt_id'], root)
+    claim = _read(directory / 'local_continuation_claim.json')
+    expected = {'version', 'attempt_id', 'request_sha256', 'submitted_inputs_sha256',
+                'original_sha256', 'native_request_sha256'}
+    if (not isinstance(claim, dict) or set(claim) != expected or claim.get('version') != '1.0'
+            or claim['attempt_id'] != request['attempt_id']
+            or claim['request_sha256'] != request['request_sha256']
+            or claim['submitted_inputs_sha256'] != _digest(request['submitted_inputs'])
+            or set(claim.get('original_sha256', {})) != set(_LOCAL_CONTINUATION_FILES)):
+        _fail('local continuation claim does not bind the reserved occurrence')
+    for name, digest in claim['original_sha256'].items():
+        if file_sha256(directory / name) != digest:
+            _fail('local continuation original evidence changed: ' + name)
+    _local_grok_failure(directory, request)
+    return claim
+
+
+def _local_grok_inputs(root, request):
+    """Restore original approved locations while verifying every preserved byte."""
+    bindings = iter(request['input_assets'])
+    def restore(role, path):
+        record = next(bindings, None)
+        if (not isinstance(record, dict) or record.get('role') != role or record.get('path') != str(path)
+                or file_sha256(path) != record.get('sha256')):
+            _fail('local continuation frozen input bytes/roles changed')
+        _inside(path, root / 'production_attempts' / request['attempt_id'] / 'inputs')
+        return str(_inside(record['original_path'], root))
+    submitted = _clean(request['submitted_inputs'])
+    submitted.pop('cli_session_id', None)
+    restored = _paths(submitted, root, restore)
+    if next(bindings, None) is not None or planned_request_digest(restored, project_dir=root) != request['request_sha256']:
+        _fail('local continuation request differs from frozen reservation')
+    return dict(restored, project_dir=str(root), governance={'scope_id': request['scope_id'], 'shot_id': request['shot_id']})
+
+
+def _check_local_grok_continuation(tool, inputs):
+    """Read-only exact defect qualification, followed by normal factual preflight."""
+    from tools.video.grok_cli_video import GrokCLIVideo, build_native_video_request
+    import re
+    import os
+    context = inputs.get('governance', {})
+    aid = context.get('continue_local_attempt_id')
+    digest = context.get('continue_local_request_sha256')
+    if (type(tool) is not GrokCLIVideo or tool.name != 'grok_cli_video' or tool.provider != 'grok_cli'
+            or not isinstance(aid, str) or not re.fullmatch(r'[A-Za-z0-9_-]+', aid)
+            or not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest)):
+        _fail('local continuation requires a canonical Grok video attempt and exact request hash')
+    root = discover_project(inputs)
+    if root is None:
+        _fail('local continuation requires its enrolled project')
+    directory = _inside(Path('production_attempts') / aid, root)
+    request = _read(directory / 'request.json')
+    if (request.get('version') != '1.0' or type(request.get('scope_attempt_index')) is not int
+            or request.get('attempt_id') != aid or request.get('cli_session_id') != aid
+            or request.get('request_sha256') != digest or request.get('tool_name') != tool.name
+            or request.get('media_kind') != 'motion' or request.get('scope', {}).get('provider') != 'grok_cli'
+            or 'derived_from_policy' in request.get('scope', {})
+            or context.get('scope_id') != request.get('scope_id') or context.get('shot_id') != request.get('shot_id')):
+        _fail('local continuation reserved route/request/scope differs')
+    for name in ('local_continuation_claim.json', 'local_continuation_result.json',
+                 'local_continuation_raw_result.json', 'reconciliation.json', 'provider_request.json',
+                 'provider_result.json', 'output.mp4'):
+        if (directory / name).exists() or (directory / name).is_symlink():
+            _fail('local continuation already claimed or has prior dispatch/output evidence')
+    _local_grok_failure(directory, request)
+    output = _inside(request['submitted_inputs']['output_path'], root)
+    if output.exists():
+        _fail('local continuation output already exists')
+    sessions_root = Path(tool._sessions_root or os.environ.get('GROK_SESSIONS_ROOT') or Path.home() / '.grok/sessions').expanduser()
+    # A captured original session is never classified as a local validation miss.
+    session_roots = {sessions_root, Path.home() / '.grok/sessions'}
+    if os.environ.get('GROK_SESSIONS_ROOT'):
+        session_roots.add(Path(os.environ['GROK_SESSIONS_ROOT']).expanduser())
+    if any((base / aid).exists() or (base / aid).is_symlink()
+           or any(base.glob('*/' + aid)) for base in session_roots):
+        _fail('local continuation original CLI session already exists')
+    restored = _local_grok_inputs(root, request)
+    if _clean(inputs) != _clean(restored) or set(context) != {
+            'scope_id', 'shot_id', 'continue_local_attempt_id', 'continue_local_request_sha256'}:
+        _fail('local continuation inputs differ from reserved frozen request')
+    scopes = _read(root / 'production_scopes.json')['scopes']
+    matches = [s for s in scopes if s.get('id') == request['scope_id']]
+    if len(matches) != 1 or matches[0] != request['scope']:
+        _fail('local continuation original approval scope changed')
+    frozen = _read(directory / 'shot_contract.json')
+    current = load_shot_contract(root)
+    if (contract_digest(frozen) != request['contract_sha256']
+            or approval_plan_digest(current) != request['scope']['approval_plan_sha256']
+            or approval_plan_digest(frozen) != approval_plan_digest(current)):
+        _fail('local continuation contract plan changed')
+    if load_selected_attempts(root) != _read(directory / 'selected_attempts.json'):
+        _fail('local continuation selected upstream evidence changed')
+    evidence = request.get('approval_evidence', {})
+    if file_sha256(_inside(evidence.get('path', ''), directory)) != request['scope']['evidence']['sha256']:
+        _fail('local continuation preserved approval changed')
+    # Both original and preserved inputs are validated; the exact frozen [] is
+    # retained. The fixed builder omits only the empty optional native images.
+    native = build_native_video_request(request['submitted_inputs'], adapter_version=tool.version)
+    if not {'first_frame', 'last_frame'}.issubset(native['arguments']):
+        _fail('local continuation requires valid native first and last pins')
+    checked = preflight(tool, restored, _local_continuation=request)
+    if checked['scope_attempt_index'] != request['scope_attempt_index']:
+        _fail('local continuation reserved allowance index changed')
+    return {'root': root, 'directory': directory, 'request': request, 'inputs': restored,
+            'checked': checked, 'native': native}
+
+
+def continue_local_grok_attempt(tool, project_dir, attempt_id, *, request_sha256, dry_run=True):
+    """Normal wrapper entry for one defect-specific already-reserved occurrence."""
+    root = Path(project_dir).resolve()
+    directory = _inside(Path('production_attempts') / attempt_id, root)
+    request = _read(directory / 'request.json')
+    inputs = _local_grok_inputs(root, request)
+    inputs['governance'].update(continue_local_attempt_id=attempt_id,
+                                continue_local_request_sha256=request_sha256)
+    if dry_run:
+        checked = _check_local_grok_continuation(tool, inputs)
+        return {'tool': tool.name, 'governed': True, 'would_execute': True,
+                'paid_submission': False, 'provider_calls': 0, 'reservations': 0,
+                'attempt_id': attempt_id, 'request_sha256': checked['request']['request_sha256'],
+                'label': 'same_reserved_local_grok_continuation'}
+    return tool.execute(inputs)
+
+
+def _execute_local_grok_continuation(tool, inputs, invoke):
+    """Claim atomically once; execute instrumented implementation without re-reserving."""
+    if _ACTIVE.get() is not None:
+        _fail('local continuation cannot enter from a nested provider dispatch')
+    root = discover_project(inputs)
+    if root is None:
+        _fail('local continuation requires its enrolled project')
+    with _lock(root):
+        qualified = _check_local_grok_continuation(tool, inputs)
+        directory, request = qualified['directory'], qualified['request']
+        claim = {'version': '1.0', 'attempt_id': request['attempt_id'],
+                 'request_sha256': request['request_sha256'],
+                 'submitted_inputs_sha256': _digest(request['submitted_inputs']),
+                 'native_request_sha256': qualified['native']['request_sha256'],
+                 'original_sha256': {name: file_sha256(directory / name) for name in _LOCAL_CONTINUATION_FILES}}
+        _write_new(directory / 'local_continuation_claim.json', claim)
+    try:
+        result = invoke(copy.deepcopy(request['submitted_inputs']))
+    except BaseException as exc:
+        _save_result(directory, error=exc, prefix='local_continuation_')
+        raise
+    else:
+        _save_result(directory, result=result, prefix='local_continuation_')
+        result.data['production_attempt_id'] = request['attempt_id']
+        result.data['production_request_sha256'] = request['request_sha256']
+        return result
 
 
 def execute_governed(tool, inputs, invoke):
     """Fresh Grok observation occurs outside project/ledger locks for policy dispatch."""
+    if isinstance(inputs, dict) and isinstance(inputs.get("governance"), dict) and "continue_local_attempt_id" in inputs["governance"]:
+        return _execute_local_grok_continuation(tool, inputs, invoke)
     observation = None
     if (not _ACTIVE.get() and isinstance(inputs, dict) and _kind(tool, inputs) == 'motion'
             and (tool.provider == 'grok_cli' or

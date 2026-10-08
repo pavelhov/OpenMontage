@@ -186,3 +186,23 @@ def test_observer_explicit_paths_match_dispatch_resolution(tmp_path, monkeypatch
     observed = observe_grok_cli_compatibility(configured, cwd=working)
     assert observed == {'cli_version': '1.0.34', 'grok_path': str(expected)}
     verify.assert_called_once_with(str(expected), cwd=working)
+
+
+def test_empty_optional_references_are_omitted_only_with_native_pin_pair(native_inputs):
+    inputs = dict(native_inputs, reference_image_paths=[])
+    prepared = build(inputs)
+    assert 'images' not in prepared['arguments']
+    assert inputs['reference_image_paths'] == []
+    assert prepared['arguments']['first_frame'] == inputs['first_frame']
+    assert prepared['arguments']['last_frame'] == inputs['last_frame']
+
+
+@pytest.mark.parametrize('change', ['no_first', 'no_last', 'reference_operation', 'malformed_refs'])
+def test_empty_optional_reference_exception_keeps_native_pin_requirements(native_inputs, change):
+    inputs = dict(native_inputs, reference_image_paths=[])
+    if change == 'no_first': inputs.pop('first_frame')
+    elif change == 'no_last': inputs.pop('last_frame')
+    elif change == 'reference_operation': inputs['operation'] = 'reference_to_video'
+    else: inputs['reference_image_paths'] = ''
+    with pytest.raises(GrokCLIContractError):
+        build(inputs)

@@ -174,20 +174,22 @@ that there is no native-audio guarantee.
   resubmit an `uncertain` attempt. It stays held with no timeout until
   qualified original receipts resolve it, or provider history does if that
   becomes available. Do not assume provider history exists.
-- If the original staged qualification attempt is held because the frozen
+- If an original staged production or optional diagnostic attempt is held because the frozen
   tentative submit path missed an observed field such as `historyId`, use
   registered `openart_account` action `recover_original_submit` with
   `read_only: true`, the original `attempt_id` and the observed
   `json_paths.submit_job_id: "historyId"`. This repair accepts that observed
   top-level submit field only. Never supply a job ID, run a raw CLI recovery or
   submit again. The tool checks the original successful process, frozen request,
-  authorization marker and ledger reservation, then reads the fresh account and
+  matching ledger authority (plus the marker for a diagnostic qualification), then reads the fresh account and
   that original creation before retaining an immutable recovery proof. It returns
   only safe schema shape, recognized status values, URL hosts and hashes. If the
   returned ID path cannot be inferred uniquely, keep the hold. An explicit
   declaration must name its unique eligible identifier field; protocol, request,
   error and billing echoes cannot qualify. Repeat the same action for current original-result
-  shape, then use `qualify_result` with the observed terminal result paths/hosts.
+  shape. Ordinary collection uses the verified identifier paths for that same
+  attempt without promotion; status, URL and native controls stay frozen. Use
+  `qualify_result` for the optional diagnostic route's strict result promotion.
   The frozen profile and request remain unchanged. Recovery neither settles or
   releases credits nor establishes a ceiling or creative quality.
 - Before the first image upload, the provider must have stated in a captured

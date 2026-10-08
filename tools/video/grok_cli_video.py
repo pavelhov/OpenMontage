@@ -208,7 +208,9 @@ def build_native_video_request(
 
             references = inputs.get("reference_image_paths")
             images: list[str] | None = None
-            if references is not None:
+            empty_optional_pair = (references == [] and operation == "first_last_frame"
+                                   and first_frame is not None and last_frame is not None)
+            if references is not None and not empty_optional_pair:
                 images = validate_local_image_paths(
                     references,
                     field="reference_to_video",

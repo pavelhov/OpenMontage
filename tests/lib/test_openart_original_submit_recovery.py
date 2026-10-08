@@ -1,6 +1,7 @@
 """Original-only staged submit recovery against fake CLI subprocesses; no live provider calls."""
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,7 @@ from tests.integration.test_openart_dispatch_recovery import governed  # noqa: F
 from tests.integration.test_openart_unknown_cost_workflow import workflow, submissions  # noqa: F401
 
 
-def lost_launch(st, monkeypatch, *, raw=None, rc=0, metadata=None):
+def lost_launch(st, monkeypatch, *, raw=None, rc=0, metadata=None, purpose=jobs.QUALIFICATION_PURPOSE):
     from tests.lib import test_openart_jobs as staged_tests
     monkeypatch.setitem(staged_tests.STAGED_PATHS, "submit_job_id", "creationId")
     binary = Path(cli.resolve_binary())
@@ -30,7 +31,7 @@ def lost_launch(st, monkeypatch, *, raw=None, rc=0, metadata=None):
     monkeypatch.setenv("SUBMIT_RC", str(rc))
     if raw is not None:
         monkeypatch.setenv("RAW_SUBMIT", raw)
-    profile, out, project = staged_launch(st)
+    profile, out, project = staged_launch(st, purpose=purpose)
     assert out["status"] == "hold_unknown_job"
     return profile, project
 
@@ -472,3 +473,183 @@ def test_exact_original_pixverse_unknown_cost_registered_one_launch_recovery(wor
     assert jobs.load_qualification(model="pixverseV6", mode="text2video", require="full") == profile
     assert submissions(tmp) == ["fixture-original"]
     assert dispatch.ledger().inspect_unpriced(aid)["billing_state"] == "unknown"
+
+
+def _ordinary_proof_path(profile):
+    return jobs.result_proof_path(profile["model"], profile["mode"], profile["profile_sha256"])
+
+
+@pytest.mark.parametrize("stale_proof", [False, True])
+def test_ordinary_lost_launch_recovers_and_collects_original_without_result_proof(staged, monkeypatch, stale_proof):
+    profile, project = lost_launch(staged, monkeypatch, purpose="ordinary")
+    assert jobs.launch_record("qa-1")["purpose"] == "ordinary"
+    origin = {name: (jobs.job_dir("qa-1") / name).read_bytes()
+              for name in ("launch.json", "frozen_request.json")}
+    if stale_proof:  # Invalid optional evidence never disables ordinary original recovery.
+        cli.write_private(_ordinary_proof_path(profile), b'{"stale": true}')
+    recovered = recover()
+    assert recovered["status"] == "original_job_recovered"
+    assert recovered["billing"] == "unknown" and recovered["release_authorized"] is False
+    assert jobs.original_job_id("qa-1") == "job-1"
+    proof = json.loads((jobs.job_dir("qa-1") / "submit_recovery.json").read_bytes())
+    assert proof["origin"]["purpose"] == "ordinary"
+    assert proof["origin"]["qualification_marker_sha256"] is None
+    effective = jobs.effective_result_contract("qa-1")
+    assert effective["result_contract_sha256"] is None
+    assert effective["json_paths"]["submit_job_id"] == "historyId"
+    assert effective["json_paths"]["result_job_id"] == recovered["json_paths"]["result_job_id"]
+    assert {k: v for k, v in effective["json_paths"].items() if k not in ("submit_job_id", "result_job_id")} \
+        == {k: v for k, v in profile["json_paths"].items() if k not in ("submit_job_id", "result_job_id")}
+    _fake_download(monkeypatch)
+    out = jobs.collect_job("qa-1", output_path=project / "qa-1.mp4", output_root=project,
+                           profile=profile, timeout=20)
+    assert out["status"] == "collected", out
+    assert jobs.verify_collection_receipt("qa-1", profile)["output"]["sha256"]
+    again = jobs.collect_job("qa-1", output_path=project / "qa-1.mp4", output_root=project,
+                             profile=profile, timeout=20)
+    assert again["status"] == "collected"
+    assert all((jobs.job_dir("qa-1") / name).read_bytes() == raw for name, raw in origin.items())
+    assert profile["json_paths"]["submit_job_id"] == "creationId"
+    assert jobs.launch_record("qa-1")["profile"] == profile
+    with pytest.raises(cli.OpenArtCLIError):
+        jobs.load_qualification(model="m1", mode="image2video", require="full")
+    with pytest.raises(cli.OpenArtCLIError):
+        jobs.promote_result_contract("qa-1", timeout=20)
+    assert os.path.lexists(_ordinary_proof_path(profile)) is stale_proof
+    assert sum("--async" in c for c in staged_calls(staged)) == 1
+
+
+def test_ordinary_recovery_rejects_cross_account(staged, monkeypatch):
+    lost_launch(staged, monkeypatch, purpose="ordinary")
+    monkeypatch.setenv("ACCOUNT", "foreign-account")
+    with pytest.raises(cli.OpenArtCLIError) as exc:
+        recover()
+    assert exc.value.kind == "account_mismatch"
+    assert jobs.original_job_id("qa-1") is None
+
+
+def test_ordinary_recovery_holds_foreign_job(staged, monkeypatch):
+    lost_launch(staged, monkeypatch, purpose="ordinary")
+    monkeypatch.setenv("RESULT_JOB", "foreign-job")
+    assert recover()["status"] == "hold_unknown_job"
+    assert jobs.original_job_id("qa-1") is None
+    assert not (jobs.job_dir("qa-1") / "submit_recovery.json").exists()
+
+
+@pytest.mark.parametrize("authority", [jobs.QUALIFICATION_PURPOSE, "forged"])
+def test_ordinary_recovery_requires_reservation_purpose_equal_frozen_launch(staged, monkeypatch, authority):
+    _, project = lost_launch(staged, monkeypatch, purpose="ordinary")
+    reservation = dict(jobs.get_active_reservation(project, "qa-1", "r" * 64), purpose=authority)
+    jobs.register_reservation_lookup(lambda root, aid, req: dict(reservation) if aid == "qa-1" else None)
+    before = staged_calls(staged)
+    with pytest.raises(cli.OpenArtCLIError):
+        recover()
+    assert staged_calls(staged) == before
+    assert jobs.original_job_id("qa-1") is None
+
+
+def test_qualification_launch_rejects_ordinary_reservation_authority(staged, monkeypatch):
+    _, project = lost_launch(staged, monkeypatch)
+    reservation = dict(jobs.get_active_reservation(project, "qa-1", "r" * 64), purpose="ordinary")
+    jobs.register_reservation_lookup(lambda root, aid, req: dict(reservation) if aid == "qa-1" else None)
+    with pytest.raises(cli.OpenArtCLIError):
+        recover()
+    assert jobs.original_job_id("qa-1") is None
+
+
+def test_ordinary_tampered_recovery_holds_collection(staged, monkeypatch):
+    profile, project = lost_launch(staged, monkeypatch, purpose="ordinary")
+    recover()
+    path = jobs.job_dir("qa-1") / "submit_recovery.json"
+    value = json.loads(path.read_bytes())
+    value["json_paths"]["result_job_id"] = "id"
+    path.write_bytes(jobs._canon(value))
+    _fake_download(monkeypatch)
+    out = jobs.collect_job("qa-1", output_path=project / "qa-1.mp4", output_root=project,
+                           profile=profile, timeout=20)
+    assert out["status"] == "hold"
+    with pytest.raises(cli.OpenArtCLIError):
+        jobs.effective_result_contract("qa-1")
+    assert sum("--async" in c for c in staged_calls(staged)) == 1
+
+
+def test_diagnostic_recovery_origin_keeps_retained_v1_shape(staged, monkeypatch):
+    """Retained v1 diagnostic recovery proofs (no purpose key) stay valid without rewrites."""
+    lost_launch(staged, monkeypatch)
+    recover()
+    path = jobs.job_dir("qa-1") / "submit_recovery.json"
+    raw = path.read_bytes()
+    origin = json.loads(raw)["origin"]
+    assert "purpose" not in origin and origin["qualification_marker_sha256"]
+    assert set(origin) == {"attempt_id", "launch_sha256", "snapshot_sha256", "origin_profile_sha256",
+                           "account_id_sha256", "submit_stdout_sha256", "submit_stderr_sha256",
+                           "original_events_sha256", "reservation_binding_sha256", "dispatch_sha256",
+                           "qualification_marker_sha256"}
+    assert jobs._load_submit_recovery("qa-1", "bad")[1] == hashlib.sha256(raw).hexdigest()
+    assert recover()["status"] == "original_job_recovered"
+    assert path.read_bytes() == raw
+
+
+def _ordinary_generation_authority(root):
+    """Rewrite the fixture's synthetic credit authorization to ordinary generation (helper pattern)."""
+    from lib import openart_credit as credit
+    from tests.lib.test_production_request import write
+    scope = json.loads((root / "production_scopes.json").read_text())["scopes"][0]
+    auth = json.loads((root / "artifacts/credit_authorization-credit.json").read_text())
+    auth.update(purpose="generation")
+    auth["occurrences"][0].update(id="ordinary-generation-synthetic-approval")
+    terms = {k: v for k, v in auth.items() if k != "evidence"}
+    raw = json.dumps({"kind": "openart_credit_authorization", "terms": terms}, sort_keys=True).encode()
+    (root / "credit-approval.json").write_bytes(raw)
+    auth["evidence"] = {"path": "credit-approval.json", "sha256": hashlib.sha256(raw).hexdigest()}
+    scope["credit_authorization_sha256"] = credit.credit_authorization_digest(auth)
+    write(root / "artifacts/credit_authorization-credit.json", auth)
+    write(root / "production_scopes.json", {"version": "1.0", "scopes": [scope]})
+
+
+def test_real_ledger_ordinary_lost_launch_recovers_and_collects_original_without_result_proof(governed, monkeypatch):
+    from lib import production_execution as execution
+    root, inputs, profile, tmp = governed
+    _ordinary_generation_authority(root)
+    binary = Path(cli.resolve_binary())
+    # historyId shift on submit; result URL stays on the frozen profile's declared host.
+    binary.write_text(binary.read_text().replace("out={'job':{'id':job}}",
+        "out={'historyId':job,'model':'m1','mode':'image2video','media':'video','status':'PENDING'}")
+        .replace("https://cdn.openart.test/result.mp4", "https://cdn.example.test/result.mp4"))
+    result = OpenArtCLIVideo().execute(inputs)
+    aid = result.data["production_attempt_id"]
+    assert jobs.launch_record(aid)["purpose"] == "ordinary"
+    assert not os.path.lexists(_ordinary_proof_path(profile))
+    row = dispatch.ledger().inspect(aid)
+    assert row["slot_state"] == "uncertain" and not row["job_id"]
+    before = {name: (jobs.job_dir(aid) / name).read_bytes()
+              for name in ("launch.json", "frozen_request.json", "credit_dispatch.json")}
+    probe = jobs.recover_original_submit(aid, json_paths={"submit_job_id": "historyId"})
+    assert probe["status"] == "original_job_recovered"
+    assert probe["json_paths"]["result_job_id"] == "creation.id"
+    recovered = jobs.recover_original_submit(aid, json_paths={"submit_job_id": "historyId", "result_job_id": "creation.id"})
+    assert recovered["status"] == "original_job_recovered"
+    origin = json.loads((jobs.job_dir(aid) / "submit_recovery.json").read_bytes())["origin"]
+    assert origin["purpose"] == "ordinary" and origin["qualification_marker_sha256"] is None
+    assert dispatch.ledger().inspect(aid) == row  # recovery neither settles nor releases
+    dispatch.record_launch_result(aid)
+    acknowledged = dispatch.ledger().inspect(aid)
+    assert acknowledged["slot_state"] == "submitted" and acknowledged["debit_state"] == row["debit_state"]
+    effective = jobs.effective_result_contract(aid)
+    assert effective["result_contract_sha256"] is None
+    assert effective["json_paths"]["submit_job_id"] == "historyId"
+    monkeypatch.setenv("FAKE_STATUS", "done")
+    request_sha = dispatch._manifest(aid)[1].request_sha256
+    _fake_download(monkeypatch)  # offline bytes; host matches the frozen profile's cdn.example.test
+    collected = execution.collect_openart_attempt(root, aid, request_sha256=request_sha)
+    assert collected["status"] == "generated", collected
+    assert jobs.verify_collection_receipt(aid, profile)["output"]["sha256"]
+    assert execution.collect_openart_attempt(root, aid, request_sha256=request_sha) == collected
+    assert dispatch.ledger().inspect(aid)["debit_state"] == row["debit_state"]  # never spuriously released
+    assert all((jobs.job_dir(aid) / name).read_bytes() == raw for name, raw in before.items())
+    assert jobs.launch_record(aid)["profile"] == profile
+    assert profile["json_paths"]["submit_job_id"] == "job.id"
+    assert not os.path.lexists(_ordinary_proof_path(profile))
+    with pytest.raises(cli.OpenArtCLIError):
+        jobs.load_qualification(model="m1", mode="image2video", require="full")
+    assert len((tmp / "paid").read_text().splitlines()) == 1

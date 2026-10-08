@@ -130,13 +130,31 @@ def test_capture_bad_native_reference_writes_no_authorization(seam, monkeypatch)
 def test_gated_mode_never_reaches_capture_or_reference_verification(seam, monkeypatch):
     root, policy, sha, inputs, native, checks = seam
     from tools import tool_registry
-    row = openart_row(model='pixverseV6', mode='image2video', level='pre_submit')
+    row = openart_row(model='pixverseV6', mode='image2video', level='pre_submit',
+                      production_ready=False)
     monkeypatch.setattr(tool_registry, '_openart_route', lambda _: row)
     with pytest.raises(pa.AutonomyError, match='not production-ready'):
         pa.derive_scope(root, inputs, provider='openart_cli')
     assert checks == []
     assert not (root / 'production_scopes.json').exists()
     assert not list((root / 'artifacts').glob('unknown_cost_authorization-*.json'))
+
+
+def test_native_ready_referenced_route_needs_no_prior_paid_qualification(seam, monkeypatch):
+    root, policy, sha, inputs, native, checks = seam
+    monkeypatch.setenv('OPENMONTAGE_OPENART_STATE_DIR', str(root / 'isolated-private'))
+    from tools import tool_registry
+    row = openart_row(model='pixverseV6', mode='image2video', level='pre_submit',
+                      production_ready=True, full_result_qualified=False,
+                      empirical_result_status='not_tested')
+    monkeypatch.setattr(tool_registry, '_openart_route', lambda _: row)
+
+    scope = pa.derive_scope(root, inputs, provider='openart_cli')
+
+    assert scope['attempts_per_shot'] == {'entry': 1}
+    assert checks == [native, native]
+    auth = json.loads((root / f'artifacts/unknown_cost_authorization-{scope["id"]}.json').read_text())
+    assert auth['occurrences'][0]['references_sha256'] == H('verified source/upload/role')
 
 
 def test_role_bound_assets_do_not_need_legacy_image_upload_field(seam, monkeypatch):
