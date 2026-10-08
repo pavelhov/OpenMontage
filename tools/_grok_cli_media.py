@@ -503,22 +503,14 @@ def _content_text(value: Any) -> str:
 
 
 def _normalize_sealed_argument_value(value: Any) -> Any:
-    """Normalize values for sealed media-arg equality checks.
+    """Ignore ASCII boundary whitespace in the top-level prompt only.
 
-    Grok CLI 1.0.13 has been observed to drop a trailing newline from sealed
-    prompt strings while still generating the requested artifact. Treat that as
-    semantically identical. Keep every other mutation as a hard protocol reject.
+    CLI transport may trim prompt boundaries. Internal text, Unicode whitespace,
+    asset paths, all other strings and every nonprompt control remain exact.
     """
-
-    if isinstance(value, str):
-        return value.rstrip("\n\r")
-    if isinstance(value, list):
-        return [_normalize_sealed_argument_value(item) for item in value]
-    if isinstance(value, tuple):
-        return [_normalize_sealed_argument_value(item) for item in value]
     if isinstance(value, dict):
         return {
-            str(key): _normalize_sealed_argument_value(item)
+            key: item.strip(" \t\n\r\v\f") if key == "prompt" and isinstance(item, str) else item
             for key, item in value.items()
         }
     return value
@@ -965,3 +957,28 @@ def execute_grok_cli_media(
                 prompt_path.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def retained_grok_session_stream(session_directory: Path, session_id: str) -> str:
+    """Decode original ACP updates into the existing strict stream validator."""
+    events = []
+    path = session_directory / 'updates.jsonl'
+    if path.is_symlink():
+        raise GrokCLIContractError('protocol', 'original session updates cannot be a symlink')
+    for line in path.read_text().splitlines():
+        row = json.loads(line)
+        if not isinstance(row, dict) or row.get('method') not in {'session/update', '_x.ai/session/update'}:
+            raise GrokCLIContractError('protocol', 'invalid original ACP session update')
+        params = row.get('params', {})
+        if not isinstance(params, dict) or params.get('sessionId') != session_id:
+            raise GrokCLIContractError('protocol', 'original update session identity differs')
+        update = params.get('update', {})
+        if not isinstance(update, dict):
+            raise GrokCLIContractError('protocol', 'invalid original session update body')
+        kind = update.get('sessionUpdate')
+        if kind in {'tool_call', 'tool_call_update'}:
+            events.append({'type': kind, **{key: value for key, value in update.items() if key != 'sessionUpdate'}})
+        elif kind == 'turn_completed':
+            events.append({'type': 'end', 'sessionId': params['sessionId'],
+                           'stopReason': update.get('stop_reason')})
+    return '\n'.join(json.dumps(event) for event in events)

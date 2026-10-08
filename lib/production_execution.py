@@ -1505,6 +1505,105 @@ def _grok_native_arguments(inputs, media_kind='motion'):
     return arguments
 
 
+def _grok_prompt_boundary_original(root, request):
+    """Qualify only the old sealed-prompt boundary rejection from original logs."""
+    from urllib.parse import quote
+    from tools._grok_cli_media import (retained_grok_session_stream, _parse_stream,
+        _trusted_session_artifact, _sealed_arguments_match, _probe_artifact, _validate_media_contract)
+    directory = root / 'production_attempts' / request['attempt_id']
+    state = _state(root, request)
+    previous = state.get('result') or {}
+    data = previous.get('data', {})
+    if (request['scope']['provider'] != 'grok_cli' or request['media_kind'] != 'motion'
+            or state['status'] != 'failed' or previous.get('success') is not False
+            or previous.get('error') != 'Grok CLI protocol error: Grok changed the sealed media-tool arguments; the artifact was rejected'
+            or data.get('error_category') != 'protocol' or data.get('dispatch_status') != 'failed'
+            or data.get('session_id') != request['cli_session_id']
+            or data.get('dispatch_session_id') != request['cli_session_id']
+            or _read(directory / 'raw_result.json') != previous
+            or data.get('retry_attempted') is not False or data.get('fallback_attempted') is not False):
+        _fail('only an uncertain original or exact sealed-prompt boundary rejection can be reconciled')
+    submitted = request['submitted_inputs']
+    receipt = data.get('conditioning_receipt', {})
+    expected = _grok_native_arguments(submitted, request['media_kind'])
+    native_tool = _grok_native_operation(submitted, request['media_kind'])
+    if (receipt.get('submitted_arguments') != expected or receipt.get('native_tool') != native_tool
+            or receipt.get('provider') != 'grok_cli' or receipt.get('session_id') != request['cli_session_id']):
+        _fail('original prompt rejection conditioning differs from frozen request')
+    # The original journal chooses the session root, never a caller-supplied source.
+    cwd = Path(submitted.get('cwd') or Path(submitted['output_path']).parent).resolve()
+    session_directory = Path(data.get('session_directory', '')).expanduser()
+    if (session_directory.name != request['cli_session_id']
+            or session_directory.parent.name != quote(str(cwd), safe='')
+            or session_directory.is_symlink() or not session_directory.is_dir()):
+        _fail('original session directory differs from frozen working directory')
+    stream = retained_grok_session_stream(session_directory, request['cli_session_id'])
+    calls = [json.loads(line) for line in stream.splitlines() if json.loads(line).get('type') == 'tool_call']
+    if len(calls) != 1:
+        _fail('original prompt recovery requires exactly one native call')
+    observed = calls[0].get('rawInput')
+    if (not isinstance(observed, dict) or observed.get('prompt') == expected.get('prompt')
+            or not _sealed_arguments_match(observed, expected)):
+        _fail('original protocol change is not prompt-only ASCII boundary whitespace')
+    path, _, session_id = _parse_stream(stream, tool_name=native_tool, expected_arguments=expected)
+    if session_id != request['cli_session_id']:
+        _fail('original completion session differs')
+    source = _trusted_session_artifact(path, session_directory.parent.parent, session_id)
+    if not source.is_relative_to(session_directory.resolve()):
+        _fail('original artifact differs from exact session directory')
+    for asset in request['input_assets']:
+        if file_sha256(_inside(asset['path'], root)) != asset['sha256']:
+            _fail('original recovery input bytes changed')
+    source_sha256 = file_sha256(source)
+    metadata = _probe_artifact(source, media_kind='video')
+    _validate_media_contract(metadata, tool_name=native_tool, arguments=expected)
+    if file_sha256(source) != source_sha256:
+        _fail('original artifact changed during probe')
+    proof = {'version':'1.0', 'mode':'prompt_boundary_ascii_whitespace', 'session_id':session_id,
+             'updates_sha256':file_sha256(session_directory / 'updates.jsonl'),
+             'source_sha256':source_sha256, 'media_metadata':metadata,
+             'original_sha256':{name:file_sha256(directory / name) for name in ('request.json','raw_result.json','result.json')}}
+    return proof, source, receipt, expected
+
+
+def collect_original_grok_prompt_boundary(project_dir, attempt_id, *, request_sha256, dry_run=True):
+    """Collect one original completed artifact; no CLI, network, dispatch or reservation."""
+    from tools._grok_cli_media import _copy_and_validate
+    from tools.base_tool import ToolResult
+    root = Path(project_dir).resolve()
+    directory = _inside(Path('production_attempts') / attempt_id, root)
+    with _lock(root):
+        request = _read(directory / 'request.json')
+        if request_sha256 != request['request_sha256']:
+            _fail('original collection request digest differs')
+        proof, source, original_receipt, arguments = _grok_prompt_boundary_original(root, request)
+        if dry_run:
+            return {'attempt_id':attempt_id, 'request_sha256':request_sha256,
+                    'provider_calls':0, 'reservations':0, 'would_collect_original':True,
+                    'original_session_recovery':proof}
+        output = Path(request['submitted_inputs']['output_path'])
+        if output.exists():
+            if not output.is_file() or output.is_symlink() or file_sha256(output) != proof['source_sha256']:
+                _fail('original collection conflicts with existing output')
+            from tools._grok_cli_media import _probe_artifact, _validate_media_contract
+            metadata = _probe_artifact(output, media_kind='video')
+            _validate_media_contract(metadata, tool_name=original_receipt['native_tool'], arguments=arguments)
+        else:
+            metadata = _copy_and_validate(source, output, media_kind='video',
+                                          tool_name=original_receipt['native_tool'], arguments=arguments)
+        if file_sha256(output) != proof['source_sha256'] or file_sha256(source) != proof['source_sha256']:
+            _fail('original artifact changed during collection')
+        data = copy.deepcopy(_state(root, request)['result']['data'])
+        data.update(dispatch_status='completed', source_artifact=str(source), output=str(output),
+                    reported_session_id=request['cli_session_id'], original_session_recovery=proof, **metadata)
+        data.pop('error_category', None)
+        data['conditioning_receipt'].update(dispatch_status='completed', submission_evidence='verified_native_call')
+        result = ToolResult(success=True, data=data, artifacts=[str(output)], cost_usd=None)
+    reconcile_attempt(root, attempt_id, result, request_sha256=request_sha256)
+    result.data.update(production_attempt_id=attempt_id, production_request_sha256=request_sha256)
+    return result
+
+
 def reconcile_attempt(project_dir, attempt_id, result, *, request_sha256):
     """Persist evidence recovered from the original session; never call a provider.
 
@@ -1519,7 +1618,13 @@ def reconcile_attempt(project_dir, attempt_id, result, *, request_sha256):
         if request['scope']['provider'] == 'openart_cli':
             _fail('OpenArt reconciliation requires collect_openart_attempt on the original attempt')
         if _state(root, request)['status'] != 'uncertain':
-            _fail('only an uncertain original attempt can be reconciled')
+            proof, source, original_receipt, arguments = _grok_prompt_boundary_original(root, request)
+            if (not result.success or result.data.get('original_session_recovery') != proof
+                    or result.data.get('source_artifact') != str(source)
+                    or file_sha256(Path(request['submitted_inputs']['output_path'])) != proof['source_sha256']):
+                _fail('failed reconciliation requires verified original prompt-boundary recovery')
+            if any(result.data.get(key) != value for key, value in proof['media_metadata'].items()):
+                _fail('original recovery metadata differs from original artifact probe')
         if request_sha256 != request['request_sha256'] or result.data.get('session_id') != request['cli_session_id']:
             _fail('reconciliation does not match original request/session provenance')
         receipt = result.data.get('conditioning_receipt', {})
@@ -1807,13 +1912,16 @@ def record_selection(project_dir, shot_id, selection):
         failures = list(Draft202012Validator({'$defs':schema['$defs'],'$ref':'#/$defs/review'}).iter_errors(review))
         if failures:
             _fail('selection requires a valid named review: ' + failures[0].message)
-        provisional = provisional_audio_review(review, root)
+        from lib.production_draft import accepted_draft_predicate
+        accepted = accepted_draft_predicate(selection, root, shot_id=shot_id)
+        audio_provisional = provisional_audio_review(review, root)
+        provisional = audio_provisional or accepted is not None
         if (review['status'] != 'pass' and not provisional) or review['subject_sha256'] != selection_digest(selection) or review['story_revision'] != marker['story_revision']:
             _fail('selection review is failed or stale')
         predicates = {item['name']:item for item in review['predicates']}
         if (len(predicates) != len(review['predicates']) or not UPSTREAM_PREDICATES.issubset(predicates)
                 or any(item.get('severity') == 'cosmetic' for name, item in predicates.items() if name in UPSTREAM_PREDICATES)
-                or any(item['status'] != 'pass' and not (provisional and name == 'speaker_source' and item['status'] == 'unknown')
+                or any(item['status'] != 'pass' and not ((audio_provisional and name == 'speaker_source' and item['status'] == 'unknown') or (name == accepted and item['status'] == 'fail'))
                        for name, item in predicates.items() if item.get('severity','critical') == 'critical' or name in UPSTREAM_PREDICATES)):
             _fail('selection has missing/failed critical predicates')
         # A shot changed by an authorized planning revision needs a fresh

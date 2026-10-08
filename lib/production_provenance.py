@@ -205,10 +205,13 @@ def _validate_attempt_provenance(
     reference_free = project_reference_free or shot.get('reference_mode') == 'reference_free'
     require(not reference_free or openart, 'reference-free contract requires OpenArt text2video')
 
-    def bound_review(review, subject, names, label, *, allow_draft=False):
+    def bound_review(review, subject, names, label, *, allow_draft=False, selection=None, upstream_id=None):
         review_schema = {'$defs': schema['$defs'], '$ref': '#/$defs/review'}
         require(not list(Draft202012Validator(review_schema).iter_errors(review)), f'{label}: incomplete semantic evidence')
-        provisional = allow_draft and provisional_audio_review(review, root)
+        from lib.production_draft import accepted_draft_predicate
+        accepted = accepted_draft_predicate(selection, root, shot_id=upstream_id) if allow_draft and selection else None
+        audio_provisional = allow_draft and provisional_audio_review(review, root)
+        provisional = audio_provisional or accepted is not None
         require((review['status'] == 'pass' or provisional) and review['subject_sha256'] == subject
                 and review['story_revision'] == story_revision, f'{label}: failed/stale review')
         seen = [predicate['name'] for predicate in review['predicates']]
@@ -216,7 +219,7 @@ def _validate_attempt_provenance(
         for predicate in review['predicates']:
             critical = predicate['name'] in CRITICAL_PREDICATES or predicate.get('severity', 'critical') == 'critical'
             require(not (predicate['name'] in CRITICAL_PREDICATES and predicate.get('severity') == 'cosmetic'), f'{label}: critical predicate downgraded')
-            deferred = provisional and predicate['name'] == 'speaker_source' and predicate['status'] == 'unknown'
+            deferred = (audio_provisional and predicate['name'] == 'speaker_source' and predicate['status'] == 'unknown') or (predicate['name'] == accepted and predicate['status'] == 'fail')
             require(not critical or predicate['status'] == 'pass' or deferred, f'{label}: critical evidence not passing')
 
     bound_review(contract['project_review'], digest, PROJECT_PREDICATES, 'frozen project review')
@@ -239,7 +242,7 @@ def _validate_attempt_provenance(
         for role in ('output', 'outgoing_frame'):
             require(isinstance(selection.get(role), dict) and selection[role].get('sha256') == binding[role + '_sha256'], 'frozen upstream hash differs')
         require(review_digest(selection.get('review')) == binding['review_sha256'], 'frozen upstream review differs')
-        bound_review(selection['review'], selection_digest(selection), UPSTREAM_PREDICATES, 'frozen upstream review', allow_draft=True)
+        bound_review(selection['review'], selection_digest(selection), UPSTREAM_PREDICATES, 'frozen upstream review', allow_draft=True, selection=selection, upstream_id=binding['shot_id'])
         current_upstream = current_selected.get(binding['shot_id'])
         require(isinstance(current_upstream, dict) and selection_digest(current_upstream) == selection_digest(selection)
                 and review_digest(current_upstream.get('review')) == review_digest(selection['review']),
