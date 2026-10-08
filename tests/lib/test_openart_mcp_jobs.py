@@ -123,3 +123,43 @@ def test_successful_fixture_archive_historical_lookup_and_tamper_rejection(fixtu
     assert jobs.qualified_profile(native['model'],native['mode'],candidate) is None
     assert not (jobs._state_root()/'mcp-qualifications'/'pixverseV6__text2video.json').exists()
     with pytest.raises(ValueError,match='profile_not_ready'):mcp.load_profile(native['model'],native['mode'],require='qualified')
+
+
+@pytest.mark.parametrize('change', [None, 'missing_asset', 'wrong_bytes', 'wrong_binding_hash', 'wrong_review', 'duplicate_id'])
+def test_capture_evidence_resolves_pathless_reference_binding_by_asset_id(tmp_path, monkeypatch, change):
+    import base64
+    from lib import production_request as prep
+    from lib.shot_contract import contract_digest, file_sha256, review_digest
+    root=tmp_path.resolve();artifacts=root/'artifacts';artifacts.mkdir()
+    image=root/'identity.png';image.write_bytes(b'SYNTHETIC immutable reviewed identity')
+    review={'review_id':'synthetic-only','reviewer':'Synthetic unit fixture','status':'pass'}
+    asset={'id':'identity-one','role':'identity_reference','cast_ids':['one'],
+           'path':str(image),'sha256':file_sha256(image),'review':review}
+    contract={'assets':[asset],'shots':[]}
+    reference={key:copy.deepcopy(asset[key]) for key in ('id','role','cast_ids','sha256')}
+    reference['review_sha256']=review_digest(review)
+    if change=='missing_asset':contract['assets']=[]
+    elif change=='duplicate_id':contract['assets'].append(copy.deepcopy(asset))
+    elif change=='wrong_bytes':image.write_bytes(b'changed')
+    elif change=='wrong_binding_hash':reference['sha256']='f'*64
+    elif change=='wrong_review':reference['review_sha256']='f'*64
+    packet={'binding':{'references':[reference],'contract_sha256':contract_digest(contract)}}
+    compiled={'source_binding':copy.deepcopy(packet['binding'])};preparation={'synthetic':True}
+    for name,value in [('shot_contract.json',contract),('compiled_request-one.json',compiled),('preparation_review-one.json',preparation)]:
+        (artifacts/name).write_text(json.dumps(value))
+    monkeypatch.setattr(prep,'source_packet',lambda *args,**kwargs:copy.deepcopy(packet))
+    authority={'shot_id':'one','preparation':{'compiled_sha256':mcp.digest(compiled),'review_sha256':mcp.digest(preparation)},
+               'scope':{'evidence':{'path':'creator-approval.txt'}}}
+    inputs={'compiled_request_id':'one','preparation_review_id':'one'}
+    assert set(reference)=={'id','role','cast_ids','sha256','review_sha256'} and 'path' not in reference
+    if change:
+        with pytest.raises(mcp.OpenArtMCPError,match='source reference'):
+            jobs._capture_evidence(root,inputs,{'input_assets':[]},authority)
+        assert not (root/'openart_mcp').exists()
+    else:
+        captured=jobs._capture_evidence(root,inputs,{'input_assets':[]},authority)
+        archived=captured['files']['identity.png']
+        assert archived['sha256']==reference['sha256']
+        assert base64.b64decode(archived['bytes_base64'])==image.read_bytes()
+        assert captured['source_packet']==packet
+        assert not (root/'openart_mcp').exists()
