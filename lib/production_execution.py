@@ -1196,8 +1196,17 @@ def _execute_local_grok_continuation(tool, inputs, invoke):
                  'native_request_sha256': qualified['native']['request_sha256'],
                  'original_sha256': {name: file_sha256(directory / name) for name in _LOCAL_CONTINUATION_FILES}}
         _write_new(directory / 'local_continuation_claim.json', claim)
+    submitted = copy.deepcopy(request['submitted_inputs'])
+    checked = qualified['checked']
+    active = {'provider': request['scope']['provider'], 'provider_called': True,
+              'session_id': request['attempt_id'], 'root': root, 'directory': directory,
+              'submitted_inputs': submitted,
+              'policy_validated': checked.get('policy_validated', False),
+              'snapshot_paths': {item['path'] for item in request['input_assets']},
+              'contract': checked['contract'], 'shot_id': checked['shot_id']}
+    token = _ACTIVE.set(active)
     try:
-        result = invoke(copy.deepcopy(request['submitted_inputs']))
+        result = invoke(submitted)
     except BaseException as exc:
         _save_result(directory, error=exc, prefix='local_continuation_')
         raise
@@ -1206,6 +1215,8 @@ def _execute_local_grok_continuation(tool, inputs, invoke):
         result.data['production_attempt_id'] = request['attempt_id']
         result.data['production_request_sha256'] = request['request_sha256']
         return result
+    finally:
+        _ACTIVE.reset(token)
 
 
 def execute_governed(tool, inputs, invoke):

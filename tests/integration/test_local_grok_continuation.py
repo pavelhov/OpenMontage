@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 import copy
 import importlib.util
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import quote
 
 import pytest
@@ -125,6 +126,42 @@ def test_same_occurrence_race_has_one_atomic_claim_and_one_native_dispatch(reser
     assert len(execution._attempts(reserved[0].root)) == 1
 
 
+@pytest.mark.parametrize('nested', ['retry', 'switch', 'selector'])
+def test_continuation_restores_canonical_context_and_blocks_nested_dispatch(reserved, monkeypatch, nested):
+    p, aid, directory, request, _ = reserved
+    import tools.video.grok_cli_video as adapter
+    media = adapter.execute_grok_cli_media
+    observed = []
+
+    def guarded_media(*args, **kwargs):
+        active = execution._ACTIVE.get()
+        assert active['provider'] == 'grok_cli' and active['provider_called'] is True
+        assert active['session_id'] == aid and active['root'] == p.root
+        assert active['directory'] == directory
+        assert active['submitted_inputs'] == request['submitted_inputs']
+        assert active['snapshot_paths'] == {item['path'] for item in request['input_assets']}
+        assert active['contract'] == p.contract and active['shot_id'] == 'entry'
+        with pytest.raises(execution.ProductionGovernanceError, match='switch providers, retry, or fall back'):
+            if nested == 'retry':
+                p.cli.execute(copy.deepcopy(request['submitted_inputs']))
+            elif nested == 'selector':
+                p.selector.execute(copy.deepcopy(p.inputs['entry']))
+            else:
+                tool = SimpleNamespace(provider='another_provider', name='other_video',
+                                       capability='video_generation')
+                execution.execute_governed(tool, copy.deepcopy(request['submitted_inputs']),
+                                           lambda _: pytest.fail('nested provider implementation invoked'))
+        observed.append(nested)
+        return media(*args, **kwargs)
+
+    monkeypatch.setattr(adapter, 'execute_grok_cli_media', guarded_media)
+    result = continue_attempt(reserved, dry_run=False)
+    assert result.success, result.error
+    assert observed == [nested]
+    assert len(p.transport.native_requests) == len(execution._attempts(p.root)) == 1
+    assert execution._ACTIVE.get() is None
+
+
 def test_claimed_uncertain_media_can_only_reconcile_original_session(reserved):
     p, aid, directory, request, frozen = reserved
     p.transport.timeout_next = True
@@ -159,6 +196,7 @@ def test_crash_after_claim_never_allows_redispatch(reserved, monkeypatch):
     monkeypatch.setattr('tools.video.grok_cli_video.execute_grok_cli_media', crash)
     with pytest.raises(KeyboardInterrupt):
         continue_attempt(reserved, dry_run=False)
+    assert execution._ACTIVE.get() is None
     assert execution.load_attempt_result(p.root, aid)['status'] == 'uncertain'
     with pytest.raises(execution.ProductionGovernanceError, match='already claimed'):
         continue_attempt(reserved, dry_run=False)
