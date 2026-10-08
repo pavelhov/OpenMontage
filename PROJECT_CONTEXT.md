@@ -8,7 +8,7 @@ OpenMontage is an open-source, AI-orchestrated video production platform.
 
 ## Architecture: Instruction-Driven (Agent-First)
 
-The AI agent IS the intelligence. Python exists only for tools and persistence. Everything else — orchestration, creative decisions, review, stage transitions — lives in instructions (YAML manifests + markdown skills) the agent follows.
+The agent owns creative direction, semantic review and production coordination through YAML manifests and markdown skills. Python owns tools, persistence and objective governance: exact authority/input checks, cumulative counters, original-job reconciliation/resume, dependency bindings, checkpoint gates and certification eligibility. Python validates declared evidence; it does not infer story meaning or judge pixels.
 
 ```
 Agent reads pipeline manifest (YAML) → reads stage director skill (MD)
@@ -16,11 +16,11 @@ Agent reads pipeline manifest (YAML) → reads stage director skill (MD)
 → checkpoints (Python utility) → presents to human for approval
 ```
 
-**No Python orchestrator, no Python reviewer, no Python handlers.** The agent drives the pipeline.
+The agent drives the pipeline's creative decisions. Canonical Python execution and state handlers enforce the recorded contracts and preserve original operations across resume; they do not replace the semantic reviewer.
 
 ## Source of Truth
 
-- **Agent guide & contract:** `AGENT_GUIDE.md` (tool inventory, pipeline selection, stage agents, protocols)
+- **Agent guide & contract:** `AGENT_GUIDE.md` (entry routing, pipeline selection, stage owners and core invariants)
 - **Skill index:** `skills/INDEX.md`
 - **Tool registry:** `tools/tool_registry.py`
 - **Pipeline manifests:** `pipeline_defs/`
