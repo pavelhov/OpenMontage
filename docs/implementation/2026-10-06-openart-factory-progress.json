@@ -1,4 +1,5 @@
 {
+  "publication_note": "Published copy redacts private account correlators and local workspace/temp paths; technical schemas, control evidence, test outcomes, and non-account provenance are retained.",
   "record_kind": "implementation_progress_not_return_envelope",
   "status": "blocked",
   "updated_at": "2026-10-07T00:23:26.065562+00:00",
@@ -93,11 +94,11 @@
     },
     "Strict_default_replay": {
       "owner": "root",
-      "snapshot_path": "/var/folders/7x/pv_kt1ld7w9bf5vwzjlscr7c0000gn/T/openart-u5p-replay-a4pnwuk1/root-byte-baseline.json",
+      "snapshot_path": "<TMP>/openart-u5p-replay-a4pnwuk1/root-byte-baseline.json",
       "snapshot_sha256": "a4ffdc390b9182c450cf56bc3c495ffc009a69413def7875f42f6fa1896692d3",
       "captured": "Original default OpenArt source_packet,compile_prompt,compiled_request,native plus SAME replayinputs/profile context; no real provider calls.",
       "status": "Finalstable root replay all4exactcanonicalJSON bytesmatch; CLIforbidden; acceptedoriginalcontext",
-      "harness_path": "/tmp/openart-strict-byte-replay-20261006.py",
+      "harness_path": "<TMP>/openart-strict-byte-replay-20261006.py",
       "harness_pre_refactor_sanity": "Root independently rebuilt native/source/prompt/compiled_request from same saved inputs/profile; all4canonical JSON byte SHA matches, no CLI permitted. Post-U5P replay still pending.",
       "post_refactor_root": "4 exactcanonicalJSON byte matches via independentroot harness, CLIforbidden, originalsameprofile/inputcontext: source_packet,prompt,native,compiled_request; run22:31UTC.",
       "reviewed_file_sha256": {
@@ -109,7 +110,7 @@
     "U5P_current": {
       "status": "Accepted at4247fa3 after fresh Opus review and complete green repository checks; prior pending entries below are chronological history, superseded by final acceptance.",
       "author_pre_fix": "Author reported combined39failed36passed characterization; fixture/interface failures not interpreted as39 independent defects. Explicit saved probes confirm schema-invalid activation log, hash-descriptor-only baselines, conflicting legacy alias accepted, ungated compose accepted.",
-      "probe_path": "/tmp/u5p_receipts/prefix_probes.txt",
+      "probe_path": "<TMP>/u5p_receipts/prefix_probes.txt",
       "probe_sha256": "b912e08fb51ccf5145cd717a5616c276d66c0a00e2c523c04b1224b5fff381a7",
       "baseline_design": "Retain full projection/planned template/script/coverage/approval-plan bytes, recompute policy.shots descriptors, compare current projection allowing only deterministic approved flex.",
       "root_scope_corrections": "Empty checkpoint_stages remains valid provider-only envelope; real existing artifact locator reads sole valid legacy/equal aliases and rejects conflicting aliases. Writers may refuse dual aliases before writes.",
@@ -155,9 +156,9 @@
       "golden": "8 original/current full execute JSON byte-identical cases; conditioning receipts/arguments/hash/endpoint included",
       "golden_sha256": "08fe1669650488e2695f4c9676af0ca87adb487bab66588e9e38cd62a66d070d",
       "baseline_paths": [
-        "/tmp/openmontage-grok-native-before.json",
-        "/tmp/openmontage-grok-native-after.json",
-        "/tmp/grok_native_baseline_capture.py"
+        "<TMP>/openmontage-grok-native-before.json",
+        "<TMP>/openmontage-grok-native-after.json",
+        "<TMP>/grok_native_baseline_capture.py"
       ],
       "red": "Forward-authored boundary tests. Initial collection reserved-fixture-name error corrected; no pre-fix behavioral red claimed.",
       "root": "Substantive exact moved-validation/native-profile/version-gate/observer diff reviewed; no P1/P2 identified",
@@ -221,7 +222,7 @@
         "source_commit": "82049506ba42f187626d1d3c2e8c39dcb5e923ec",
         "exit_code": 0,
         "result": "3910 passed,11 skipped,3 xfailed,1 subtests passed in853.80s (14:13)",
-        "log_path": "/var/folders/7x/pv_kt1ld7w9bf5vwzjlscr7c0000gn/T/openmontage-final-live-wrapper-full-tg_6_az2.log",
+        "log_path": "<TMP>/openmontage-final-live-wrapper-full-tg_6_az2.log",
         "log_sha256": "36522dcf2164c42c7139c8b0ba8a0e3aeb9b998c7853b207f845cd0fb5db1d64",
         "session_cleanup": "36110completed0"
       },
@@ -230,7 +231,7 @@
         "source_commit": "82049506ba42f187626d1d3c2e8c39dcb5e923ec",
         "exit_code": 0,
         "result": "1293passed7skipped33.40s",
-        "log_path": "/var/folders/7x/pv_kt1ld7w9bf5vwzjlscr7c0000gn/T/openmontage-final-live-wrapper-contracts-ldaf_q0b.log",
+        "log_path": "<TMP>/openmontage-final-live-wrapper-contracts-ldaf_q0b.log",
         "log_sha256": "c8aacadb9d765d84c88a6e10c4c849b7ef6b2a9cbf6ccc4bef23511b30a43458",
         "session_cleanup": "16227completed0"
       },
@@ -280,7 +281,7 @@
       },
       "menu_test": {
         "owner": "Root inline after scope reduced to one small contract assertion; Cursor requested native route produced no saved changes or test receipt before preserved deliberate transfer. No failed route/model inferred from timeouts.",
-        "recovery_path": "/var/folders/7x/pv_kt1ld7w9bf5vwzjlscr7c0000gn/T/openmontage-menu-test-recovery-u5iq3pme",
+        "recovery_path": "<TMP>/openmontage-menu-test-recovery-u5iq3pme",
         "preserved_sha256": "3b10eb14f9039752d607571381e2122853fed91d4760be3545a99b2e4d7dfbb5",
         "saved_diff_bytes": 0,
         "changed": "Expected sixth summary key and ordered Grok/OpenArt list with list-valued model fields; stale guide-line-number comment removed. Original account test files unchanged.",
@@ -293,7 +294,7 @@
       "prior_completed_run": "3failed3886passed11skipped3xfailed1subtests934.67s; original HyperFrames expected menu keys and two original Analyze account cases failed.",
       "runtime_fix": "Original two Analyze tests untouched. Narrow wrapper guard restored original diagnostic path; actual2failed0.26s then4passed0.79s includingtwo new discovery/no-write boundaries. Sol combined322passed22.16s; fresh Opus161passed28.2s on released hashes, noP1/P2.",
       "menu_fix": "Root updated the old key assertion for accepted qualified_cli_video_routes, checked ordered Grok/OpenArt rows and model lists;153affected-file cases passed13.55s. Test-only patch after deliberate Cursor scope reduction/ownership transfer, not timeout failure.",
-      "cursor_recovery": "/var/folders/7x/pv_kt1ld7w9bf5vwzjlscr7c0000gn/T/openmontage-menu-test-recovery-u5iq3pme;original SHA3b10eb14f9039752d607571381e2122853fed91d4760be3545a99b2e4d7dfbb5,empty owned diff preserved, root verified bytes before tiny assertion edit.",
+      "cursor_recovery": "<TMP>/openmontage-menu-test-recovery-u5iq3pme;original SHA3b10eb14f9039752d607571381e2122853fed91d4760be3545a99b2e4d7dfbb5,empty owned diff preserved, root verified bytes before tiny assertion edit.",
       "final": "All three actual failures closed; whole suite EXIT0; original account files unchanged in final repair."
     },
     "live_form_adapter": {
@@ -321,7 +322,7 @@
       "final_full_suite": {
         "session_id": 36110,
         "wrapper_pid": 29260,
-        "log_path": "/var/folders/7x/pv_kt1ld7w9bf5vwzjlscr7c0000gn/T/openmontage-final-live-wrapper-full-tg_6_az2.log",
+        "log_path": "<TMP>/openmontage-final-live-wrapper-full-tg_6_az2.log",
         "command": "make RUN_PYTHON=.venv/bin/python test",
         "source_commit": "82049506ba42f187626d1d3c2e8c39dcb5e923ec",
         "exit_code": 0,
@@ -331,7 +332,7 @@
       }
     },
     "post_live_form_full_interruption": {
-      "log_path": "/var/folders/7x/pv_kt1ld7w9bf5vwzjlscr7c0000gn/T/openmontage-post-live-form-full-i7ojigdf.log",
+      "log_path": "<TMP>/openmontage-post-live-form-full-i7ojigdf.log",
       "session_id": 52868,
       "wrapper_exit_code": 130,
       "reason": "Root confirmed remaining compiled native schema extraction bug after accepting initial pure parser; deliberately stopped checks to fix source before final whole-suite proof; not timeout or model failure.",
@@ -346,7 +347,7 @@
       "documentation_finding": "Versioned README documents nonspending model cost bymodel/mode only; no settingsflags, taggedrepo has no commandimplementation source. Documentation inference does not rule out hiddenbehavior.",
       "root_actual_help_audit": {
         "command": [
-          "/Users/pavel/.local/bin/openart",
+          "<HOME>/.local/bin/openart",
           "model",
           "cost",
           "--help"
@@ -379,7 +380,7 @@
       "source_commit": "82049506ba42f187626d1d3c2e8c39dcb5e923ec",
       "exit_code": 0,
       "result": "1293passed7skipped33.40s",
-      "log_path": "/var/folders/7x/pv_kt1ld7w9bf5vwzjlscr7c0000gn/T/openmontage-final-live-wrapper-contracts-ldaf_q0b.log",
+      "log_path": "<TMP>/openmontage-final-live-wrapper-contracts-ldaf_q0b.log",
       "log_sha256": "c8aacadb9d765d84c88a6e10c4c849b7ef6b2a9cbf6ccc4bef23511b30a43458",
       "session_cleanup": "16227completed0"
     },
@@ -389,14 +390,14 @@
       "diff": "git diff --check green",
       "contracts": "make RUN_PYTHON=.venv/bin/python test-contracts EXIT0;1293passed7skipped35.32s",
       "full_tests": "make RUN_PYTHON=.venv/bin/python test EXIT0;3891passed11skipped3xfailed1subtests passed929.85s",
-      "contracts_log": "/var/folders/7x/pv_kt1ld7w9bf5vwzjlscr7c0000gn/T/openmontage-final-contracts-x6ei427s.log",
+      "contracts_log": "<TMP>/openmontage-final-contracts-x6ei427s.log",
       "contracts_log_sha256": "b7d1e35c4241eaea7a6646f910eb4a949be1619bc17b69930ceb7cdd275b99c3",
-      "full_log": "/var/folders/7x/pv_kt1ld7w9bf5vwzjlscr7c0000gn/T/openmontage-final-full-tests-5m59wl9w.log",
+      "full_log": "<TMP>/openmontage-final-full-tests-5m59wl9w.log",
       "interrupted_full_log_sha256": "26e1d5d0e25999fb1b559789cbc922d0f0e2f64f686c77a15f55e0c62df58412",
       "strict_byte_replay_latest": "2026-10-06T23:03:37Z: original retained source packet, compiled prompt, native and compiled request all exact canonical bytes; network/provider subprocess forbidden.",
       "u4_unchanged": "git diff e5f57dd -- lib/openart_credit.py lib/provider_credit_ledger.py lib/openart_dispatch.py is empty; earlier midphase same-buffer evidence simplification remains canonical.",
       "full_failed_log_sha256": "4c663b051848098b7d679a204eed500b271adb3deecc502b506b020e3fb9c34b",
-      "full_failed_log": "/var/folders/7x/pv_kt1ld7w9bf5vwzjlscr7c0000gn/T/openmontage-final-full-tests-ey7skjdf.log",
+      "full_failed_log": "<TMP>/openmontage-final-full-tests-ey7skjdf.log",
       "full_log_sha256": "1c576d62e23dd5139de12683a8ea26d4827434e9e8fb52595371c60469caae94",
       "process_cleanup": "Root full session36383, contracts62618 and readonly account83834 completed; no detached root test process retained.",
       "network_policy": "OPENMONTAGE_ALLOW_NETWORK, HYPERFRAMES_QA and HYPERFRAMES_QA_RENDER unset for checks; executable fake CLI calls expected, real generation/upload/purchase0.",
@@ -491,7 +492,7 @@
     "private_tracked_path_check": "No apparent runtime-state or credential payload path; .env.example and tools/google_credentials.py are existing credential-adjacent engine paths, content not inspected."
   },
   "U5P_recovery_snapshot": {
-    "path": "/var/folders/7x/pv_kt1ld7w9bf5vwzjlscr7c0000gn/T/openmontage-u5p-recovery-bs727ils",
+    "path": "<TMP>/openmontage-u5p-recovery-bs727ils",
     "reason": "Preserve current engine files before prospective durable-core checkpoint and any deliberate ownership transfer. No credentials/runtime account state.",
     "manifest": [
       {

@@ -33,6 +33,8 @@ if args==['version']: out={'version':os.environ.get('VERSION','1')}
 elif args==['account']: out={'id':os.environ.get('ACCOUNT','private-account'),'tier':os.environ.get('TIER','turbo'),'upload':g}
 elif args[:2]==['model','form']:
  out={'properties':{'prompt':{'type':'string'},'image':{'type':'string'},'duration':{'type':'integer','default':int(os.environ.get('DEFAULT','5'))}},'required':['prompt']}
+ if os.environ.get('FORM_UNION')=='true': out={'anyOf':[{'type':'object','properties':{'prompt':{'type':'string'},'duration':{'type':'integer','enum':[5,10],'default':5}},'required':['prompt']},{'type':'object','properties':{'prompt':{'type':'string'},'duration':{'type':'integer','minimum':12,'maximum':15}},'required':['prompt']}]}
+ if os.environ.get('FORM_UNION')=='noprompt': out={'anyOf':[{'type':'object','properties':{'prompt':{'type':'string'}},'required':['prompt']},{'type':'object','properties':{'duration':{'type':'integer'}}}]}
  if os.environ.get('FORM_WRAPPER')=='true': out={'model':os.environ.get('FORM_MODEL','m1'),'media':os.environ.get('FORM_MEDIA','video'),'mode':os.environ.get('FORM_MODE','image2video'),'jsonSchema':out}
  if os.environ.get('FORM_CONFLICT')=='true': out['schema']={'properties':{'prompt':{'type':'string'}}}
 elif args[:2]==['upload','add']: out={'url':url,'upload':g}
@@ -195,3 +197,20 @@ def test_changed_delayed_guarantee_blocks_preview_before_generation(fake,monkeyp
     calls=[json.loads(x) for x in fake[1].read_text().splitlines()]
     assert not any(x[:2]==['generate','video'] for x in calls)
     assert jobs.qualification_status('m1','image2video')['level']=='inspected'
+
+
+def test_root_union_form_capture_through_actual_transport(fake, monkeypatch):
+    """Composed path: fake CLI -> run_readonly receipts -> form_view -> validate_profile (union)."""
+    monkeypatch.setenv('FORM_UNION', 'true')
+    assert _inspect()['level'] == 'inspected'
+    profile = jobs.load_qualification(model='m1', mode='image2video', require='inspected')
+    assert profile['form_defaults'] == {}
+    calls = [json.loads(x) for x in fake[1].read_text().splitlines()]
+    assert calls == [['version'], ['account'], cli.model_form_argv('m1', 'image2video')]
+
+
+def test_root_union_branch_without_prompt_is_not_inspected(fake, monkeypatch):
+    monkeypatch.setenv('FORM_UNION', 'noprompt')
+    with pytest.raises(cli.OpenArtCLIError):
+        _inspect()
+    assert jobs.qualification_status('m1','image2video')['level'] == 'none'

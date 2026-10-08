@@ -1,8 +1,4 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "openmontage/tools/openart_account",
-  "title": "OpenArt Account and Recovery Controls",
-  "description": "Nonspending account inspection, original-attempt status/verification/collection, and profile-qualified reference upload for the official OpenArt subscription CLI. No generation submission is exposed.",
   "type": "object",
   "required": [
     "action",
@@ -15,6 +11,10 @@
         "inspect",
         "quote",
         "form",
+        "catalog",
+        "native_surface",
+        "cli_help",
+        "transport_surface_probe",
         "native_dry_run",
         "readiness",
         "status",
@@ -48,6 +48,20 @@
     "mode": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+    },
+    "form_receipt_id": {
+      "type": "string"
+    },
+    "form_receipt_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "cli_version_receipt_id": {
+      "type": "string"
+    },
+    "cli_version_receipt_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
     },
     "prompt": {
       "type": "string",
@@ -138,6 +152,25 @@
   },
   "additionalProperties": false,
   "allOf": [
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "native_surface"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "model",
+          "mode",
+          "form_receipt_id",
+          "form_receipt_sha256",
+          "cli_version_receipt_id",
+          "cli_version_receipt_sha256"
+        ]
+      }
+    },
     {
       "if": {
         "properties": {

@@ -73,6 +73,16 @@ def profile_path_for(model: str, mode: str) -> Path:
     return cli.state_dir() / "qualification" / cli._safe_part(model) / cli._safe_part(mode) / "profile.json"
 
 
+_PROBE_MARKERS = ("schema_only", "unqualified_for_dispatch", "evidence_kind")
+
+
+def _reject_probe_receipt(data: Any, kind: str) -> None:
+    """Synthetic transport-surface probe receipts are schema evidence only: never preview,
+    qualification, upload, generation or result authority, regardless of their argv."""
+    if isinstance(data, dict) and any(m in data for m in _PROBE_MARKERS):
+        raise OpenArtCLIError(kind, "schema-only probe receipt cannot serve as authority")
+
+
 def _receipt_parsed(receipt_id: str, receipt_sha256: str) -> Any:
     """Verify one captured private receipt (permissions + digest) and return its parsed body."""
     path = cli.receipt_path(receipt_id)
@@ -84,9 +94,12 @@ def _receipt_parsed(receipt_id: str, receipt_sha256: str) -> Any:
     if hashlib.sha256(raw).hexdigest() != receipt_sha256:
         raise OpenArtCLIError("generation_unqualified", "captured receipt digest mismatch")
     try:
-        return json.loads(raw).get("parsed")
+        data = json.loads(raw)
+        parsed = data.get("parsed")
     except (ValueError, AttributeError):
         raise OpenArtCLIError("generation_unqualified", "captured receipt unreadable")
+    _reject_probe_receipt(data, "generation_unqualified")
+    return parsed
 
 
 def _qual():
@@ -292,27 +305,83 @@ def _effective_paths(profile: dict) -> dict:
     """json_paths in force for status/collection: profile paths + result-proof paths (staged)."""
     if not _is_staged(profile):
         return profile["json_paths"]
-    proof = load_result_proof(profile)
+    proof = _proof_or_none(profile)
     return dict(profile["json_paths"], **proof["json_paths"])
 
 
+def _has_result_proof(profile: dict) -> bool:
+    """True when a result proof file exists (valid or not) for this staged profile."""
+    if not _is_staged(profile):
+        return True
+    origin = profile.get("profile_sha256") or sha256_json(
+        {k: v for k, v in profile.items() if k != "profile_sha256"})
+    try:
+        return os.path.lexists(result_proof_path(profile["model"], profile["mode"], origin))
+    except (OpenArtCLIError, KeyError, TypeError):
+        return False
+
+
+def _proof_or_none(profile: dict) -> dict:
+    """Optional empirical proof: production-ready pre_submit profiles need none.
+
+    Staged profile without a proof file -> profile's own json_paths, no contract digest.
+    An existing proof file is fully verified; if invalid it is ignored (status 'invalid').
+    require='full' and promotion keep strict load_result_proof.
+    """
+    if _is_staged(profile):
+        none = {"result_contract_sha256": None, "result_proof_id": None,
+                "json_paths": profile["json_paths"], "evidence": None, "legacy_full": False}
+        if not _has_result_proof(profile):
+            return none
+        try:
+            return load_result_proof(profile)
+        except OpenArtCLIError:
+            # Invalid optional evidence is reported (empirical status 'invalid') but never
+            # removes native readiness: production uses the frozen profile-declared paths.
+            return dict(none, empirical_invalid=True)
+    return load_result_proof(profile)
+
+
 def qualification_status(model: str, mode: str) -> dict:
-    """Pure readiness: level in {none, inspected, pre_submit, full}; never raises, no CLI."""
+    """Pure readiness: level in {none, inspected, pre_submit, full}; never raises, no CLI.
+
+    production_ready: real profile at pre_submit or full (native form + preview + account).
+    full_result_qualified / empirical_result_status: optional empirical proof, informational.
+    """
     row = {"level": "none", "profile_sha256": None, "result_contract_sha256": None,
-           "result_proof_id": None, "error": None}
+           "result_proof_id": None, "error": None, "production_ready": False,
+           "full_result_qualified": False, "empirical_result_status": "not_tested"}
     for level in ("inspected", "pre_submit", "full"):
         try:
             prof = load_qualification(model=model, mode=mode, require=level)
         except OpenArtCLIError as exc:
+            if level == "full" and row["level"] == "pre_submit":
+                # Missing optional proof is not an error; a present-but-bad proof is reported.
+                if exc.kind == "result_contract_unqualified" and _has_result_proof_for(model, mode):
+                    row["empirical_result_status"] = "invalid"
+                    row["error"] = exc.kind
+                break
             if row["error"] is None or level == "inspected":
                 row["error"] = exc.kind
             break
         row.update(level=level, profile_sha256=prof["profile_sha256"], error=None)
+        if level in ("pre_submit", "full") and prof.get("source") == "real":
+            row["production_ready"] = True
         if level == "full" and _is_staged(prof):
             proof = load_result_proof(prof)
             row.update(result_contract_sha256=proof["result_contract_sha256"],
                        result_proof_id=proof["result_proof_id"])
+        if level == "full":
+            row.update(full_result_qualified=True, empirical_result_status="result_verified")
     return row
+
+
+def _has_result_proof_for(model: str, mode: str) -> bool:
+    try:
+        prof = load_qualification(model=model, mode=mode, require="pre_submit")
+    except OpenArtCLIError:
+        return False
+    return _is_staged(prof) and _has_result_proof(prof)
 
 
 def save_profile(profile: dict, *, require: str = "inspected") -> dict:
@@ -375,6 +444,9 @@ def load_qualification(path: Optional[Path] = None, *, model: Optional[str] = No
         raise OpenArtCLIError("generation_unqualified", "qualification profile is not private")
     except (OSError, ValueError):
         raise OpenArtCLIError("generation_unqualified", "qualification profile unreadable")
+    production_ready = require == "production_ready"
+    if production_ready:
+        require = "pre_submit"
     staged_full = require == "full" and _is_staged(profile)
     profile = validate_profile(profile, allow_fixture=allow_fixture,
                                require="pre_submit" if staged_full else require)
@@ -399,7 +471,9 @@ def list_qualifications() -> list[dict]:
     for target in candidates:
         row = {"model": None, "mode": None, "source": None, "profile_sha256": None, "cli_version": None,
                "tier": None, "image2video_qualified": False, "valid": False, "error": None,
-               "level": "none", "result_contract_sha256": None, "result_proof_id": None}
+               "level": "none", "result_contract_sha256": None, "result_proof_id": None,
+               "production_ready": False, "full_result_qualified": False,
+               "empirical_result_status": "not_tested"}
         try:
             raw = json.loads(target.read_text())
             if isinstance(raw, dict):
@@ -410,14 +484,17 @@ def list_qualifications() -> list[dict]:
             row["profile_sha256"] = prof["profile_sha256"]
             if prof["source"] != "real":
                 row["error"] = "fixture_profile"
+                row["empirical_result_status"] = "fixture_only"
             else:
                 status = qualification_status(prof["model"], prof["mode"])
                 if status["profile_sha256"] == prof["profile_sha256"]:
                     row.update(level=status["level"],
                                result_contract_sha256=status["result_contract_sha256"],
-                               result_proof_id=status["result_proof_id"])
-                    if status["level"] != "full":
-                        row["error"] = status["error"] or "result_contract_unqualified"
+                               result_proof_id=status["result_proof_id"],
+                               production_ready=status["production_ready"],
+                               full_result_qualified=status["full_result_qualified"],
+                               empirical_result_status=status["empirical_result_status"],
+                               error=status["error"])
                 else:
                     row["error"] = status["error"] or "profile_not_current"
                 full = row["level"] == "full"
@@ -432,7 +509,8 @@ def list_qualifications() -> list[dict]:
 
 # ---------------------------------------------------------------- native request
 
-def _verify_dry_run_evidence(dry_run: dict, controls: dict, profile: dict, creative: list) -> dict:
+def _verify_dry_run_evidence(dry_run: dict, controls: dict, profile: dict, creative: list,
+                             typed: Optional[dict] = None) -> dict:
     """Verify retained native preview evidence against the exact creative request.
 
     Accepts either evidence {endpoint, body_sha256, receipt_id, receipt_sha256} (re-verified from
@@ -467,14 +545,59 @@ def _verify_dry_run_evidence(dry_run: dict, controls: dict, profile: dict, creat
         raise OpenArtCLIError("dry_run_mismatch", "dry-run endpoint differs from qualified endpoint")
     expected_params = {native: controls[ours] for ours, native in _BODY_PARAM_NAMES.items()
                        if controls.get(ours) is not None}
-    if controls.get("image_url") is not None:
-        expected_params["image"] = controls["image_url"]
-    if set(body) != {"model", "media", "mode", "params"} or body.get("model") != controls["model"] \
-            or body.get("media") != "video" or body.get("mode") != controls["mode"] \
-            or body.get("params") != expected_params:
+    params = body.get("params") if isinstance(body.get("params"), dict) else None
+    if controls.get("image_url") is not None and params is not None:
+        start = params.get("startFrame")
+        if "startFrame" in params:
+            # Probe-verified CLI 0.1.1 --image wire: exactly {label, type:'image', url}. The
+            # label is accepted only as the CLI's own string; it is never synthesized here.
+            if not isinstance(start, dict) or set(start) != {"label", "type", "url"} \
+                    or start.get("type") != "image" or start.get("url") != controls["image_url"] \
+                    or not isinstance(start.get("label"), str) or not start["label"]:
+                raise OpenArtCLIError("dry_run_mismatch", "startFrame differs from verified --image wire")
+            expected_params["startFrame"] = start
+        elif typed is not None:
+            # New syntax claims native startFrame: the legacy params.image wire is never accepted.
+            raise OpenArtCLIError("dry_run_mismatch", "typed first_frame requires the params.startFrame wire")
+        else:
+            # Legacy retained evidence replay (pre-probe profiles/attempts stay byte-identical).
+            expected_params["image"] = controls["image_url"]
+    # Type-exact (canonical JSON) comparison: True/1 and 5.0/5 never compare equal here.
+    if set(body) != {"model", "media", "mode", "params"} or sha256_json(body.get("model")) != sha256_json(controls["model"]) \
+            or body.get("media") != "video" or sha256_json(body.get("mode")) != sha256_json(controls["mode"]) \
+            or not isinstance(body.get("params"), dict) or sha256_json(body["params"]) != sha256_json(expected_params):
         raise OpenArtCLIError("dry_run_mismatch", "native dry-run body differs from requested controls")
+    if _needs_full_form(typed, body["params"], profile, receipt_argv is not None):
+        # The actual wire body must satisfy the FULL retained form (unions intact): startFrame
+        # URL/label pattern/enum/length and T2V range/branch constraints, whatever the caller
+        # syntax. Only frozen legacy params.image replay keeps its pre-probe check. No id exception.
+        try:
+            cli.validate_form_params(_retained_form(profile), body["params"],
+                                     model=profile["model"], mode=profile["mode"])
+        except OpenArtCLIError as exc:
+            raise OpenArtCLIError("dry_run_mismatch",
+                                  f"native dry-run body violates the retained form ({exc.kind})") from None
     return {"endpoint": endpoint, "body_sha256": body_sha,
             "receipt_id": dry_run.get("receipt_id"), "receipt_sha256": dry_run.get("receipt_sha256")}
+
+
+def _needs_full_form(typed: Optional[dict], params: dict, profile: dict, receipt_backed: bool) -> bool:
+    """Whether a dry-run body must be revalidated against the full retained form.
+
+    Always for new syntax and for any current ``params.startFrame`` wire; for receipt-backed
+    real/T2V previews too. Frozen legacy ``params.image`` replay is exempt (byte-identical
+    history). Raw fixture seams without any retained form receipt stay isolated component use.
+    """
+    if typed is not None or "startFrame" in params:
+        must = True
+    elif "image" in params:
+        return False
+    else:
+        must = receipt_backed
+    if not must:
+        return False
+    has_form = any(isinstance(e, dict) and e.get("kind") == "form" for e in profile.get("captured_receipts") or [])
+    return has_form or typed is not None or profile.get("source") == "real"
 
 
 def _load_receipt(receipt_id: Any, receipt_sha256: Any, kind: str) -> dict:
@@ -495,6 +618,7 @@ def _load_receipt(receipt_id: Any, receipt_sha256: Any, kind: str) -> dict:
         raise OpenArtCLIError(kind, "receipt unreadable")
     if not isinstance(data, dict):
         raise OpenArtCLIError(kind, "receipt unreadable")
+    _reject_probe_receipt(data, kind)
     return data
 
 
@@ -510,9 +634,89 @@ def _file_sha256(path: Path) -> tuple[str, int]:
 _OPERATION_MODES = {"text_to_video": "text2video", "image_to_video": "image2video"}
 
 
+_NEW_SYNTAX_KEYS = ("native_params", "input_assets", "last_image_path", "end_image_upload_id",
+                    "reference_image_paths", "reference_image_upload_ids", "reference_video_paths",
+                    "reference_video_upload_ids", "reference_audio_paths", "reference_audio_upload_ids")
+
+
+def _retained_form(profile: dict) -> Any:
+    """Parsed `model form` body from the profile's own verified captured receipt (never caller caps)."""
+    entries = [e for e in profile.get("captured_receipts") or [] if isinstance(e, dict) and e.get("kind") == "form"]
+    if len(entries) != 1:
+        raise OpenArtCLIError("generation_unqualified", "typed native inputs need exactly one retained form receipt")
+    receipt = _load_receipt(entries[0].get("receipt_id"), entries[0].get("receipt_sha256"), "generation_unqualified")
+    if receipt.get("argv") != cli.model_form_argv(profile["model"], profile["mode"]) + cli.GLOBAL_FLAGS:
+        raise OpenArtCLIError("generation_unqualified", "retained form receipt argv differs from profile model/mode")
+    if _qual()._hash(receipt.get("parsed")) != profile.get("form_sha256"):
+        raise OpenArtCLIError("generation_unqualified", "retained form receipt differs from profile form_sha256")
+    return receipt.get("parsed")
+
+
+def _bind_typed_inputs(inputs: dict, profile: dict) -> tuple[dict, dict]:
+    """New-syntax path: bind canonical native_params/input_assets through retained form capabilities.
+
+    Returns (legacy-shaped inputs for the existing CLI flag flow, binding facts). Every role or
+    param the CLI cannot carry fails here, before any provider call.
+    """
+    from lib import openart_controls as controls_mod
+    allowed = set(ALLOWED_INPUTS) | set(IGNORED_INPUTS) | set(_NEW_SYNTAX_KEYS)
+    unknown = sorted(k for k in inputs if k not in allowed)
+    if unknown:
+        raise OpenArtCLIError("unsupported_gate", f"unsupported OpenArt controls {unknown}")
+    if inputs.get("model") != profile["model"]:
+        raise OpenArtCLIError("unsupported_gate", "model differs from qualified profile")
+    if inputs.get("mode", profile["mode"]) != profile["mode"]:
+        raise OpenArtCLIError("unsupported_gate", "mode differs from qualified profile")
+    form = _retained_form(profile)
+    caps = controls_mod.mode_capabilities(form, model=profile["model"], mode=profile["mode"],
+                                          cli_version=profile["cli_version"])
+    bind_in = {k: v for k, v in inputs.items() if k not in IGNORED_INPUTS}
+    bind_in["mode"] = profile["mode"]
+    bound = controls_mod.bind_native_inputs(bind_in, caps)
+    legacy = {k: inputs[k] for k in IGNORED_INPUTS if k in inputs}
+    legacy.update({"prompt": bound["controls"]["prompt"], "model": profile["model"], "mode": profile["mode"]})
+    for alias in controls_mod.FLAG_ALIASES:
+        if bound["controls"].get(alias) is not None:
+            legacy[alias] = bound["controls"][alias]
+    assets = bound["input_assets"]
+    if any(a["role"] != "first_frame" for a in assets) or len(assets) > 1:
+        raise OpenArtCLIError("transport_unsupported", "only one first_frame asset has a CLI transport")
+    if assets:
+        asset = assets[0]
+        if asset["native"] != "startFrame":
+            raise OpenArtCLIError("transport_unsupported", "first_frame native differs from CLI --image wire")
+        if not asset.get("source_path"):
+            raise OpenArtCLIError("control_invalid", "first_frame needs a local source_path to verify bytes")
+        legacy["image_path"], legacy["image_upload_id"] = asset["source_path"], asset["upload_id"]
+        legacy.setdefault("operation", "image_to_video")
+    return legacy, {"native_params": bound["native_params"], "assets": assets,
+                    "capabilities_sha256": bound["capabilities_sha256"], "union_branch": bound["union_branch"]}
+
+
 def _native_controls(inputs: dict, profile: dict) -> tuple[dict, Optional[dict]]:
+    controls, upload, _ = _native_controls_typed(inputs, profile)
+    return controls, upload
+
+
+def _native_controls_typed(inputs: dict, profile: dict) -> tuple[dict, Optional[dict], Optional[dict]]:
     if not isinstance(inputs, dict):
         raise OpenArtCLIError("invalid_argument", "inputs must be an object")
+    if any(k in inputs for k in _NEW_SYNTAX_KEYS):
+        legacy, typed = _bind_typed_inputs(inputs, profile)
+        controls, upload = _native_controls_legacy(legacy, profile)
+        for asset in typed["assets"]:
+            if asset.get("source_sha256") not in (None, upload["source_sha256"]):
+                raise OpenArtCLIError("upload_mismatch", "claimed source_sha256 differs from current source bytes")
+            if asset.get("body_pointer") not in (None, "params.startFrame"):
+                raise OpenArtCLIError("control_invalid", "first_frame body_pointer differs from params.startFrame")
+        typed["input_assets"] = [{"role": "first_frame", "native": "startFrame", "body_pointer": "params.startFrame",
+                                  **upload}] if typed["assets"] else []
+        return controls, upload, typed
+    controls, upload = _native_controls_legacy(inputs, profile)
+    return controls, upload, None
+
+
+def _native_controls_legacy(inputs: dict, profile: dict) -> tuple[dict, Optional[dict]]:
     for key in UNSUPPORTED_INPUTS:
         if key in inputs:
             raise OpenArtCLIError("unsupported_gate", f"{key} is not a qualified OpenArt control")
@@ -584,16 +788,16 @@ def native_request(inputs: dict, profile: dict, dry_run: Optional[dict] = None) 
     Deterministic for identical inputs/profile/evidence. Without dry_run evidence
     `native_body_sha256` is None and launch refuses.
     """
-    controls, image_upload = _native_controls(inputs, profile)
+    controls, image_upload, typed = _native_controls_typed(inputs, profile)
     creative = _creative_argv(controls)
     argv = cli.check_submit_argv(creative + ["--async"], allow_image="image_url" in controls)
-    evidence = _verify_dry_run_evidence(dry_run, controls, profile, creative) if dry_run is not None else None
+    evidence = _verify_dry_run_evidence(dry_run, controls, profile, creative, typed) if dry_run is not None else None
     profile_digest = profile.get("profile_sha256") or sha256_json(
         {k: v for k, v in profile.items() if k != "profile_sha256"})
     public_controls = {k: v for k, v in controls.items() if k != "image_url"}
     if image_upload:
         public_controls["image_url_sha256"] = image_upload["url_sha256"]
-    return {
+    out = {
         "argv": argv,
         "creative_argv": creative,
         "native_controls": public_controls,
@@ -614,9 +818,77 @@ def native_request(inputs: dict, profile: dict, dry_run: Optional[dict] = None) 
         "mode": controls["mode"],
         "image_upload": image_upload,
     }
+    if typed is not None:
+        # New syntax only: legacy-syntax requests keep their frozen shape/hashes.
+        out["native_params"] = typed["native_params"]
+        out["input_assets"] = typed["input_assets"]
+    return out
 
 
 # ---------------------------------------------------------------- uploads (qualified nonspending only)
+
+
+def _reference_controls(inputs: Any) -> dict:
+    """Normalize caller inputs exactly as production dispatch does (lazy: avoids import cycle)."""
+    if not isinstance(inputs, dict):
+        raise OpenArtCLIError("control_invalid", "inputs must be an object")
+    try:
+        from lib import production_execution as execution
+    except ImportError:  # pragma: no cover - production layer always present in repo
+        return dict(inputs)
+    try:
+        return execution._openart_controls(inputs)
+    except Exception as exc:  # execution raises its own error type for alias conflicts
+        if isinstance(exc, OpenArtCLIError):
+            raise
+        raise OpenArtCLIError("control_invalid", f"inputs alias conflict: {exc}")
+
+
+def native_reference_digest(inputs: Any, profile: dict, native: Optional[dict] = None) -> Optional[str]:
+    """Digest of the exact source-bound native media references of one request, or None.
+
+    Rebuilds the native request from ``inputs``/``profile`` (re-reading source bytes and
+    revalidating each retained upload record, snapshot, receipt, account binding and URL)
+    and requires it to equal ``native`` exactly; any drift -> ``upload_mismatch`` (bytes,
+    upload, URL) or ``control_invalid`` (role/native/shape). Returns ``None`` only when the
+    rebuilt request carries no media reference at all. The digest is sha256 of the sorted
+    canonical list of ``{role, native, source_sha256, upload_id, url_sha256}`` rows.
+    Legacy ``image_upload`` maps to role ``first_frame`` with native ``startFrame`` (the
+    probe-verified CLI 0.1.1 ``--image`` wire key). Pure: no CLI call, no lock.
+    """
+    if not isinstance(profile, dict):
+        raise OpenArtCLIError("control_invalid", "profile must be an object")
+    controls = _reference_controls(inputs)
+    if native is None:
+        rebuilt = prepare_native_request(controls, profile)
+    else:
+        if not isinstance(native, dict):
+            raise OpenArtCLIError("control_invalid", "native must be an object")
+        rebuilt = native_request(controls, profile, dry_run=native.get("dry_run"))
+        # Type-exact: canonical JSON digest, so True/1 or 5.0/5 drift in native fields fails.
+        if sha256_json(rebuilt) != sha256_json(native):
+            if rebuilt.get("image_upload") != native.get("image_upload"):
+                raise OpenArtCLIError("upload_mismatch", "native reference binding differs from current sources")
+            raise OpenArtCLIError("control_invalid", "native request differs from current inputs/profile")
+    rows = []
+    upload = rebuilt.get("image_upload")
+    if upload is not None:
+        if not isinstance(upload, dict) or set(upload) != {"upload_id", "source_sha256", "url_sha256"} \
+                or not all(isinstance(upload[k], str) and upload[k] for k in upload):
+            raise OpenArtCLIError("control_invalid", "image_upload binding malformed")
+        rows.append({"role": "first_frame", "native": "startFrame", **upload})
+    for asset in rebuilt.get("input_assets") or []:
+        # Rows come only from the jobs-rebuilt request (compared above), never caller fields.
+        if not isinstance(asset, dict) or set(asset) != {"role", "native", "body_pointer", "upload_id",
+                                                         "source_sha256", "url_sha256"}:
+            raise OpenArtCLIError("control_invalid", "rebuilt input_assets binding malformed")
+        row = {k: asset[k] for k in ("role", "native", "upload_id", "source_sha256", "url_sha256")}
+        if row not in rows:
+            rows.append(row)
+    if not rows:
+        return None
+    rows.sort(key=lambda r: (r["role"], r["upload_id"], r["source_sha256"]))
+    return sha256_json(rows)
 
 def _no_upload_approval(project_root: Path, upload_id: str, source_sha256: str) -> Optional[dict]:
     return None
@@ -1292,21 +1564,17 @@ QUALIFICATION_PURPOSE = "result_contract_qualification"
 def _launch_purpose(profile: dict, reservation: dict) -> bool:
     """True when this launch is the single result-contract qualification attempt.
 
-    Purpose comes ONLY from the trusted registered ledger lookup result. Staged profiles
-    without a verified result proof can launch only for that purpose; ordinary launches
-    need full qualification.
+    Purpose comes ONLY from the trusted registered ledger lookup result. Supported staged
+    (pre_submit) profiles launch ordinarily without any prior result proof; empirical result
+    qualification is optional diagnostics. Invalid optional proof is ignored for production.
     """
     if not _is_staged(profile):
         return False
-    try:
-        load_result_proof(profile)
-        return False
-    except OpenArtCLIError:
-        pass
-    if reservation.get("purpose") != QUALIFICATION_PURPOSE:
-        raise OpenArtCLIError("result_contract_unqualified",
-                              "pre-submit profile needs an approved result_contract_qualification reservation")
-    return True
+    if not _proof_or_none(profile).get("empirical_invalid") and _has_result_proof(profile):
+        return False  # verified optional proof already exists
+    # Supported pre_submit profiles launch ordinarily without prior empirical proof; the
+    # single result_contract_qualification launch remains an optional diagnostic purpose.
+    return reservation.get("purpose") == QUALIFICATION_PURPOSE
 
 
 def _marker_key(profile: dict, reservation: dict, account: str) -> str:
@@ -1825,14 +2093,15 @@ def effective_result_contract(attempt_id: str) -> dict:
     """Pure: the result contract in force for an attempt's frozen launch profile.
 
     Independent of later catalog/profile updates. Legacy full profiles return
-    result_contract_sha256=None. Raises result_contract_unqualified when staged and unproven.
+    result_contract_sha256=None; supported staged profiles without (valid) optional proof
+    likewise return None with the frozen profile-declared json_paths.
     """
     aid = cli._safe_part(attempt_id)
     launch = launch_record(aid)
     if launch is None:
         raise OpenArtCLIError("result_contract_unqualified", "attempt was never launched")
     prof = launch["profile"]
-    proof = load_result_proof(prof)
+    proof = _proof_or_none(prof)
     return {"profile_sha256": prof.get("profile_sha256"),
             "result_contract_sha256": proof["result_contract_sha256"],
             "result_proof_id": proof["result_proof_id"],
@@ -1869,8 +2138,9 @@ def _finish_parse(attempt_id: str, rc: Optional[int], profile: dict) -> dict:
         try:
             paths = _effective_paths(profile)
         except OpenArtCLIError:
-            # Only the first qualification launch may use its tentative frozen declaration.
-            # Ordinary launches parse through the already verified immutable full contract.
+            # _effective_paths ignores invalid optional proof for staged profiles, so this only
+            # covers residual profile errors: ordinary launches hold; the diagnostic
+            # qualification launch may still use its tentative frozen declaration.
             qualified = (launch_record(attempt_id) or {}).get("purpose") == QUALIFICATION_PURPOSE
     job_id = parse_submit(text, profile, paths) if qualified and len(raw) <= cli.MAX_STDOUT else None
     if job_id is None:
@@ -1914,13 +2184,21 @@ def _verify_raw_submit(attempt_id: str, launch: dict, job_id: str, kind: str,
         recovery, _, candidate = _load_submit_recovery(attempt_id, kind)
         if candidate != job_id or launch["binding"]["profile_sha256"] != recovery["origin"]["origin_profile_sha256"]:
             raise OpenArtCLIError(kind, "recovered original job differs from launch binding")
-    try:
-        paths = _effective_paths(launch["profile"]) if proven else launch["profile"]["json_paths"]
-    except OpenArtCLIError:
-        if recovery is None or os.path.lexists(result_proof_path(
-                launch["profile"]["model"], launch["profile"]["mode"], launch["binding"]["profile_sha256"])):
-            raise OpenArtCLIError(kind, "result contract unqualified for this launch profile")
+    proof_exists = os.path.lexists(result_proof_path(
+        launch["profile"]["model"], launch["profile"]["mode"], launch["binding"]["profile_sha256"]))
+    if recovery is not None and not proof_exists:
         paths = dict(launch["profile"]["json_paths"], **recovery["json_paths"])
+    elif proven and launch.get("purpose") == QUALIFICATION_PURPOSE and _is_staged(launch["profile"]) \
+            and _proof_or_none(launch["profile"])["result_contract_sha256"] is None:
+        # Evaluated lazily: load_result_proof re-enters here with proven=False.
+        # The diagnostic qualification launch's tentative parse is not original-job identity
+        # until promotion; ordinary launches use the frozen profile-declared paths.
+        raise OpenArtCLIError(kind, "result contract unqualified for this launch profile")
+    else:
+        try:
+            paths = _effective_paths(launch["profile"]) if proven else launch["profile"]["json_paths"]
+        except OpenArtCLIError:
+            raise OpenArtCLIError(kind, "result contract unqualified for this launch profile")
     if recovery is not None and paths["submit_job_id"] != recovery["json_paths"]["submit_job_id"]:
         raise OpenArtCLIError(kind, "submit path differs from immutable original recovery")
     parsed = parse_submit(raw.decode("utf-8", "replace"), launch["profile"], paths)
@@ -2242,7 +2520,7 @@ def collect_job(attempt_id: str, *, output_path: Path, output_root: Path, profil
         record = {"version": "1", "attempt_id": aid, "binding": binding,
                   "launch_sha256": _launch_sha256(aid), "profile_sha256": profile.get("profile_sha256"),
                   "job_id_sha256": _sha(job_id), **submit,
-                  "result_contract_sha256": load_result_proof(profile)["result_contract_sha256"],
+                  "result_contract_sha256": _proof_or_none(profile)["result_contract_sha256"],
                   "account_id_sha256": acct["account_id_sha256"],
                   "status_receipt_id": got["receipt_id"],
                   "status_receipt_sha256": got["receipt_sha256"],
@@ -2310,7 +2588,7 @@ def collect_job(attempt_id: str, *, output_path: Path, output_root: Path, profil
                 "account_receipt_id": acct["receipt_id"], "account_receipt_sha256": acct["receipt_sha256"],
                 "status_receipt_id": got["receipt_id"], "status_receipt_sha256": got["receipt_sha256"],
                 "result_job_id_sha256": _sha(job_id), "url_sha256": _sha(url), **submit,
-                "result_contract_sha256": load_result_proof(profile)["result_contract_sha256"],
+                "result_contract_sha256": _proof_or_none(profile)["result_contract_sha256"],
                 "project_root": launch["project_root"],
                 "source_host": meta.get("source_host"), "output_root": str(out_root),
                 "intent_id": intent["intent_id"], "recovered": recovered,
@@ -2367,10 +2645,11 @@ def verify_collection_receipt(attempt_id: str, profile: dict) -> dict:
             or ev["account_id_sha256"] != ev["binding"].get("account_id_sha256"):
         raise OpenArtCLIError(bad, "account receipt differs from bound account")
     try:
-        contract = load_result_proof(profile)["result_contract_sha256"]
+        contract = _proof_or_none(profile)["result_contract_sha256"]
     except OpenArtCLIError:
         raise OpenArtCLIError(bad, "result contract for the origin profile is not verified")
-    if "result_contract_sha256" not in ev or ev["result_contract_sha256"] != contract:
+    # None = collected before any optional empirical proof existed (original-job paths).
+    if "result_contract_sha256" not in ev or ev["result_contract_sha256"] not in (contract, None):
         raise OpenArtCLIError(bad, "collection evidence result contract differs")
     srec = _load_receipt(ev.get("status_receipt_id"), ev.get("status_receipt_sha256"), bad)
     status, url = _check_status_receipt(srec, job_id, profile)
@@ -2460,10 +2739,11 @@ def verify_terminal_failure(attempt_id: str, profile: dict) -> dict:
     if any(rec.get(k) != v for k, v in submit.items()):
         raise OpenArtCLIError(bad, "terminal failure differs from original raw submit")
     try:
-        contract = load_result_proof(profile)["result_contract_sha256"]
+        contract = _proof_or_none(profile)["result_contract_sha256"]
     except OpenArtCLIError:
         raise OpenArtCLIError(bad, "terminal semantics unqualified for the origin profile")
-    if "result_contract_sha256" not in rec or rec["result_contract_sha256"] != contract:
+    # None = collected before any optional empirical proof existed (original-job paths).
+    if "result_contract_sha256" not in rec or rec["result_contract_sha256"] not in (contract, None):
         raise OpenArtCLIError(bad, "terminal failure result contract differs")
     try:
         arec = _load_receipt(rec.get("account_receipt_id"), rec.get("account_receipt_sha256"), bad)

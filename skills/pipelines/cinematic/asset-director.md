@@ -75,6 +75,16 @@ If `motion_required = true`, the representative visual must be a video clip samp
 
 If rejected, adjust parameters and retry (max 3 iterations). Do not batch until approved.
 
+In a board-backed episode, an independent text-only cutaway may use
+`shot.reference_mode: "reference_free"` for OpenArt text-to-video. That shot
+must have no local cast IDs, visible speakers, dialogue, assets or upstream
+sources; required frame pins and manifest reference/handoff obligations block
+it. Keep the episode's global boards, payoff and cast evidence, and retain all
+requirements on its other shots. This allows the cutaway alongside a separate
+referenced Grok shot. It does not authorize OpenArt to replace the same shot's
+cast, dialogue or reference continuity when the Grok route is unavailable.
+See `docs/OPENART_CLI.md#reference-free-and-provider-qualification-paths`.
+
 Before the sample is generated, tell the user exactly which generation path will be used:
 
 - tool,
@@ -203,5 +213,7 @@ and the named preparation review in `skills/meta/reviewer.md` before dispatch.
 Keep reviewed start/end boards, every dialogue occurrence, explicit timing and
 current upstream continuity. Unsupported ending pins, audio inputs or rich
 references block this route and require a separately approved alternative.
-Preserve the exact selected model/settings and private approval evidence; an
-offline fixture is not live compatibility or production certification.
+Preserve the exact selected model/settings and private approval evidence. Current
+schema, authenticated account and native transport readiness permit production;
+paid result qualification is optional diagnostic evidence. An offline fixture is
+not provider evidence or a creative-quality review.

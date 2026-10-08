@@ -1,0 +1,72 @@
+# OpenArt video through MCP
+
+OpenMontage can hand video requests to the user's installed, signed-in OpenArt connector. `openart_mcp_video` is a separate route from `openart_cli_video`; their accounts, controls, and approvals are independent. The observed MCP catalog contains 45 model/mode forms. A route is production-ready when the current pinned catalog row, valid exact native form/schema, current authenticated account identity, and known mode/operation are present; each exact request must also pass native role, parameter, and schema validation. Paid live-result or quality qualification is optional diagnostic evidence, not a production prerequisite. Never describe a schema-supported route as live-tested or quality-reviewed unless it is.
+
+## Refresh connector observations
+
+When retained connector observations are stale or unavailable, refresh them through the user's signed-in connector. Call `mcp__codex_apps__openart_openart_model_list({})`, then `mcp__codex_apps__openart_openart_model_form_get({model, mode})` for the listed video modes, and `mcp__codex_apps__openart_openart_account_get({})`. Keep each exact `structuredContent` response with its tool name, arguments, and actual observation time. Do not query a browser or use local credentials to substitute for these tools.
+
+Retain the complete observations with `lib.openart_mcp.retain_observation('schema', schema_observation)` and `retain_observation('account', account_observation)`. Include `version: "1"`, `transport: "openart_mcp"`, and the actual observation time in each envelope. The schema envelope records the `schema_observation_only_not_dispatch_authority` classification, the model-list result, and each form result with its exact `{model, mode}` arguments. The account envelope records `tool: "openart_account_get"`, empty arguments, and the `agent_recorded_connector_observation_not_dispatch_authority` classification. The helper stores private, hash-addressed observations and updates an index for later sessions; explicit digest overrides take precedence over that index. Account results can contain personal information; keep the raw observation in that private store. These observations help discovery and request binding, but do not qualify a model, approve billing, or authorize a generation.
+
+## Pick the scene treatment
+
+Read the selected model/mode form and use its native control names, values, and input roles. Unsupported settings stop preparation instead of being dropped or described in prompt text.
+
+For an ordinary boarded image-to-video shot, use the starting board as the native first frame. The ending board is the reviewed target state; it does not need to be sent as a native last-frame pin. When the user or approved contract explicitly requires an exact pinned ending, use the model's verified end-frame control and provide both first- and last-frame assets under the `first_last_frame` operation.
+
+Reference-guided modes such as `element2video`, or SmartShot forms with declared identity-reference roles, describe a different treatment. Their native reference roles bind cast or environment identity while the model creates a scene; they are not literal first-frame pins. This change needs a fresh approved contract and governed request. Preserve the requested mode or ask before changing it.
+
+Record that treatment as `reference_mode: "reference_guided"` on the shot contract or its project default. Use operation `reference_to_video` with `element2video`, or `shot_video` with SmartShot's `generate-shot-video` mode.
+
+## Approval and cost
+
+The normal route is Strict. A fresh approval binds the exact request, model/mode, native parameters, sources, project, and account. A displayed default cost is only an estimate. Exact-credit authorization requires verified account identity, billing unit, debit quantum, request parameters, balance, and debit evidence. Otherwise the approval must explicitly accept unknown cost with no enforceable credit ceiling. Attempt caps limit attempts; they do not cap provider charges.
+
+Auto-continue is a separate supported policy variant, not a readiness claim. It requires a fresh, active, user-approved Auto-continue policy with strict governance safeguards, the exact provider entry `openart_mcp`, unknown-cost billing and an explicit no-ceiling acknowledgement, a bound account UID and OpenArt project ID, and exact schema-supported model/mode routes. The policy is revalidated for every attempt. Without a current valid policy, use Strict approval. A Grok CLI subscription entry is separate: its media model and remaining quota are unreported, and its approval cannot authorize OpenArt MCP requests or vice versa.
+
+The provider-qualification pipeline is optional for bounded, user-approved tests and diagnostics. Its live-result evidence may inform quality decisions, but it is not ordinary production onboarding. Candidate status remains insufficient for production; supported exact native routes may proceed under ordinary request, account, authorization, and scope checks without paid result qualification. Paid benchmarks still require separate approval.
+
+## Source uploads and generation handoff
+
+The current `upload_import` connector contract makes no non-spend or no-delayed-charge promise. Treat uploads as unknown-cost, with delayed charges unknown and no enforceable credit ceiling. Before uploading, prepare an exact source-transfer authorization in the project's retained artifacts and pass only its opaque ID as `billing_declaration.upload_authorization_id`. The retained authorization must bind provider `openart_mcp`, `status: "approved"`, `purpose: "source_transfer_only"`, current project/story revision, observed account UID hash, OpenArt project ID, ordered file paths and hashes, `no_enforceable_credit_ceiling: true`, `delayed_charges_unknown: true`, and `max_upload_batches: 1`; it also needs a named approver and current in-project approval evidence path/hash. The wrapper verifies this artifact and independently checks each file against the current reviewed source contract. Caller-supplied billing claims or approval objects cannot grant authority.
+
+A same-run human approval may cover these exact source batches and a named generation policy; within that explicitly approved scope, do not ask again for every clip. Upload authority and generation authority remain distinct, and an older generation policy does not authorize new source transfers. After approval, call the upload envelope once, retain its original result, and bind the returned native reference into generation. The resulting generation request still passes its own current exact request, account, model/mode, and source checks.
+
+Generation preparation returns one begin envelope for the installed connector. Call its exact tool with its exact arguments once, then retain the original structured result against that local attempt. Errors, missing history IDs, or lost receipts leave the attempt uncertain and must never trigger another generation. Polling and collection stay bound to that original history ID. If the connector's result card is self-polling, let it complete without launching a second poll. Text-only polling follows the connector cadence for the same ID.
+
+After recording a terminal `COMPLETED` status for the original history, call account action `download` to fetch its exact retained resource URL into the private download area. Then pass that action's returned `downloaded_path` to `collect` for the same attempt; collection verifies the retained download receipt and copies only those bytes to the approved output path. Do not supply an arbitrary local video as if it were the provider result. The URL/history/resource/hash binding is locally retained agent evidence, not a cryptographic attestation from OpenArt.
+
+## H3 Max Turbo schema example
+
+The observed form uses model `fal-h3-max-turbo`, mode `image2video`, integer `duration`, and `resolution` values including `768P`. The snippet demonstrates request shape only; it is not evidence of live production qualification. Replace placeholders with retained source evidence and actual connector upload IDs. Set `videoCount` to `1` for a one-output shot so the authorized attempt and result count remain aligned.
+
+```json
+{
+  "operation": "image_to_video",
+  "model": "fal-h3-max-turbo",
+  "mode": "image2video",
+  "native_params": {"duration": 8, "resolution": "768P", "videoCount": 1},
+  "input_assets": [
+    {"role": "first_frame", "source_path": "assets/shot-start.png", "source_sha256": "<retained-sha256>", "upload_id": "<actual-upload-id>"}
+  ]
+}
+```
+
+If an exact ending pin is required, add a native `last_frame` asset and use `operation: "first_last_frame"`; this form requires both first and last frame assets:
+
+```json
+{
+  "operation": "first_last_frame",
+  "model": "fal-h3-max-turbo",
+  "mode": "image2video",
+  "native_params": {"duration": 8, "resolution": "768P", "videoCount": 1},
+  "input_assets": [
+    {"role": "first_frame", "source_path": "assets/shot-start.png", "source_sha256": "<retained-sha256>", "upload_id": "<actual-start-upload-id>"},
+    {"role": "last_frame", "source_path": "assets/shot-end.png", "source_sha256": "<retained-sha256>", "upload_id": "<actual-end-upload-id>"}
+  ]
+}
+```
+
+Keep the resulting clip review separate from transport success: native controls do not guarantee perfect one-shot quality.
+
+The MCP route uses the agent-mediated connector and does not call the OpenArt CLI or reuse CLI credentials. Do not infer MCP controls or authority from CLI qualification.

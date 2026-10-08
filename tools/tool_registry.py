@@ -60,9 +60,11 @@ def _openart_route(tool: BaseTool) -> dict[str, Any]:
     """Read-only OpenArt menu row: qualification files + existing ledger snapshot.
 
     Never calls the CLI, never constructs CreditLedger, never creates state.
-    Only FULL real-result-qualified profiles count as available models;
-    inspected/pre_submit rows are qualification candidates; fixtures never live.
+    Real profiles with inspected native controls and an effective preview count as
+    available models; full result proof remains empirical evidence, not a gate.
+    Fixtures never count as production models.
     """
+    from lib.openart_catalog import read_observed_catalog
     supports = dict(getattr(tool, "supports", {}))
     errors: list[str] = []
     try:
@@ -89,22 +91,26 @@ def _openart_route(tool: BaseTool) -> dict[str, Any]:
             "model": row.get("model"),
             "mode": row.get("mode"),
             "level": row.get("level"),
+            "production_ready": row.get("production_ready") is True,
+            "full_result_qualified": row.get("full_result_qualified") is True,
+            "empirical_result_status": row.get("empirical_result_status", "not_tested"),
             "cli_version": row.get("cli_version"),
             "profile_sha256": row.get("profile_sha256"),
         }
         if row.get("source") != "real" or row.get("error") == "fixture_profile":
             rejected.append({**compact, "reason": "fixture_profile_never_live"})
-        elif row.get("valid") is True and row.get("level") == "full":
+        elif row.get("production_ready") is True:
             entry = ((catalog.get(row.get("model")) or {}).get("modes") or {}).get(row.get("mode"))
             if entry and entry.get("profile_sha256") == row.get("profile_sha256"):
                 controls = {"native_controls": entry["native_controls"],
+                            "native_capabilities": entry.get("native_capabilities"),
                             "native_controls_source": "retained_form_and_exact_preview_receipts",
                             "required_unqualified": entry["required_unqualified"],
                             "argv_flag_without_effective_preview":
                                 entry["argv_flag_without_effective_preview"]}
                 account = entry.get("account_id_sha256")
             else:
-                # Full row whose retained receipts could not be verified: never ready.
+                # Production-ready row whose retained receipts could not be verified: never ready.
                 controls = {"native_controls": "unverified_receipts",
                             "native_controls_source": "unavailable", "required_unqualified": None,
                             "argv_flag_without_effective_preview": []}
@@ -113,6 +119,9 @@ def _openart_route(tool: BaseTool) -> dict[str, Any]:
             available_models.append({**compact,
                                      "result_contract_sha256": row.get("result_contract_sha256"),
                                      "result_proof_id": row.get("result_proof_id"),
+                                     "production_ready": True,
+                                     "full_result_qualified": row.get("full_result_qualified") is True,
+                                     "empirical_result_status": row.get("empirical_result_status", "not_tested"),
                                      "account_id_sha256": account,
                                      "catalog_verified": account is not None,
                                      "controls": controls})
@@ -121,7 +130,7 @@ def _openart_route(tool: BaseTool) -> dict[str, Any]:
                                "purpose": "qualification_candidate",
                                "production_available": False,
                                "next_stage": "pre_submit" if row.get("level") == "inspected"
-                               else "first_original_result_qualification",
+                               else "inspect_native_controls",
                                "error": row.get("error")})
         else:
             rejected.append({**compact, "reason": row.get("error") or "unqualified"})
@@ -204,10 +213,14 @@ def _openart_route(tool: BaseTool) -> dict[str, Any]:
     if status != "available":
         blockers.append(f"tool_status:{status}")
     verified_models = [m for m in available_models if m["catalog_verified"]]
+    verified_caps = [m['controls'].get('native_capabilities') or {} for m in verified_models]
+    supports.update(first_last_frame=any(c.get('roles', {}).get('last_frame', {}).get('supported') is True for c in verified_caps),
+                    native_audio=any(c.get('params', {}).get('generateAudio', {}).get('binding') == 'flag' for c in verified_caps),
+                    multiple_reference_images=any(c.get('roles', {}).get('reference_image', {}).get('supported') is True for c in verified_caps))
     if not available_models:
-        blockers.append("no_full_real_result_qualified_profile")
+        blockers.append("no_production_ready_real_profile")
     elif not verified_models:
-        blockers.append("full_profile_receipts_unverified")
+        blockers.append("production_profile_receipts_unverified")
     if ledger["error"]:
         blockers.append("ledger_unreadable")
     if ledger["pending"]:
@@ -229,6 +242,7 @@ def _openart_route(tool: BaseTool) -> dict[str, Any]:
         "operations": [op for op in ("text_to_video", "image_to_video") if supports.get(op)],
         "models": available_models,
         "qualification_candidates": candidates,
+        "observed_candidates": read_observed_catalog(),
         "not_live": rejected,
         "controls": {
             "first_last_frame": supports.get("first_last_frame") is True,
@@ -238,7 +252,7 @@ def _openart_route(tool: BaseTool) -> dict[str, Any]:
             # retained form + exact preview receipts. Nothing route-wide is guessed.
             "native_controls": "per_model" if verified_models else "not_yet_qualified",
             "native_controls_source": "models[].controls" if verified_models
-            else "no_verified_full_profile",
+            else "no_verified_production_profile",
             "required_unqualified": ["resolution"] if not verified_models else sorted(
                 {n for m in verified_models for n in m["controls"]["required_unqualified"]}),
         },
@@ -277,7 +291,16 @@ def _openart_route(tool: BaseTool) -> dict[str, Any]:
                 "unknown_cost": {"default": False, "recommended": False,
                     "explicit_acknowledgement": "no_enforceable_credit_ceiling",
                     "current_quote_required": False, "guaranteed_ceiling": False,
-                    "requested_charge": "unknown", "auto_continue_available": False},
+                    "requested_charge": "unknown",
+                    "native_modes": sorted({m['mode'] for m in verified_models if m['mode'] in {'text2video', 'image2video'}}),
+                    "reference_mode": "reference_free_or_approved_source_bound",
+                    "source_binding_required_for_references": True,
+                    # Engine support is limited to verified exact text/single-start modes;
+                    # it never reports active policy or fresh account readiness.
+                    "auto_continue_available": any(
+                        m["mode"] in {"text2video", "image2video"} for m in verified_models),
+                    "auto_continue_requires": "active_policy_openart_unknown_cost_variant",
+                    "auto_continue_policy_active": None},
             },
             "holds": {
                 "pending_reservation": [h for h in ledger["holds"] if h["hold"] == "pending_reservation"],
@@ -779,6 +802,7 @@ class ToolRegistry:
             # reuse the existing read-only `--version`/`--help` compatibility
             # probe and never generate media.
             "qualified_cli_video_routes": self.qualified_cli_video_routes(),
+            "qualified_connector_video_routes": self.qualified_connector_video_routes(),
             # Keep endpoint support visible even when a provider's ordinary
             # image-to-video route is available through another billing path.
             "pinned_final_frame_routes": [
@@ -817,6 +841,26 @@ class ToolRegistry:
         if openart is not None:
             routes.append(_openart_route(openart))
         return routes
+
+    def qualified_connector_video_routes(self) -> list[dict[str, Any]]:
+        """Observed native connector controls, separate from CLI qualification."""
+        self.ensure_discovered()
+        tool = self._tools.get('openart_mcp_video')
+        if tool is None:
+            return []
+        info = tool.get_info()
+        return [{'provider': 'openart_mcp', 'tool': tool.name,
+                 'transport': 'agent_mediated_connector',
+                 'explicit_selection_only': True,
+                 'production_available': any(mode.get('production_ready') is True
+                     for model in info.get('model_catalog', {}).values()
+                     for mode in model.get('modes', {}).values()),
+                 'model_catalog': info.get('model_catalog', {}),
+                 'qualification_status': 'model_mode_account_bound',
+                 'billing': {'kind': 'unknown_cost', 'enforceable_credit_ceiling': False},
+                 'limitations': ['Production readiness comes from the current native catalog/form/account; empirical result status is reported separately.',
+                     'Python prepares connector handoffs; the agent calls the session connector.',
+                     'CLI profiles and approvals never authorize this connector route.']}]
 
     # Post-hoc fix: narrow helper that keeps the registry output stdout-safe on
     # Windows cp1252 without imposing a new style rule on every tool author.

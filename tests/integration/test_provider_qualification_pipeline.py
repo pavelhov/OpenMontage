@@ -301,3 +301,105 @@ def test_explicit_reviewable_settings_and_reference_free_semantics(prepared, fie
     prepared[2][field] = value
     with pytest.raises(QualificationValidationError, match='settings|reference-free'):
         validate(prepared)
+
+
+def test_referenced_qualification_requires_exact_retained_role_bytes(prepared):
+    root, packet, inputs, native, profile = prepared
+    source = root / 'starting-board.png'; source.write_bytes(b'synthetic reviewed board')
+    asset = {'role': 'first_frame', 'path': source.name,
+             'sha256': hashlib.sha256(source.read_bytes()).hexdigest(), 'upload_id': 'retained-fixture'}
+    packet.update(mode='image2video', native_no_reference=False, input_assets=[asset])
+    inputs.update(mode='image2video', image_path=str(source), image_upload_id=asset['upload_id'])
+    native = dict(native, image_upload={'source_sha256': asset['sha256'], 'upload_id': asset['upload_id']})
+    prepared = (root, packet, inputs, native, profile)
+    authority_path = root / 'artifacts/unknown_cost_authorization-original.json'
+    authority = json.loads(authority_path.read_text()); authority['mode'] = 'image2video'
+    authority_path.write_text(json.dumps(authority))
+    scopes_path = root / 'production_scopes.json'; scopes = json.loads(scopes_path.read_text())
+    scopes['scopes'][0]['unknown_cost_authorization_sha256'] = hashlib.sha256(
+        json.dumps(authority, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    scopes_path.write_text(json.dumps(scopes))
+    (root / 'artifacts/provider_qualification_packet.json').write_text(json.dumps(packet))
+    checkpoint(prepared)
+    assert validate(prepared)['native_no_reference'] is False
+    native['image_upload']['source_sha256'] = 'f' * 64
+    with pytest.raises(QualificationValidationError, match='asset roles'):
+        validate(prepared)
+
+
+def test_referenced_qualification_schema_requires_source_and_upload_bindings(prepared):
+    packet = copy.deepcopy(prepared[1]); packet.update(mode='image2video', native_no_reference=False)
+    with pytest.raises(jsonschema.ValidationError):
+        validate_artifact('provider_qualification_packet', packet)
+
+
+def explicit_settings_packet(prepared, settings, *, mode='text2video'):
+    root, packet, inputs, native, profile = prepared
+    native = dict(native, native_controls=dict(settings))
+    prepared = (root, packet, inputs, native, profile)
+    for key in ('duration', 'aspect_ratio', 'resolution'):
+        packet.pop(key); inputs.pop(key)
+    packet['native_settings'] = dict(settings)
+    inputs.update(settings)
+    if mode == 'image2video':
+        source = root / 'starting-board.png'; source.write_bytes(b'exact synthetic starting board')
+        asset = {'role': 'first_frame', 'path': source.name,
+                 'sha256': hashlib.sha256(source.read_bytes()).hexdigest(), 'upload_id': 'retained-upload'}
+        packet.update(mode=mode, native_no_reference=False, input_assets=[asset])
+        inputs.update(mode=mode, image_path=str(source), image_upload_id=asset['upload_id'])
+        native['image_upload'] = {'source_sha256': asset['sha256'], 'upload_id': asset['upload_id']}
+        path = root / 'artifacts/unknown_cost_authorization-original.json'
+        authorization = json.loads(path.read_text()); authorization['mode'] = mode
+        path.write_text(json.dumps(authorization))
+        scope_path = root / 'production_scopes.json'; scopes = json.loads(scope_path.read_text())
+        scopes['scopes'][0]['unknown_cost_authorization_sha256'] = hashlib.sha256(
+            json.dumps(authorization, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        scope_path.write_text(json.dumps(scopes))
+    (root / 'artifacts/provider_qualification_packet.json').write_text(json.dumps(packet))
+    checkpoint(prepared)
+    return prepared
+
+
+@pytest.mark.parametrize('mode,settings', [
+    ('text2video', {'duration': 5, 'aspect_ratio': '16:9'}),
+    ('image2video', {'duration': 5, 'resolution': '720p'}),
+    ('text2video', {})])
+def test_exact_mode_qualification_can_omit_unsupported_native_flags(prepared, mode, settings):
+    selected = explicit_settings_packet(prepared, settings, mode=mode)
+    assert validate(selected)['native_settings'] == settings
+
+
+@pytest.mark.parametrize('drift', ['extra', 'omitted', 'prepared_extra', 'native_param_extra', 'duplicate_alias', 'json_type'])
+def test_native_settings_extra_omitted_or_ambiguous_flags_fail_before_dispatch(prepared, drift):
+    selected = explicit_settings_packet(prepared, {'duration': 5, 'aspect_ratio': '16:9'})
+    _, _, inputs, native, _ = selected
+    if drift == 'extra': inputs['resolution'] = '720p'
+    if drift == 'omitted': inputs.pop('aspect_ratio')
+    if drift == 'prepared_extra': native['native_controls']['resolution'] = '720p'
+    if drift == 'native_param_extra': inputs['native_params'] = {'generateAudio': True}
+    if drift == 'duplicate_alias': inputs['native_params'] = {'duration': 5}
+    if drift == 'json_type': inputs['duration'] = 5.0
+    with pytest.raises(QualificationValidationError, match='setting|parameter'):
+        validate(selected)
+
+
+def test_native_settings_camel_aliases_bind_exact_prepared_settings(prepared):
+    selected = explicit_settings_packet(prepared, {'duration': 5, 'aspect_ratio': '16:9'})
+    _, _, inputs, native, _ = selected
+    inputs.pop('duration'); inputs.pop('aspect_ratio')
+    inputs['native_params'] = {'duration': 5, 'aspectRatio': '16:9'}
+    native['native_params'] = dict(inputs['native_params'])
+    assert validate(selected)['native_settings'] == {'duration': 5, 'aspect_ratio': '16:9'}
+    native['native_params']['resolution'] = '720p'
+    with pytest.raises(QualificationValidationError, match='prepared native settings'):
+        validate(selected)
+
+
+@pytest.mark.parametrize('legacy_key', ['duration', 'aspect_ratio', 'resolution'])
+def test_packet_cannot_mix_legacy_and_explicit_native_settings(prepared, legacy_key):
+    packet = copy.deepcopy(prepared[1])
+    settings = {key: packet.pop(key) for key in ('duration', 'aspect_ratio', 'resolution')}
+    packet['native_settings'] = {'duration': settings['duration']}
+    packet[legacy_key] = settings[legacy_key]
+    with pytest.raises(jsonschema.ValidationError):
+        validate_artifact('provider_qualification_packet', packet)

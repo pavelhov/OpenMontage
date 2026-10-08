@@ -107,14 +107,12 @@ def _capture_inspection(model: str, mode: str, json_paths: dict, timeout: float)
     identity = qual.lookup_path(account["parsed"], json_paths["account_id"])
     if not qual._text(identity):
         raise cli.OpenArtCLIError("generation_unqualified", "observed account identity missing")
-    schema = cli.form_schema(form["parsed"], model=model, mode=mode)
-    cli.form_controls(form["parsed"], model=model, mode=mode)
+    form_defaults, _ = qual.form_view(form["parsed"], model=model, mode=mode)
     profile = dict(dummy, source="real", cli_version=qual.lookup_path(version["parsed"], "version"),
                    account_id_sha256=hashlib.sha256(identity.encode()).hexdigest(),
                    tier=qual.lookup_path(account["parsed"], json_paths["account_tier"]),
                    form_sha256=qual._hash(form["parsed"]),
-                   form_defaults={name: spec["default"] for name, spec in schema["properties"].items()
-                                  if isinstance(spec, dict) and "default" in spec},
+                   form_defaults=form_defaults,
                    captured_receipts=[_entry("version", version), _entry("account", account), _entry("form", form)])
     return _checked(qual.validate_profile, profile, require="inspected")
 

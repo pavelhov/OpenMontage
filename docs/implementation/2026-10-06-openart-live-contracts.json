@@ -1,10 +1,11 @@
 {
+  "publication_note": "Published copy redacts private account correlators and local workspace/temp paths; technical schemas, control evidence, test outcomes, and non-account provenance are retained.",
   "version": "1.0",
   "observed_at": "2026-10-06T23:55:52.828301+00:00",
   "scope": "readonly_contract_discovery",
   "binary": {
-    "expected_path": "/Users/pavel/.local/bin/openart",
-    "resolved_path": "/Users/pavel/.local/bin/openart",
+    "expected_path": "<HOME>/.local/bin/openart",
+    "resolved_path": "<HOME>/.local/bin/openart",
     "verified_expected_binary": true
   },
   "commands": [
@@ -1023,7 +1024,7 @@
         "path": "user.uid",
         "type": "string",
         "nonempty": true,
-        "sha256": "4e63308108875fd6454441b8fb91c7f8bd944a63ffa6ec0cec3620e39d32257d"
+        "account_uid_sha256": "[redacted private account correlator]"
       }
     ],
     "safe_auth_booleans": {},
@@ -2979,7 +2980,7 @@
       "source_commit": "82049506ba42f187626d1d3c2e8c39dcb5e923ec",
       "exit_code": 0,
       "result": "3910 passed,11 skipped,3 xfailed,1 subtests passed in853.80s (14:13)",
-      "log_path": "/var/folders/7x/pv_kt1ld7w9bf5vwzjlscr7c0000gn/T/openmontage-final-live-wrapper-full-tg_6_az2.log",
+      "log_path": "<TMP>/openmontage-final-live-wrapper-full-tg_6_az2.log",
       "log_sha256": "36522dcf2164c42c7139c8b0ba8a0e3aeb9b998c7853b207f845cd0fb5db1d64",
       "session_cleanup": "36110completed0"
     }

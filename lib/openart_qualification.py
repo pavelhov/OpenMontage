@@ -12,7 +12,7 @@ import json
 import re
 import stat
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlsplit, unquote
 
 from tools import _openart_cli as cli
@@ -114,6 +114,9 @@ def _record(entry: dict, kind: str = "generation_unqualified") -> dict:
         if len(raw) > cli.MAX_STDOUT or hashlib.sha256(raw).hexdigest() != entry["receipt_sha256"]:
             raise ValueError
         record = json.loads(raw)
+        if isinstance(record, dict) and any(m in record for m in ("schema_only", "unqualified_for_dispatch",
+                                                                   "evidence_kind")):
+            raise ValueError  # synthetic schema-only probe: never qualification authority
         if not isinstance(record, dict) or type(record.get("returncode")) is not int or record["returncode"] != 0 \
                 or not _text(record.get("started_at")) or not isinstance(record.get("argv"), list) \
                 or any(not _captured_argument(record["argv"], i) for i in range(len(record["argv"]))) \
@@ -185,6 +188,36 @@ def verify_captured(profile: dict, level: str = "full") -> None:
         _fail("captured profile contract malformed")
 
 
+def form_view(form: Any, *, model: str, mode: str) -> tuple[dict, bool]:
+    """(form_defaults, every-shape-has-prompt) for a captured form. Pure."""
+    defaults, has_prompt, _ = _form_view(form, model=model, mode=mode)
+    return defaults, has_prompt
+
+
+def _form_view(form: Any, *, model: str, mode: str) -> tuple[dict, bool, Optional[dict]]:
+    """(form_defaults, every-shape-has-prompt, strict controls or None for unions). Pure.
+
+    Plain object forms keep the exact legacy strict path (``form_schema``/``form_controls``), so
+    existing profiles are byte-identical. Root ``anyOf``/``oneOf`` forms are accepted only through
+    the full-original ``exact_form_schema`` (branches intact, strict wrapper/keyword checks); their
+    defaults are never collapsed across branches, so ``form_defaults`` is ``{}`` and the whole
+    form (all branch defaults included) stays bound by ``form_sha256``. Every branch must carry a
+    ``prompt`` property.
+    """
+    try:
+        schema = cli.form_schema(form, model=model, mode=mode)
+        controls = cli.form_controls(form, model=model, mode=mode)
+    except cli.OpenArtCLIError as strict_error:
+        root = cli.exact_form_schema(form, model=model, mode=mode)
+        kind = "anyOf" if "anyOf" in root else "oneOf" if "oneOf" in root else None
+        if kind is None:
+            raise strict_error
+        return {}, all("prompt" in b["properties"] for b in root[kind]), None
+    defaults = {name: spec["default"] for name, spec in schema["properties"].items()
+                if isinstance(spec, dict) and "default" in spec}
+    return defaults, "prompt" in controls, controls
+
+
 def _verify_captured(profile: dict, level: str = "full") -> None:
     records = _records(profile.get("captured_receipts"), _STAGE_KINDS.get(level, _KINDS))
     paths = profile["json_paths"]
@@ -199,17 +232,14 @@ def _verify_captured(profile: dict, level: str = "full") -> None:
     try:
         _argv(records["form"], cli.model_form_argv(profile["model"], profile["mode"]))
         form = records["form"]["parsed"]
-        schema = cli.form_schema(form, model=profile["model"], mode=profile["mode"])
-        controls = cli.form_controls(form, model=profile["model"], mode=profile["mode"])
+        defaults, has_prompt, controls = _form_view(form, model=profile["model"], mode=profile["mode"])
     except cli.OpenArtCLIError:
         _fail("model form controls are unsupported", "unsupported_gate")
     if _hash(form) != profile["form_sha256"]:
         _fail("observed form hash differs from profile")
-    defaults = {name: spec["default"] for name, spec in schema["properties"].items()
-                if isinstance(spec, dict) and "default" in spec}
     if _hash(defaults) != _hash(profile["form_defaults"]):
         _fail("observed form defaults differ from profile")
-    if "prompt" not in controls:
+    if not has_prompt:
         _fail("video form lacks prompt control", "unsupported_gate")
     if level == "inspected":
         return
@@ -223,11 +253,29 @@ def _verify_captured(profile: dict, level: str = "full") -> None:
             or not isinstance(body["params"], dict):
         _fail("preview model/mode/body differs from profile")
     params = body["params"]
-    if not set(params) <= {"prompt", "duration", "aspectRatio", "resolution", "image"}:
+    if not set(params) <= {"prompt", "duration", "aspectRatio", "resolution", "image", "startFrame"} \
+            or ("image" in params and "startFrame" in params):
         _fail("unsupported native controls", "unsupported_gate")
+    start_url = None
+    if "startFrame" in params:
+        start_url = _start_frame_wire_url(params["startFrame"], profile)
+        try:
+            cli.validate_form_params(form, params, model=profile["model"], mode=profile["mode"])
+        except cli.OpenArtCLIError:
+            _fail(start_frame_form_mismatch(form, params, profile), "unsupported_gate")
+    if any(value is None for value in params.values()):
+        _fail("preview requests absent or null form controls", "unsupported_gate")
+    if controls is None:
+        # Root-union form: the exact wire params must select one FULL original branch (no
+        # flattening); that branch then supplies the per-control view below.
+        try:
+            branch = cli.validate_form_params(form, params, model=profile["model"], mode=profile["mode"])
+        except cli.OpenArtCLIError:
+            _fail("preview params violate the captured union form", "unsupported_gate")
+        controls = {name: spec if isinstance(spec, dict) else {} for name, spec in branch["properties"].items()}
     native_controls = {"prompt": "prompt", "duration": "duration", "aspectRatio": "aspectRatio",
-                       "resolution": "resolution", "image": "image"}
-    if any(value is None or native_controls[name] not in controls for name, value in params.items()):
+                       "resolution": "resolution", "image": "image", "startFrame": "startFrame"}
+    if any(native_controls[name] not in controls for name in params):
         _fail("preview requests absent or null form controls", "unsupported_gate")
     for name, value in params.items():
         enum = controls[native_controls[name]].get("enum")
@@ -236,13 +284,13 @@ def _verify_captured(profile: dict, level: str = "full") -> None:
     try:
         creative = cli.native_video_argv(params.get("prompt"), model=profile["model"], mode=profile["mode"],
             duration=params.get("duration"), aspect_ratio=params.get("aspectRatio"),
-            resolution=params.get("resolution"), image_url=params.get("image"))
+            resolution=params.get("resolution"), image_url=start_url or params.get("image"))
     except cli.OpenArtCLIError:
         _fail("preview native controls invalid", "unsupported_gate")
     _argv(records["dry_run"], creative + ["--dry-run"])
     if profile["mode"] == "image2video":
         retained_url = _qualified_upload_url(profile)
-        if params.get("image") != retained_url:
+        if (start_url or params.get("image")) != retained_url:
             _fail("native preview image differs from exact verified upload URL")
     if level == "pre_submit":
         return
@@ -263,6 +311,37 @@ def _verify_captured(profile: dict, level: str = "full") -> None:
             _fail("successful result lacks URL examples")
         for url in urls:
             _url(url, paths["url_hosts"])
+
+
+# Probe-verified CLI 0.1.1 ``--image`` wire (receipt 2026-10-07T223851-592bce16, schema-only):
+# params.startFrame == {label: str, type: 'image', url: <the --image URL>}; no ``id``.
+START_FRAME_WIRE_KEYS = frozenset({"label", "type", "url"})
+CLI_OMITS_REQUIRED_START_FRAME_ID = "CLI_omits_required_startFrame_id"
+
+
+def _start_frame_wire_url(value: Any, profile: dict) -> str:
+    """Exact observed wire shape only; never adds, drops or renames fields."""
+    if profile["mode"] != "image2video" or not isinstance(value, dict) \
+            or set(value) != START_FRAME_WIRE_KEYS or value.get("type") != "image" \
+            or not _text(value.get("label")) or not _text(value.get("url")):
+        _fail("preview startFrame differs from the probe-verified CLI wire shape", "unsupported_gate")
+    return value["url"]
+
+
+def start_frame_form_mismatch(form: Any, params: dict, profile: dict) -> str:
+    """Truthful reason a CLI startFrame body fails the captured form (pure)."""
+    try:
+        schema = cli.exact_form_schema(form, model=profile["model"], mode=profile["mode"])
+    except cli.OpenArtCLIError:
+        return "captured form unqualified for startFrame validation"
+    branches = schema.get("anyOf") or schema.get("oneOf") or [schema]
+    for branch in branches:
+        spec = (branch.get("properties") or {}).get("startFrame") if isinstance(branch, dict) else None
+        if isinstance(spec, dict) and "id" in (spec.get("required") or []) \
+                and "id" not in (params.get("startFrame") or {}):
+            return (f"{CLI_OMITS_REQUIRED_START_FRAME_ID}: captured form requires startFrame.id but "
+                    f"CLI {profile.get('cli_version')} --image sends only label/type/url")
+    return "native preview params violate the full captured form schema"
 
 
 def validate_upload_contract(profile: dict) -> None:

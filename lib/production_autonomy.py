@@ -22,6 +22,7 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 
 from lib.production_request import digest
+from lib.shot_contract import CRITICAL_PREDICATES
 from schemas.artifacts import load_schema
 
 ACTIVATION_SUBJECT = 'Production autonomy policy'
@@ -187,9 +188,90 @@ def require_active_policy(root):
 
 # ---------------------------------------------------------------- conflicts
 
+UNKNOWN_BILLING = 'unknown_cost_no_ceiling'
+UNKNOWN_ACKNOWLEDGEMENT = 'no_enforceable_credit_ceiling'
+ROUTE_TOOLS = {'openart_cli': 'openart_cli_video', 'grok_cli': 'grok_cli_video', 'openart_mcp': 'openart_mcp_video'}
+
+
+def _provider_spec(policy, provider):
+    return next((p for p in policy['providers'] if p['id'] == provider), None)
+
+
+def _openart_spec(policy):
+    return next((p for p in policy['providers'] if p['id'] == 'openart_cli'), None)
+
+
+def _is_unknown(spec):
+    """Only the separately approved schema variant; generic flags never qualify."""
+    return isinstance(spec, dict) and spec.get('billing') == UNKNOWN_BILLING \
+        and spec.get('exposure_acknowledgement') == UNKNOWN_ACKNOWLEDGEMENT
+
+
+def _openart_route_approved(spec, model, mode):
+    if _is_unknown(spec):
+        return {'model': model, 'mode': mode} in spec['routes']
+    return model in spec['models']
+
+
+def _intent_allows(policy, shot_id, provider, model):
+    intent = (policy.get('model_selection_intents') or {}).get(shot_id)
+    if intent is None:
+        return True
+    from lib.video_model_selection import selection_intent_allows_route
+    return selection_intent_allows_route(intent, provider, model, ROUTE_TOOLS.get(provider))
+
+
+def _intent_conflicts(policy):
+    intents = policy.get('model_selection_intents')
+    if intents is None:
+        return []
+    from lib.video_model_selection import validate_model_selection_intent
+    out = []
+    providers = {p['id']: p for p in policy['providers']}
+    for shot_id, intent in intents.items():
+        if shot_id not in policy['shots']:
+            out.append(f'conflict: model selection intent names unapproved shot {shot_id}')
+            continue
+        try:
+            validate_model_selection_intent(intent)
+        except (ValueError, TypeError) as exc:
+            out.append(f'conflict: invalid model selection intent for {shot_id}: {exc}')
+            continue
+        for item in intent['approved_pool']:
+            provider = item['provider']
+            if 'tool' in item and item['tool'] != ROUTE_TOOLS.get(provider):
+                out.append(f'conflict: intent pool tool outside policy route for {shot_id}')
+            elif provider == 'grok_cli':
+                if provider not in providers or 'model' in item:
+                    out.append(f'conflict: intent pool Grok route outside policy for {shot_id}')
+            elif provider in {'openart_cli', 'openart_mcp'}:
+                spec = providers.get(provider)
+                names = ({r['model'] for r in spec['routes']} if _is_unknown(spec) else set(spec['models'])) if spec else set()
+                if item.get('model') not in names:
+                    out.append(f'conflict: intent pool OpenArt model outside policy for {shot_id}')
+            else:
+                out.append(f'conflict: intent pool provider outside policy for {shot_id}')
+    return out
+
+
 def policy_conflicts(policy, baselines=None):
     """Whole-policy conflicts. A model lock is not a conflict (it only excludes Grok)."""
     out = []
+    out.extend(_intent_conflicts(policy))
+    ids = [p['id'] for p in policy['providers']]
+    if len(ids) != len(set(ids)):
+        out.append('conflict: duplicate policy provider')
+    mcp_spec = _provider_spec(policy, 'openart_mcp')
+    if mcp_spec is not None and not _is_unknown(mcp_spec):
+        out.append('conflict: MCP requires fresh no-enforceable-ceiling acceptance')
+    if _is_unknown(mcp_spec) and 'model' in policy['locked']['controls'] and not any(_model_lock_allows(policy['locked']['controls']['model'], route['model']) for route in mcp_spec['routes']):
+        out.append('conflict: exact model lock excludes every approved MCP route')
+    spec = _openart_spec(policy)
+    if spec is not None and spec.get('billing') == UNKNOWN_BILLING and not _is_unknown(spec):
+        out.append('conflict: unknown-cost billing lacks no-ceiling acknowledgement')
+    if _is_unknown(spec) and 'model' in policy['locked']['controls'] and not any(
+            _model_lock_allows(policy['locked']['controls']['model'], r['model']) for r in spec['routes']):
+        out.append('conflict: exact model lock excludes every approved unknown-cost route')
     locked, flex = policy['locked'], policy['flex']
     controls = locked['controls']
     if flex['duration_s'] and 'duration' in controls:
@@ -229,10 +311,20 @@ def static_planning_projection(contract, scene_plan, script, shot_id, manifest=N
     shot['upstream'] = [{k: copy.deepcopy(v) for k, v in u.items()
                          if k not in {'attempt_id', 'output_sha256', 'outgoing_frame_sha256', 'review_sha256'}}
                         for u in shot.get('upstream', [])]
-    cast = set(shot['cast_ids']) | set(contract['late_cast_ids']) | set(contract['payoff_speaker_ids'])
-    needed = set(shot['asset_ids']) | {contract['payoff_asset_id']}
-    needed.update(a['id'] for a in contract['assets']
-                  if not a.get('upstream_source') and cast.intersection(a['cast_ids']))
+    # An explicitly reference-free shot inside a boarded episode carries no implicit
+    # cast/payoff bytes; the global contract snapshot below still freezes them.
+    shot_reference_free = shot.get('reference_mode') == 'reference_free'
+    if shot_reference_free and (shot['cast_ids'] or shot.get('dialogue') or shot['asset_ids'] or shot.get('upstream')):
+        raise AutonomyError('reference-free shot carries cast, dialogue, assets or upstream')
+    if shot_reference_free:
+        cast, needed = set(), set()
+    else:
+        cast = set(shot['cast_ids']) | set(contract['late_cast_ids']) | set(contract['payoff_speaker_ids'])
+        needed = set(shot['asset_ids'])
+        if contract.get('payoff_asset_id') is not None:
+            needed.add(contract['payoff_asset_id'])
+        needed.update(a['id'] for a in contract['assets']
+                      if not a.get('upstream_source') and cast.intersection(a['cast_ids']))
     assets = []
     for source in contract['assets']:
         if source['id'] not in needed:
@@ -266,7 +358,7 @@ def static_planning_projection(contract, scene_plan, script, shot_id, manifest=N
     cards = scene_plan.get('metadata', {}).get('visual_development', {}).get('shot_cards', {})
     return copy.deepcopy({'story': contract['story'], 'shot': shot, 'assets': assets,
         'late_cast_ids': contract['late_cast_ids'], 'payoff_speaker_ids': contract['payoff_speaker_ids'],
-        'payoff_asset_id': contract['payoff_asset_id'], 'implicit_cast_ids': sorted(cast),
+        'payoff_asset_id': contract.get('payoff_asset_id'), 'implicit_cast_ids': sorted(cast),
         'order': {'shots': [s['id'] for s in contract['shots']],
                   'scenes': [s['id'] for s in scene_plan['scenes']],
                   'script_sections': [s['id'] for s in script['sections']]},
@@ -353,6 +445,11 @@ def _canonical_global_planning(policy, baselines, durations):
         old = baselines[shot_id]['projection']['shot']['duration_seconds']
         if duration != old and duration not in policy['flex']['duration_s']:
             raise AutonomyError('duration outside approved flex')
+    if all(duration == baselines[shot_id]['projection']['shot']['duration_seconds']
+           for shot_id, duration in durations.items()):
+        # No retime: the deterministic transform is the identity on retained bytes.
+        # Reference-free contracts may legitimately carry an empty assets list.
+        return contract, scene_plan, script
     from lib.production_retime import retime_planning
     transformed = retime_planning(contract, scene_plan, script, durations)
     return transformed['contract'], transformed['scene_plan'], transformed['script']
@@ -507,7 +604,31 @@ def eligible_routes(policy, shot_id, menu):
     eligible, excluded = [], []
     for row in menu:
         provider = row.get('provider')
-        if provider == 'openart_cli':
+        if provider == 'openart_mcp':
+            spec = providers.get(provider)
+            if not _is_unknown(spec) or row.get('production_available') is not True:
+                excluded.append({'provider': provider, 'reason': 'not approved or not production-ready'})
+                continue
+            from lib import openart_mcp as mcp
+            for route in spec['routes']:
+                name, mode = route['model'], route['mode']
+                metadata = (row.get('model_catalog', {}).get(name, {}).get('modes') or {}).get(mode, {})
+                try:
+                    if metadata.get('production_ready') is not True:
+                        raise AutonomyError('model/mode is not a production-ready native route')
+                    profile = mcp.load_profile(name, mode, require='supported')
+                    if profile.get('account_uid_sha256') != spec['uid_sha256']:
+                        raise AutonomyError('account differs from approved account')
+                    if 'model' in locks and not _model_lock_allows(locks['model'], name):
+                        raise AutonomyError('exact model lock excludes model')
+                    if not _intent_allows(policy, shot_id, provider, name):
+                        raise AutonomyError('model selection intent excludes route')
+                    # Value locks are proved against exact typed native params at preparation.
+                    eligible.append({'provider': provider, 'model': name, 'mode': mode,
+                        'profile_sha256': profile['profile_sha256'], 'pending_lock_proof': sorted(locks)})
+                except (ValueError, KeyError) as exc:
+                    excluded.append({'provider': provider, 'model': name, 'mode': mode, 'reason': str(exc)})
+        elif provider == 'openart_cli':
             spec = providers.get(provider)
             if not spec:
                 excluded.append({'provider': provider, 'reason': 'not in policy'})
@@ -520,22 +641,25 @@ def eligible_routes(policy, shot_id, menu):
                 excluded.append({'provider': provider, 'reason': 'dispatch not ready',
                                  'blockers': list(readiness.get('blockers') or [])})
                 continue
-            shadow = {m.get('model') if isinstance(m, dict) else m
+            shadow = {(m.get('model'), m.get('mode')) if isinstance(m, dict) else (m, None)
                       for key in ('qualification_candidates', 'not_live') for m in row.get(key) or []}
             for model in row.get('models') or []:
                 name = model.get('model')
                 native = (model.get('controls') or {}).get('native_controls')
                 why = None
-                if name not in spec['models']:
+                if not _openart_route_approved(spec, name, model.get('mode')):
                     why = 'model not approved'
-                elif name in shadow:
+                elif (name, model.get('mode')) in shadow or (name, None) in shadow:
                     why = 'model also listed as candidate/not live'
-                elif model.get('level') != 'full' or model.get('catalog_verified') is not True:
-                    why = 'model not fully catalog verified'
+                elif model.get('production_ready') is not True or model.get('level') not in ('pre_submit', 'full') \
+                        or model.get('catalog_verified') is not True:
+                    why = 'model not production-ready and catalog verified'
                 elif model.get('account_id_sha256') != spec['account_id_sha256']:
                     why = 'account differs from approved account'
                 elif 'model' in locks and not _model_lock_allows(locks['model'], name):
                     why = 'exact model lock excludes model'
+                elif not _intent_allows(policy, shot_id, provider, name):
+                    why = 'model selection intent excludes route'
                 elif any(c != 'model' for c in locks) and not isinstance(native, dict):
                     why = 'native controls unverified'
                 else:
@@ -558,6 +682,8 @@ def eligible_routes(policy, shot_id, menu):
                 why = 'grok media model disclosure mismatch'
             elif 'model' in locks:
                 why = 'exact media-model lock: Grok media model is unreported'
+            elif not _intent_allows(policy, shot_id, provider, None):
+                why = 'model selection intent excludes route'
             if why:
                 excluded.append({'provider': provider, 'reason': why})
             else:
@@ -603,7 +729,7 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None)
     for asset in projection['assets']:
         if asset.get('upstream_source'):
             continue
-        locked_cast = (asset['id'] == projection['payoff_asset_id'] or
+        locked_cast = (asset['id'] == projection.get('payoff_asset_id') or
                        bool(set(asset.get('cast_ids', [])) & set(projection['implicit_cast_ids'])))
         if not locked_cast and asset['sha256'] not in policy['locked']['sources']:
             continue
@@ -641,9 +767,10 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None)
     # Full root canonical compilation preserves ordered duplicate speech/speaker/source,
     # including all implicit lines absent from explicit locked.dialogue maps.
     provider = native.get('provider', 'openart_cli')
-    canonical = preparation.compile_provider_prompt(root, shot_id, provider=provider)
+    canonical = preparation.compile_provider_prompt(root, shot_id, provider=provider, **({'model': native['model']} if provider == 'openart_mcp' else {}))
     body = preparation._body(native)
-    if body['params']['prompt'] != canonical['prompt'] or compiled['coverage'] != canonical['coverage']:
+    prompt = body['params'].get('sceneDescription' if provider == 'openart_mcp' and native.get('prompt_param_path') == '/params/sceneDescription' else 'prompt')
+    if prompt != canonical['prompt'] or compiled['coverage'] != canonical['coverage']:
         raise AutonomyError('submitted native prompt/coverage is not canonical root compilation')
     if provider == 'grok_cli':
         actual_controls = dict(native['request']['arguments'])
@@ -654,6 +781,17 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None)
                 actual_controls[alias] = actual_controls[key]
     else:
         actual_controls = dict(body['params'], model=native['model'])
+    if provider == 'openart_mcp':
+        for public, field in [('duration', 'videoDuration'), ('resolution', 'videoResolution'), ('aspect_ratio', 'videoAspectRatio')]:
+            if field in actual_controls:
+                actual_controls[public] = actual_controls[field]
+        for role, aliases in [('first_frame', ('first_frame', 'start_frame')), ('last_frame', ('last_frame', 'end_frame'))]:
+            assets = [a for a in native['input_assets'] if a['role'] == role]
+            if len(assets) > 1:
+                raise AutonomyError('ambiguous MCP frame role lock')
+            if assets:
+                for alias in aliases:
+                    actual_controls[alias] = assets[0]['source_path']
     for name, lock in policy['locked']['controls'].items():
         if name not in actual_controls:
             raise AutonomyError(f'native locked control absent: {name}')
@@ -663,7 +801,7 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None)
             if not isinstance(value, str) or not Path(value).is_file():
                 raise AutonomyError('native frame control does not carry verified local content')
             content_sha = hashlib.sha256(Path(value).read_bytes()).hexdigest()
-        if ('value' in lock and value != lock['value']) or ('value_sha256' in lock and content_sha != lock['value_sha256']):
+        if ('value' in lock and (digest(value) != digest(lock['value']) if provider == 'openart_mcp' else value != lock['value'])) or ('value_sha256' in lock and content_sha != lock['value_sha256']):
             raise AutonomyError(f'native locked control differs: {name}')
         proof['controls'][name] = digest(value)
     return digest(proof)
@@ -705,7 +843,8 @@ def openart_allowance_id(sha):
 
 def _scope_record(policy, sha, decision_id, *, shot_id, provider, request_digest, approval_plan_sha256,
                  derivation_index, lock_digest, compiled_request_sha256=None, preparation_review_id=None,
-                 resolved_upstream=None, phase='first_pass', replaces_attempt_ids=None, credit_authorization_sha256=None):
+                 resolved_upstream=None, phase='first_pass', replaces_attempt_ids=None, credit_authorization_sha256=None,
+                 unknown_cost_authorization_sha256=None):
     """Normal v1.0 production scope for one attempt; exact single-shot scope."""
     if shot_id not in policy['shots']:
         raise AutonomyError(f'{shot_id} has no approved baseline')
@@ -729,26 +868,155 @@ def _scope_record(policy, sha, decision_id, *, shot_id, provider, request_digest
     }
     if phase == 'repair':
         scope['replaces_attempt_ids'] = list(replaces_attempt_ids)
+    if provider == 'openart_mcp':
+        if credit_authorization_sha256 is not None:
+            raise AutonomyError('MCP exact-credit ceiling is not qualified')
+        if unknown_cost_authorization_sha256 is not None:
+            scope['unknown_cost_authorization_sha256'] = unknown_cost_authorization_sha256
     if provider == 'openart_cli':
+        spec = next(p for p in policy['providers'] if p['id'] == 'openart_cli')
+        if _is_unknown(spec):
+            if credit_authorization_sha256 is not None:
+                raise AutonomyError('unknown-cost policy scope cannot carry exact credit authority')
+            if unknown_cost_authorization_sha256 is not None:
+                scope['unknown_cost_authorization_sha256'] = unknown_cost_authorization_sha256
+            return scope
+        if unknown_cost_authorization_sha256 is not None:
+            raise AutonomyError('priced policy scope cannot carry unknown-cost authority')
         if credit_authorization_sha256 is not None:
             scope['credit_authorization_sha256'] = credit_authorization_sha256
-        spec = next(p for p in policy['providers'] if p['id'] == 'openart_cli')
         scope['credit_terms'] = {'allowance_id': openart_allowance_id(sha), 'allowance': spec['ceiling'],
                                  'account_id_sha256': spec['account_id_sha256'], 'workspace': spec['workspace']}
     return scope
 
 
-def _refuse_unknown_cost(inputs):
-    if any(key in inputs for key in ('unknown_cost_authorization_id',
-            'unknown_cost_evidence_id', 'unknown_cost_authorization',
-            'unknown_cost_authorization_sha256')):
+def _prepare_mcp_policy_native(root, policy, shot_id, inputs):
+    """Qualified connector evidence is separate from CLI account and preview proof."""
+    from lib import openart_mcp as mcp, production_execution as execution
+    spec = _provider_spec(policy, 'openart_mcp')
+    if not _is_unknown(spec) or not _openart_route_approved(spec, inputs.get('model'), inputs.get('mode')):
+        raise AutonomyError('exact MCP model/mode is outside freshly approved policy')
+    if not _intent_allows(policy, shot_id, 'openart_mcp', inputs.get('model')):
+        raise AutonomyError('MCP route violates retained model selection intent')
+    profile = mcp.load_profile(inputs.get('model'), inputs.get('mode'), require='supported')
+    native = mcp.prepare_native_request(execution._openart_mcp_controls(inputs), profile)
+    mcp.validate_native_request(native, profile)
+    _validate_mcp_policy_binding(spec, native, profile)
+    return profile, native
+
+
+def _validate_mcp_policy_binding(spec, native, profile):
+    if native.get('provider') != 'openart_mcp':
+        raise AutonomyError('MCP policy cannot authorize another transport')
+    uid = (native.get('account_binding') or {}).get('uid_sha256')
+    body = native.get('body')
+    if not isinstance(body, dict):
+        raise AutonomyError('MCP native body absent')
+    if (uid != spec['uid_sha256'] or profile.get('account_uid_sha256') != uid
+            or body.get('projectId') != spec['project_id']):
+        raise AutonomyError('MCP immutable account/project differs from fresh policy')
+    if not _openart_route_approved(spec, body.get('model'), body.get('mode')):
+        raise AutonomyError('MCP native exact model/mode outside fresh policy')
+
+
+def _mcp_policy_terms(root, policy, sha, decision_id, scope, inputs, native):
+    """Canonical derived terms; no caller assertion of unknown cost grants authority."""
+    spec = _provider_spec(policy, 'openart_mcp')
+    if not _is_unknown(spec):
+        raise AutonomyError('MCP policy lacks fresh no-enforceable-ceiling acknowledgement')
+    return {'kind': 'unknown_cost', 'provider': 'openart_mcp',
+        'project_root': str(Path(root).resolve()), 'project_id': policy['project_id'],
+        'story_revision': policy['story_revision'], 'policy_sha256': sha,
+        'activation_decision_id': decision_id, 'scope_id': scope['id'],
+        'shot_id': inputs['governance']['shot_id'], 'uid_sha256': spec['uid_sha256'],
+        'projectId': spec['project_id'], 'model': inputs['model'], 'mode': inputs['mode'],
+        'request_sha256': scope['requests'][inputs['governance']['shot_id']],
+        'body_sha256': native['body_sha256'], 'source_binding_sha256': native['source_binding_sha256'],
+        'profile_sha256': native['profile_sha256'], 'form_sha256': native['form_sha256'],
+        'compiled_request_sha256': scope['derived_from_policy']['compiled_request_sha256'],
+        'lock_digest': scope['derived_from_policy']['lock_digest'],
+        'exposure_acknowledgement': UNKNOWN_ACKNOWLEDGEMENT,
+        'enforceable_credit_ceiling': False, 'count': 1, 'purpose': 'generation'}
+
+
+def rooted_policy_mcp_authority(root, inputs, scope, native, profile, *, exclude_attempt_id=None):
+    """Rooted fresh billing authority. Invoke under the gateway's begin/project lock.
+
+    An exclusion is never accepted from caller JSON. The execution adapter owns
+    its private same-original revalidation context; all other attempts count.
+    """
+    if exclude_attempt_id is not None:
+        raise AutonomyError('caller-controlled attempt exclusions are forbidden')
+    if scope.get('provider') != 'openart_mcp' or 'derived_from_policy' not in scope:
+        raise AutonomyError('MCP policy authority requires its retained derived scope')
+    policy, sha, decision_id = validate_derived_scope(root, scope, inputs=inputs)
+    current_profile, current_native = _prepare_mcp_policy_native(root, policy, inputs['governance']['shot_id'], inputs)
+    if digest(current_native) != digest(native) or digest(current_profile) != digest(profile):
+        raise AutonomyError('MCP prepared native/form/account/source evidence drifted')
+    terms = _mcp_policy_terms(root, policy, sha, decision_id, scope, inputs, native)
+    if scope.get('unknown_cost_authorization_sha256') != digest(terms):
+        raise AutonomyError('MCP derived unknown-cost binding differs')
+    return {**terms, 'sha256': digest(terms)}
+
+
+def validate_policy_mcp_attempt(root, scope, *, inputs, native, profile, authority=None, return_authority=False):
+    """Reprove a retained connector policy origin without editing its journal."""
+    policy, sha, decision_id, material = _scope_material(root, inputs, 'openart_mcp', derived_unknown_id=scope['id'])
+    expected = _scope_record(policy, sha, decision_id, derivation_index=scope['derived_from_policy']['derivation_index'],
+        phase=scope['phase'], replaces_attempt_ids=scope.get('replaces_attempt_ids'), **material)
+    scopes = _json(Path(root) / 'production_scopes.json')['scopes']
+    if scope != expected or len([s for s in scopes if s == expected]) != 1:
+        raise AutonomyError('historical MCP scope differs from retained rooted policy')
+    current_profile, current_native = _prepare_mcp_policy_native(root, policy, inputs['governance']['shot_id'], inputs)
+    if digest(current_native) != digest(native) or digest(current_profile) != digest(profile):
+        raise AutonomyError('historical MCP native/account/form/source evidence changed')
+    checked = _mcp_policy_terms(root, policy, sha, decision_id, scope, inputs, native)
+    checked['sha256'] = digest(checked)
+    if authority is not None and any(authority.get(key) != value for key, value in checked.items()):
+        raise AutonomyError('historical MCP policy authority differs from current rooted origin')
+    return checked if return_authority else sha
+
+
+def _refuse_unknown_cost(inputs, *, derived_unknown_id=None, allow_evidence=False):
+    """Caller-supplied unknown-cost authority never grants anything.
+
+    Only the authorization ID that ``derive_scope`` itself captured for the exact
+    replayed scope is tolerated, and the evidence ID only once the active policy is
+    the separately acknowledged unknown variant.
+    """
+    unavailable = 'unknown-cost Auto-continue is unavailable; use separate Strict approval'
+    if any(key in inputs for key in ('unknown_cost_authorization', 'unknown_cost_authorization_sha256')):
+        raise AutonomyError(unavailable)
+    if 'unknown_cost_authorization_id' in inputs and (
+            derived_unknown_id is None or inputs['unknown_cost_authorization_id'] != derived_unknown_id):
+        raise AutonomyError(unavailable)
+    if 'unknown_cost_evidence_id' in inputs and not allow_evidence:
         raise AutonomyError('unknown-cost Auto-continue is unavailable; use separate Strict approval')
 
 
-def _scope_material(root, inputs, provider, observation=None):
-    _refuse_unknown_cost(inputs)
+def _scope_material(root, inputs, provider, observation=None, *, derived_unknown_id=None):
+    _refuse_unknown_cost(inputs, derived_unknown_id=derived_unknown_id, allow_evidence=True)
     from lib import production_request as preparation, production_execution as execution
     policy, sha, decision_id = require_active_policy(root)
+    unknown = _is_unknown(_provider_spec(policy, provider))
+    if provider not in {'openart_cli', 'openart_mcp'} and _is_unknown(_openart_spec(policy)) and any(key in inputs for key in ('unknown_cost_evidence_id', 'unknown_cost_authorization_id')):
+        raise AutonomyError('unknown-cost authority is OpenArt-only')
+    if not unknown:
+        _refuse_unknown_cost(inputs)
+    if unknown and provider == 'openart_cli':
+        if any(key in inputs for key in ('credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256')):
+            raise AutonomyError('unknown-cost policy refuses exact-credit fields')
+        if not isinstance(inputs.get('unknown_cost_evidence_id'), str):
+            raise AutonomyError('unknown-cost policy requires retained unknown_cost_evidence_id')
+    elif provider == 'openart_mcp':
+        if not unknown:
+            raise AutonomyError('MCP requires a freshly approved distinct unknown-cost policy')
+        if _json(Path(root) / 'project.json').get('pipeline_type') == 'provider-qualification':
+            raise AutonomyError('MCP qualification requires separate Strict approval')
+        if any(key in inputs for key in ('credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256', 'unknown_cost_evidence_id', 'unknown_cost_authorization_id', 'mcp_billing_authorization_id', 'billing_authority')):
+            raise AutonomyError('MCP policy refuses caller billing authority and CLI authority fields')
+    elif unknown and any(key in inputs for key in ('unknown_cost_evidence_id', 'unknown_cost_authorization_id')):
+        raise AutonomyError('unknown-cost authority is OpenArt-only')
     shot_id = inputs['governance']['shot_id']
     if provider not in {p['id'] for p in policy['providers']}:
         raise AutonomyError('route provider outside approved policy')
@@ -760,9 +1028,13 @@ def _scope_material(root, inputs, provider, observation=None):
         menu = _openart_route(OpenArtCLIVideo())
         eligible, _ = eligible_routes(policy, shot_id, [menu])
         if not any(r['model'] == inputs.get('model') and r['mode'] == inputs.get('mode') for r in eligible):
-            raise AutonomyError('exact OpenArt route is not fully qualified and ready')
-        profile = jobs.load_qualification(model=inputs.get('model'), mode=inputs.get('mode'), require='full')
+            raise AutonomyError('exact OpenArt route is not production-ready (native form, preview and account)')
+        profile = jobs.load_qualification(model=inputs.get('model'), mode=inputs.get('mode'), require='production_ready')
         native = jobs.prepare_native_request(execution._openart_controls(inputs), profile)
+        if unknown:
+            jobs.native_reference_digest(inputs, profile, native=native)
+    elif provider == 'openart_mcp':
+        profile, native = _prepare_mcp_policy_native(root, policy, shot_id, inputs)
     elif provider == 'grok_cli':
         if 'model' in policy['locked']['controls']:
             raise AutonomyError('Grok media model is unreported and cannot meet exact lock')
@@ -785,7 +1057,14 @@ def _scope_material(root, inputs, provider, observation=None):
         'lock_digest': locks, 'compiled_request_sha256': proof['compiled_sha256'],
         'preparation_review_id': inputs['preparation_review_id'],
         'resolved_upstream': resolved}
-    if provider == 'openart_cli' and inputs.get('credit_authorization_id'):
+    if provider == 'openart_mcp' and derived_unknown_id is not None:
+        fake_scope = {'id': derived_unknown_id, 'requests': {shot_id: material['request_digest']}, 'derived_from_policy': {'compiled_request_sha256': material['compiled_request_sha256'], 'lock_digest': material['lock_digest']}}
+        material['unknown_cost_authorization_sha256'] = digest(_mcp_policy_terms(root, policy, sha, decision_id, fake_scope, inputs, native))
+    elif provider == 'openart_cli' and unknown and inputs.get('unknown_cost_authorization_id'):
+        from lib import openart_dispatch as dispatch, openart_credit as credit
+        authorization = dispatch._authorization(Path(root), inputs)
+        material['unknown_cost_authorization_sha256'] = credit.unknown_cost_authorization_digest(authorization)
+    elif provider == 'openart_cli' and inputs.get('credit_authorization_id'):
         from lib import openart_dispatch as dispatch, openart_credit as credit
         authorization = dispatch._authorization(Path(root), inputs)
         material['credit_authorization_sha256'] = credit.credit_authorization_digest(authorization)
@@ -799,7 +1078,8 @@ def validate_derived_scope(root, scope, *, inputs, observation=None):
     derived = scope['derived_from_policy']
     if not isinstance(derived, dict):
         raise AutonomyError('malformed derived_from_policy')
-    policy, sha, decision_id, material = _scope_material(root, inputs, scope.get('provider'), observation)
+    policy, sha, decision_id, material = _scope_material(root, inputs, scope.get('provider'), observation,
+                                                         derived_unknown_id=scope.get('id'))
     if derived.get('policy_sha256') != sha or derived.get('decision_id') != decision_id:
         raise AutonomyError('derived scope cites inactive policy')
     _require_route_decision(root, sha, decision_id, material['shot_id'], scope['provider'])
@@ -822,7 +1102,10 @@ def validate_derived_scope(root, scope, *, inputs, observation=None):
     if expected != scope:
         raise AutonomyError('derived scope differs from authoritative current replay')
     if scope['provider'] == 'openart_cli':
-        _validate_policy_credit(root, policy, sha, scope, inputs)
+        if _is_unknown(_openart_spec(policy)):
+            _validate_policy_unknown(root, policy, sha, scope, inputs)
+        else:
+            _validate_policy_credit(root, policy, sha, scope, inputs)
     return policy, sha, decision_id
 
 
@@ -838,8 +1121,18 @@ def _validate_repair_evidence(root, shot_id, replacement_ids):
         request = attempts.get(aid)
         if not request or request['shot_id'] != shot_id or production_kind(request) != 'motion':
             raise AutonomyError('repair must name actual same-shot motion attempts')
-        directory = root / 'production_attempts' / aid
-        state = execution._state(root, request)
+        if request.get('provider') == 'openart_mcp':
+            from lib import openart_mcp_jobs as mcp_jobs
+            frozen = mcp_jobs.frozen_request(root, aid)
+            original_scope = frozen['authority']['scope']
+            if digest(original_scope) != frozen['authority']['scope_sha256'] or original_scope['provider'] != 'openart_mcp':
+                raise AutonomyError('MCP repair original scope identity differs')
+            state = execution.load_attempt_result(root, aid)
+            directory = Path(root) / 'openart_mcp' / 'attempts' / aid
+            request = {**request, 'scope': original_scope, 'story_revision': original_scope['story_revision']}
+        else:
+            directory = root / 'production_attempts' / aid
+            state = execution._state(root, request)
         if state['status'] == 'generated':
             validate_attempt_provenance(root, aid, shot_id=shot_id,
                 story_revision=request['story_revision'], expected_output=state['output'])
@@ -849,12 +1142,29 @@ def _validate_repair_evidence(root, shot_id, replacement_ids):
             valid = False
             for path in reviews:
                 review = _json(path)
-                if (not list(validator.iter_errors(review)) and review['status'] == 'fail' and
+                # Semantic repair authority needs a named failed critical predicate; cosmetic-only
+                # or unknown-only findings never authorize a resubmit or alternate route.
+                critical = any(isinstance(p, dict) and p.get('status') == 'fail' and
+                               (p.get('name') in CRITICAL_PREDICATES or
+                                p.get('severity', 'critical') == 'critical') and
+                               not (p.get('name') in CRITICAL_PREDICATES and p.get('severity') == 'cosmetic')
+                               for p in review.get('predicates') or [])
+                if (not list(validator.iter_errors(review)) and review['status'] == 'fail' and critical and
                         review['subject_sha256'] == state['output']['sha256'] and
                         review['story_revision'] == request['story_revision']):
                     valid = True
             if not valid:
-                raise AutonomyError('repair requires named failed review of actual generated output')
+                raise AutonomyError('repair requires named failed critical review of actual generated output')
+        elif request['scope']['provider'] == 'openart_mcp':
+            if state['status'] != 'failed':
+                raise AutonomyError('MCP original is pending or uncertain; never resubmit')
+            terminal = mcp_jobs.terminal_failure_record(root, aid)
+            review = _json(directory / 'rejection.json')
+            if (set(review) != {'status', 'kind', 'attempt_id', 'terminal_failure_sha256', 'reviewer'} or
+                    review['status'] != 'fail' or review['kind'] != 'generation_terminal_failure' or
+                    review['attempt_id'] != aid or review['terminal_failure_sha256'] != terminal['terminal_failure_sha256'] or
+                    not isinstance(review['reviewer'], str) or not review['reviewer'].strip()):
+                raise AutonomyError('MCP terminal failure review differs from original provider evidence')
         elif request['scope']['provider'] == 'openart_cli':
             from lib import openart_jobs as jobs
             frozen = execution.load_openart_frozen(request)
@@ -894,11 +1204,17 @@ def derive_scope(root, inputs, *, provider, observation=None, phase='first_pass'
             _validate_repair_evidence(root, shot_id, replaces_attempt_ids)
         elif any(a['shot_id'] == shot_id and production_kind(a) == 'motion' for a in execution._attempts(root)):
             raise AutonomyError('first_pass cannot authorize a corrective reroll')
-        _append_route_decisions_locked(root, policy, sha, decision_id, shot_id, provider, inputs)
+        _append_route_decisions_locked(root, policy, sha, decision_id, shot_id, provider, inputs, phase=phase, replaces_attempt_ids=replaces_attempt_ids)
         material.pop('credit_authorization_sha256', None)
+        material.pop('unknown_cost_authorization_sha256', None)
         scope = _scope_record(policy, sha, decision_id, derivation_index=index, phase=phase,
                               replaces_attempt_ids=replaces_attempt_ids, **material)
-        if provider == 'openart_cli':
+        if provider == 'openart_mcp':
+            profile, native = _prepare_mcp_policy_native(root, policy, shot_id, inputs)
+            scope['unknown_cost_authorization_sha256'] = digest(_mcp_policy_terms(root, policy, sha, decision_id, scope, inputs, native))
+        elif provider == 'openart_cli' and _is_unknown(_openart_spec(policy)):
+            scope['unknown_cost_authorization_sha256'] = _capture_policy_unknown_cost(root, policy, sha, scope, inputs)
+        elif provider == 'openart_cli':
             authorization = _capture_policy_credit(root, policy, sha, scope, inputs)
             scope['credit_authorization_sha256'] = authorization
         if any(s['id'] == scope['id'] for s in scopes):
@@ -1002,7 +1318,7 @@ def production_kind(request):
 def root_attempt_counts(root, policy, *, exclude_scope_id=None):
     """Count journals, private original reservations and undispached policy scopes once."""
     from lib import production_execution as execution, openart_dispatch as dispatch
-    from lib.provider_credit_ledger import Binding, read_existing_snapshot
+    from lib.provider_credit_ledger import Binding, UnpricedBinding, read_existing_snapshot
     root = Path(root).resolve()
     attempts = execution._attempts(root)
     path = root / 'production_scopes.json'
@@ -1037,14 +1353,35 @@ def root_attempt_counts(root, policy, *, exclude_scope_id=None):
             raise AutonomyError('inconsistent journal/private attempt identity')
         records[aid] = value
     for request in attempts:
+        if request.get('provider') == 'openart_mcp':
+            from lib import openart_mcp_jobs as mcp_jobs
+            frozen = mcp_jobs.frozen_request(root, request['attempt_id'])
+            authority = frozen['authority']
+            original_scope = authority['scope']
+            matching = [s for s in scopes if s['id'] == authority['scope_id']]
+            if len(matching) != 1 or matching[0] != original_scope or digest(original_scope) != authority['scope_sha256']:
+                raise AutonomyError('MCP private original scope identity differs')
+            if request.get('shot_id') != authority['shot_id'] or request.get('scope_id') != authority['scope_id']:
+                raise AutonomyError('MCP private original shot/scope identity differs')
+            if authority['shot_id'] in policy['shots']:
+                aid, shot = request['attempt_id'], authority['shot_id']
+                request_sha = authority['request_sha256']
+                if original_scope['requests'].get(shot) != request_sha:
+                    raise AutonomyError('MCP original request differs from exact scope')
+                if aid in records:
+                    raise AutonomyError('duplicate cross-provider original attempt identity')
+                records[aid] = (shot, original_scope['phase'], original_scope['id'], request_sha)
+            continue
         if request.get('shot_id') in policy['shots'] and production_kind(request) is None:
             raise AutonomyError('policy-shot journal has unknown production kind')
         if production_kind(request) == 'motion' and request['shot_id'] in policy['shots']:
             add(request)
     snapshot = read_existing_snapshot()
     private_ids = set()
-    for row in snapshot['reservations']:
-        binding = Binding(**json.loads(row['binding_json']))
+    rows = [(Binding, row) for row in snapshot['reservations']]
+    rows += [(UnpricedBinding, row) for row in snapshot.get('unpriced_reservations', [])]
+    for kind, row in rows:
+        binding = kind(**json.loads(row['binding_json']))
         binding.validate()
         if Path(binding.project_root).resolve() != root:
             continue
@@ -1059,8 +1396,10 @@ def root_attempt_counts(root, policy, *, exclude_scope_id=None):
         private_ids.add(binding.attempt_id)
         if request['shot_id'] in policy['shots']:
             add(request, manifest['journal_records'].get('selected_attempts.json', {}))
-    if any(row['attempt_id'] not in private_ids for row in snapshot['outbox']
-           if row['attempt_id'] not in {r['attempt_id'] for r in snapshot['reservations']}):
+    reserved = {r['attempt_id'] for _, r in rows}
+    if any(row['attempt_id'] not in private_ids
+           for row in list(snapshot['outbox']) + list(snapshot.get('unpriced_outbox', []))
+           if row['attempt_id'] not in reserved):
         raise AutonomyError('private outbox origin is missing')
     used = {value[2] for value in records.values()}
     open_shots = set()
@@ -1167,8 +1506,13 @@ def validate_policy_attempt(root, request, scope, frozen_contract, *, frozen_ope
     if scope['provider'] == 'openart_cli':
         from lib import openart_credit as credit, openart_dispatch as dispatch
         manifest, binding, _ = dispatch._manifest(request['attempt_id'])
-        material['credit_authorization_sha256'] = credit.credit_authorization_digest(manifest['authorization'])
-        if binding.authorization_sha256 != material['credit_authorization_sha256']:
+        unknown_manifest = manifest.get('authorization_kind') == 'unknown_cost'
+        if unknown_manifest != _is_unknown(_openart_spec(policy)):
+            raise AutonomyError('historical billing mode differs from active policy')
+        key = 'unknown_cost_authorization_sha256' if unknown_manifest else 'credit_authorization_sha256'
+        fn = credit.unknown_cost_authorization_digest if unknown_manifest else credit.credit_authorization_digest
+        material[key] = fn(manifest['authorization'])
+        if binding.authorization_sha256 != material[key]:
             raise AutonomyError('historical private credit authorization differs')
     expected = _scope_record(policy, sha, decision_id, derivation_index=derived['derivation_index'],
         phase=scope['phase'], replaces_attempt_ids=scope.get('replaces_attempt_ids'), **material)
@@ -1182,7 +1526,7 @@ def _capture_policy_credit(root, policy, sha, scope, inputs):
     """Emit ordinary U4 authorization/evidence for exactly one policy occurrence."""
     from lib import openart_credit as credit, openart_jobs as jobs, production_execution as execution
     spec = next(p for p in policy['providers'] if p['id'] == 'openart_cli')
-    profile = jobs.load_qualification(model=inputs.get('model'), mode=inputs.get('mode'), require='full')
+    profile = jobs.load_qualification(model=inputs.get('model'), mode=inputs.get('mode'), require='production_ready')
     native = jobs.prepare_native_request(execution._openart_controls(inputs), profile)
     quote = credit.get_retained_quote(inputs, profile, inputs.get('credit_quote_id'))
     shot = next(iter(scope['requests']))
@@ -1213,6 +1557,91 @@ def _capture_policy_credit(root, policy, sha, scope, inputs):
 
 
 def _validate_policy_credit(root, policy, sha, scope, inputs):
+    if _is_unknown(_openart_spec(policy)):
+        raise AutonomyError('unknown-cost policy has no exact-credit allowance')
+    return _validate_policy_credit_priced(root, policy, sha, scope, inputs)
+
+
+_UNKNOWN_PROBE_ATTEMPT = '00000000-0000-4000-8000-000000000000'
+
+
+def _capture_policy_unknown_cost(root, policy, sha, scope, inputs):
+    """Emit one rooted policy-derived unknown-cost authorization; never human evidence.
+
+    ``approved_by`` names the active policy digest. The retained capture is the
+    exact canonical unknown-cost capture shape so ordinary dispatch/ledger
+    validators bind it unchanged; no amount, quote, allowance or ceiling exists.
+    """
+    from lib import openart_credit as credit, openart_jobs as jobs, production_execution as execution
+    spec = _openart_spec(policy)
+    model, mode = inputs.get('model'), inputs.get('mode')
+    if not _openart_route_approved(spec, model, mode):
+        raise AutonomyError('unknown-cost route outside exact approved policy routes')
+    profile = jobs.load_qualification(model=model, mode=mode, require='production_ready')
+    native = jobs.prepare_native_request(execution._openart_controls(inputs), profile)
+    references_sha256 = jobs.native_reference_digest(inputs, profile, native=native)
+    evidence = credit.get_retained_unknown_evidence(inputs, profile, inputs['unknown_cost_evidence_id'])
+    if (evidence['account_id_sha256'] != spec['account_id_sha256'] or
+            profile.get('account_id_sha256') != spec['account_id_sha256']):
+        raise AutonomyError('unknown-cost evidence/profile account differs from policy binding')
+    if evidence['workspace'] != credit.UNOBSERVED_WORKSPACE or spec['workspace'] != credit.UNOBSERVED_WORKSPACE:
+        raise AutonomyError('unknown-cost workspace must be explicitly unobserved')
+    shot = next(iter(scope['requests']))
+    ident = scope['id']
+    terms = {'version': '1', 'kind': 'openart_unknown_cost', 'status': 'approved',
+        'approved_by': f'policy:{sha}', 'exposure_acknowledgement': UNKNOWN_ACKNOWLEDGEMENT,
+        'provider': 'openart_cli', 'project_root': str(Path(root).resolve()),
+        'project_id': policy['project_id'], 'story_revision': policy['story_revision'],
+        'scope_id': ident, 'shot_id': shot, 'account_id_sha256': spec['account_id_sha256'],
+        'workspace': spec['workspace'], 'workspace_observed': False,
+        'workspace_billing_guarantee': 'unverified', 'model': model, 'mode': mode,
+        'count': 1, 'purpose': 'generation',
+        'occurrences': [{'id': ident + '-0', 'index': 0, 'request_sha256': scope['requests'][shot],
+                         'native_sha256': native['native_body_sha256'],
+                         'profile_sha256': native['profile_sha256']}]}
+    if references_sha256 is not None:
+        terms['occurrences'][0]['references_sha256'] = references_sha256
+    raw = json.dumps({'kind': credit.UNKNOWN_EVIDENCE_KIND, 'terms': terms},
+                     sort_keys=True, separators=(',', ':')).encode()
+    rel = f'approvals/autonomy-unknown-{ident}.json'
+    authorization = {**terms, 'evidence': {'path': rel, 'sha256': hashlib.sha256(raw).hexdigest()}}
+    Draft202012Validator(load_schema('unknown_cost_authorization')).validate(authorization)
+    evidence_path = _inside(root, rel)
+    auth_path = Path(root) / 'artifacts' / f'unknown_cost_authorization-{ident}.json'
+    if evidence_path.exists() or auth_path.exists():
+        raise AutonomyError('policy unknown-cost capture already exists')
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    auth_path.parent.mkdir(parents=True, exist_ok=True)
+    evidence_path.write_bytes(raw)
+    auth_path.write_text(json.dumps(authorization, indent=2))
+    inputs['unknown_cost_authorization_id'] = ident
+    inputs['governance']['scope_id'] = ident
+    return credit.unknown_cost_authorization_digest(authorization)
+
+
+def _validate_policy_unknown(root, policy, sha, scope, inputs):
+    from lib import openart_credit as credit, openart_dispatch as dispatch, openart_jobs as jobs
+    if inputs.get('unknown_cost_authorization_id') != scope['id']:
+        raise AutonomyError('unknown-cost authorization is not this exact derived scope')
+    authorization = dispatch._authorization(Path(root), inputs)
+    spec = _openart_spec(policy)
+    if (authorization.get('approved_by') != f'policy:{sha}' or authorization.get('count') != 1
+            or authorization.get('purpose') != 'generation' or authorization.get('kind') != 'openart_unknown_cost'
+            or authorization.get('exposure_acknowledgement') != UNKNOWN_ACKNOWLEDGEMENT
+            or authorization.get('account_id_sha256') != spec['account_id_sha256']
+            or authorization.get('workspace') != spec['workspace']
+            or authorization.get('evidence', {}).get('path') != f'approvals/autonomy-unknown-{scope["id"]}.json'
+            or not _openart_route_approved(spec, authorization.get('model'), authorization.get('mode'))):
+        raise AutonomyError('unknown-cost capture differs from exact policy binding/count/purpose')
+    profile = jobs.load_qualification(model=inputs.get('model'), mode=inputs.get('mode'), require='production_ready')
+    marker = _json(Path(root) / 'project.json')
+    shot = inputs['governance']['shot_id']
+    return credit.validate_unknown_cost_authorization(root, authorization, scope=scope, marker=marker,
+        inputs=inputs, profile=profile, evidence_id=inputs['unknown_cost_evidence_id'],
+        request_sha256=scope['requests'][shot], occurrence_index=0, attempt_id=_UNKNOWN_PROBE_ATTEMPT)
+
+
+def _validate_policy_credit_priced(root, policy, sha, scope, inputs):
     from lib import openart_credit as credit, openart_dispatch as dispatch, openart_jobs as jobs
     authorization = dispatch._authorization(Path(root), inputs)
     spec = next(p for p in policy['providers'] if p['id'] == 'openart_cli')
@@ -1220,7 +1649,7 @@ def _validate_policy_credit(root, policy, sha, scope, inputs):
             or authorization['count'] != 1 or authorization['allowance_id'] != openart_allowance_id(sha)
             or authorization['allowance'] != spec['ceiling'] or authorization['ceiling'] != spec['ceiling']):
         raise AutonomyError('credit capture differs from exact policy allowance/count/purpose')
-    profile = jobs.load_qualification(model=inputs.get('model'), mode=inputs.get('mode'), require='full')
+    profile = jobs.load_qualification(model=inputs.get('model'), mode=inputs.get('mode'), require='production_ready')
     marker = _json(Path(root) / 'project.json')
     credit.validate_credit_authorization(root, authorization, scope=scope, marker=marker, inputs=inputs,
         profile=profile, quote_id=inputs.get('credit_quote_id'), request_sha256=scope['requests'][inputs['governance']['shot_id']],
@@ -1234,7 +1663,7 @@ def _require_route_decision(root, sha, decision_id, shot_id, provider):
         raise AutonomyError('policy route decision is missing or stale')
 
 
-def _append_route_decisions_locked(root, policy, sha, decision_id, shot_id, provider, inputs):
+def _append_route_decisions_locked(root, policy, sha, decision_id, shot_id, provider, inputs, *, phase='first_pass', replaces_attempt_ids=None):
     """Caller holds project lock; avoid nested lock and preserve canonical history."""
     from lib.production_execution import _artifact_path
     from uuid import uuid4
@@ -1246,12 +1675,31 @@ def _append_route_decisions_locked(root, policy, sha, decision_id, shot_id, prov
     data = _json(path)
     citation = f'[policy:{sha} activation:{decision_id}]'
     entries = [('provider_selection', f'Production route for {shot_id}', provider,
-                'Chosen eligible exact subscription CLI route ' + citation)]
+                'Chosen eligible exact approved route ' + citation)]
+    if provider == 'openart_mcp':
+        counts = root_attempt_counts(root, policy)
+        caps = policy['caps']
+        remaining = {'total': caps['max_total_attempts'] - counts['total'] - 1,
+                     'per_shot': caps['max_attempts_per_shot'] - counts['per_shot'].get(shot_id, 0) - 1,
+                     'repair': caps['max_repair_attempts'] - counts['repair'] - int(phase == 'repair')}
+        reason = ('Exact production-ready MCP route ' + inputs['model'] + '/' + inputs['mode']
+                  + '; phase ' + phase + '; replaces ' + json.dumps(replaces_attempt_ids or [])
+                  + '; unknown cost with no enforceable credit ceiling; remaining attempt caps '
+                  + json.dumps(remaining, sort_keys=True) + ' ' + citation)
+        entries[0] = ('provider_selection', f'Production route for {shot_id}', provider, reason)
     baseline = retained_baselines(root, policy)[shot_id]['planned_request_template']['inputs']
     changes = {key: {'from': baseline.get(key), 'to': inputs.get(key)}
                for key in ('duration', 'resolution', 'model', 'operation', 'reference_image_paths', 'image_paths',
                            'images', 'first_frame', 'last_frame', 'image_path', 'last_image_path')
                if baseline.get(key) != inputs.get(key)}
+    for key in ('duration', 'resolution'):
+        native_alias = 'videoDuration' if key == 'duration' else 'videoResolution'
+        before = baseline.get(key, baseline.get('native_params', {}).get(key, baseline.get('native_params', {}).get(native_alias)))
+        after = inputs.get(key, inputs.get('native_params', {}).get(key, inputs.get('native_params', {}).get(native_alias)))
+        if json.dumps(before, sort_keys=True) != json.dumps(after, sort_keys=True):
+            changes[key] = {'from': before, 'to': after}
+    if baseline.get('input_assets') != inputs.get('input_assets'):
+        changes['input_assets'] = {'from': baseline.get('input_assets'), 'to': inputs.get('input_assets')}
     if changes:
         entries.append(('budget_tradeoff', f'Production compromises for {shot_id}', 'approved_flex',
                         'Approved deterministic adjustments: ' + json.dumps(changes, sort_keys=True) + ' ' + citation))
@@ -1275,13 +1723,22 @@ def _append_route_decisions_locked(root, policy, sha, decision_id, shot_id, prov
 def _validate_request_delta(root, policy, shot_id, inputs, provider):
     """Compare rooted actual inputs with exact retained layout and approved flex."""
     from lib import production_execution as execution
+    if not _intent_allows(policy, shot_id, provider, inputs.get('model') if provider in {'openart_cli', 'openart_mcp'} else None):
+        raise AutonomyError('request route violates approved per-shot model selection intent')
     retained = retained_baselines(root, policy)[shot_id]
     template = retained['planned_request_template']
     baseline = execution._clean(template['inputs'])
     actual = execution._clean(inputs)
     if ('preferred_provider' in actual and actual['preferred_provider'] != provider) or ('allowed_providers' in actual and actual['allowed_providers'] != [provider]):
         raise AutonomyError('policy dispatch requires exact singleton route')
-    routing = {'model', 'mode', 'operation', 'image_upload_id', 'preferred_provider', 'allowed_providers'}
+    # Planner route plumbing: the tool/host names must be the canonical ones for
+    # the singleton provider; anything foreign or non-canonical stays blocked.
+    if 'preferred_tool' in actual and actual['preferred_tool'] != ROUTE_TOOLS.get(provider):
+        raise AutonomyError('preferred_tool is not the canonical tool for the policy route')
+    if 'hosting_provider' in actual and actual['hosting_provider'] != provider:
+        raise AutonomyError('hosting_provider is not the canonical host for the policy route')
+    routing = {'model', 'mode', 'operation', 'image_upload_id', 'preferred_provider', 'allowed_providers',
+               'preferred_tool', 'hosting_provider'}
     plumbing = {'output_path', 'cli_session_id', 'timeout_seconds', 'cwd', 'allow_unknown_cost',
                 'native_dry_run_receipt_id', 'native_dry_run_receipt_sha256'}
     assets = iter(template['static_input_assets'])
@@ -1295,6 +1752,24 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider):
                 raise AutonomyError('upstream request lacks actual selected bytes')
             dynamic.append((pointer, copy.deepcopy(binding), record['sha256']))
             return {'sha256': record['sha256']}
+        if key == 'input_assets':
+            names = {'first_frame': 'first_frame', 'last_frame': 'last_frame',
+                     'reference_image': 'reference_image_paths', 'reference_video': 'reference_video_paths',
+                     'reference_audio': 'reference_audio_paths',
+                     'environment_reference': 'reference_image_paths', 'character_reference': 'reference_image_paths'}
+            if not isinstance(value, list):
+                raise AutonomyError('input_assets must be ordered canonical role bindings')
+            rows = []
+            for index, item in enumerate(value):
+                if not isinstance(item, dict) or item.get('role') not in names or not item.get('source_path'):
+                    raise AutonomyError('retained input_assets requires explicit role and source_path')
+                record = next(assets, None)
+                if (record is None or record['role'] != names[item['role']]
+                        or _inside(root, record['path']) != _inside(root, item['source_path'])
+                        or 'source_sha256' in item and record['sha256'] != item['source_sha256']):
+                    raise AutonomyError('retained canonical role/source occurrence differs')
+                rows.append({**copy.deepcopy(item), 'source_path': {'sha256': record['sha256']}, 'source_sha256': record['sha256']})
+            return rows
         if key in execution.INPUT_PATH_KEYS:
             if isinstance(value, list):
                 return [resolve(v, pointer + '/' + str(i), key) for i, v in enumerate(value)]
@@ -1332,16 +1807,65 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider):
     for key in routing | plumbing | {'prompt', 'duration', 'resolution'}:
         expected.pop(key, None)
         bound_actual.pop(key, None)
-    if inputs.get('duration') != current_projection(root, shot_id)['shot']['duration_seconds']:
+    if execution.explicit_motion_duration(inputs) != current_projection(root, shot_id)['shot']['duration_seconds']:
         raise AutonomyError('request duration does not match approved deterministic planning')
-    if actual.get('resolution') != baseline.get('resolution') and actual.get('resolution') not in policy['flex']['resolution']:
+    def explicit_resolution(value):
+        params = value.get('native_params', {})
+        if not isinstance(params, dict):
+            raise AutonomyError('native_params must be an exact controls object')
+        keys = [key for key in ('resolution', 'videoResolution') if key in params]
+        if len(keys) > 1 or 'resolution' in value and keys:
+            raise AutonomyError('ambiguous duplicate native resolution aliases')
+        return value.get('resolution', params.get(keys[0]) if keys else None)
+    actual_resolution, baseline_resolution = explicit_resolution(actual), explicit_resolution(baseline)
+    if actual_resolution != baseline_resolution and actual_resolution not in policy['flex']['resolution']:
         raise AutonomyError('request resolution changed outside declared flex')
+    # Only the established duration/resolution flex aliases are normalized here.
+    # Exact form preparation still checks all provider-native values; other
+    # controls remain present for the retained-template equality below.
+    for value in (expected, bound_actual):
+        if isinstance(value.get('native_params'), dict):
+            value['native_params'].pop('duration', None)
+            value['native_params'].pop('resolution', None)
+            if provider == 'openart_mcp':
+                value['native_params'].pop('videoDuration', None)
+                value['native_params'].pop('videoResolution', None)
+            if not value['native_params']:
+                value.pop('native_params')
     # Only explicitly approved reference roles may be dropped/substituted; cast
     # conflicts are rejected whole at policy activation and implicit locks reprove.
     projection = retained['projection']
     def role_for(sha):
         roles = {a['role'] for a in projection['assets'] if a.get('sha256') == sha}
         return roles
+    if provider == 'openart_mcp' and expected.get('input_assets') != bound_actual.get('input_assets'):
+        old_rows, new_rows = expected.get('input_assets', []), bound_actual.get('input_assets', [])
+        position, accepted = 0, True
+        substitutes = {(s['sha256'], s['role']) for s in policy['flex']['references']['substitutes']}
+        current_assets = execution.load_shot_contract(root)['assets']
+        for old in old_rows:
+            new = new_rows[position] if position < len(new_rows) else None
+            if digest(old) == digest(new):
+                position += 1
+                continue
+            old_sha = old.get('source_sha256')
+            roles = role_for(old_sha)
+            new_sha = new.get('source_sha256') if isinstance(new, dict) else None
+            new_roles = {a['role'] for a in current_assets if a.get('sha256') == new_sha}
+            stripped = lambda row: {k: v for k, v in row.items() if k not in {'source_path', 'source_sha256', 'upload_id', 'reference_id'}}
+            if (new is not None and stripped(old) == stripped(new) and new_sha != old_sha
+                    and any((new_sha, role) in substitutes and role in new_roles for role in roles)):
+                position += 1
+                continue
+            if roles and roles.issubset(set(policy['flex']['references']['droppable_roles'])):
+                continue
+            accepted = False
+            break
+        if accepted and position == len(new_rows):
+            if 'input_assets' in bound_actual:
+                expected['input_assets'] = copy.deepcopy(new_rows)
+            else:
+                expected.pop('input_assets', None)
     for key in set(expected) | set(bound_actual):
         if key not in {'references', 'start_frame', 'end_frame'}:
             continue
@@ -1373,7 +1897,7 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider):
                 expected.pop(key, None)
             else:
                 expected[key] = new
-    if expected != bound_actual:
+    if digest(expected) != digest(bound_actual):
         raise AutonomyError('request changed outside retained template/approved flex: ' + ', '.join(_diff(expected, bound_actual)))
 
 
@@ -1410,7 +1934,8 @@ def _apply_reference_planning_flex(policy, expected, current):
         if remaining == desired:
             shot['asset_ids'] = list(desired)
     needed = {aid for shot in current['shots'] for aid in shot['asset_ids']}
-    needed.add(current['payoff_asset_id'])
+    if current.get('payoff_asset_id') is not None:
+        needed.add(current['payoff_asset_id'])
     needed.update(actor_bound)
     needed.update(a['id'] for a in expected['assets'] if a['role'] == 'identity_reference')
     expected['assets'] = [a for a in expected['assets'] if a['id'] in current_assets or a['id'] in needed or a['role'] not in droppable]

@@ -163,7 +163,7 @@ def test_image2video_profile_requires_upload_contract(env):
 
 # ------------------------------------------------------------ native request
 
-@pytest.mark.parametrize("key", ["first_frame", "reference_image_path", "reference_image_paths", "image",
+@pytest.mark.parametrize("key", ["first_frame", "reference_image_path", "image",
                                  "image_url", "end_image_path", "audio_path", "keyframes", "voices",
                                  "rich_references", "bogus_control"])
 def test_unsupported_aliases_and_controls_fail(env, key):
@@ -1132,12 +1132,73 @@ def test_staged_first_account_full_chain(staged, monkeypatch):
     assert exc.value.kind == "result_contract_exists"
 
 
-def test_staged_ordinary_purpose_and_missing_occurrence_never_spawn(staged):
-    for kw in ({"purpose": "ordinary"}, {"occurrence": None}):
-        attempt = "o-" + str(len(staged_calls(staged)))
-        with pytest.raises(OpenArtCLIError):
-            staged_launch(staged, attempt=attempt, **kw)
+def test_staged_missing_occurrence_never_spawns(staged):
+    with pytest.raises(OpenArtCLIError):
+        staged_launch(staged, attempt="o-0", occurrence=None)
     assert not any("--async" in c for c in staged_calls(staged))
+
+
+def test_supported_pre_submit_ordinary_first_launch_and_original_collect_without_proof(staged, monkeypatch):
+    """Native form + exact preview + current account suffice; no prior paid result needed."""
+    profile, out, project = staged_launch(staged, attempt="ord-1", purpose="ordinary")
+    assert out["status"] == "submitted"
+    assert sum("--async" in c for c in staged_calls(staged)) == 1
+    status = jobs.qualification_status("m1", "image2video")
+    assert status["production_ready"] is True and status["full_result_qualified"] is False
+    assert status["empirical_result_status"] == "not_tested" and status["level"] == "pre_submit"
+    assert jobs.load_qualification(model="m1", mode="image2video", require="production_ready") == profile
+    with pytest.raises(OpenArtCLIError):
+        jobs.load_qualification(model="m1", mode="image2video", require="full")
+    eff = jobs.effective_result_contract("ord-1")
+    assert eff["result_contract_sha256"] is None
+    _fake_download(monkeypatch)
+    got = jobs.collect_job("ord-1", output_path=project / "ord-1.mp4", output_root=project, profile=profile,
+                           timeout=20)
+    assert got["status"] == "collected", got
+    assert jobs.verify_collection_receipt("ord-1", profile)["output"]["sha256"] == \
+        hashlib.sha256(b"generated video bytes").hexdigest()
+    again = jobs.collect_job("ord-1", output_path=project / "ord-1.mp4", output_root=project, profile=profile,
+                             timeout=20)
+    assert again["status"] == "collected"
+    assert sum("--async" in c for c in staged_calls(staged)) == 1  # collect/resume never resubmits
+
+
+@pytest.mark.parametrize("env_key,value", [("RESULT_JOB", "job-other"),
+                                           ("RESULT_URL", "https://evil.example.test/out.mp4")])
+def test_supported_first_collect_rejects_unrelated_job_or_host(staged, monkeypatch, env_key, value):
+    profile, out, project = staged_launch(staged, attempt="ord-2", purpose="ordinary")
+    assert out["status"] == "submitted"
+    _fake_download(monkeypatch)
+    monkeypatch.setenv(env_key, value)
+    try:
+        got = jobs.collect_job("ord-2", output_path=project / "ord-2.mp4", output_root=project,
+                               profile=profile, timeout=20)
+    except OpenArtCLIError:
+        got = {"status": "rejected"}
+    assert got["status"] in ("hold", "rejected"), got
+    assert not (project / "ord-2.mp4").exists()
+    with pytest.raises(OpenArtCLIError):
+        jobs.verify_collection_receipt("ord-2", profile)
+    assert sum("--async" in c for c in staged_calls(staged)) == 1
+
+
+def test_invalid_optional_proof_reported_but_never_removes_readiness(staged):
+    profile, _ = staged_pre_submit(staged)
+    staged["profile"], staged["src"] = profile, _
+    target = jobs.result_proof_path("m1", "image2video", profile["profile_sha256"])
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    target.write_bytes(b"{not a proof")
+    target.chmod(0o600)
+    status = jobs.qualification_status("m1", "image2video")
+    assert status["production_ready"] is True and status["empirical_result_status"] == "invalid"
+    assert status["full_result_qualified"] is False
+    assert jobs.load_qualification(model="m1", mode="image2video", require="production_ready") == profile
+    with pytest.raises(OpenArtCLIError):
+        jobs.load_qualification(model="m1", mode="image2video", require="full")
+    _, out, _ = staged_launch(staged, attempt="ord-3", purpose="ordinary")
+    assert out["status"] == "submitted"
+    assert jobs.effective_result_contract("ord-3")["result_contract_sha256"] is None
+    assert sum("--async" in c for c in staged_calls(staged)) == 1
 
 
 def test_staged_same_occurrence_cannot_qualify_twice(staged):

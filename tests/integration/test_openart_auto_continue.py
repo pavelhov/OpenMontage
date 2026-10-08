@@ -336,6 +336,21 @@ def test_grok_preparation_uses_real_builder_and_closed_native_arm(package, monke
     failed_review = copy.deepcopy(first_selection['review'])
     failed_review['status'] = 'fail'
     failed_review['subject_sha256'] = retained_result['output']['sha256']
+    # Cosmetic-only or unknown-only findings never create semantic repair authority.
+    for weak in ({'name': 'grain', 'status': 'fail', 'evidence': 'slight grain', 'severity': 'cosmetic'},
+                 {'name': 'identity', 'status': 'unknown', 'evidence': 'not judged', 'severity': 'critical'}):
+        weak_review = dict(failed_review, review_id=failed_review['review_id'] + '-' + weak['status'],
+                           predicates=[weak])
+        weak_dir = root / 'production_attempts' / aid / 'rejections'
+        record_rejection(root, aid, weak_review)
+        with pytest.raises(ValueError, match='critical'):
+            autonomy._validate_repair_evidence(root, 'entry', [aid])
+        for path in weak_dir.glob('*.json'):
+            path.chmod(0o600)
+            path.unlink()
+    # Legacy reviews may omit severity; the canonical engine default is critical.
+    failed_review['predicates'] = [{'name': 'character_identity', 'status': 'fail',
+                                    'evidence': 'face changes mid-shot'}]
     record_rejection(root, aid, failed_review)
     autonomy._validate_repair_evidence(root, 'entry', [aid])
     repair_inputs = copy.deepcopy(inputs)

@@ -6,6 +6,12 @@ After completing any pipeline stage's work — before checkpointing. You are the
 
 Every stage gets reviewed. No exceptions. The review quality determines whether the final video is worth watching.
 
+At a given stage/shot boundary, one owner performs one substantive semantic
+review. The production owner may rely on that current, passing review and its
+bound evidence; do not repeat the same review as a worker/parent handoff or
+create another reviewer pass by default. Re-review only when a specific defect,
+uncertainty, or changed binding requires it. Keep critical unknowns blocked.
+
 ## Critique Quality (CHAI Rules)
 
 > Findings ≠ critiques. A finding identifies a problem; a critique tells the next stage how to fix it. The CMU/Harvard CHAI study ("Building a Precise Video Language with Human-AI Oversight", arXiv 2604.21718v2) showed that critique quality, measured on three axes, directly governs downstream output quality. Apply all three to every reviewer pass.
@@ -359,7 +365,11 @@ certify a final, even if every spot check passes. Keep it inspectable as a draft
    filenames alone. Required cast, cast count, completed action, speaker/source,
    possession, transformation, outgoing boundary, payoff, and late-cast evidence
    are critical and cannot be downgraded to cosmetic.
-2. Watch **and listen to the complete composed master in synchronized playback**,
+2. For shot and asset review, inspect evidence targeted to the required
+   predicates: representative frames and focused intervals around action,
+   identity, and continuity. Do not extract or inspect every frame by default;
+   expand inspection only to resolve a concrete uncertainty or defect.
+   At final certification, watch **and listen to the complete composed master in synchronized playback**,
    including the opening, every scene/transition, dialogue, and full ending.
    Frame sampling, transcripts, duration probes, or audio-only listening cannot
    substitute for this review. If the viewing/listening facility is unavailable,

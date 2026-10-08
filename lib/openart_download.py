@@ -190,7 +190,7 @@ def _open_output_parent(output_path, output_root):
 
 def collect_output(url, output_path, *, allowed_hosts, output_root,
                    expected_sha256=None, max_bytes=536870912, timeout=30.0,
-                   max_redirects=5):
+                   max_redirects=5, allow_public_redirects=False, retain_private_trace=False):
     """Download and atomically publish one result; returns verified local metadata.
 
     Root and destination parent must already exist and have no symlink ancestors.
@@ -211,6 +211,8 @@ def collect_output(url, output_path, *, allowed_hosts, output_root,
             _fail("Invalid expected result digest")
         if not isinstance(allowed_hosts, (set, frozenset, list, tuple)) or not 0 < len(allowed_hosts) <= 100:
             _fail("Result hosts must be an explicit finite collection")
+        if type(allow_public_redirects) is not bool or type(retain_private_trace) is not bool:
+            _fail("Invalid result redirect/trace policy")
         hosts = {_host(host) for host in allowed_hosts}
         original_host, _, _ = _url(url, hosts)
         # Keep all remote URL path/query material out of public metadata.
@@ -218,8 +220,18 @@ def collect_output(url, output_path, *, allowed_hosts, output_root,
         parent, target = _open_output_parent(output_path, output_root)
         deadline = time.monotonic() + timeout
         current = url
+        private_trace = []
         for hop in range(max_redirects + 1):
+            if hop and allow_public_redirects:
+                try:
+                    redirect_host = _host(urlsplit(current).hostname)
+                except (ValueError, TypeError):
+                    _fail("Invalid result redirect host")
+                # Validate scheme, authority and credentials before any DNS or connection.
+                _url(current, {redirect_host})
+                hosts.add(redirect_host)
             host, path, query = _url(current, hosts)
+            private_trace.append(current)
             address = _resolve_public(host, deadline)
             connection = _PinnedHTTPSConnection(host, address, _remaining(deadline))
             connection.request("GET", path + ("?" + query if query else ""), headers={"Accept-Encoding": "identity"})
@@ -272,8 +284,11 @@ def collect_output(url, output_path, *, allowed_hosts, output_root,
             os.unlink(temporary, dir_fd=parent)
             temporary = None
             os.fsync(parent)
-            return {"path": str(target), "size": size, "sha256": sha256,
+            result = {"path": str(target), "size": size, "sha256": sha256,
                     "source_url": source_url, "source_host": original_host}
+            if retain_private_trace:
+                result.update(final_url=current, redirect_chain=private_trace)
+            return result
         _fail("Result redirect limit exceeded")
     except OpenArtDownloadError:
         raise

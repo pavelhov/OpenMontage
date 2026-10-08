@@ -230,7 +230,9 @@ def test_contract_delta_only_allows_flexed_retiming(tmp_path):
 
 
 def openart_row(**model_over):
-    model = {'model': 'kling-3', 'mode': 'i2v', 'level': 'full', 'profile_sha256': H('prof'),
+    model = {'model': 'kling-3', 'mode': 'i2v', 'level': 'full', 'production_ready': True,
+             'full_result_qualified': True, 'empirical_result_status': 'result_verified',
+             'profile_sha256': H('prof'),
              'account_id_sha256': H('acct'), 'catalog_verified': True,
              'controls': {'native_controls': {'resolution': {
                  'observed_in_form': True, 'qualified_in_exact_preview': True,

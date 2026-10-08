@@ -116,10 +116,17 @@ def test_video_discovery_scopes_quote_requirement_to_authorization_mode(monkeypa
     assert unknown['current_quote_required'] is False and unknown['credit_authorization_required'] is False
     assert unknown['unknown_cost_authorization_required'] is True
     assert unknown['required_fields'] == ['unknown_cost_authorization_id', 'unknown_cost_evidence_id']
-    assert unknown['native_modes'] == ['text2video'] and unknown['reference_mode'] == 'reference_free'
+    assert unknown['native_modes'] == ['text2video', 'image2video']
+    assert unknown['reference_mode'] == 'reference_free_or_approved_source_bound'
+    assert unknown['source_binding_required_for_references'] is True
+    image_mode = OpenArtCLIVideo._authorization_modes('image2video')['unknown_cost']
+    assert image_mode['native_modes'] == ['image2video'] and image_mode['reference_mode'] == 'source_bound'
+    assert 'unknown_cost' not in OpenArtCLIVideo._authorization_modes('element2video')
     assert unknown['explicit_acknowledgement'] == 'no_enforceable_credit_ceiling'
     assert unknown['guaranteed_ceiling'] is False and unknown['requested_charge'] == 'unknown'
-    assert unknown['auto_continue_available'] is False and unknown['recommended'] is False
+    assert unknown['auto_continue_available'] is True and unknown['recommended'] is False
+    assert unknown['auto_continue_requires'] == 'active_policy_openart_unknown_cost_variant'
+    assert unknown['auto_continue_policy_active'] is None
     jsonschema.validate({**video_inputs(), **dict(zip(unknown['required_fields'], ['retained', D]))}, info['input_schema'])
 
 

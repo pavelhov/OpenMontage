@@ -48,7 +48,11 @@ def test_unknown_cost_is_separate_explicit_opt_in(private_state, no_side_effects
     assert unknown == {'default': False, 'recommended': False,
                        'explicit_acknowledgement': 'no_enforceable_credit_ceiling',
                        'current_quote_required': False, 'guaranteed_ceiling': False,
-                       'requested_charge': 'unknown', 'auto_continue_available': False}
+                       'requested_charge': 'unknown', 'auto_continue_available': False,
+                       'native_modes': [], 'reference_mode': 'reference_free_or_approved_source_bound',
+                       'source_binding_required_for_references': True,
+                       'auto_continue_requires': 'active_policy_openart_unknown_cost_variant',
+                       'auto_continue_policy_active': None}
     assert row['billing']['current_quote_required'] is True
 
 
@@ -147,29 +151,42 @@ def test_missing_state_is_reported_empty_and_never_created(private_state, no_sid
     assert openart["ledger"]["initialized"] is False and openart["ledger"]["error"] is None
 
 
-def test_only_full_real_profiles_are_available(private_state, no_side_effects, monkeypatch):
+def test_pre_submit_real_profiles_are_available_without_result_proof(private_state, no_side_effects, monkeypatch):
     base = {"cli_version": "0.1.1", "tier": "subscription", "profile_sha256": "p" * 64,
             "result_contract_sha256": None, "result_proof_id": None, "image2video_qualified": False}
     rows = [
-        {**base, "model": "full-model", "mode": "text2video", "source": "real", "valid": True, "level": "full",
+        {**base, "model": "full-model", "mode": "text2video", "source": "real", "valid": True, "production_ready": True, "full_result_qualified": True, "level": "full",
          "error": None, "result_contract_sha256": "r" * 64, "result_proof_id": "proof"},
         {**base, "model": "pre-model", "mode": "image2video", "source": "real", "valid": False,
-         "level": "pre_submit", "error": "result_contract_unqualified"},
+         "production_ready": True, "full_result_qualified": False,
+         "level": "pre_submit", "error": None},
         {**base, "model": "insp-model", "mode": "text2video", "source": "real", "valid": False,
          "level": "inspected", "error": "result_contract_unqualified"},
         {**base, "model": "fixture-model", "mode": "text2video", "source": "fixture", "valid": False,
-         "level": "none", "error": "fixture_profile"},
+         "production_ready": False, "full_result_qualified": False,
+         "empirical_result_status": "fixture_only", "level": "none", "error": "fixture_profile"},
     ]
     monkeypatch.setattr(openart_jobs, "list_qualifications", lambda: [dict(r) for r in rows])
+    monkeypatch.setattr(OpenArtCLIVideo, "_model_catalog", staticmethod(lambda: {
+        model: {"modes": {row["mode"]: {"profile_sha256": row["profile_sha256"],
+          "native_controls": "observed", "native_capabilities": {}, "required_unqualified": [],
+          "argv_flag_without_effective_preview": [], "account_id_sha256": "a" * 64}}}
+        for model, row in ((r["model"], r) for r in rows if r["source"] == "real" and r.get("production_ready"))}))
     openart = _routes(ToolRegistry())["openart_cli"]
-    assert [m["model"] for m in openart["models"]] == ["full-model"]
+    assert {m["model"] for m in openart["models"]} == {"full-model", "pre-model"}
+    pre = next(m for m in openart["models"] if m["model"] == "pre-model")
+    assert pre["production_ready"] is True
+    assert pre["full_result_qualified"] is False
+    assert pre["empirical_result_status"] == "not_tested"
+    assert pre["result_proof_id"] is None
     candidates = {c["model"]: c for c in openart["qualification_candidates"]}
-    assert set(candidates) == {"pre-model", "insp-model"}
+    assert set(candidates) == {"insp-model"}
     assert all(c["production_available"] is False and c["purpose"] == "qualification_candidate"
                for c in candidates.values())
-    assert candidates["pre-model"]["next_stage"] == "first_original_result_qualification"
-    assert [r["model"] for r in openart["not_live"]] == ["fixture-model"]
-    # Binary missing: a full profile alone does not make the route production-available.
+    fixture = openart["not_live"][0]
+    assert fixture["model"] == "fixture-model"
+    assert fixture["empirical_result_status"] == "fixture_only"
+    # Binary missing: a production-ready profile alone does not make the route available.
     assert openart["status"] == "unavailable" and openart["production_available"] is False
     assert openart["account_stages"]["account_discovery"] == "full_profile_retained"
     assert "tool_status:unavailable" in openart["dispatch_readiness"]["blockers"]
@@ -182,13 +199,13 @@ def test_account_discovery_reflects_retained_staged_rows(private_state, no_side_
     openart = _routes(ToolRegistry())["openart_cli"]
     assert openart["account_stages"]["account_discovery"] == "inspected_profile_retained"
     assert openart["models"] == []
-    assert "no_full_real_result_qualified_profile" in openart["dispatch_readiness"]["blockers"]
+    assert "no_production_ready_real_profile" in openart["dispatch_readiness"]["blockers"]
 
 
 def test_openart_ledger_facts_block_dispatch_readiness_even_with_full_profile(
         private_state, no_side_effects, monkeypatch):
     _seed_ledger(private_state)
-    full = {"model": "m", "mode": "text2video", "source": "real", "valid": True, "level": "full",
+    full = {"model": "m", "mode": "text2video", "source": "real", "valid": True, "production_ready": True, "full_result_qualified": True, "level": "full",
             "error": None, "cli_version": "0.1.1", "profile_sha256": "p" * 64,
             "result_contract_sha256": "r" * 64, "result_proof_id": "proof"}
     monkeypatch.setattr(openart_jobs, "list_qualifications", lambda: [dict(full)])
@@ -210,7 +227,7 @@ def test_terminal_slot_unknown_billing_hold_is_eligible_but_needs_quote(
     _seed_ledger(private_state, rows=(("billed", "oa", "terminal", "unresolved"),
                                       ("closedhold", "oa", "closed", "unresolved")),
                  quarantine=False, outbox=False)
-    full = {"model": "m", "mode": "text2video", "source": "real", "valid": True, "level": "full",
+    full = {"model": "m", "mode": "text2video", "source": "real", "valid": True, "production_ready": True, "full_result_qualified": True, "level": "full",
             "error": None, "cli_version": "0.1.1", "profile_sha256": "p" * 64,
             "result_contract_sha256": "r" * 64, "result_proof_id": "proof"}
     monkeypatch.setattr(openart_jobs, "list_qualifications", lambda: [dict(full)])
@@ -275,6 +292,25 @@ def _tree(root):
     return sorted((str(p.relative_to(root)), p.stat().st_size) for p in root.rglob("*"))
 
 
+def test_real_pre_submit_form_and_preview_publish_production_model_without_result(governed):
+    root, inputs, profile, tmp = governed
+    rows = openart_jobs.list_qualifications()
+    row = next(r for r in rows if r["model"] == "m1" and r["mode"] == "image2video")
+    assert row["production_ready"] is True
+    assert row["full_result_qualified"] is False
+    assert row["empirical_result_status"] == "not_tested"
+    mode = OpenArtCLIVideo._model_catalog()["m1"]["modes"]["image2video"]
+    assert mode["production_ready"] is True
+    assert mode["full_result_qualified"] is False
+    assert mode["empirical_result_status"] == "not_tested"
+    menu = _routes(ToolRegistry())["openart_cli"]
+    published = next(m for m in menu["models"] if m["model"] == "m1")
+    assert published["production_ready"] is True
+    assert published["empirical_result_status"] == "not_tested"
+    assert mode["native_controls"]["resolution"]["qualified_in_exact_preview"] is True
+    assert not (tmp / "paid").exists()
+
+
 def test_actual_full_profile_catalog_reads_reference_receipts(governed, monkeypatch):
     from lib import openart_dispatch as dispatch  # noqa: F401
     root, inputs, profile, tmp = governed
@@ -300,7 +336,9 @@ def test_actual_full_profile_catalog_reads_reference_receipts(governed, monkeypa
     assert mode["profile_sha256"] == full["profile_sha256"] and mode["source"] == "real"
     assert mode["account_id_sha256"] == full["account_id_sha256"]
     assert mode["default_authorization_mode"] == mode["requirement_flags_apply_to"] == "exact_credit"
-    assert "unknown_cost" not in mode["authorization_modes"]
+    assert mode['authorization_modes']['unknown_cost']['native_modes'] == ['image2video']
+    assert mode['authorization_modes']['unknown_cost']['reference_mode'] == 'source_bound'
+    assert mode['authorization_modes']['unknown_cost']['source_binding_required_for_references'] is True
     assert mode["authorization_modes"]["exact_credit"]["current_quote_required"] is True
     native = mode["native_controls"]
     assert native["duration"]["preview"] == {"value": 8}
@@ -336,13 +374,13 @@ def test_tampered_reference_receipt_drops_catalog_and_blocks_readiness(governed,
     row = _routes(ToolRegistry())["openart_cli"]
     if row["models"]:  # full row may still list, but never verified/ready
         assert row["models"][0]["catalog_verified"] is False
-        assert "full_profile_receipts_unverified" in row["dispatch_readiness"]["blockers"]
+        assert "production_profile_receipts_unverified" in row["dispatch_readiness"]["blockers"]
         assert row["production_available"] is False
 
 
 def test_argv_resolution_flag_without_effective_preview_is_unqualified(monkeypatch):
     """Unit seam: resolution in argv but absent from the effective preview body."""
-    row = {"model": "m", "mode": "text2video", "source": "real", "valid": True, "level": "full",
+    row = {"model": "m", "mode": "text2video", "source": "real", "valid": True, "production_ready": True, "full_result_qualified": True, "level": "full",
            "profile_sha256": "p" * 64, "result_contract_sha256": "r" * 64, "result_proof_id": "x"}
     prof = {"profile_sha256": "p" * 64, "source": "real", "dry_run_endpoint": "POST /g",
             "account_id_sha256": "a" * 64,
@@ -368,7 +406,7 @@ def test_argv_resolution_flag_without_effective_preview_is_unqualified(monkeypat
 
 def test_malformed_enum_members_are_hashed_not_disclosed(monkeypatch):
     """A resolution enum carrying a signed URL/private string must not leak via the menu."""
-    row = {"model": "m", "mode": "text2video", "source": "real", "valid": True, "level": "full",
+    row = {"model": "m", "mode": "text2video", "source": "real", "valid": True, "production_ready": True, "full_result_qualified": True, "level": "full",
            "profile_sha256": "p" * 64, "result_contract_sha256": "r" * 64, "result_proof_id": "x"}
     prof = {"profile_sha256": "p" * 64, "source": "real", "dry_run_endpoint": "POST /g",
             "captured_receipts": [{"kind": "form", "receipt_id": "f", "receipt_sha256": "1" * 64},

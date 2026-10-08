@@ -52,27 +52,54 @@ def _leaf(value, pointer):
 
 
 
-def _check_required_native_controls(scene_plan, manifest, shot_id):
-    """Read the existing approved pinned-final-frame sidecars, never caller flags."""
-    visual = scene_plan.get('metadata', {}).get('visual_development', {})
-    card = visual.get('shot_cards', {}).get(shot_id, {})
+def _check_required_native_controls(scene_plan, manifest, shot_id, *, native=None, project_dir=None):
+    """Bind required native ending frames to exact approved canonical handoffs."""
+    card = scene_plan.get('metadata', {}).get('visual_development', {}).get('shot_cards', {}).get(shot_id, {})
+    for key in ('pinned_initial_frame', 'pinned_start_frame', 'pinned_first_frame'):
+        pin = card.get(key)
+        if pin is not None:
+            if not isinstance(pin, dict) or type(pin.get('required')) is not bool:
+                raise ValueError('malformed declared initial frame-pin requirement')
+            start_assets = (native or {}).get('input_assets')
+            if start_assets is None:
+                start_assets = [{'role': 'first_frame'}] if (native or {}).get('image_upload') else []
+            if pin['required'] and len([a for a in start_assets if a.get('role') == 'first_frame']) != 1:
+                raise ValueError('OpenArt lacks required native initial-frame pin')
     requirement = card.get('pinned_final_frame')
-    if requirement is not None:
-        if not isinstance(requirement, dict) or type(requirement.get('required')) is not bool:
-            raise ValueError('malformed declared pinned_final_frame requirement')
-        if requirement['required']:
-            raise ValueError('OpenArt lacks required native ending-frame pin declared by scene plan')
-    if manifest is None:
+    if requirement is not None and (not isinstance(requirement, dict) or type(requirement.get('required')) is not bool):
+        raise ValueError('malformed declared pinned_final_frame requirement')
+    assets = {a['id']: a for a in (manifest or {}).get('assets', [])}
+    metadata = (manifest or {}).get('metadata', {})
+    handoffs = [(key, handoff) for key, handoff in metadata.get('motion_handoffs', {}).items()
+                if handoff.get('scene_id', assets.get(key, {}).get('scene_id')) == shot_id
+                and handoff.get('pinned_final_frame') is not None]
+    refs = [ref for ref in metadata.get('reference_assets', {}).values()
+            if ref.get('scene_id') == shot_id and ref.get('temporal_use') == 'last_frame' and ref.get('requirement_id')]
+    declared = bool(requirement and requirement['required']) or bool(handoffs) or bool(refs)
+    if not declared:
         return
-    assets = {a['id']: a for a in manifest['assets']}
-    metadata = manifest.get('metadata', {})
-    for asset_id, handoff in metadata.get('motion_handoffs', {}).items():
-        scene = handoff.get('scene_id', assets.get(asset_id, {}).get('scene_id'))
-        if scene == shot_id and handoff.get('pinned_final_frame') is not None:
-            raise ValueError('OpenArt lacks required native ending-frame pin retained by motion handoff')
-    for ref in metadata.get('reference_assets', {}).values():
-        if ref.get('scene_id') == shot_id and ref.get('temporal_use') == 'last_frame' and ref.get('requirement_id'):
-            raise ValueError('OpenArt lacks declared ending-frame reference control')
+    submitted = (native or {}).get('input_assets', [])
+    endings = [a for a in submitted if a.get('role') == 'last_frame']
+    starts = [a for a in submitted if a.get('role') == 'first_frame']
+    if len(endings) != 1 or len(starts) != 1:
+        raise ValueError('OpenArt lacks required native ending-frame pin')
+    if project_dir is None or manifest is None or len(handoffs) != 1:
+        raise ValueError('ending-frame needs one exact approved starting/ending handoff')
+    from lib.pinned_final_frame import pinned_final_frame_params
+    start_id, handoff = handoffs[0]
+    try:
+        bound = pinned_final_frame_params(scene_plan, manifest, scene_id=shot_id,
+            keyframe_asset_id=start_id, provider=native.get('provider', 'openart_cli'), model=native.get('model'), project_dir=project_dir)
+    except ValueError as exc:
+        raise ValueError('ending-frame canonical binding invalid: ' + str(exc)) from None
+    if (file_sha256(bound['reference_image_path']) != starts[0].get('source_sha256')
+            or file_sha256(bound['last_image_path']) != endings[0].get('source_sha256')):
+        raise ValueError('ending-frame native start/target source bytes differ from canonical handoff')
+    end_id = handoff['pinned_final_frame']['asset_id']
+    for ref in refs:
+        if (ref.get('requirement_id') != bound['endpoint_requirement_id']
+                or ref.get('asset_id') != end_id or ref.get('approved') is False):
+            raise ValueError('ending-frame reference requirement or target differs from approved handoff')
 
 
 
@@ -92,7 +119,7 @@ def _manifest_requirement_binding(manifest, shot_id):
             'motion_handoffs': handoffs, 'reference_assets': references}
 
 
-def source_packet(project_dir, shot_id, *, provider="openart_cli"):
+def source_packet(project_dir, shot_id, *, provider="openart_cli", native=None, check_native_controls=True):
     """Resolve authoritative closed contract, explicit scene→script mapping and bytes."""
     from lib.production_execution import approval_plan_digest, load_selected_attempts
     root = Path(project_dir).resolve()
@@ -108,8 +135,12 @@ def source_packet(project_dir, shot_id, *, provider="openart_cli"):
     if contract['project_id'] != marker['project_id']:
         raise ValueError('contract project mismatch')
     index, shot = next((i, s) for i, s in enumerate(contract['shots']) if s['id'] == shot_id)
-    reference_free = contract.get('reference_mode') == 'reference_free'
-    if reference_free and provider != 'openart_cli':
+    reference_guided = (shot.get('reference_mode', contract.get('reference_mode')) == 'reference_guided')
+    if reference_guided and provider != 'openart_mcp':
+        raise ValueError('reference-guided contract requires the explicit OpenArt MCP reference route')
+    reference_free = (contract.get('reference_mode') == 'reference_free'
+                      or shot.get('reference_mode') == 'reference_free')
+    if reference_free and provider not in {'openart_cli', 'openart_mcp'}:
         raise ValueError('reference-free contract requires OpenArt text2video')
     rows = []
     if reference_free:
@@ -121,7 +152,8 @@ def source_packet(project_dir, shot_id, *, provider="openart_cli"):
     refs = []
     payoff_id = contract.get('payoff_asset_id')
     needed_assets = set(shot['asset_ids']) | ({payoff_id} if not reference_free else set())
-    needed_cast = set(shot['cast_ids']) | set(contract['late_cast_ids']) | set(contract['payoff_speaker_ids'])
+    needed_cast = (set() if reference_free else
+                   set(shot['cast_ids']) | set(contract['late_cast_ids']) | set(contract['payoff_speaker_ids']))
     needed_assets.update(a['id'] for a in contract['assets'] if a['role'] == 'identity_reference' and needed_cast.intersection(a['cast_ids']))
     # All contract review bindings are retained: review prose is outside contract_digest.
     for ai, asset in enumerate(contract['assets']):
@@ -142,9 +174,9 @@ def source_packet(project_dir, shot_id, *, provider="openart_cli"):
     manifest = _read(root, 'asset_manifest.json') if manifest_path.exists() else None
     if manifest is not None:
         _schema('asset_manifest', manifest)
-    if provider == "openart_cli":
-        _check_required_native_controls(scene_plan, manifest, shot_id)
-    elif provider != "grok_cli":
+    if provider in {"openart_cli", "openart_mcp"} and check_native_controls:
+        _check_required_native_controls(scene_plan, manifest, shot_id, native=native, project_dir=root)
+    elif provider not in {"grok_cli", "openart_cli", "openart_mcp"}:
         raise ValueError("unsupported preparation provider")
     if reference_free:
         card = scene_plan.get('metadata', {}).get('visual_development', {}).get('shot_cards', {}).get(shot_id, {})
@@ -186,12 +218,14 @@ def source_packet(project_dir, shot_id, *, provider="openart_cli"):
                'reviews_sha256': digest([contract['project_review'], shot.get('review')])}
     if reference_free:
         binding['reference_mode'] = 'reference_free'
+    elif reference_guided:
+        binding['reference_mode'] = 'reference_guided'
     return {'binding': binding, 'occurrences': rows, 'shot': shot}
 
 
-def compile_prompt(project_dir, shot_id):
+def compile_prompt(project_dir, shot_id, *, native=None):
     """Return literal prompt and trace map; this does not create a passing review."""
-    packet = source_packet(project_dir, shot_id)
+    packet = source_packet(project_dir, shot_id, native=native)
     return _compile_packet(packet)
 
 
@@ -225,16 +259,17 @@ def _compile_packet(packet, *, native_pointer='/params/prompt'):
 
 def build_static_source_packet(project_dir, shot_id, *, provider):
     """Validated provider-neutral source bytes; OpenArt's original guard is preserved."""
-    packet = source_packet(project_dir, shot_id, provider=provider)
+    packet = source_packet(project_dir, shot_id, provider=provider,
+        check_native_controls=provider != 'openart_mcp')
     if provider == 'grok_cli':
         from lib.production_autonomy import contract_delta, current_projection
         contract_delta(project_dir, shot_id, current_projection(project_dir, shot_id))
     return packet
 
 
-def compile_provider_prompt(project_dir, shot_id, *, provider):
+def compile_provider_prompt(project_dir, shot_id, *, provider, model=None):
     packet = build_static_source_packet(project_dir, shot_id, provider=provider)
-    compiled = _compile_packet(packet, native_pointer='/arguments/prompt' if provider == 'grok_cli' else '/params/prompt')
+    compiled = _compile_packet(packet, native_pointer='/arguments/prompt' if provider == 'grok_cli' else ('/params/sceneDescription' if provider == 'openart_mcp' and model == 'smart-shot' else '/params/prompt'))
     if provider == 'grok_cli':
         from tools._grok_cli_media import validate_prompt
         compiled['prompt'] = validate_prompt(compiled['prompt'])
@@ -244,6 +279,12 @@ def compile_provider_prompt(project_dir, shot_id, *, provider):
 def _body(native):
     if native.get('provider') == 'grok_cli':
         return {'params': copy.deepcopy(native['request']['arguments'])}
+    if native.get('provider') == 'openart_mcp':
+        from lib.openart_mcp import digest as mcp_digest
+        body = copy.deepcopy(native['body'])
+        if mcp_digest(body) != native['body_sha256']:
+            raise ValueError('MCP native body binding changed')
+        return body
     from lib import openart_jobs as jobs
     evidence = native['dry_run']
     receipt = jobs._load_receipt(evidence['receipt_id'], evidence['receipt_sha256'], 'native_preview_invalid')
@@ -254,10 +295,43 @@ def _body(native):
 
 
 def _native_binding(native):
+    if native.get('provider') == 'openart_mcp':
+        from lib.openart_mcp import validate_native_request
+        validate_native_request(native)
+        return {'provider': 'openart_mcp', 'transport': native['transport'],
+                'native_controls_sha256': digest(native['body']['params']),
+                'native_body_sha256': native['body_sha256'],
+                'profile_sha256': native['profile_sha256'],
+                'form_sha256': native['form_sha256'],
+                'schema_observation_sha256': native['schema_observation_sha256'],
+                'account_id_sha256': native['account_binding']['uid_sha256'],
+                'account_observation_sha256': native['account_binding']['account_observation_sha256'],
+                'references_sha256': native['source_binding_sha256'],
+                'model': native['model'], 'mode': native['mode'], 'source': native['source']}
     if native.get('provider') == 'grok_cli':
         return copy.deepcopy(native)
-    return {key: native[key] for key in ('native_controls_sha256', 'native_argv_sha256', 'native_body_sha256',
+    value = {key: native[key] for key in ('native_controls_sha256', 'native_argv_sha256', 'native_body_sha256',
         'profile_sha256', 'form_sha256', 'form_defaults_sha256', 'cli_version', 'tier', 'account_id_sha256', 'model', 'mode', 'source')}
+    if 'native_capabilities_sha256' in native:
+        value['native_capabilities_sha256'] = native['native_capabilities_sha256']
+    return value
+
+
+def mcp_native_settings(native):
+    """Exact ordinary form controls; opaque reference IDs bind separately by hash.
+
+    Retained connector media objects can contain signed URLs. They remain in the
+    private native body and its hash instead of a public qualification packet.
+    """
+    reserved = {'prompt', 'sceneDescription', 'startFrame', 'endFrame', 'visualReferences',
+                'characterReferenceImageUrls', 'environmentReferenceImageUrl'}
+    for asset in native.get('input_assets', []):
+        parts = str(asset.get('param_path', '')).strip('/').split('/')
+        if parts and parts[0] == 'params':
+            parts = parts[1:]
+        if parts:
+            reserved.add(parts[0])
+    return {key: copy.deepcopy(value) for key, value in native['body']['params'].items() if key not in reserved}
 
 
 def _number(value, label, minimum=0):
@@ -269,7 +343,8 @@ def _number(value, label, minimum=0):
 def validate_timing(timing, packet, project_dir, body):
     """Check declared intervals and explicit estimates, never infer performance quality."""
     shot = packet['shot']
-    duration = _number(body['params']['duration'], 'native duration', 0.001)
+    duration_key = 'videoDuration' if body.get('model') == 'smart-shot' else 'duration'
+    duration = _number(body['params'][duration_key], 'native duration', 0.001)
     if duration != shot['duration_seconds'] or timing['duration_seconds'] != duration:
         raise ValueError('timing duration differs from actual native duration')
     margin = _number(timing['margin_seconds'], 'margin')
@@ -363,8 +438,11 @@ def prepare_grok_native(inputs, observation):
     if set(observation) != {'cli_version', 'grok_path'} or not all(isinstance(v, str) and v.strip() for v in observation.values()):
         raise ValueError('closed fresh Grok CLI observation required')
     cleaned = _clean(inputs)
-    cleaned.pop('preferred_provider', None)
-    cleaned.pop('allowed_providers', None)
+    # Match the selector's native dispatch projection without changing the
+    # governed request digest: these are route/planning fields, not CLI controls.
+    for key in ('preferred_tool', 'hosting_provider', 'preferred_provider', 'preferred_provider_gap',
+                'allowed_providers', 'task_context', 'target_operation'):
+        cleaned.pop(key, None)
     native = build_native_video_request(cleaned, adapter_version=GrokCLIVideo.version)
     check_cli_feature_gates(observation['cli_version'], native['arguments'])
     return {'provider': 'grok_cli', 'cli_version': observation['cli_version'],
@@ -377,6 +455,10 @@ def prep_builder(provider):
     if provider == 'openart_cli':
         from lib.openart_jobs import prepare_native_request
         return prepare_native_request
+    if provider == 'openart_mcp':
+        from lib.openart_mcp import prepare_native_request
+        from lib.production_execution import _openart_mcp_controls
+        return lambda inputs, profile: prepare_native_request(_openart_mcp_controls(inputs), profile)
     raise ValueError('provider outside Auto-continue')
 
 
@@ -384,7 +466,7 @@ def prepare_compiled_request(inputs, native, profile, *, coverage, timing):
     """Build sidecar after a retained preview. Persist and obtain named review separately."""
     from lib.production_execution import planned_request_digest
     root = Path(inputs['project_dir']).resolve()
-    packet = source_packet(root, inputs['governance']['shot_id'], provider=native.get('provider', 'openart_cli'))
+    packet = source_packet(root, inputs['governance']['shot_id'], provider=native.get('provider', 'openart_cli'), native=native)
     value = {'version': '1.0', 'request_sha256': planned_request_digest(inputs, project_dir=root),
              'source_binding': packet['binding'], 'native_binding': _native_binding(native),
              'coverage': copy.deepcopy(coverage), 'timing': copy.deepcopy(timing)}
@@ -407,7 +489,12 @@ def _validate_compiled(compiled, inputs, native, profile, packet):
     reference_free = packet['binding'].get('reference_mode') == 'reference_free'
     if reference_free and (grok or native.get('mode') != 'text2video'):
         raise ValueError('reference-free contract requires OpenArt text2video')
-    if grok:
+    mcp = native.get('provider') == 'openart_mcp'
+    if mcp:
+        from lib.openart_mcp import prepare_native_request
+        from lib.production_execution import _openart_mcp_controls
+        actual_native = prepare_native_request(_openart_mcp_controls(inputs), profile)
+    elif grok:
         actual_native = prepare_grok_native(inputs, {'cli_version': native['cli_version'], 'grok_path': native['grok_path']})
     else:
         from lib import openart_jobs as jobs
@@ -415,16 +502,17 @@ def _validate_compiled(compiled, inputs, native, profile, packet):
             actual_native = jobs.prepare_native_request(controls(inputs), profile)
         except jobs.OpenArtCLIError as exc:
             raise ValueError('native preparation invalid: ' + exc.kind) from None
-    if actual_native != native:
+    if digest(actual_native) != digest(native):
         raise ValueError('stale native body/controls/version/tier/form/defaults')
-    if compiled['source_binding'] != packet['binding']:
+    if digest(compiled['source_binding']) != digest(packet['binding']):
         raise ValueError('stale source/reference/review/upstream bindings')
     if compiled['request_sha256'] != planned_request_digest(inputs, project_dir=inputs['project_dir']):
         raise ValueError('compiled request changed')
-    if compiled['native_binding'] != _native_binding(native):
+    if digest(compiled['native_binding']) != digest(_native_binding(native)):
         raise ValueError('stale native body/controls/version/tier/form/defaults')
     body = _body(native)
-    prompt = body['params']['prompt']
+    prompt_field = 'sceneDescription' if mcp and native['model'] == 'smart-shot' else 'prompt'
+    prompt = body['params'][prompt_field]
     rows, coverage = packet['occurrences'], compiled['coverage']
     if len(rows) != len(coverage):
         raise ValueError('coverage omits required occurrence')
@@ -433,7 +521,7 @@ def _validate_compiled(compiled, inputs, native, profile, packet):
         if any(mapped[key] != row[key] for key in ('occurrence_id', 'source_pointer', 'value_sha256')):
             raise ValueError('coverage occurrence/source mismatch')
         start, end = mapped['start'], mapped['end']
-        expected_pointer = '/arguments/prompt' if grok else '/params/prompt'
+        expected_pointer = '/arguments/prompt' if grok else '/params/' + prompt_field
         if mapped['native_pointer'] != expected_pointer or not 0 <= start < end <= len(prompt):
             raise ValueError('coverage must target actual native prompt fragment')
         fragment = prompt[start:end]
@@ -448,7 +536,8 @@ def _validate_compiled(compiled, inputs, native, profile, packet):
     if reference_free:
         if packet['binding']['references'] or packet['binding']['upstream'] or native.get('image_upload') is not None:
             raise ValueError('reference-free native request contains image/reference obligations')
-        if any(key in body['params'] for key in ('image', 'images', 'first_frame', 'last_frame', 'keyframes', 'references', 'voices', 'audio')):
+        media_fields = ('startFrame', 'endFrame', 'visualReferences', 'characterReferenceImageUrls', 'environmentReferenceImageUrl') if mcp else ('image', 'images', 'first_frame', 'last_frame', 'keyframes', 'references', 'voices', 'audio')
+        if (mcp and (native.get('input_assets') or any(key in body['params'] and body['params'][key] not in ([], None) for key in media_fields))) or (not mcp and any(key in body['params'] for key in media_fields)):
             raise ValueError('reference-free native request contains image/reference controls')
     elif grok:
         refs = packet['binding']['references']
@@ -456,21 +545,22 @@ def _validate_compiled(compiled, inputs, native, profile, packet):
         submitted = native['request']['input_assets']
         if len(start_refs) != 1 or not any(r['role'] == 'first_frame' and r['sha256'] == start_refs[0]['sha256'] for r in submitted):
             raise ValueError('Grok native request must carry approved start board')
-    elif native['mode'] == 'image2video':
-        refs = packet['binding']['references']
-        start_refs = [r for r in refs if r['role'] == 'start_frame' and r['id'] in packet['shot']['asset_ids']]
-        upload = native['image_upload']
-        if len(start_refs) != 1 or not upload or upload['source_sha256'] != start_refs[0]['sha256']:
-            raise ValueError('image2video must carry the approved start board')
     else:
-        raise ValueError('closed shot contract needs approved start board: text2video unsupported')
-    if not grok and profile['source'] == 'real':
+        validate_openart_asset_roles(packet, native)
+        scene = _read(Path(inputs['project_dir']).resolve(), 'scene_plan.json')
+        from lib.production_execution import _artifact_path
+        root = Path(inputs['project_dir']).resolve()
+        manifest = _read(root, 'asset_manifest.json') if _artifact_path(root, 'asset_manifest.json').exists() else None
+        _check_required_native_controls(scene, manifest, packet['binding']['shot_id'], native=native, project_dir=root)
+    if not grok and not mcp and profile['source'] == 'real':
         from lib import openart_jobs as jobs
         from tools import _openart_cli as cli
         entry = next(e for e in profile['captured_receipts'] if e['kind'] == 'form')
         form = jobs._receipt_parsed(entry['receipt_id'], entry['receipt_sha256'])
         try:
-            form_schema = cli.form_schema(form, model=profile['model'], mode=profile['mode'])
+            root_schema = cli.form_root_schema(form, model=profile['model'], mode=profile['mode'])
+            form_schema = ({root_schema['union']: root_schema['branches']} if root_schema['union']
+                           else root_schema['branches'][0])
             Draft202012Validator(form_schema).validate(body['params'])
         except cli.OpenArtCLIError:
             raise ValueError('native form schema or metadata is unsupported') from None
@@ -479,12 +569,71 @@ def _validate_compiled(compiled, inputs, native, profile, packet):
     validate_timing(compiled['timing'], packet, inputs['project_dir'], body)
 
 
+def validate_openart_asset_roles(packet, native):
+    """Bind actual native media roles to reviewed shot bytes, never prompt mentions.
+
+    Native builders verify retained upload proofs; this checks their immutable
+    role/source results against the authoritative contract. Legacy single-image
+    profiles retain their original representation.
+    """
+    submitted = native.get('input_assets')
+    if submitted is None:
+        upload = native.get('image_upload')
+        submitted = ([{'role': 'first_frame', 'source_sha256': upload['source_sha256']}]
+                     if upload else [])
+    if not isinstance(submitted, list):
+        raise ValueError('OpenArt native asset roles missing')
+    refs = [r for r in packet['binding']['references'] if r['id'] in packet['shot']['asset_ids']
+            or r['role'] == 'identity_reference' and set(r.get('cast_ids', [])).intersection(packet['shot'].get('cast_ids', []))]
+    if packet['binding'].get('reference_mode') == 'reference_guided':
+        if native.get('provider') != 'openart_mcp' or native.get('mode') not in {'element2video', 'generate-shot-video'}:
+            raise ValueError('reference-guided contract requires an explicit native reference-guided mode')
+        role_options = {'start_frame': {'reference_image', 'environment_reference', 'first_frame'},
+            'end_frame': {'reference_image', 'environment_reference', 'last_frame'},
+            'identity_reference': {'reference_image', 'character_reference'},
+            'reference_image': {'reference_image'}, 'reference_video': {'reference_video'},
+            'reference_audio': {'reference_audio'}}
+        approved = {(role, ref['sha256']) for ref in refs for role in role_options.get(ref['role'], set())}
+        for asset in submitted:
+            if (asset.get('role'), asset.get('source_sha256')) not in approved:
+                raise ValueError('OpenArt guided native role/source is not an approved shot asset')
+        for ref in refs:
+            if ref['role'] in {'start_frame', 'end_frame'}:
+                continue  # reviewed composition targets, no implicit temporal pin
+            if ref['role'] in role_options and not any(asset.get('role') in role_options[ref['role']]
+                    and asset.get('source_sha256') == ref['sha256'] for asset in submitted):
+                raise ValueError('OpenArt guided native request omits approved reference role ' + ref['role'])
+        return
+    starts = [r for r in refs if r['role'] == 'start_frame']
+    if len(starts) != 1 or not any(a.get('role') == 'first_frame' and a.get('source_sha256') == starts[0]['sha256'] for a in submitted):
+        raise ValueError('OpenArt closed shot contract needs approved start board')
+    mapping = {'start_frame': 'first_frame', 'end_frame': 'last_frame',
+               'identity_reference': 'reference_image', 'reference_image': 'reference_image',
+               'reference_video': 'reference_video',
+               'reference_audio': 'reference_audio'}
+    approved = {(mapping.get(r['role']), r['sha256']) for r in refs}
+    for asset in submitted:
+        if (asset.get('role'), asset.get('source_sha256')) not in approved:
+            raise ValueError('OpenArt native role/source is not an approved shot asset')
+    # The shot contract always retains a reviewed ending target. It becomes a
+    # native pin only through the canonical scene/handoff requirement checked
+    # separately; an optional target remains bound in source/semantic review.
+    # Identity references may be carried by the reviewed composite starting board
+    # in image2video. Other modes must preserve separately declared references.
+    required = [r for r in refs if r['role'] in mapping
+                and r['role'] != 'end_frame'
+                and not (r['role'] == 'identity_reference' and native.get('mode') == 'image2video')]
+    for ref in required:
+        if not any(a.get('role') == mapping[ref['role']] and a.get('source_sha256') == ref['sha256'] for a in submitted):
+            raise ValueError('OpenArt native request omits approved reference role ' + ref['role'])
+
+
 def validate_preparation(inputs, native, profile):
     """Dispatcher entry: pure, authoritative current sidecars; returns bound evidence."""
     root = Path(inputs['project_dir']).resolve()
     compiled = _read(root, 'compiled_request-' + _id(inputs.get('compiled_request_id')) + '.json')
     review = _read(root, 'preparation_review-' + _id(inputs.get('preparation_review_id')) + '.json')
-    packet = source_packet(root, inputs['governance']['shot_id'], provider=native.get('provider', 'openart_cli'))
+    packet = source_packet(root, inputs['governance']['shot_id'], provider=native.get('provider', 'openart_cli'), native=native)
     _validate_compiled(compiled, inputs, native, profile, packet)
     _schema('preparation_review', review)
     if review['review_id'] != inputs['preparation_review_id']:
@@ -508,11 +657,12 @@ def approved_upload_lookup(project_root, upload_id, source_sha256):
                     'approved_by', 'evidence_path', 'evidence_sha256'}
         if set(record) != expected or record['version'] != '1.0' or not record['approved_by'].strip():
             return None
-        packet = source_packet(root, record['shot_id'])
+        packet = source_packet(root, record['shot_id'], check_native_controls=False)
         if record['upload_id'] != upload_id or record['source_sha256'] != source_sha256 or record['source_binding'] != packet['binding']:
             return None
         asset = next(a for a in packet['binding']['references'] if a['id'] == record['asset_id'])
-        if asset['role'] != 'start_frame' or asset['sha256'] != source_sha256 or asset['id'] not in packet['shot']['asset_ids']:
+        if asset['role'] not in {'start_frame', 'end_frame', 'identity_reference', 'reference_image', 'reference_video', 'reference_audio'} or asset['sha256'] != source_sha256 or not (asset['id'] in packet['shot']['asset_ids'] or asset['role'] == 'identity_reference'
+                    and set(asset['cast_ids']).intersection(packet['shot']['cast_ids'])):
             return None
         evidence = (root / record['evidence_path']).resolve()
         if not evidence.is_relative_to(root) or file_sha256(evidence) != record['evidence_sha256']:
@@ -582,7 +732,7 @@ def freeze_preparation(attempt_id, inputs, native, profile):
     review = _read(root, 'preparation_review-' + _id(inputs['preparation_review_id']) + '.json')
     if proof != {'compiled_sha256': digest(compiled), 'review_sha256': digest(review)}:
         raise ValueError('preparation changed while snapshotting')
-    packet = source_packet(root, inputs['governance']['shot_id'], provider=native.get('provider', 'openart_cli'))
+    packet = source_packet(root, inputs['governance']['shot_id'], provider=native.get('provider', 'openart_cli'), native=native)
     if packet['binding'] != compiled['source_binding']:
         raise ValueError('source packet changed while snapshotting')
     payload = {'compiled': compiled, 'review': review, 'source_packet': packet}
@@ -621,7 +771,7 @@ def _validate_frozen_preparation(request, frozen, project_dir, *, current_requir
     inputs = _paths(inputs, Path(project_dir).resolve(), restore)
     packet = data['source_packet']
     if current_required:
-        current = source_packet(project_dir, request['shot_id'])
+        current = source_packet(project_dir, request['shot_id'], native=frozen['native'])
         stable = set(packet['binding']) - {'contract_sha256', 'reviews_sha256'}
         if any(current['binding'][key] != packet['binding'][key] for key in stable):
             raise ValueError('stale source/reference/review/upstream bindings')

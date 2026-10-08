@@ -372,9 +372,21 @@ function artifactReviewContent(name, artifact) {
       reviewFacts([
         reviewFact("runtime", plan.render_runtime),
         reviewFact("pipeline", plan.pipeline),
-        reviewFact("estimated cost", cost.total_estimated_usd != null ? fmtMoney(cost.total_estimated_usd) : null),
+        reviewFact("estimated cost", cost.total_estimated_usd != null ? fmtMoney(cost.total_estimated_usd) : "Unknown"),
+        cost.total_estimated_usd == null ? reviewFact("budget comparison", "Unavailable — cost unknown") : null,
         reviewFact("concepts", Array.isArray(artifact.concept_options) ? artifact.concept_options.length : null),
       ]),
+      cost.total_estimated_usd == null && cost.unknown_cost_notes
+        ? el("p", { class: "approval-rationale" }, cost.unknown_cost_notes)
+        : null,
+      Array.isArray(cost.line_items) && cost.line_items.some((item) => item.estimated_usd == null)
+        ? el("ul", { class: "approval-items" }, cost.line_items.filter((item) => item.estimated_usd == null).map((item) =>
+          el("li", {},
+            el("div", { class: "approval-item-title" }, `${item.tool} — Unknown${item.quantity != null ? ` · ${item.quantity} calls` : ""}`),
+            el("p", {}, item.operation),
+            item.notes ? el("p", {}, item.notes) : null,
+          )))
+        : null,
       titledItems(artifact.concept_options, selected),
       (artifact.selected_concept || {}).rationale
         ? el("p", { class: "approval-rationale" },

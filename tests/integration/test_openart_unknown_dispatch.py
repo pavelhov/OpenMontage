@@ -98,7 +98,9 @@ def test_provider_refusal_keeps_legacy_exact_hold(tmp_path,monkeypatch):
     monkeypatch.setattr(jobs,'original_process_state',lambda *args:{'state':'exited','returncode':1})
     monkeypatch.setattr(jobs,'append_event',lambda attempt,event:events.append(event))
     monkeypatch.setattr(jobs,'_launch_result',lambda attempt,status,job:{'status':status})
-    assert jobs._finish_parse('original',1,{})['status']=='hold_unknown_job'
+    # Minimal frozen legacy (non-staged) profile: _finish_parse requires its qualified json_paths.
+    legacy_profile={'json_paths':{'job_id':'job_id'}}
+    assert jobs._finish_parse('original',1,legacy_profile)['status']=='hold_unknown_job'
     assert [e['type'] for e in events]==['hold_unknown_job']
 
 

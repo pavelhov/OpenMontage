@@ -143,7 +143,10 @@
           "pattern": "^[a-f0-9]{64}$"
         },
         "reference_mode": {
-          "const": "reference_free"
+          "enum": [
+            "reference_free",
+            "reference_guided"
+          ]
         }
       }
     },
@@ -219,6 +222,10 @@
               "type": "string",
               "minLength": 1,
               "pattern": "\\S"
+            },
+            "native_capabilities_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
             }
           }
         },
@@ -564,6 +571,79 @@
               }
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "transport",
+            "native_controls_sha256",
+            "native_body_sha256",
+            "profile_sha256",
+            "form_sha256",
+            "account_id_sha256",
+            "references_sha256",
+            "model",
+            "mode",
+            "source",
+            "schema_observation_sha256",
+            "account_observation_sha256"
+          ],
+          "properties": {
+            "native_controls_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "native_body_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "profile_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "form_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "account_id_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "references_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "provider": {
+              "const": "openart_mcp"
+            },
+            "transport": {
+              "const": "agent_mediated_connector"
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "mode": {
+              "type": "string",
+              "minLength": 1
+            },
+            "source": {
+              "enum": [
+                "real",
+                "fixture"
+              ]
+            },
+            "schema_observation_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "account_observation_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
         }
       ]
     },
@@ -599,7 +679,8 @@
           "native_pointer": {
             "enum": [
               "/params/prompt",
-              "/arguments/prompt"
+              "/arguments/prompt",
+              "/params/sceneDescription"
             ]
           },
           "start": {

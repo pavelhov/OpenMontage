@@ -1,0 +1,5093 @@
+{
+  "catalog_receipt": {
+    "receipt_id": "2026-10-07T221310-f9045d15",
+    "receipt_sha256": "c01d39e6930a996366da8fcc9a4ed6cd56cb65e3cd9413c405e8a0b2f0f734ac"
+  },
+  "cli_011_image_probe": {
+    "missing_from_observed_params": [
+      "id"
+    ],
+    "observed_params": [
+      "label",
+      "type",
+      "url"
+    ],
+    "receipt_id": "2026-10-07T223851-592bce16",
+    "receipt_sha256": "879ae5d89474f542d2cade476fef7d9f6fbe719b60c54a800e7f09f1dd74bae0"
+  },
+  "forms": [
+    {
+      "mode": "element2video",
+      "model": "byte-plus-seedance-2",
+      "receipt_id": "2026-10-07T221334-2860c498",
+      "receipt_sha256": "f7b6e3c51686ab17b2a3d50c9ec95ad212ce4a05faa406c23eb2b9edfc157801",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "4:3",
+                  "1:1",
+                  "3:4",
+                  "9:16",
+                  "21:9",
+                  "adaptive",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 4,
+                "type": "integer"
+              },
+              "generateAudio": {
+                "type": "boolean"
+              },
+              "mode": {
+                "enum": [
+                  "normal",
+                  "fast"
+                ],
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480p",
+                  "720p",
+                  "1080p",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "type": "number"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "visualReferences": {
+                "items": {
+                  "additionalProperties": {},
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "url",
+                    "label"
+                  ],
+                  "type": "object"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "visualReferences"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "image2video",
+      "model": "byte-plus-seedance-2",
+      "receipt_id": "2026-10-07T221333-fae5b7b2",
+      "receipt_sha256": "fb5f8deab7f2ad2d1da8fa7d4ad2dcbcdc2435185547799e304c978a27965942",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "4:3",
+                  "1:1",
+                  "3:4",
+                  "9:16",
+                  "21:9",
+                  "adaptive",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 4,
+                "type": "integer"
+              },
+              "endFrame": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "image",
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "url",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "generateAudio": {
+                "type": "boolean"
+              },
+              "mode": {
+                "enum": [
+                  "normal",
+                  "fast"
+                ],
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480p",
+                  "720p",
+                  "1080p",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "type": "number"
+              },
+              "startFrame": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "startFrame"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "text2video",
+      "model": "byte-plus-seedance-2",
+      "receipt_id": "2026-10-07T221332-350baf3c",
+      "receipt_sha256": "46ceecfe72df4ffa6f4a2fdd5d19c014b477ce799c818c41eaa1efa034fc2427",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "4:3",
+                  "1:1",
+                  "3:4",
+                  "9:16",
+                  "21:9",
+                  "adaptive",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 4,
+                "type": "integer"
+              },
+              "generateAudio": {
+                "type": "boolean"
+              },
+              "mode": {
+                "enum": [
+                  "normal",
+                  "fast"
+                ],
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480p",
+                  "720p",
+                  "1080p",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "type": "number"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "element2video",
+      "model": "byte-plus-seedance-2-5",
+      "receipt_id": "2026-10-07T221342-2a0dd121",
+      "receipt_sha256": "d54cb79b2a81967acbc0eeecd7f66c23fb1fa817c4029f0c3e9af3e52d7aa1e4",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "4:3",
+                  "1:1",
+                  "3:4",
+                  "9:16",
+                  "21:9",
+                  "adaptive"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "duration": {
+                "maximum": 30,
+                "minimum": 4,
+                "type": "integer"
+              },
+              "generateAudio": {
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480p",
+                  "720p",
+                  "1080p"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "type": "number"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "visualReferences": {
+                "items": {
+                  "additionalProperties": {},
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "url",
+                    "label"
+                  ],
+                  "type": "object"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "visualReferences"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "image2video",
+      "model": "byte-plus-seedance-2-5",
+      "receipt_id": "2026-10-07T221341-f9098fa8",
+      "receipt_sha256": "88496156015d595418701965763e36ce9703033e5c57aa713a5e96a497582dc3",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "duration": {
+                "maximum": 30,
+                "minimum": 4,
+                "type": "integer"
+              },
+              "endFrame": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "image",
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "url",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "generateAudio": {
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480p",
+                  "720p",
+                  "1080p"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "type": "number"
+              },
+              "startFrame": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "startFrame"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "text2video",
+      "model": "byte-plus-seedance-2-5",
+      "receipt_id": "2026-10-07T221340-426f56ec",
+      "receipt_sha256": "192c41a7c3a385768fdbe245a1714801f7357739502702ca116534dd2efb278b",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "4:3",
+                  "1:1",
+                  "3:4",
+                  "9:16",
+                  "21:9",
+                  "adaptive"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "duration": {
+                "maximum": 30,
+                "minimum": 4,
+                "type": "integer"
+              },
+              "generateAudio": {
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480p",
+                  "720p",
+                  "1080p"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "type": "number"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "element2video",
+      "model": "byte-plus-seedance-2-fast",
+      "receipt_id": "2026-10-07T221336-6b215378",
+      "receipt_sha256": "8b2f106cbb4f16e93323bfdc3c2deac7105dd56dad9e5f0c0c282c09e874cd4c",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "4:3",
+                  "1:1",
+                  "3:4",
+                  "9:16",
+                  "21:9",
+                  "adaptive",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 4,
+                "type": "integer"
+              },
+              "generateAudio": {
+                "type": "boolean"
+              },
+              "mode": {
+                "const": "fast",
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480p",
+                  "720p",
+                  "1080p",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "type": "number"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "visualReferences": {
+                "items": {
+                  "additionalProperties": {},
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "url",
+                    "label"
+                  ],
+                  "type": "object"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "visualReferences"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "image2video",
+      "model": "byte-plus-seedance-2-fast",
+      "receipt_id": "2026-10-07T221335-ba774d12",
+      "receipt_sha256": "e7934bff109317f3c07016925657e1b790a5b0bd347410a41b270f44b0c2c59a",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "4:3",
+                  "1:1",
+                  "3:4",
+                  "9:16",
+                  "21:9",
+                  "adaptive",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 4,
+                "type": "integer"
+              },
+              "endFrame": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "image",
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "url",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "generateAudio": {
+                "type": "boolean"
+              },
+              "mode": {
+                "const": "fast",
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480p",
+                  "720p",
+                  "1080p",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "type": "number"
+              },
+              "startFrame": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "startFrame"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "text2video",
+      "model": "byte-plus-seedance-2-fast",
+      "receipt_id": "2026-10-07T221335-aec972d9",
+      "receipt_sha256": "df64a3866444bfe50244c159ddd437744920e7244926c2cb714b072fad33ad25",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "4:3",
+                  "1:1",
+                  "3:4",
+                  "9:16",
+                  "21:9",
+                  "adaptive",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 4,
+                "type": "integer"
+              },
+              "generateAudio": {
+                "type": "boolean"
+              },
+              "mode": {
+                "const": "fast",
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480p",
+                  "720p",
+                  "1080p",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "type": "number"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "element2video",
+      "model": "byte-plus-seedance-2-mini",
+      "receipt_id": "2026-10-07T221339-2a9c14b3",
+      "receipt_sha256": "a6fb558513d7ea13b91a39d4d2295cb78fedf6c4295b3af48a90c940fed43360",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "4:3",
+                  "1:1",
+                  "3:4",
+                  "9:16",
+                  "21:9",
+                  "adaptive",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 4,
+                "type": "integer"
+              },
+              "generateAudio": {
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480p",
+                  "720p"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "type": "number"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "visualReferences": {
+                "items": {
+                  "additionalProperties": {},
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "url",
+                    "label"
+                  ],
+                  "type": "object"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "visualReferences"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "image2video",
+      "model": "byte-plus-seedance-2-mini",
+      "receipt_id": "2026-10-07T221338-508c1b25",
+      "receipt_sha256": "75cea307950f30ced94e5bb796c0d204dcc85b914d3946d8d37dcc2c30ce0831",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "4:3",
+                  "1:1",
+                  "3:4",
+                  "9:16",
+                  "21:9",
+                  "adaptive",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 4,
+                "type": "integer"
+              },
+              "endFrame": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "image",
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "url",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "generateAudio": {
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480p",
+                  "720p"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "type": "number"
+              },
+              "startFrame": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "startFrame"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "text2video",
+      "model": "byte-plus-seedance-2-mini",
+      "receipt_id": "2026-10-07T221337-97c86d63",
+      "receipt_sha256": "fe2e1546691e16049efb71940d6fee9975135611a66dbbed5ea6958026f3987f",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "4:3",
+                  "1:1",
+                  "3:4",
+                  "9:16",
+                  "21:9",
+                  "adaptive",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 4,
+                "type": "integer"
+              },
+              "generateAudio": {
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480p",
+                  "720p"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "type": "number"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "element2video",
+      "model": "fal-h3-max",
+      "receipt_id": "2026-10-07T221324-8b6a3363",
+      "receipt_sha256": "981a0d2623edb4876bc26aa6d66ae4a96fda4f6dfe492ca1168159e4fb9d376c",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "21:9",
+                  "16:9",
+                  "4:3",
+                  "1:1",
+                  "3:4",
+                  "9:16"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 5,
+                "type": "integer"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "promptExpansionMode": {
+                "enum": [
+                  "balanced"
+                ],
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480P",
+                  "768P"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "visualReferences": {
+                "items": {
+                  "additionalProperties": {},
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "url",
+                    "label"
+                  ],
+                  "type": "object"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "prompt",
+              "visualReferences"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "image2video",
+      "model": "fal-h3-max",
+      "receipt_id": "2026-10-07T221323-f7ef3c32",
+      "receipt_sha256": "844d9e05fc6f73f59ff6fa4f871487c70c0d45a31872dc039b6d74021c62d14f",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "duration": {
+                "maximum": 15,
+                "minimum": 5,
+                "type": "integer"
+              },
+              "endFrame": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "imageUrl": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "thumbnailUrl": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "image",
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "url",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "promptExpansionMode": {
+                "enum": [
+                  "balanced"
+                ],
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480P",
+                  "768P"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              "startFrame": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "imageUrl": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "thumbnailUrl": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prompt",
+              "startFrame"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "text2video",
+      "model": "fal-h3-max",
+      "receipt_id": "2026-10-07T221323-90d24bd7",
+      "receipt_sha256": "4568a76797dbbedd1c3be5aa219f0fa729f2be22b570a6dd9ac01ba11081bf16",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "21:9",
+                  "16:9",
+                  "4:3",
+                  "1:1",
+                  "3:4",
+                  "9:16"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 5,
+                "type": "integer"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "promptExpansionMode": {
+                "enum": [
+                  "balanced"
+                ],
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480P",
+                  "768P"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prompt"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "image2video",
+      "model": "fal-h3-max-turbo",
+      "receipt_id": "2026-10-07T221326-c554480a",
+      "receipt_sha256": "eb4c93156fa6da3778f9726636115799b5d70ebcf7fc63c6778baef314cd8168",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "duration": {
+                "maximum": 15,
+                "minimum": 5,
+                "type": "integer"
+              },
+              "endFrame": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "imageUrl": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "thumbnailUrl": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "image",
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "url",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "promptExpansionMode": {
+                "enum": [
+                  "balanced"
+                ],
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480P",
+                  "768P",
+                  "1080P"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              "startFrame": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "imageUrl": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "thumbnailUrl": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prompt",
+              "startFrame"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "text2video",
+      "model": "fal-h3-max-turbo",
+      "receipt_id": "2026-10-07T221325-16166805",
+      "receipt_sha256": "9a53233c10c730ef5c4d117427dab6e1202076c7e22a3c7b05026710d7bfe73b",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "21:9",
+                  "16:9",
+                  "4:3",
+                  "1:1",
+                  "3:4",
+                  "9:16"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 5,
+                "type": "integer"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "promptExpansionMode": {
+                "enum": [
+                  "balanced"
+                ],
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480P",
+                  "768P",
+                  "1080P"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "maximum": 9007199254740991,
+                "minimum": -9007199254740991,
+                "type": "integer"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prompt"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "element2video",
+      "model": "gemini-omni-1-1-flash",
+      "receipt_id": "2026-10-07T221319-1af4e13b",
+      "receipt_sha256": "f4036109e7d8f5bcb057bcdd795eaf6dfc019c4a62c1b479f6772998e84ce630",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16"
+                ],
+                "type": "string"
+              },
+              "creationMode": {
+                "const": "element",
+                "type": "string"
+              },
+              "duration": {
+                "maximum": 10,
+                "minimum": 3,
+                "type": "integer"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "360p",
+                  "720p",
+                  "1080p",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "visualReferences": {
+                "items": {
+                  "additionalProperties": {},
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "image",
+                        "element",
+                        "character",
+                        "video"
+                      ],
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "url",
+                    "label"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 13,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "visualReferences"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "image2video",
+      "model": "gemini-omni-1-1-flash",
+      "receipt_id": "2026-10-07T221318-1d806663",
+      "receipt_sha256": "429870202e2e441dbd1c9b674bf6e7526f15993217ef38aacfb7a91de459495e",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16"
+                ],
+                "type": "string"
+              },
+              "duration": {
+                "maximum": 10,
+                "minimum": 3,
+                "type": "integer"
+              },
+              "endFrame": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "image",
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "url",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "360p",
+                  "720p",
+                  "1080p",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "startFrame": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "startFrame"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "text2video",
+      "model": "gemini-omni-1-1-flash",
+      "receipt_id": "2026-10-07T221317-1763f021",
+      "receipt_sha256": "266bc84314f282b40dfa8fcf4fba7bdfc93f691bf73e82c040af9fa57e5e1613",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16"
+                ],
+                "type": "string"
+              },
+              "creationMode": {
+                "const": "text",
+                "type": "string"
+              },
+              "duration": {
+                "maximum": 10,
+                "minimum": 3,
+                "type": "integer"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "360p",
+                  "720p",
+                  "1080p",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "element2video",
+      "model": "gemini-omni-flash",
+      "receipt_id": "2026-10-07T221316-e070620f",
+      "receipt_sha256": "8f8e575ae95461b80b9ec9cc9419e98244b30e08555ede4ef6dea6c767606715",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16"
+                ],
+                "type": "string"
+              },
+              "creationMode": {
+                "const": "element",
+                "type": "string"
+              },
+              "duration": {
+                "maximum": 10,
+                "minimum": 3,
+                "type": "integer"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "visualReferences": {
+                "items": {
+                  "additionalProperties": {},
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "image",
+                        "element",
+                        "character",
+                        "video"
+                      ],
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "url",
+                    "label"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 5,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "visualReferences"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "image2video",
+      "model": "gemini-omni-flash",
+      "receipt_id": "2026-10-07T221314-90394117",
+      "receipt_sha256": "adabb7a65f46db6bdde6d63d33f82439f3165801db4e9abe1e3623fedf1093a7",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16"
+                ],
+                "type": "string"
+              },
+              "duration": {
+                "maximum": 10,
+                "minimum": 3,
+                "type": "integer"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "startFrame": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "startFrame"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "text2video",
+      "model": "gemini-omni-flash",
+      "receipt_id": "2026-10-07T221313-79fcd0c1",
+      "receipt_sha256": "57a387171e49b34faeb6c4a55bd75b9dcfc95e8da2cc380ba2ecc243a89d54e4",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16"
+                ],
+                "type": "string"
+              },
+              "creationMode": {
+                "const": "text",
+                "type": "string"
+              },
+              "duration": {
+                "maximum": 10,
+                "minimum": 3,
+                "type": "integer"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "image2video",
+      "model": "grok-imagine-1-5",
+      "receipt_id": "2026-10-07T221312-750b9a73",
+      "receipt_sha256": "6a5d23d59de59df8b31098fdc5a2b3734ef74dd76cc0e80ca8c56624a0c33732",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "auto",
+                  "16:9",
+                  "4:3",
+                  "3:2",
+                  "1:1",
+                  "2:3",
+                  "3:4",
+                  "9:16"
+                ],
+                "type": "string"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480p",
+                  "720p",
+                  "1080p"
+                ],
+                "type": "string"
+              },
+              "startFrame": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prompt",
+              "startFrame"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "text2video",
+      "model": "grok-imagine-1-5",
+      "receipt_id": "2026-10-07T221311-fb83a599",
+      "receipt_sha256": "35d85d7439e8a9d2746211aaa2dd80258251cd82ef96fbfbd2d8b2e003aa6e29",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "4:3",
+                  "3:2",
+                  "1:1",
+                  "2:3",
+                  "3:4",
+                  "9:16"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "creationMode": {
+                "enum": [
+                  "text",
+                  "element"
+                ],
+                "type": "string"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "480p",
+                  "720p",
+                  "1080p"
+                ],
+                "type": "string"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "element2video",
+      "model": "kling-3-omni",
+      "receipt_id": "2026-10-07T221329-42933c59",
+      "receipt_sha256": "134ea3dcec47ba15c19571008d6c78f3731e49d0f2ab2aa8e832f4ac61159b34",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16",
+                  "1:1"
+                ],
+                "type": "string"
+              },
+              "creationMode": {
+                "const": "element",
+                "type": "string"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 3,
+                "type": "integer"
+              },
+              "generateSound": {
+                "type": "boolean"
+              },
+              "multiShot": {
+                "const": false,
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "std",
+                  "pro",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "shotType": {
+                "const": "customize",
+                "type": "string"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "visualReferences": {
+                "items": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "imageUrl": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "source": {
+                          "type": "string"
+                        },
+                        "thumbnailUrl": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "const": "image",
+                          "type": "string"
+                        },
+                        "url": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "id",
+                        "url",
+                        "label"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "elementId": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "imageUrl": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "thumbnailUrl": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "const": "element",
+                          "type": "string"
+                        },
+                        "url": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "label",
+                        "url",
+                        "type"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "maxItems": 7,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "visualReferences",
+              "prompt"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16",
+                  "1:1"
+                ],
+                "type": "string"
+              },
+              "creationMode": {
+                "const": "element",
+                "type": "string"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 3,
+                "type": "integer"
+              },
+              "generateSound": {
+                "type": "boolean"
+              },
+              "multiPrompt": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "duration": {
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "index": {
+                      "maximum": 9007199254740991,
+                      "minimum": -9007199254740991,
+                      "type": "integer"
+                    },
+                    "prompt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "index",
+                    "prompt",
+                    "duration"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 6,
+                "minItems": 1,
+                "type": "array"
+              },
+              "multiShot": {
+                "const": true,
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "std",
+                  "pro",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "shotType": {
+                "const": "customize",
+                "type": "string"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "visualReferences": {
+                "items": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "imageUrl": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "source": {
+                          "type": "string"
+                        },
+                        "thumbnailUrl": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "const": "image",
+                          "type": "string"
+                        },
+                        "url": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "id",
+                        "url",
+                        "label"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "elementId": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "imageUrl": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "thumbnailUrl": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "const": "element",
+                          "type": "string"
+                        },
+                        "url": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "label",
+                        "url",
+                        "type"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "maxItems": 7,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "visualReferences",
+              "multiShot",
+              "multiPrompt"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": "anyOf"
+      }
+    },
+    {
+      "mode": "image2video",
+      "model": "kling-3-omni",
+      "receipt_id": "2026-10-07T221328-6493a975",
+      "receipt_sha256": "fa6337cd9807a30718368a7d4e0d381ded2f9411b21c95747984a4bc264e4331",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "duration": {
+                "maximum": 15,
+                "minimum": 3,
+                "type": "integer"
+              },
+              "endFrame": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "imageUrl": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "thumbnailUrl": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "image",
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "url",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "generateSound": {
+                "type": "boolean"
+              },
+              "multiShot": {
+                "const": false,
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "std",
+                  "pro",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "shotType": {
+                "const": "customize",
+                "type": "string"
+              },
+              "startFrame": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "imageUrl": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "thumbnailUrl": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "startFrame",
+              "prompt"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "duration": {
+                "maximum": 15,
+                "minimum": 3,
+                "type": "integer"
+              },
+              "endFrame": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "imageUrl": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "thumbnailUrl": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "image",
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "url",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "generateSound": {
+                "type": "boolean"
+              },
+              "multiPrompt": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "duration": {
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "index": {
+                      "maximum": 9007199254740991,
+                      "minimum": -9007199254740991,
+                      "type": "integer"
+                    },
+                    "prompt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "index",
+                    "prompt",
+                    "duration"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 6,
+                "minItems": 1,
+                "type": "array"
+              },
+              "multiShot": {
+                "const": true,
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "std",
+                  "pro",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "shotType": {
+                "const": "customize",
+                "type": "string"
+              },
+              "startFrame": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "imageUrl": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "thumbnailUrl": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "startFrame",
+              "multiShot",
+              "multiPrompt"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": "oneOf"
+      }
+    },
+    {
+      "mode": "text2video",
+      "model": "kling-3-omni",
+      "receipt_id": "2026-10-07T221327-32a48f98",
+      "receipt_sha256": "a52cc6f3c90fd61f12abff36a760eda26542194cbc5ba2f8b16b0af2bb3c43b3",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16",
+                  "1:1"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "creationMode": {
+                "const": "text",
+                "type": "string"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 3,
+                "type": "integer"
+              },
+              "generateSound": {
+                "type": "boolean"
+              },
+              "multiShot": {
+                "const": false,
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "std",
+                  "pro",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "shotType": {
+                "const": "customize",
+                "type": "string"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prompt"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16",
+                  "1:1"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "creationMode": {
+                "const": "text",
+                "type": "string"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 3,
+                "type": "integer"
+              },
+              "generateSound": {
+                "type": "boolean"
+              },
+              "multiPrompt": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "duration": {
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "index": {
+                      "maximum": 9007199254740991,
+                      "minimum": -9007199254740991,
+                      "type": "integer"
+                    },
+                    "prompt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "index",
+                    "prompt",
+                    "duration"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 6,
+                "minItems": 1,
+                "type": "array"
+              },
+              "multiShot": {
+                "const": true,
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "std",
+                  "pro",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "shotType": {
+                "const": "customize",
+                "type": "string"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "multiShot",
+              "multiPrompt"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": "anyOf"
+      }
+    },
+    {
+      "mode": "image2video",
+      "model": "kling-v3",
+      "receipt_id": "2026-10-07T221331-2105cf85",
+      "receipt_sha256": "0ca2acbfb9fa2b5d8fb406ce35b57c9ce387aab1e29cbc8ba95584ee56e7c295",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "duration": {
+                "maximum": 15,
+                "minimum": 3,
+                "type": "integer"
+              },
+              "endFrame": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "imageUrl": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "thumbnailUrl": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "image",
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "url",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "generateSound": {
+                "type": "boolean"
+              },
+              "multiShot": {
+                "const": false,
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "std",
+                  "pro",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "shotType": {
+                "enum": [
+                  "customize",
+                  "intelligence"
+                ],
+                "type": "string"
+              },
+              "startFrame": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "imageUrl": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "thumbnailUrl": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "startFrame",
+              "prompt"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "duration": {
+                "maximum": 15,
+                "minimum": 3,
+                "type": "integer"
+              },
+              "endFrame": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "imageUrl": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "thumbnailUrl": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "image",
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "url",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "generateSound": {
+                "type": "boolean"
+              },
+              "multiPrompt": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "duration": {
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "index": {
+                      "maximum": 9007199254740991,
+                      "minimum": -9007199254740991,
+                      "type": "integer"
+                    },
+                    "prompt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "index",
+                    "duration"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 6,
+                "type": "array"
+              },
+              "multiShot": {
+                "const": true,
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "std",
+                  "pro",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "shotType": {
+                "enum": [
+                  "customize",
+                  "intelligence"
+                ],
+                "type": "string"
+              },
+              "startFrame": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "imageUrl": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "thumbnailUrl": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "startFrame",
+              "multiShot"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": "oneOf"
+      }
+    },
+    {
+      "mode": "text2video",
+      "model": "kling-v3",
+      "receipt_id": "2026-10-07T221330-8cadd3d3",
+      "receipt_sha256": "056d040b1d0666aeaadaa2f99b4bfaebbbf9a178ca89fffa80f5d9437dd9a539",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16",
+                  "1:1"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 3,
+                "type": "integer"
+              },
+              "generateSound": {
+                "type": "boolean"
+              },
+              "multiShot": {
+                "const": false,
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "std",
+                  "pro",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "shotType": {
+                "enum": [
+                  "customize",
+                  "intelligence"
+                ],
+                "type": "string"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prompt"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16",
+                  "1:1"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 3,
+                "type": "integer"
+              },
+              "generateSound": {
+                "type": "boolean"
+              },
+              "multiPrompt": {
+                "items": {
+                  "additionalProperties": false,
+                  "properties": {
+                    "duration": {
+                      "maximum": 9007199254740991,
+                      "minimum": 1,
+                      "type": "integer"
+                    },
+                    "index": {
+                      "maximum": 9007199254740991,
+                      "minimum": -9007199254740991,
+                      "type": "integer"
+                    },
+                    "prompt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "index",
+                    "duration"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 6,
+                "type": "array"
+              },
+              "multiShot": {
+                "const": true,
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "std",
+                  "pro",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "shotType": {
+                "enum": [
+                  "customize",
+                  "intelligence"
+                ],
+                "type": "string"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "multiShot"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": "oneOf"
+      }
+    },
+    {
+      "mode": "element2video",
+      "model": "minimax-h3",
+      "receipt_id": "2026-10-07T221349-3e5a101d",
+      "receipt_sha256": "dc21d56ac5d18108adfb02d951f4595eae3423b600f3509f3f82c99a9ffabd6a",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "21:9",
+                  "16:9",
+                  "4:3",
+                  "1:1",
+                  "3:4",
+                  "9:16"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 5,
+                "type": "integer"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "768P",
+                  "2K"
+                ],
+                "type": "string"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "visualReferences": {
+                "items": {
+                  "additionalProperties": {},
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "url",
+                    "label"
+                  ],
+                  "type": "object"
+                },
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "prompt",
+              "visualReferences"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "image2video",
+      "model": "minimax-h3",
+      "receipt_id": "2026-10-07T221348-3e57d0e4",
+      "receipt_sha256": "8d70b8bd50dbb474f09da6ecbe19906595598e23ebf5a8137e6e66fd90b22968",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "duration": {
+                "maximum": 15,
+                "minimum": 5,
+                "type": "integer"
+              },
+              "endFrame": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "imageUrl": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "name": {
+                        "type": "string"
+                      },
+                      "source": {
+                        "type": "string"
+                      },
+                      "thumbnailUrl": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "image",
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "url",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "768P",
+                  "2K"
+                ],
+                "type": "string"
+              },
+              "startFrame": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "imageUrl": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "type": "string"
+                  },
+                  "thumbnailUrl": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prompt",
+              "startFrame"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "text2video",
+      "model": "minimax-h3",
+      "receipt_id": "2026-10-07T221347-c72ba3e5",
+      "receipt_sha256": "11bb2ffbb766195a461ad21944bcdf77dd31b6f6104076f8bea9993cb4efb629",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "21:9",
+                  "16:9",
+                  "4:3",
+                  "1:1",
+                  "3:4",
+                  "9:16"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 5,
+                "type": "integer"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "768P",
+                  "2K"
+                ],
+                "type": "string"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prompt"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "image2video",
+      "model": "pixverseV6",
+      "receipt_id": "2026-10-07T221354-99b90bec",
+      "receipt_sha256": "78457a0b7329a96bfd0fdc1ec12e29bed245ed6e243e70ad45b12107a2feffca",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "duration": {
+                "maximum": 15,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "endFrame": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "image",
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "url",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "generateAudio": {
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "360p",
+                  "540p",
+                  "720p",
+                  "1080p"
+                ],
+                "type": "string"
+              },
+              "startFrame": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prompt",
+              "startFrame"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "text2video",
+      "model": "pixverseV6",
+      "receipt_id": "2026-10-07T221352-47cec1e6",
+      "receipt_sha256": "96c0e6510fcae32467ff57e966f0f7daaaee4e8f1611a1e4173e33572bc766e5",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "4:3",
+                  "1:1",
+                  "3:4",
+                  "9:16",
+                  "2:3",
+                  "3:2",
+                  "21:9"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "generateAudio": {
+                "type": "boolean"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "360p",
+                  "540p",
+                  "720p",
+                  "1080p"
+                ],
+                "type": "string"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prompt"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "generate-shot-video",
+      "model": "smart-shot",
+      "receipt_id": "2026-10-07T221355-bcaac73a",
+      "receipt_sha256": "0ee2ab13611865dae9f546237c4a9f3256db5c116766fc28cace9157db22e899",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "characterReferenceImageUrls": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 3,
+                "type": "array"
+              },
+              "environmentReferenceImageUrl": {
+                "type": "string"
+              },
+              "sceneDescription": {
+                "type": "string"
+              },
+              "sheetQuality": {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "type": "string"
+              },
+              "videoAspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16",
+                  "1:1",
+                  "4:3",
+                  "3:4"
+                ],
+                "type": "string"
+              },
+              "videoDuration": {
+                "maximum": 30,
+                "minimum": 4,
+                "type": "integer"
+              },
+              "videoQuality": {
+                "const": "high",
+                "type": "string"
+              },
+              "videoResolution": {
+                "enum": [
+                  "480p",
+                  "720p",
+                  "1080p"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "sceneDescription"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "characterReferenceImageUrls": {
+                "items": {
+                  "type": "string"
+                },
+                "maxItems": 3,
+                "type": "array"
+              },
+              "environmentReferenceImageUrl": {
+                "type": "string"
+              },
+              "sceneDescription": {
+                "type": "string"
+              },
+              "sheetQuality": {
+                "enum": [
+                  "low",
+                  "medium",
+                  "high"
+                ],
+                "type": "string"
+              },
+              "videoAspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16",
+                  "1:1",
+                  "4:3",
+                  "3:4"
+                ],
+                "type": "string"
+              },
+              "videoDuration": {
+                "maximum": 30,
+                "minimum": 4,
+                "type": "integer"
+              },
+              "videoQuality": {
+                "const": "standard",
+                "type": "string"
+              },
+              "videoResolution": {
+                "enum": [
+                  "480p",
+                  "720p",
+                  "1080p"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "sceneDescription"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": "anyOf"
+      }
+    },
+    {
+      "mode": "element2video",
+      "model": "veo3-1",
+      "receipt_id": "2026-10-07T221322-31dbb418",
+      "receipt_sha256": "066f02e115ea05369c6076b3b31201b6d878e8ecb4bad664b7eb94171d6630cd",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "creationMode": {
+                "const": "element",
+                "type": "string"
+              },
+              "duration": {
+                "const": 8,
+                "type": "number"
+              },
+              "generateAudio": {
+                "type": "boolean"
+              },
+              "mode": {
+                "const": "fast",
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "720p",
+                  "1080p",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "visualReferences": {
+                "items": {
+                  "additionalProperties": {},
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "enum": [
+                        "image",
+                        "element",
+                        "character"
+                      ],
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "url",
+                    "label"
+                  ],
+                  "type": "object"
+                },
+                "maxItems": 3,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "prompt",
+              "visualReferences"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "image2video",
+      "model": "veo3-1",
+      "receipt_id": "2026-10-07T221321-edcd12b2",
+      "receipt_sha256": "7ea57a97544a2f78933eac5a5dbc272805982a7215fa47f0da2809f614c8acf6",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16"
+                ],
+                "type": "string"
+              },
+              "duration": {
+                "anyOf": [
+                  {
+                    "const": 4,
+                    "type": "number"
+                  },
+                  {
+                    "const": 6,
+                    "type": "number"
+                  },
+                  {
+                    "const": 8,
+                    "type": "number"
+                  }
+                ]
+              },
+              "endFrame": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "image",
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "url",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "generateAudio": {
+                "type": "boolean"
+              },
+              "mode": {
+                "enum": [
+                  "lite",
+                  "fast",
+                  "normal"
+                ],
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "720p",
+                  "1080p",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "startFrame": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "startFrame"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "text2video",
+      "model": "veo3-1",
+      "receipt_id": "2026-10-07T221320-8fd10dc0",
+      "receipt_sha256": "1224eb915c674dfa0af0398238c88981da18892530ab28c03d5d6acc4396cc97",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16",
+                  "auto"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "creationMode": {
+                "const": "text",
+                "type": "string"
+              },
+              "duration": {
+                "anyOf": [
+                  {
+                    "const": 4,
+                    "type": "number"
+                  },
+                  {
+                    "const": 6,
+                    "type": "number"
+                  },
+                  {
+                    "const": 8,
+                    "type": "number"
+                  }
+                ]
+              },
+              "generateAudio": {
+                "type": "boolean"
+              },
+              "mode": {
+                "enum": [
+                  "lite",
+                  "fast",
+                  "normal"
+                ],
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "720p",
+                  "1080p",
+                  "4k"
+                ],
+                "type": "string"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prompt"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "element2video",
+      "model": "wan2-7",
+      "receipt_id": "2026-10-07T221346-b8fc59f7",
+      "receipt_sha256": "76c7de1b86efba22afefb8f1776dbf6107758e4f7179387e66d91f3c0482a4db",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16",
+                  "1:1",
+                  "4:3",
+                  "3:4"
+                ],
+                "type": "string"
+              },
+              "duration": {
+                "maximum": 10,
+                "minimum": 2,
+                "type": "integer"
+              },
+              "enablePromptExpansion": {
+                "type": "boolean"
+              },
+              "negativePrompt": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "720p",
+                  "1080p"
+                ],
+                "type": "string"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "visualReferences": {
+                "items": {
+                  "anyOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "imageUrl": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "source": {
+                          "type": "string"
+                        },
+                        "thumbnailUrl": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "const": "image",
+                          "type": "string"
+                        },
+                        "url": {
+                          "type": "string"
+                        },
+                        "voiceReference": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "duration": {
+                              "type": "number"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "source": {
+                              "enum": [
+                                "upload",
+                                "library"
+                              ],
+                              "type": "string"
+                            },
+                            "url": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "url"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "id",
+                        "url",
+                        "label"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "elementId": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "imageUrl": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "thumbnailUrl": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "const": "element",
+                          "type": "string"
+                        },
+                        "url": {
+                          "type": "string"
+                        },
+                        "voiceReference": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "duration": {
+                              "type": "number"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "source": {
+                              "enum": [
+                                "upload",
+                                "library"
+                              ],
+                              "type": "string"
+                            },
+                            "url": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "url"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "label",
+                        "url",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "imageUrl": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "thumbnailUrl": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "const": "video",
+                          "type": "string"
+                        },
+                        "url": {
+                          "type": "string"
+                        },
+                        "voiceReference": {
+                          "additionalProperties": false,
+                          "properties": {
+                            "duration": {
+                              "type": "number"
+                            },
+                            "name": {
+                              "type": "string"
+                            },
+                            "source": {
+                              "enum": [
+                                "upload",
+                                "library"
+                              ],
+                              "type": "string"
+                            },
+                            "url": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "url"
+                          ],
+                          "type": "object"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "label",
+                        "url",
+                        "type"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "maxItems": 5,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "prompt",
+              "visualReferences"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "image2video",
+      "model": "wan2-7",
+      "receipt_id": "2026-10-07T221345-528a048e",
+      "receipt_sha256": "c4a071b16d46f63471a86380bb4f6d000ebcc2384e8a4761f27f3738d205a410",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "duration": {
+                "maximum": 15,
+                "minimum": 2,
+                "type": "integer"
+              },
+              "enablePromptExpansion": {
+                "type": "boolean"
+              },
+              "endFrame": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "image",
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "url",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "negativePrompt": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "720p",
+                  "1080p"
+                ],
+                "type": "string"
+              },
+              "startFrame": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "startFrame"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "text2video",
+      "model": "wan2-7",
+      "receipt_id": "2026-10-07T221344-6eb6cbea",
+      "receipt_sha256": "3ed4aabc8007b37553786951cd8b7689a323536b740653067428ce4fed751283",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16",
+                  "1:1",
+                  "4:3",
+                  "3:4"
+                ],
+                "type": "string"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "creationMode": {
+                "const": "text",
+                "type": "string"
+              },
+              "duration": {
+                "maximum": 15,
+                "minimum": 2,
+                "type": "integer"
+              },
+              "enablePromptExpansion": {
+                "type": "boolean"
+              },
+              "negativePrompt": {
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "resolution": {
+                "enum": [
+                  "720p",
+                  "1080p"
+                ],
+                "type": "string"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prompt"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "element2video",
+      "model": "wan3-0",
+      "receipt_id": "2026-10-07T221352-338b823c",
+      "receipt_sha256": "e51275db1b408ac7bb3813c8d4f635902864d27c18652c44ae522bf3b8d6657f",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16",
+                  "1:1",
+                  "4:3",
+                  "3:4",
+                  "adaptive"
+                ],
+                "type": "string"
+              },
+              "audio": {
+                "type": "boolean"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "creationMode": {
+                "const": "element",
+                "type": "string"
+              },
+              "duration": {
+                "anyOf": [
+                  {
+                    "const": -1,
+                    "type": "number"
+                  },
+                  {
+                    "maximum": 30,
+                    "minimum": 2,
+                    "type": "integer"
+                  }
+                ]
+              },
+              "mode": {
+                "enum": [
+                  "standard",
+                  "prime"
+                ],
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "promptExtend": {
+                "type": "boolean"
+              },
+              "resolution": {
+                "enum": [
+                  "480p",
+                  "720p",
+                  "1080p"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "maximum": 2147483647,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              },
+              "visualReferences": {
+                "items": {
+                  "oneOf": [
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "imageUrl": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "source": {
+                          "type": "string"
+                        },
+                        "thumbnailUrl": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "const": "image",
+                          "type": "string"
+                        },
+                        "url": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "id",
+                        "url",
+                        "label"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "elementId": {
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "imageUrl": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "thumbnailUrl": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "const": "element",
+                          "type": "string"
+                        },
+                        "url": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "label",
+                        "url",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "imageUrl": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "thumbnailUrl": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "const": "video",
+                          "type": "string"
+                        },
+                        "url": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "label",
+                        "url",
+                        "type"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "properties": {
+                        "audioRole": {
+                          "enum": [
+                            "voice_reference",
+                            "background",
+                            "sound_effect",
+                            "generic"
+                          ],
+                          "type": "string"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "imageUrl": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "name": {
+                          "type": "string"
+                        },
+                        "thumbnailUrl": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "const": "audio",
+                          "type": "string"
+                        },
+                        "url": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "label",
+                        "url",
+                        "type"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "maxItems": 20,
+                "minItems": 1,
+                "type": "array"
+              }
+            },
+            "required": [
+              "prompt",
+              "visualReferences"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "image2video",
+      "model": "wan3-0",
+      "receipt_id": "2026-10-07T221351-c77144fa",
+      "receipt_sha256": "5f55f4c2807c06bea7c30e1c9b012d74d4ad79f4f6e199cfa16200bbf5038a68",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "audio": {
+                "type": "boolean"
+              },
+              "duration": {
+                "anyOf": [
+                  {
+                    "const": -1,
+                    "type": "number"
+                  },
+                  {
+                    "maximum": 30,
+                    "minimum": 2,
+                    "type": "integer"
+                  }
+                ]
+              },
+              "endFrame": {
+                "anyOf": [
+                  {
+                    "additionalProperties": false,
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "type": {
+                        "const": "image",
+                        "type": "string"
+                      },
+                      "url": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type",
+                      "id",
+                      "url",
+                      "label"
+                    ],
+                    "type": "object"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "mode": {
+                "enum": [
+                  "standard",
+                  "prime"
+                ],
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "promptExtend": {
+                "type": "boolean"
+              },
+              "resolution": {
+                "enum": [
+                  "480p",
+                  "720p",
+                  "1080p"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "maximum": 2147483647,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "startFrame": {
+                "additionalProperties": false,
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "type": {
+                    "const": "image",
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "type",
+                  "id",
+                  "url",
+                  "label"
+                ],
+                "type": "object"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "startFrame"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    },
+    {
+      "mode": "text2video",
+      "model": "wan3-0",
+      "receipt_id": "2026-10-07T221350-234a8f14",
+      "receipt_sha256": "16f4e123d18cbd339ee7132f97b208146c2ad7eafd348c10c3800c12a40b5268",
+      "schema": {
+        "branches": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "aspectRatio": {
+                "enum": [
+                  "16:9",
+                  "9:16",
+                  "1:1",
+                  "4:3",
+                  "3:4",
+                  "adaptive"
+                ],
+                "type": "string"
+              },
+              "audio": {
+                "type": "boolean"
+              },
+              "autoEnhancePrompt": {
+                "type": "boolean"
+              },
+              "creationMode": {
+                "const": "text",
+                "type": "string"
+              },
+              "duration": {
+                "anyOf": [
+                  {
+                    "const": -1,
+                    "type": "number"
+                  },
+                  {
+                    "maximum": 30,
+                    "minimum": 2,
+                    "type": "integer"
+                  }
+                ]
+              },
+              "mode": {
+                "enum": [
+                  "standard",
+                  "prime"
+                ],
+                "type": "string"
+              },
+              "prompt": {
+                "type": "string"
+              },
+              "promptExtend": {
+                "type": "boolean"
+              },
+              "resolution": {
+                "enum": [
+                  "480p",
+                  "720p",
+                  "1080p"
+                ],
+                "type": "string"
+              },
+              "seed": {
+                "maximum": 2147483647,
+                "minimum": 0,
+                "type": "integer"
+              },
+              "videoCount": {
+                "maximum": 8,
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "prompt"
+            ],
+            "type": "object"
+          }
+        ],
+        "union": null
+      }
+    }
+  ],
+  "official_cli_version": "0.1.1",
+  "schema_policy": "structural JSON Schema only; defaults/examples/descriptions removed",
+  "source": "retained live OpenArt CLI model form receipts captured 2026-10-07"
+}

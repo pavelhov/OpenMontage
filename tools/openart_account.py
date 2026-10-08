@@ -9,7 +9,7 @@ from tools import _openart_cli as cli
 from tools.base_tool import (BaseTool, Determinism, DependencyError, ExecutionMode,
                              ToolResult, ToolRuntime, ToolStability, ToolTier)
 
-READ_ONLY_ACTIONS = ("inspect", "quote", "form", "native_dry_run", "readiness",
+READ_ONLY_ACTIONS = ("inspect", "quote", "form", "catalog", "native_surface", "cli_help", "transport_surface_probe", "native_dry_run", "readiness",
                      "status", "collect", "verify", "upload", "qualifications",
                      "qualify_inspection", "qualify_upload", "qualify_preview", "qualify_result",
                      "recover_original_submit",
@@ -42,7 +42,7 @@ class OpenArtAccount(BaseTool):
      'properties': {'action': {'type': 'string',
                                'enum': ['inspect',
                                         'quote',
-                                        'form',
+                                        'form', 'catalog', 'native_surface', 'cli_help', 'transport_surface_probe',
                                         'native_dry_run',
                                         'readiness',
                                         'status',
@@ -67,6 +67,10 @@ class OpenArtAccount(BaseTool):
                     'read_only': {'const': True, 'description': 'Must be explicitly true.'},
                     'model': {'type': 'string', 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$'},
                     'mode': {'type': 'string', 'pattern': '^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$'},
+                    'form_receipt_id': {'type': 'string'},
+                    'form_receipt_sha256': {'type': 'string', 'pattern': '^[0-9a-f]{64}$'},
+                    'cli_version_receipt_id': {'type': 'string'},
+                    'cli_version_receipt_sha256': {'type': 'string', 'pattern': '^[0-9a-f]{64}$'},
                     'prompt': {'type': 'string', 'minLength': 1, 'maxLength': 8000},
                     'duration': {'type': 'integer', 'minimum': 1, 'maximum': 120},
                     'aspect_ratio': {'type': 'string', 'pattern': '^[0-9]{1,2}:[0-9]{1,2}$'},
@@ -88,7 +92,10 @@ class OpenArtAccount(BaseTool):
                     'guarantee': {'type': 'object'},
                     'url_hosts': {'type': 'array', 'items': {'type': 'string'}}},
      'additionalProperties': False,
-     'allOf': [{'if': {'properties': {'action': {'const': 'qualify_inspection'}}},
+     'allOf': [{'if': {'properties': {'action': {'const': 'native_surface'}}},
+                'then': {'required': ['model', 'mode', 'form_receipt_id', 'form_receipt_sha256',
+                                      'cli_version_receipt_id', 'cli_version_receipt_sha256']}},
+               {'if': {'properties': {'action': {'const': 'qualify_inspection'}}},
                 'then': {'required': ['model', 'mode', 'json_paths']}},
                {'if': {'properties': {'action': {'const': 'qualify_upload'}}},
                 'then': {'required': ['model', 'mode', 'json_paths', 'guarantee', 'url_hosts']}},
@@ -154,6 +161,65 @@ class OpenArtAccount(BaseTool):
                           data={"error": public, "reservations": 0, "paid_submission": False})
 
     def _dispatch(self, action: str, inputs: dict) -> ToolResult:
+        if action in {'cli_help', 'transport_surface_probe'}:
+            allowed = {'action', 'read_only', 'timeout_seconds'}
+            if action == 'transport_surface_probe':
+                allowed |= {'model', 'duration', 'resolution'}
+            if set(inputs) - allowed:
+                raise cli.OpenArtCLIError('invalid_argument', 'schema probe accepts no caller prompt, URL, file, upload or native body')
+            timeout = cli.validate_timeout(inputs.get('timeout_seconds'))
+            observed = (cli.readonly_video_help(timeout=timeout) if action == 'cli_help' else
+                        cli.readonly_transport_surface_probe(model=inputs.get('model'),
+                            duration=inputs.get('duration'), resolution=inputs.get('resolution'), timeout=timeout))
+            public = {key: observed[key] for key in ('receipt_id', 'receipt_sha256', 'stdout_sha256', 'public') if key in observed}
+            return self._ok(action, {**public, 'schema_only': True, 'unqualified_for_dispatch': True,
+                                    'production_ready': False})
+        if action in {'catalog', 'form', 'native_surface'}:
+            from lib import openart_catalog as discovery
+            from lib.openart_controls import mode_capabilities
+            allowed = {'action', 'read_only', 'timeout_seconds'}
+            if action != 'catalog':
+                allowed |= {'model', 'mode'}
+            if action == 'native_surface':
+                allowed |= {'form_receipt_id', 'form_receipt_sha256',
+                            'cli_version_receipt_id', 'cli_version_receipt_sha256'}
+            if set(inputs) - allowed:
+                raise cli.OpenArtCLIError('invalid_argument', 'discovery accepts only exact model/mode and receipt selections; no caller body or URL')
+            if action == 'native_surface':
+                model, mode = cli._ident(inputs.get('model'), 'model'), cli._ident(inputs.get('mode'), 'mode')
+                form_ref = {'receipt_id': inputs.get('form_receipt_id'), 'receipt_sha256': inputs.get('form_receipt_sha256')}
+                parsed = discovery._record(form_ref, ['model', 'form', model, mode])
+                version_ref = {'receipt_id': inputs.get('cli_version_receipt_id'), 'receipt_sha256': inputs.get('cli_version_receipt_sha256')}
+                version = discovery._record(version_ref, ['version'])
+                caps = mode_capabilities(parsed, model=model, mode=mode, cli_version=version.get('version'),
+                                         element_types=discovery.observed_element_types(model, mode))
+                return self._ok(action, {'form_receipt': form_ref, 'version_receipt': version_ref,
+                    'native_capabilities': discovery._public_caps(caps),
+                    'qualification': 'observed_not_dispatch_authority', 'production_ready': False})
+            version = self._call(['version'], inputs)
+            version_parsed = version.pop('_parsed')
+            if action == 'catalog':
+                call = self._call(['model', 'list'], inputs)
+                call.pop('_parsed')
+                publication = discovery.retain_discovery_observation(catalog=call, cli_version_receipt=version)
+                return self._ok(action, {**publication, 'catalog_receipt': {k: call[k] for k in ('receipt_id', 'receipt_sha256')},
+                    'version_receipt': {k: version[k] for k in ('receipt_id', 'receipt_sha256')},
+                    'observed_candidates': discovery.read_observed_catalog(), 'production_ready': False})
+            model, mode = cli._ident(inputs.get('model'), 'model'), cli._ident(inputs.get('mode'), 'mode')
+            call = self._call(cli.model_form_argv(model, mode), inputs)
+            parsed = call.pop('_parsed')
+            root = cli.form_root_schema(parsed, model=model, mode=mode)
+            publication = discovery.retain_discovery_observation(form={**call, 'model': model, 'mode': mode}, cli_version_receipt=version)
+            try:
+                caps = mode_capabilities(parsed, model=model, mode=mode, cli_version=version_parsed.get('version'),
+                                         element_types=discovery.observed_element_types(model, mode))
+                controls = discovery._public_caps(caps)
+            except cli.OpenArtCLIError as exc:
+                controls = {'reason': exc.kind, 'transport_supported': None}
+            return self._ok(action, {**publication, 'form_receipt': {k: call[k] for k in ('receipt_id', 'receipt_sha256')},
+                'version_receipt': {k: version[k] for k in ('receipt_id', 'receipt_sha256')},
+                'controls': controls, 'form_shape': root['union'] or 'json_schema',
+                'qualification': 'unqualified_for_dispatch', 'production_ready': False})
         if action == "recover_original_submit":
             from lib import openart_jobs as jobs
             return self._ok(action, jobs.recover_original_submit(
@@ -218,15 +284,6 @@ class OpenArtAccount(BaseTool):
             call.pop("_parsed")
             return self._ok(action, {**call, "kind": "model_cost", "model": inputs["model"],
                                      "mode": inputs["mode"], "covers_settings": False,
-                                     "qualification": "unqualified_for_dispatch"})
-        if action == "form":
-            call = self._call(cli.model_form_argv(inputs.get("model"), inputs.get("mode")), inputs)
-            parsed = call.pop("_parsed")
-            try:
-                controls, shape = cli.form_controls(parsed), "json_schema"
-            except cli.OpenArtCLIError:
-                controls, shape = None, "unqualified"
-            return self._ok(action, {**call, "controls": controls, "form_shape": shape,
                                      "qualification": "unqualified_for_dispatch"})
         if action == "status":
             from lib import openart_jobs as jobs

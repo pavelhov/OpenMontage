@@ -33,6 +33,12 @@ _RATIO_RE = re.compile(r"^[0-9]{1,2}:[0-9]{1,2}$")
 _RES_RE = re.compile(r"^[0-9]{3,4}p$|^[0-9]{1,2}k$", re.I)
 _FILTERED_ENV = {"OPENART_TOKEN", "OPENART_API_KEY"}
 GLOBAL_FLAGS = ["--json", "--no-input"]
+# Fixed public sample published at https://openart.ai/mcp/; never caller media.
+_SURFACE_IMAGE = ("https://cdn.openart.ai/cdn-cgi/image/format%3Dauto%2Cwidth%3D128%2Cfit%3Dcontain%2C"
+                  "dpr%3D2%2Cquality%3D85%2Cmetadata%3Dnone%2Csharpen%3D1/openart-strapi-assets/"
+                  "frame_to_video_ref_2_c695801644/frame_to_video_ref_2_c695801644.webp")
+_SURFACE_PROMPT = "OpenMontage synthetic transport surface inspection"
+_SURFACE_PROBE = contextvars.ContextVar("openart_surface_probe", default=False)
 
 # Gates that U1 cannot qualify from a fixture. Live captured account evidence
 # (recorded by root) is the only thing that may move a gate to "qualified".
@@ -317,6 +323,8 @@ def _check_read_only(argv: list[str]) -> None:
         raise OpenArtCLIError("not_read_only", "argv must be a non-empty list of strings")
     if argv in (["version"], ["account"], ["model", "list"], ["creation", "list"], ["model", "cost"]):
         return
+    if argv == ["generate", "video", "--help"]:
+        return
     head, rest = argv[:2], argv[2:]
     if head == ["model", "form"]:
         if len(rest) == 2 and all(_ID_RE.match(x) for x in rest):
@@ -342,7 +350,8 @@ def _check_read_only(argv: list[str]) -> None:
         seen = set()
         for flag, value in zip(pairs[::2], pairs[1::2]):
             pattern = _DRY_RUN_VALUE_FLAGS.get(flag) or (
-                _IMAGE_URL_RE if flag == "--image" and _IMAGE_FLAG_ALLOWED.get() else None)
+                _IMAGE_URL_RE if flag == "--image" and (_IMAGE_FLAG_ALLOWED.get() or
+                    (_SURFACE_PROBE.get() and value == _SURFACE_IMAGE and prompt == _SURFACE_PROMPT)) else None)
             if pattern is None or flag in seen or not pattern.match(value):
                 _refuse(f"flag not allowed on read-only dry-run: {flag[:32]}", argv)
             seen.add(flag)
@@ -415,7 +424,7 @@ def run_upload_reference(source: Path, timeout: float = DEFAULT_TIMEOUT) -> dict
     return _run_checked(["upload", "add", str(source)], validate_timeout(timeout))
 
 
-def _run_checked(argv: list[str], timeout: float) -> dict:
+def _run_checked(argv: list[str], timeout: float, *, help_text: bool = False) -> dict:
     if is_offline():
         raise OpenArtCLIError("offline_only", "OpenArt CLI invocation refused during offline preparation")
     binary = resolve_binary()
@@ -454,16 +463,31 @@ def _run_checked(argv: list[str], timeout: float) -> dict:
         if size > MAX_STDOUT:
             raise OpenArtCLIError("output_too_large", f"stdout exceeded {MAX_STDOUT} bytes", diag)
         if returncode != 0:
+            if _SURFACE_PROBE.get():
+                # Failed synthetic inspection is retained too; never turn its diagnostics
+                # into a successful body or an ordinary qualification receipt.
+                failed = {"argv": full, "started_at": started, "returncode": returncode,
+                          "parsed": None, "schema_only": True, "unqualified_for_dispatch": True,
+                          "evidence_kind": "synthetic_transport_surface_probe",
+                          "stdout_sha256": hashlib.sha256(out_path.read_bytes()).hexdigest(),
+                          "streams": {"stdout": out_path.name, "stderr": err_path.name}}
+                failed_bytes = json.dumps(failed, sort_keys=True).encode()
+                write_private(root / "receipts" / f"{stem}.json", failed_bytes)
+                diag.update(receipt_id=stem, receipt_sha256=hashlib.sha256(failed_bytes).hexdigest(),
+                            schema_only=True, unqualified_for_dispatch=True)
             raise OpenArtCLIError("nonzero_exit", f"openart exited {returncode}", diag)
         with open(out_path, "rb") as fh:
             stdout = fh.read(MAX_STDOUT + 1)
         try:
-            parsed = json.loads(stdout.decode("utf-8"))
+            parsed = {"help": stdout.decode("utf-8")} if help_text else json.loads(stdout.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             raise OpenArtCLIError("malformed_json", "openart --json output was not JSON", diag)
         receipt = {"argv": full, "started_at": started, "returncode": returncode,
                    "stdout_sha256": hashlib.sha256(stdout).hexdigest(), "parsed": parsed,
                    "streams": {"stdout": out_path.name, "stderr": err_path.name}}
+        if _SURFACE_PROBE.get():
+            receipt.update(schema_only=True, unqualified_for_dispatch=True,
+                           evidence_kind="synthetic_transport_surface_probe")
         receipt_bytes = json.dumps(receipt, sort_keys=True).encode()
         write_private(root / "receipts" / f"{stem}.json", receipt_bytes)
     return {"argv": full, "parsed": parsed, "public": redact(parsed), "receipt_id": stem,
@@ -582,6 +606,60 @@ def check_submit_argv(argv: list[str], *, allow_image: bool = False) -> list[str
     return argv
 
 
+def readonly_video_help(timeout: float = DEFAULT_TIMEOUT) -> dict:
+    """Inspect only the exact installed video help surface; preserve private raw text."""
+    argv = ["generate", "video", "--help"]
+    _check_read_only(argv)
+    return _run_checked(argv, validate_timeout(timeout), help_text=True)
+
+
+def _body_shape(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(k): _body_shape(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_body_shape(v) for v in value]
+    if value is None:
+        return "null"
+    return "boolean" if isinstance(value, bool) else "number" if isinstance(value, (int, float)) else "string"
+
+
+def readonly_transport_surface_probe(*, model: str, duration: Any = None,
+                                     resolution: Optional[str] = None,
+                                     timeout: float = DEFAULT_TIMEOUT) -> dict:
+    """Fixed synthetic HTTPS --image dry-run. This proves wire shape only, never dispatch.
+
+    No caller URL, file, upload, output or async option exists. The private receipt is marked
+    schema-only so it cannot stand in for qualified reference evidence.
+    """
+    argv = native_dry_run_argv(_SURFACE_PROMPT, model=model, mode="image2video",
+                              image_url=_SURFACE_IMAGE, duration=duration, resolution=resolution)
+    token = _SURFACE_PROBE.set(True)
+    try:
+        result = run_readonly(argv, timeout=timeout)
+    finally:
+        _SURFACE_PROBE.reset(token)
+    request = dry_run_request(result["parsed"])
+    params = request["body"].get("params", {})
+    def contains_image(value):
+        if value == _SURFACE_IMAGE:
+            return True
+        if isinstance(value, dict):
+            return any(contains_image(v) for v in value.values())
+        if isinstance(value, list):
+            return any(contains_image(v) for v in value)
+        return False
+    keys = [k for k, v in params.items() if contains_image(v)] if isinstance(params, dict) else []
+    result.update(schema_only=True, unqualified_for_dispatch=True,
+                  image_param_key=keys[0] if len(keys) == 1 else None)
+    result["public"] = {"endpoint": request["endpoint"], "body_shape": _body_shape(request["body"]),
+                        "body_sha256": request["body_sha256"], "image_param_key": result["image_param_key"], "schema_only": True,
+                        "unqualified_for_dispatch": True}
+    return result
+
+
+transport_surface_probe = readonly_transport_surface_probe
+
+
 def dry_run_request(parsed: Any) -> dict:
     """Extract {endpoint, body, body_sha256} from v0.1.1 `--dry-run --json` output.
 
@@ -631,6 +709,115 @@ def form_schema(form: Any, *, model: Optional[str] = None, mode: Optional[str] =
     if not isinstance(schema.get("properties"), dict):
         raise OpenArtCLIError("form_shape_unqualified", "model form output is not a JSON Schema object")
     return schema
+
+
+_ROOT_KEYWORDS = {"type", "properties", "required", "additionalProperties", "$schema", "title",
+                  "description", "default", "examples", "$id", "anyOf", "oneOf"}
+_BRANCH_KEYWORDS = _ROOT_KEYWORDS - {"anyOf", "oneOf", "$schema", "$id"}
+
+
+def _check_form_meta(form: dict, model: Optional[str], mode: Optional[str]) -> None:
+    if "model" in form and model is not None and form["model"] != model:
+        raise OpenArtCLIError("form_shape_unqualified", "model form metadata differs from target model")
+    if "mode" in form and mode is not None and form["mode"] != mode:
+        raise OpenArtCLIError("form_shape_unqualified", "model form metadata differs from target mode")
+    if "media" in form and form["media"] != "video":
+        raise OpenArtCLIError("form_shape_unqualified", "model form metadata is not video")
+
+
+def _object_schema(schema: Any, allowed: set) -> bool:
+    return (isinstance(schema, dict) and schema.get("type", "object") == "object"
+            and isinstance(schema.get("properties"), dict) and not (set(schema) - allowed)
+            and isinstance(schema.get("required", []), list))
+
+
+def _captured_form_schema(form: Any, *, model: Optional[str] = None, mode: Optional[str] = None) -> dict:
+    """The full original root JSON Schema of a captured form (object root or root anyOf/oneOf).
+
+    Strict: a present non-object ``schema``/``jsonSchema`` wrapper, conflicting wrappers, a bare
+    schema beside a wrapper, non-object branches and unknown root keywords (``allOf``, ``not``,
+    ``if`` ...) are all ``form_shape_unqualified`` - never dropped.
+    """
+    if not isinstance(form, dict):
+        raise OpenArtCLIError("form_shape_unqualified", "model form output is not a JSON Schema object")
+    _check_form_meta(form, model, mode)
+    wrappers = []
+    for key in ("schema", "jsonSchema"):
+        if key in form:
+            if not isinstance(form[key], dict):
+                raise OpenArtCLIError("form_shape_unqualified", "model form schema wrapper is malformed")
+            wrappers.append(form[key])
+    if any(w != wrappers[0] for w in wrappers[1:]):
+        raise OpenArtCLIError("form_shape_unqualified", "model form has conflicting schema wrappers")
+    bare = bool((_ROOT_KEYWORDS | {"allOf", "not", "if", "then", "else", "$ref"}) & set(form))
+    if wrappers and bare:
+        raise OpenArtCLIError("form_shape_unqualified", "model form has a bare schema beside a wrapper")
+    root = wrappers[0] if wrappers else {k: v for k, v in form.items() if k not in ("model", "mode", "media")}
+    kinds = [k for k in ("anyOf", "oneOf") if k in root]
+    if not kinds:
+        if not _object_schema(root, _ROOT_KEYWORDS - {"anyOf", "oneOf"}):
+            raise OpenArtCLIError("form_shape_unqualified", "model form root is not a plain object schema")
+        return root
+    if len(kinds) != 1 or "properties" in root or set(root) - _ROOT_KEYWORDS \
+            or root.get("type", "object") != "object":
+        raise OpenArtCLIError("form_shape_unqualified", "model form root union carries unsupported constraints")
+    if set(root) & {"required", "additionalProperties"}:
+        raise OpenArtCLIError("form_shape_unqualified", "root union has unsupported object siblings")
+    branches = root[kinds[0]]
+    if not isinstance(branches, list) or not branches or not all(
+            _object_schema(b, _BRANCH_KEYWORDS) for b in branches):
+        raise OpenArtCLIError("form_shape_unqualified", "root union branches must be plain object schemas")
+    return root
+
+
+_PARAMS_UNSET = object()
+
+
+def _schema_validator(schema: dict):
+    from jsonschema import validators
+    from jsonschema.exceptions import SchemaError
+    try:
+        cls = validators.validator_for(schema)
+        cls.check_schema(schema)
+        return cls(schema)
+    except SchemaError:
+        raise OpenArtCLIError("form_shape_unqualified", "captured form is not a valid JSON Schema")
+
+
+def exact_form_schema(form: Any, *, model: Optional[str] = None, mode: Optional[str] = None,
+                      params: Any = _PARAMS_UNSET) -> dict:
+    """Return intact captured root, or the unique full branch matching supplied native params."""
+    root = _captured_form_schema(form, model=model, mode=mode)
+    validator = _schema_validator(root)
+    if params is _PARAMS_UNSET:
+        return root
+    if not validator.is_valid(params):
+        raise OpenArtCLIError("control_invalid", "native params violate the captured form schema")
+    for kind in ("anyOf", "oneOf"):
+        if kind in root:
+            branches = [b for b in root[kind] if _schema_validator(b).is_valid(params)]
+            if len(branches) != 1:
+                raise OpenArtCLIError("form_shape_unqualified", "native params do not select a unique form branch")
+            return branches[0]
+    return root
+
+
+def form_root_schema(form: Any, *, model: Optional[str] = None, mode: Optional[str] = None) -> dict:
+    """Union-aware view of ``exact_form_schema``: {"union": None|"anyOf"|"oneOf", "branches": [...]}.
+
+    Strict ``form_schema`` callers (legacy qualification) keep refusing unions.
+    """
+    root = exact_form_schema(form, model=model, mode=mode)
+    for kind in ("anyOf", "oneOf"):
+        if kind in root:
+            return {"union": kind, "branches": root[kind]}
+    return {"union": None, "branches": [root]}
+
+
+def validate_form_params(form: Any, params: Any, *, model: Optional[str] = None,
+                         mode: Optional[str] = None) -> dict:
+    """Validate a native body ``params`` against the FULL original form schema (unions intact)."""
+    return exact_form_schema(form, model=model, mode=mode, params=params)
 
 
 def form_controls(form: Any, *, model: Optional[str] = None, mode: Optional[str] = None) -> dict:

@@ -445,3 +445,46 @@ def test_timeout_validated_before_launch(env, bad):
 def test_receipt_id_rejects_paths(env, bad):
     with pytest.raises(cli.OpenArtCLIError):
         cli.receipt_path(bad)
+
+
+def test_synthetic_surface_probe_fixed_guard_receipt_and_public_shape(env):
+    env["binary"].write_text("#!" + sys.executable + '\nimport json,sys\na=sys.argv\nprint(json.dumps({"endpoint":"POST /api/cli/v1/generate","body":{"model":a[a.index("--model")+1],"mode":"image2video","media":"video","params":{"image":a[a.index("--image")+1],"prompt":a[3]}}}))\n')
+    result = cli.readonly_transport_surface_probe(model="m1", duration=5)
+    assert result["schema_only"] and result["unqualified_for_dispatch"]
+    assert result["image_param_key"] == "image"
+    assert result["public"]["body_shape"]["params"]["image"] == "string"
+    assert "example.invalid" not in json.dumps(result["public"])
+    receipt = json.loads(cli.receipt_path(result["receipt_id"]).read_text())
+    assert receipt["schema_only"] and receipt["unqualified_for_dispatch"]
+    assert receipt["argv"][-3:] == ["--dry-run", "--json", "--no-input"]
+    assert receipt["argv"][receipt["argv"].index("--image")+1] == cli._SURFACE_IMAGE
+    with pytest.raises(cli.OpenArtCLIError):
+        cli.run_readonly(receipt["argv"][:-2])
+    assert not cli._SURFACE_PROBE.get()
+
+
+def test_surface_probe_does_not_allow_caller_image_or_submit(env):
+    with pytest.raises(TypeError):
+        cli.readonly_transport_surface_probe(model="m1", image_url="https://user.example/x")
+    with pytest.raises(cli.OpenArtCLIError):
+        cli.check_submit_argv(["generate", "video", cli._SURFACE_PROMPT, "--model", "m1", "--image", cli._SURFACE_IMAGE, "--async"])
+
+
+def test_failed_synthetic_probe_retains_non_authoritative_private_receipt(env, monkeypatch):
+    monkeypatch.setenv("FAKE_OPENART_MODE", "nonzero")
+    with pytest.raises(cli.OpenArtCLIError) as err:
+        cli.readonly_transport_surface_probe(model="m1")
+    diag = err.value.diagnostics
+    receipt = json.loads(cli.receipt_path(diag["receipt_id"]).read_text())
+    assert receipt["parsed"] is None and receipt["returncode"] == 3
+    assert receipt["schema_only"] and receipt["unqualified_for_dispatch"]
+    assert hashlib.sha256(cli.receipt_path(diag["receipt_id"]).read_bytes()).hexdigest() == diag["receipt_sha256"]
+    assert not cli._SURFACE_PROBE.get()
+
+
+def test_exact_video_help_retains_text_without_enablement(env):
+    env["binary"].write_text("#!" + sys.executable + '\nprint("Usage: openart generate video [options] --image")\n')
+    result = cli.readonly_video_help()
+    assert result["parsed"]["help"].startswith("Usage:")
+    receipt = json.loads(cli.receipt_path(result["receipt_id"]).read_text())
+    assert receipt["argv"] == ["generate", "video", "--help", "--json", "--no-input"]

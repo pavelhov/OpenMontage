@@ -504,6 +504,16 @@ def _unknown_public(proof):
         'evidence_id':proof['evidence_id'],'evidence_sha256':_hash(t),'provider_calls':0}
 
 
+def _unknown_references(inputs,profile,native):
+    """Source-bound reference digest (None when reference-free). Only already-qualified
+    retained upload proofs bound into the exact native request are accepted."""
+    try: references=jobs.native_reference_digest(inputs,profile,native=native)
+    except cli.OpenArtCLIError as e: _uk_fail(f'unknown-cost native references unverified: {e.message}')
+    if references is None and (native.get('image_upload') or native.get('native_controls',{}).get('image_url_sha256')):
+        _uk_fail('unknown-cost native reference binding missing')
+    return references
+
+
 def refresh_unknown_cost_evidence(inputs,profile,*,timeout=cli.DEFAULT_TIMEOUT,deadline=None):
     """Explicit read-only capture under transport serialization: eligibility, native
     preview, account identity/balance and model price. Never submits or reserves.
@@ -518,11 +528,12 @@ def refresh_unknown_cost_evidence(inputs,profile,*,timeout=cli.DEFAULT_TIMEOUT,d
     jobs.validate_profile(profile,require='pre_submit')
     controls=_controls(inputs)
     native=jobs.prepare_native_request(controls,profile)
-    if native.get('image_upload') or native.get('native_controls',{}).get('image_url_sha256'): _uk_fail('unknown-cost route is native reference-free only')
+    references=_unknown_references(inputs,profile,native)
     remaining=lambda:cli.lock_remaining(deadline)
     with cli.transport_lock(wait_timeout=remaining()):
         setup.verify_current(profile,timeout=remaining())
-        preview=cli.run_readonly(native['creative_argv']+['--dry-run'],timeout=remaining())
+        with cli.allow_image_reference(references is not None):
+            preview=cli.run_readonly(native['creative_argv']+['--dry-run'],timeout=remaining())
         current=jobs.native_request(controls,profile,dry_run={'receipt_id':preview['receipt_id'],'receipt_sha256':preview['receipt_sha256']})
         for key in ('native_body_sha256','native_controls_sha256','native_argv_sha256','profile_sha256'):
             if current[key]!=native[key]: _uk_fail('fresh native preview differs from approved settings','unknown_cost_evidence_changed')
@@ -530,6 +541,10 @@ def refresh_unknown_cost_evidence(inputs,profile,*,timeout=cli.DEFAULT_TIMEOUT,d
         cost=cli.run_readonly(cli.model_cost_argv(profile['model'],profile['mode']),timeout=remaining())
         ce,ae,pe=_entry('unknown_cost_price',cost),_entry('unknown_cost_account',account),_entry('unknown_cost_preview',preview)
         terms=_unknown_terms(native,profile,controls,ce,ae)
+        if references is not None:
+            if jobs.native_reference_digest(inputs,profile,native=current)!=references:
+                _uk_fail('fresh native preview references differ from approved sources','unknown_cost_evidence_changed')
+            terms['references_sha256']=references
         proof={'version':'1','kind':'openart_unknown_cost_evidence','terms':terms,
                'cost_receipt':ce,'account_receipt':ae,'preview_receipt':pe}
         proof['evidence_id']=_hash(proof)
@@ -584,6 +599,8 @@ def get_retained_unknown_evidence(inputs,profile,evidence_id):
     except cli.OpenArtCLIError as e:
         if e.kind=='unknown_cost_unqualified': raise
         _uk_fail('retained unknown-cost receipts invalid')
+    references=_unknown_references(inputs,profile,observed)
+    if references is not None: terms['references_sha256']=references
     if terms!=proof['terms']: _uk_fail('retained unknown-cost evidence differs from current request/profile','unknown_cost_evidence_changed')
     return _unknown_public(proof)
 
@@ -678,7 +695,12 @@ def validate_unknown_cost_authorization(project_root,authorization,*,scope,marke
     if len(matches)!=1: bad('unknown-cost exact occurrence missing/duplicated')
     occurrence=matches[0]
     native=jobs.prepare_native_request(_controls(inputs),profile)
-    if 'references_sha256' in occurrence or native.get('image_upload'): bad('unknown-cost route is native reference-free only')
+    try: references=jobs.native_reference_digest(inputs,profile,native=native)
+    except cli.OpenArtCLIError as e: bad(f'unknown-cost native references unverified: {e.message}')
+    if references is None:
+        if 'references_sha256' in occurrence or native.get('image_upload'): bad('reference-free unknown-cost occurrence must not bind references')
+    elif occurrence.get('references_sha256')!=references:
+        bad('unknown-cost occurrence references_sha256 differs from exact source-bound native references')
     for field,expected in [('request_sha256',request_sha256),('native_sha256',native['native_body_sha256']),
                           ('profile_sha256',native['profile_sha256'])]:
         if occurrence[field]!=expected: bad('unknown-cost authorization immutable occurrence mismatch')
@@ -689,7 +711,7 @@ def validate_unknown_cost_authorization(project_root,authorization,*,scope,marke
     if execution._OPENART_COMPILED_REQUEST_CHECK is None: bad('current compilation validator unavailable')
     execution._OPENART_COMPILED_REQUEST_CHECK(inputs,native,profile)
     if a['purpose']=='generation':
-        jobs.load_result_proof(profile)
+        jobs._proof_or_none(profile)  # optional empirical proof; an invalid proof is reported, never a gate
     elif occurrence_index!=0 or a['count']!=1:
         bad('result qualification requires one first original occurrence')
     digest=unknown_cost_authorization_digest(a)

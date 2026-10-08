@@ -92,9 +92,10 @@
     },
     "reference_mode": {
       "enum": [
-        "reference_free"
+        "reference_free",
+        "reference_guided"
       ],
-      "description": "Explicit all-text noncast contract; absence retains board-backed prerequisites."
+      "description": "Explicit reference_free is text-only; reference_guided uses reviewed boards as targets and separate native references, without temporal frame pins. Absence retains literal boarded prerequisites."
     }
   },
   "required": [
@@ -240,7 +241,10 @@
             "timed_keyframe",
             "payoff_board",
             "observed_outgoing_frame",
-            "voice_reference"
+            "voice_reference",
+            "reference_image",
+            "reference_video",
+            "reference_audio"
           ]
         },
         "path": {
@@ -458,6 +462,12 @@
     "shot": {
       "type": "object",
       "properties": {
+        "reference_mode": {
+          "enum": [
+            "reference_free",
+            "reference_guided"
+          ]
+        },
         "id": {
           "type": "string",
           "minLength": 1,
@@ -640,9 +650,40 @@
           },
           "shots": {
             "items": {
-              "properties": {
-                "asset_ids": {
-                  "minItems": 1
+              "if": {
+                "required": [
+                  "reference_mode"
+                ],
+                "properties": {
+                  "reference_mode": {
+                    "const": "reference_free"
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "cast_ids": {
+                    "maxItems": 0
+                  },
+                  "required_visible_speakers": {
+                    "maxItems": 0
+                  },
+                  "dialogue": {
+                    "maxItems": 0
+                  },
+                  "asset_ids": {
+                    "maxItems": 0
+                  },
+                  "upstream": {
+                    "maxItems": 0
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "asset_ids": {
+                    "minItems": 1
+                  }
                 }
               }
             }

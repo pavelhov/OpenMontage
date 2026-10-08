@@ -91,8 +91,8 @@ def _validate_request(root, request, policy, sha, decision_id, inputs, scope):
 
 def _settings(inputs, request, provider):
     return {'provider': provider, 'media_model': _token(inputs.get('model') or inputs.get('model_name'))
-            if provider == 'openart_cli' else None,
-            'media_model_status': 'reported' if provider == 'openart_cli' else 'unreported' if provider == 'grok_cli' else 'unknown',
+            if provider in {'openart_cli', 'openart_mcp'} else None,
+            'media_model_status': 'reported' if provider in {'openart_cli', 'openart_mcp'} else 'unreported' if provider == 'grok_cli' else 'unknown',
             'declared_model': _token(inputs.get('model') or inputs.get('model_name')),
             'agent_model': _token(inputs.get('agent_model') or inputs.get('model')) if provider == 'grok_cli' else None,
             'duration': _token(inputs.get('duration')), 'resolution': _token(inputs.get('resolution')),
@@ -129,7 +129,11 @@ def _observed_credits(value):
 
 
 def unknown_cost_report(project_root):
-    """Pure Strict summary; unknown exposure never enters Auto credit totals.
+    """Read-only unknown-cost summary for Strict and policy-derived attempts.
+
+    Unknown exposure never enters exact credit totals. Policy-derived attempts
+    (rooted unknown-cost Auto-continue) appear here as well and in the
+    ``openart_unknown_cost`` section of ``completion_report``.
 
     Reads typed private originals and safe evidence summaries without calling
     the provider, initializing state, approving, repairing, or writing files.
@@ -212,6 +216,86 @@ def unknown_cost_report(project_root):
             'attempts': sorted(attempts, key=lambda item: item['attempt_id']), 'quality_status': 'unreviewed'}
 
 
+def _mcp_dimensions(params):
+    """Only exact ordinary/SmartShot fields actually present; never defaults."""
+    aliases = {'duration': ('duration', 'videoDuration'),
+               'resolution': ('resolution', 'videoResolution'),
+               'aspect_ratio': ('aspectRatio', 'videoAspectRatio')}
+    return {name: _token(next((params[field] for field in fields if field in params), None))
+            for name, fields in aliases.items()}
+
+
+def _mcp_policy_rows(root, policy, sha):
+    """Read immutable connector origins separately from the CLI credit ledger."""
+    spec = autonomy._provider_spec(policy, 'openart_mcp')
+    if spec is None:
+        return [], None, None
+    from lib import openart_mcp as mcp, openart_mcp_jobs as jobs
+    attempts = jobs.list_attempts(root)
+    snapshot = {'attempts': attempts, 'frozen_sha256': {}}
+    rows = []
+    scopes = _read(root / 'production_scopes.json')['scopes'] if (root / 'production_scopes.json').exists() else []
+    for item in attempts:
+        frozen = jobs.frozen_request(root, item['attempt_id'])
+        snapshot['frozen_sha256'][item['attempt_id']] = execution._digest(frozen)
+        authority, native, inputs = frozen['authority'], frozen['native'], frozen['generation_inputs']
+        scope = authority['scope']
+        if (scope.get('derived_from_policy') or {}).get('policy_sha256') != sha:
+            continue
+        _require(scope['provider'] == 'openart_mcp' and execution._digest(scope) == authority['scope_sha256']
+                 and len([s for s in scopes if s == scope]) == 1, 'MCP retained scope binding changed')
+        profile = mcp.load_profile(native['model'], native['mode'], require='supported')
+        autonomy.validate_policy_mcp_attempt(root, scope, inputs=inputs, native=native, profile=profile,
+                                             authority=authority.get('billing'))
+        state = execution.load_attempt_result(root, item['attempt_id'])
+        status = state.get('status', 'uncertain')
+        settings = _settings(inputs, {'input_assets': []}, 'openart_mcp')
+        settings['references'] = [{'input_key': _token(asset['role']), 'sha256': asset['source_sha256']} for asset in native.get('input_assets', [])]
+        if status == 'generated':
+            from lib.production_provenance import validate_attempt_provenance
+            output = execution._inside(inputs['output_path'], root)
+            validate_attempt_provenance(root, item['attempt_id'], shot_id=authority['shot_id'],
+                story_revision=policy['story_revision'], expected_output={'path': str(output), 'sha256': execution.file_sha256(output)})
+        params = native['body']['params']
+        settings.update(media_model=_token(native['model']), **_mcp_dimensions(params))
+        baseline = policy['shots'][authority['shot_id']]
+        template = autonomy.retained_baselines(root, policy)[authority['shot_id']]['planned_request_template']
+        baseline_inputs = template['inputs']
+        baseline_settings = _settings(baseline_inputs, {'input_assets': []},
+                                      baseline_inputs.get('preferred_provider') or baseline_inputs.get('provider'))
+        baseline_params = baseline_inputs.get('native_params') or {}
+        for key, value in _mcp_dimensions(baseline_params).items():
+            baseline_settings[key] = _token(baseline_inputs[key]) if key in baseline_inputs else value
+        baseline_refs = [{'role': a['role'], 'sha256': a['sha256']} for a in baseline['static_input_assets']]
+        baseline_settings['references'] = baseline_refs
+        changes = {key: {'baseline': baseline_settings[key], 'attempted': value}
+                   for key, value in settings.items() if key != 'references' and value != baseline_settings[key]}
+        baseline_request_sha = baseline.get('request_sha256')
+        if baseline_request_sha is None:
+            baseline_request_sha = execution.approved_request_digest(template, project_dir=root,
+                selected_attempts=scope['derived_from_policy'].get('resolved_upstream', {}))
+        rows.append({'attempt_id': item['attempt_id'], 'job_id': _token(state.get('history_id')),
+            'shot_id': authority['shot_id'], 'request_sha256': authority['request_sha256'],
+            'status': _token(status), 'outbox_only': False, 'settings': settings,
+            'credits': {'authorization_kind': 'unknown_cost', 'requested_charge': 'unknown',
+                        'enforceable_credit_ceiling': False},
+            'native_body_sha256': native['body_sha256'],
+            'source_binding_sha256': native['source_binding_sha256'],
+            'baseline_delta': {'baseline_sha256': execution._digest(baseline),
+                'request_changed': authority['request_sha256'] != baseline_request_sha,
+                'resolved_baseline_request_sha256': baseline_request_sha,
+                'unresolved_dimensions': [] if baseline_settings['provider'] is not None else ['provider', 'media_model_attribution'],
+                'baseline_references': baseline_refs, 'settings_comparison': 'retained_approved_evidence',
+                'settings_changes': changes, 'baseline_settings': baseline_settings,
+                'reference_bytes_changed': sorted(a['sha256'] for a in settings['references']) != sorted(a['sha256'] for a in baseline_refs)}})
+    exposure = {'provider': 'openart_mcp', 'cost_status': 'unknown', 'billing': spec['billing'],
+        'exposure_acknowledgement': spec['exposure_acknowledgement'], 'enforceable_credit_ceiling': False,
+        'policy_sha256': sha, 'uid_sha256': spec['uid_sha256'], 'project_id': spec['project_id'],
+        'routes': copy.deepcopy(spec['routes']), 'attempt_ids': sorted(row['attempt_id'] for row in rows),
+        'attempts': len(rows)}
+    return rows, exposure, snapshot
+
+
 def completion_report(project_root, policy_sha):
     """Write a new report using current policy, attempts, ledger and certification.
 
@@ -250,18 +334,40 @@ def completion_report(project_root, policy_sha):
             journal_hashes[path] = hashlib.sha256(raw).hexdigest()
         else:
             findings.append({'attempt_id': request['attempt_id'], 'code': 'excluded_other_policy_or_strict_attempt'})
-    reservations = {}
+    reservations = {}; unpriced = {}
+    provider_spec = next((p for p in policy['providers'] if p['id'] == 'openart_cli'), None)
+    unknown_mode = autonomy._is_unknown(provider_spec)
+    from lib import openart_dispatch as dispatch, openart_jobs as jobs
     for row in snapshot['reservations']:
         binding = Binding(**json.loads(row['binding_json']))
         binding.validate()
         if binding.project_root == str(root) and binding.allowance_id == autonomy.openart_allowance_id(sha):
+            _require(not unknown_mode, 'exact credit reservation under unknown-cost policy')
             _require(binding.attempt_id not in reservations, 'duplicate ledger attempt')
             public_journal = root / 'production_attempts' / binding.attempt_id / 'request.json'
             _require(not (public_journal.exists() or public_journal.is_symlink()) or binding.attempt_id in journals,
                      'matching policy reservation has an existing journal under another authority')
             reservations[binding.attempt_id] = (row, binding)
+    for row in snapshot.get('unpriced_reservations', []):
+        binding = UnpricedBinding(**json.loads(row['binding_json']))
+        binding.validate()
+        if binding.project_root != str(root):
+            continue
+        manifest, actual_binding, frozen = dispatch._manifest(binding.attempt_id)
+        _require(actual_binding == binding and manifest.get('authorization_kind') == 'unknown_cost',
+                 'unpriced private original differs')
+        derived = manifest.get('scope', {}).get('derived_from_policy') or {}
+        if derived.get('policy_sha256') != sha:
+            continue
+        _require(unknown_mode, 'unknown-cost reservation under exact-credit policy')
+        _require(binding.attempt_id not in unpriced, 'duplicate unpriced ledger attempt')
+        public_journal = root / 'production_attempts' / binding.attempt_id / 'request.json'
+        _require(not (public_journal.exists() or public_journal.is_symlink()) or binding.attempt_id in journals,
+                 'matching policy reservation has an existing journal under another authority')
+        unpriced[binding.attempt_id] = (row, binding)
+    reservations.update(unpriced)
     rows = []; totals = {}
-    from lib import openart_dispatch as dispatch, openart_jobs as jobs
+    unknown_attempts = []
     from lib.production_request import load_private_approval, validate_frozen_preparation_history, validate_frozen_preparation, _body
     for aid in sorted(journals.keys() | reservations.keys()):
         request = journals.get(aid)
@@ -273,14 +379,20 @@ def completion_report(project_root, policy_sha):
         if provider == 'openart_cli':
             _require(aid in reservations, 'OpenArt journal lacks ledger reservation')
             row, binding = reservations[aid]
-            provider_spec = next((p for p in policy['providers'] if p['id'] == 'openart_cli'), None)
             _require(provider_spec is not None and binding.provider == 'openart_cli'
                      and binding.account_id == provider_spec['account_id_sha256']
                      and binding.workspace_id == provider_spec['workspace']
-                     and binding.allowance == provider_spec['ceiling'], 'ledger reservation outside active credit envelope')
+                     and (unknown_mode or binding.allowance == provider_spec['ceiling']),
+                     'ledger reservation outside active credit envelope')
             manifest, actual_binding, frozen = dispatch._manifest(aid)
             _require(actual_binding == binding and manifest['marker']['project_id'] == policy['project_id']
                      and manifest['marker']['story_revision'] == policy['story_revision'], 'private dispatch binding mismatch')
+            if unknown_mode:
+                authority = manifest['unknown_cost_authorization']
+                _require(authority['sha256'] == binding.authorization_sha256
+                         and authority['occurrence'] == binding.authorization_occurrence
+                         and manifest['scope'].get('unknown_cost_authorization_sha256') == binding.authorization_sha256,
+                         'unpriced authority binding differs')
             intended = manifest['journal_records']['request.json']
             if request is None:
                 request = intended
@@ -288,7 +400,8 @@ def completion_report(project_root, policy_sha):
             else:
                 _require(request == intended, 'public/private journal mismatch')
                 if row['slot_state'] != 'prepared':
-                    ready = [r for r in snapshot['ready_journals'] if r['attempt_id'] == aid]
+                    ready = [r for r in snapshot['unpriced_ready_journals' if unknown_mode else 'ready_journals']
+                             if r['attempt_id'] == aid]
                     _require(len(ready) == 1 and ready[0]['journal_sha256'] == hashlib.sha256(
                         (root / 'production_attempts' / aid / 'request.json').read_bytes()).hexdigest(), 'ready journal hash mismatch')
             frozen = execution.load_openart_frozen(request)
@@ -304,17 +417,35 @@ def completion_report(project_root, policy_sha):
             inputs = frozen['inputs']
             _require(frozen['profile'].get('source') == 'real', 'nonreal private request')
             accounts = [a for a in snapshot['accounts'] if a['account_key'] == row['account_key']]
-            _require(len(accounts) == 1, 'missing or duplicate reservation account')
-            account = accounts[0]; scale = CreditScale(account['quantum'])
-            known = row['debit_state'] in {'settled', 'refunded', 'released'}
-            _require(not known or row['debit_state'] == 'released' or bool(row['debit_evidence_sha256']), 'debit evidence missing')
-            units = _credit_units(row)
-            credit = {'quantum': scale.quantum, 'debit_state': row['debit_state'],
-                      **{k: scale.display(v) for k, v in units.items()}}
-            group = totals.setdefault(scale.quantum, {k: 0 for k in units if k != 'original_reserved'})
-            for k, v in units.items():
-                if k != 'original_reserved': group[k] += v
-            if row['debit_state'] == 'unresolved': findings.append({'attempt_id': aid, 'code': 'unresolved_openart_debit'})
+            # Unpriced reservations never create a priced account/allowance row;
+            # only exact-credit reservations require exactly one.
+            _require(len(accounts) <= 1 if unknown_mode else len(accounts) == 1,
+                     'missing or duplicate reservation account')
+            account = accounts[0] if accounts else {'quarantined': 0}
+            if unknown_mode:
+                slot, billing = row['slot_state'], row['billing_state']
+                _require(slot in {'prepared', 'ready', 'submitting', 'submitted', 'uncertain', 'terminal', 'closed', 'no-dispatch'}
+                         and billing in {'unknown', 'qualified'}, 'invalid unpriced state')
+                credit = {'authorization_kind': 'unknown_cost', 'requested_charge': 'unknown',
+                          'slot_state': slot, 'billing_state': billing}
+                if billing == 'qualified':
+                    _require(re.fullmatch('[a-f0-9]{64}', row['billing_evidence_sha256'] or '') is not None
+                             and bool(row['job_id']), 'qualified per-job billing proof missing')
+                    credit['billed_amount'] = _observed_credits(row['billed_amount'])
+                else:
+                    findings.append({'attempt_id': aid, 'code': 'openart_cost_unknown'})
+                unknown_attempts.append(aid)
+            else:
+                scale = CreditScale(account['quantum'])
+                known = row['debit_state'] in {'settled', 'refunded', 'released'}
+                _require(not known or row['debit_state'] == 'released' or bool(row['debit_evidence_sha256']), 'debit evidence missing')
+                units = _credit_units(row)
+                credit = {'quantum': scale.quantum, 'debit_state': row['debit_state'],
+                          **{k: scale.display(v) for k, v in units.items()}}
+                group = totals.setdefault(scale.quantum, {k: 0 for k in units if k != 'original_reserved'})
+                for k, v in units.items():
+                    if k != 'original_reserved': group[k] += v
+                if row['debit_state'] == 'unresolved': findings.append({'attempt_id': aid, 'code': 'unresolved_openart_debit'})
             if account['quarantined'] or any(q['claim_key'] == binding.claim_key for q in snapshot['account_quarantine']):
                 findings.append({'attempt_id': aid, 'code': 'credit_account_quarantined'})
             job_id = jobs.original_job_id(aid)
@@ -396,6 +527,10 @@ def completion_report(project_root, policy_sha):
                         'baseline_references': baseline_refs, 'settings_comparison': 'retained_approved_evidence',
                         'settings_changes': changes, 'baseline_settings': baseline_settings,
                         'unresolved_dimensions': unresolved_dimensions}})
+    mcp_rows, mcp_exposure, mcp_snapshot = _mcp_policy_rows(root, policy, sha)
+    rows.extend(mcp_rows)
+    findings.extend({'attempt_id': row['attempt_id'], 'code': 'openart_mcp_cost_unknown'} for row in mcp_rows)
+    findings.extend({'attempt_id': row['attempt_id'], 'code': 'attempt_result_unresolved'} for row in mcp_rows if row['status'] not in {'generated', 'failed'})
     from lib.production_review import validate_final_review, CURRENT_VERSION
     final_path = root / 'artifacts' / 'final_review.json'
     final_raw = final_path.read_bytes() if final_path.exists() else None
@@ -422,6 +557,16 @@ def completion_report(project_root, policy_sha):
               'grok': f'subscription quota unknown, {grok_count} attempts',
               'quality_status': 'certified' if result['eligible'] else 'draft', 'findings': findings,
               'final_review_sha256': hashlib.sha256(final_raw).hexdigest() if final_raw is not None else None}
+    if unknown_mode:
+        report['openart_unknown_cost'] = {
+            'cost_status': 'unknown', 'billing': provider_spec['billing'],
+            'exposure_acknowledgement': provider_spec['exposure_acknowledgement'],
+            'policy_sha256': sha, 'account_id_sha256': provider_spec['account_id_sha256'],
+            'workspace': provider_spec['workspace'],
+            'routes': [{'model': r['model'], 'mode': r['mode']} for r in provider_spec['routes']],
+            'attempt_ids': sorted(unknown_attempts), 'attempts': len(unknown_attempts)}
+    if mcp_exposure is not None:
+        report['openart_mcp_unknown_cost'] = mcp_exposure
     # Recheck authorization after evidence collection, still before any writes.
     current, current_sha, current_decision = autonomy.require_active_policy(root)
     _require(current_sha == sha and current_decision == decision_id and current == policy, 'policy changed during report')
@@ -434,6 +579,11 @@ def completion_report(project_root, policy_sha):
             _require(not (path.exists() or path.is_symlink()), 'outbox-only public journal appeared during report; retry')
     _require((final_path.read_bytes() if final_path.exists() else None) == final_raw, 'final certification changed during report')
     _require(read_existing_snapshot() == snapshot, 'credit ledger changed during report; retry with current evidence')
+    if mcp_snapshot is not None:
+        from lib.openart_mcp_jobs import list_attempts as list_mcp_attempts, frozen_request as frozen_mcp_request
+        _require(list_mcp_attempts(root) == mcp_snapshot['attempts'], 'MCP attempt state changed during report; retry')
+        _require(all(execution._digest(frozen_mcp_request(root, aid)) == expected
+                     for aid, expected in mcp_snapshot['frozen_sha256'].items()), 'MCP original evidence changed during report; retry')
     directory = root / 'artifacts' / 'autonomy_reports'
     _require(directory.resolve().is_relative_to(root), 'report directory escapes project')
     directory.mkdir(parents=True, exist_ok=True)

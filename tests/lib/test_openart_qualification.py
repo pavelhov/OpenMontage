@@ -357,3 +357,43 @@ def test_positional_compiled_prompt_newlines_in_actual_raw_capture(synthetic_con
 def test_other_argument_controls_remain_rejected(synthetic_contract,argv):
     profile,_,_,capture=synthetic_contract
     with pytest.raises(Error): qualification._record(capture('dry_run',argv,{}))
+
+
+def _union_form():
+    return {"anyOf": [
+        {"type": "object", "properties": {"prompt": {"type": "string"},
+            "duration": {"type": "integer", "enum": [5, 10], "default": 5}}, "required": ["prompt"]},
+        {"type": "object", "properties": {"prompt": {"type": "string"},
+            "duration": {"type": "integer", "minimum": 12, "maximum": 15}}, "required": ["prompt"]}]}
+
+
+@pytest.mark.parametrize("duration,ok", [(5, True), (10, True), (13, True), (7, False), (20, False)])
+def test_captured_root_union_profile_validates_exact_branch(synthetic_contract, duration, ok):
+    """Composed path: real synthetic captured receipts -> validate_profile -> union branch selection."""
+    profile, bodies, refresh, _ = synthetic_contract
+    form = _union_form()
+    refresh("form", parsed=form)
+    profile["form_sha256"] = digest(form)
+    profile["form_defaults"] = {}
+    creative = ["generate", "video", "synthetic fox", "--model", "m-turbo", "--duration", str(duration)]
+    dry = copy.deepcopy(bodies["dry_run"][1])
+    dry["body"]["params"]["duration"] = duration
+    refresh("dry_run", argv=creative + ["--dry-run"], parsed=dry)
+    refresh("submit", argv=creative + ["--async"])
+    if ok:
+        assert qualification.validate_profile(profile)["form_defaults"] == {}
+    else:
+        with pytest.raises(Error):
+            qualification.validate_profile(profile)
+
+
+def test_captured_root_union_profile_never_collapses_branch_defaults(synthetic_contract):
+    profile, _, refresh, _ = synthetic_contract
+    form = _union_form()
+    refresh("form", parsed=form)
+    profile["form_sha256"] = digest(form)
+    profile["form_defaults"] = {"duration": 5}
+    with pytest.raises(Error):
+        qualification.validate_profile(profile)
+    profile["form_defaults"] = {}
+    assert qualification.validate_profile(profile, require="inspected")["form_sha256"] == digest(form)

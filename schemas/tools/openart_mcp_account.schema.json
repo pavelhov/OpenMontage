@@ -1,0 +1,290 @@
+{
+  "type": "object",
+  "required": [
+    "action"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "action": {
+      "type": "string",
+      "enum": [
+        "account",
+        "begin",
+        "catalog",
+        "collect",
+        "download",
+        "form",
+        "list",
+        "poll",
+        "profile",
+        "provenance",
+        "qualify",
+        "receive",
+        "record_status",
+        "state",
+        "upload_prepare",
+        "upload_receipt"
+      ]
+    },
+    "project_dir": {
+      "type": "string",
+      "minLength": 1
+    },
+    "attempt_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$"
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "mode": {
+      "type": "string",
+      "minLength": 1
+    },
+    "require": {
+      "type": "string",
+      "enum": [
+        "candidate",
+        "supported",
+        "qualified"
+      ]
+    },
+    "outcome": {
+      "type": "object"
+    },
+    "error": {
+      "type": "string",
+      "minLength": 1
+    },
+    "result": {
+      "type": "object"
+    },
+    "downloaded_path": {
+      "type": "string",
+      "minLength": 1
+    },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "billing_declaration": {
+      "type": "object"
+    },
+    "openart_project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "upload_id": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "enum": [
+              "form",
+              "profile"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "required": [
+          "model",
+          "mode"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "profile"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "required": [
+          "require"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "enum": [
+              "begin",
+              "collect",
+              "download",
+              "list",
+              "poll",
+              "provenance",
+              "qualify",
+              "receive",
+              "record_status",
+              "state",
+              "upload_prepare",
+              "upload_receipt"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "required": [
+          "project_dir"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "enum": [
+              "begin",
+              "collect",
+              "download",
+              "poll",
+              "provenance",
+              "qualify",
+              "receive",
+              "record_status",
+              "state"
+            ]
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "required": [
+          "attempt_id"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "receive"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "oneOf": [
+          {
+            "required": [
+              "outcome"
+            ],
+            "not": {
+              "required": [
+                "error"
+              ]
+            }
+          },
+          {
+            "required": [
+              "error"
+            ],
+            "not": {
+              "required": [
+                "outcome"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "record_status"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "required": [
+          "result"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "collect"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "required": [
+          "downloaded_path"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "upload_prepare"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "required": [
+          "files",
+          "billing_declaration"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": {
+            "const": "upload_receipt"
+          }
+        },
+        "required": [
+          "action"
+        ]
+      },
+      "then": {
+        "required": [
+          "upload_id",
+          "result"
+        ]
+      }
+    }
+  ]
+}

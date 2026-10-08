@@ -282,7 +282,8 @@
       "type": "object",
       "required": ["total_estimated_usd", "line_items", "budget_verdict"],
       "properties": {
-        "total_estimated_usd": { "type": "number", "minimum": 0 },
+        "total_estimated_usd": { "type": ["number", "null"], "minimum": 0, "description": "Complete estimate, or null when any component cost is unknown. Never substitute a known subtotal." },
+        "unknown_cost_notes": { "type": "string", "minLength": 1, "pattern": "\\S" },
         "line_items": {
           "type": "array",
           "items": {
@@ -292,10 +293,11 @@
               "tool": { "type": "string" },
               "operation": { "type": "string", "description": "What this tool call does" },
               "quantity": { "type": "number", "description": "How many calls, e.g., 6 images, 1 TTS run" },
-              "estimated_usd": { "type": "number", "minimum": 0 },
+              "estimated_usd": { "type": ["number", "null"], "minimum": 0 },
               "notes": { "type": "string" }
             },
-            "additionalProperties": false
+            "additionalProperties": false,
+            "allOf": [{ "if": { "properties": { "estimated_usd": { "type": "null" } }, "required": ["estimated_usd"] }, "then": { "required": ["notes"], "properties": { "notes": { "minLength": 1, "pattern": "\\S" } } } }]
           }
         },
         "budget_cap_usd": {
@@ -305,7 +307,7 @@
         },
         "budget_verdict": {
           "type": "string",
-          "enum": ["within_budget", "near_limit", "over_budget", "no_budget_set"],
+          "enum": ["within_budget", "near_limit", "over_budget", "no_budget_set", "unknown_cost"],
           "description": "How the estimate compares to the budget cap"
         },
         "savings_options": {
@@ -314,7 +316,11 @@
           "description": "Concrete ways to reduce cost if over budget"
         }
       },
-      "additionalProperties": false
+      "additionalProperties": false,
+      "allOf": [
+        { "if": { "properties": { "total_estimated_usd": { "type": "null" } }, "required": ["total_estimated_usd"] }, "then": { "required": ["unknown_cost_notes"], "properties": { "budget_verdict": { "const": "unknown_cost" } } } },
+        { "if": { "properties": { "line_items": { "contains": { "properties": { "estimated_usd": { "type": "null" } }, "required": ["estimated_usd"] } } }, "required": ["line_items"] }, "then": { "properties": { "total_estimated_usd": { "type": "null" } } } }
+      ]
     },
     "approval": {
       "type": "object",

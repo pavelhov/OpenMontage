@@ -59,7 +59,12 @@ def review_digest(review: dict) -> str:
 
 def selection_digest(selection: dict) -> str:
     """Bind a review to the exact upstream attempt/output/outgoing-frame tuple."""
-    return _digest({key: selection.get(key) for key in ("attempt_id", "output", "outgoing_frame")})
+    subject = {key: selection.get(key) for key in ("attempt_id", "output", "outgoing_frame")}
+    # Revised choreography needs a new review of the same footage against the
+    # authorized current plan. Keep historical selection subjects unchanged.
+    if "planning_revision" in selection:
+        subject["planning_revision"] = selection["planning_revision"]
+    return _digest(subject)
 
 
 def draft_audio_policy_digest(project_dir: str | Path) -> str:
@@ -190,15 +195,16 @@ def validate_shot_contract(
         errors.append(f"shots.{shot_id}: shot missing")
         return result()
 
-    reference_free = contract.get("reference_mode") == "reference_free"
+    project_reference_free = contract.get("reference_mode") == "reference_free"
+    reference_free = project_reference_free or shot.get("reference_mode") == "reference_free"
     # Legacy board-backed contracts retain the global payoff gate.
     payoff_id = contract.get("payoff_asset_id")
     payoff = assets.get(payoff_id)
-    if not reference_free and (not payoff or payoff["role"] != "payoff_board"):
+    if not project_reference_free and (not payoff or payoff["role"] != "payoff_board"):
         errors.append("payoff_asset_id: missing payoff_board role")
-    elif not reference_free and not set(contract["payoff_speaker_ids"]).issubset(payoff["cast_ids"]):
+    elif not project_reference_free and not set(contract["payoff_speaker_ids"]).issubset(payoff["cast_ids"]):
         errors.append("payoff_speaker_ids: missing payoff speaker in board cast")
-    required_assets = set(shot["asset_ids"]) | ({payoff_id} if not reference_free else set())
+    required_assets = set(shot["asset_ids"]) | ({payoff_id} if not project_reference_free else set())
     for cast_id in set(contract["late_cast_ids"]) | set(shot["cast_ids"]) | set(contract["payoff_speaker_ids"]):
         identity = [a for a in assets.values() if a["role"] == "identity_reference" and cast_id in a["cast_ids"]]
         if not identity:

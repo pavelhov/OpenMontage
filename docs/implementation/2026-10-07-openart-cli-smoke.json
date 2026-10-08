@@ -1,4 +1,5 @@
 {
+  "publication_note": "Published copy redacts private account correlators and local workspace/temp paths; technical schemas, control evidence, test outcomes, and non-account provenance are retained.",
   "observed_at": "2026-10-07T12:52:12.558906+00:00",
   "route": "registered_OpenMontage_adapter_to_official_OpenArt_CLI",
   "registered_tools": {
@@ -236,7 +237,7 @@
     "normal_strict_project_scope_preparation_and_credit_authorization_absent"
   ],
   "runtime": {
-    "successful_interpreter": "/Users/pavel/tools/openmontage/.venv/bin/python",
+    "successful_interpreter": "<HOME>/tools/openmontage/.venv/bin/python",
     "default_shell_python_missing_jsonschema": true,
     "failed_default_python_attempt_started_provider_calls": 0,
     "dependency_installations": 0

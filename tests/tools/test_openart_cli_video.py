@@ -3,6 +3,29 @@ import pytest
 from lib.production_execution import ProductionGovernanceError, preflight
 from tools.video.openart_cli_video import OpenArtCLIVideo
 from tools.provider_pricing import PriceQuoteRequired
+from tools.base_tool import ToolStatus
+
+
+def test_pre_submit_native_profile_makes_cli_route_available_without_result_proof(monkeypatch):
+    from lib import openart_jobs, production_execution
+
+    monkeypatch.setattr(openart_jobs.cli, 'resolve_binary', lambda: '/fake/openart')
+    monkeypatch.setattr(openart_jobs, 'list_qualifications', lambda: [{
+        'source': 'real', 'level': 'pre_submit', 'production_ready': True,
+        'full_result_qualified': False, 'error': None,
+    }])
+    monkeypatch.setattr(production_execution, '_OPENART_COMPILED_REQUEST_CHECK', object())
+    assert OpenArtCLIVideo().get_status() is ToolStatus.AVAILABLE
+
+@pytest.mark.parametrize('resolution', ['480P', '768P', '1080P', '720p', '2K', '4k'])
+def test_menu_preserves_safe_native_resolution_case(resolution):
+    assert OpenArtCLIVideo._safe_value('resolution', resolution) == {'value': resolution}
+
+@pytest.mark.parametrize('resolution', ['1080P?token=private', 'https://private.example/1080P', '1080P\nsecret'])
+def test_menu_hashes_non_resolution_values(resolution):
+    value = OpenArtCLIVideo._safe_value('resolution', resolution)
+    assert isinstance(value, dict) and value.get('value_redacted') is True
+    assert 'value' not in value
 
 @pytest.mark.parametrize('inputs', [{}, {'prompt':'synthetic','output_path':'/tmp/synthetic.mp4'}, {'resume_job':'synthetic'}])
 def test_direct_openart_is_strict_only(inputs):
