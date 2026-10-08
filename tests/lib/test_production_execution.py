@@ -1072,3 +1072,105 @@ def test_openart_unknown_authorization_requires_safe_artifact_id(tmp_path, monke
     with pytest.raises(ProductionGovernanceError, match='invalid_argument:'):
         preflight(OpenArtCLIVideo(), inputs)
     assert not (tmp_path / 'production_attempts').exists()
+
+
+def _reviewed_pin_request(tmp_path):
+    inputs, scope, contract = project(tmp_path, motion=True)
+    # Distinct native pin bytes and two cast members make role/coverage tests real.
+    for asset in contract['assets']:
+        if asset['role'] in {'start_frame', 'end_frame'}:
+            path = tmp_path / asset['path']
+            path.write_bytes(path.read_bytes() + ('<!-- ' + asset['role'] + ' -->').encode())
+            asset['sha256'] = file_sha256(path)
+            asset['review']['subject_sha256'] = asset['sha256']
+            asset['cast_ids'] = ['patient', 'doctor']
+    contract['shots'][0]['cast_ids'] = ['patient', 'doctor']
+    from tests.lib.test_shot_contract import refresh
+    refresh(contract)
+    scope['approval_plan_sha256'] = approval_plan_digest(contract)
+    (tmp_path / 'shot_contract.json').write_text(json.dumps(contract))
+    inputs.update(operation='first_last_frame', first_frame=inputs.pop('image_path'),
+                  last_frame=inputs.pop('last_image_path'))
+    inputs.pop('reference_image_paths')
+    scope['requests']['entry'] = planned_request_digest(inputs, project_dir=tmp_path)
+    write_scopes(tmp_path, scope)
+    return inputs, scope, contract
+
+
+def test_reviewed_native_pin_pair_carries_identity_without_auxiliary_refs(tmp_path):
+    inputs, _, contract = _reviewed_pin_request(tmp_path)
+    tool = MotionTool()
+    check = preflight(tool, inputs)
+    assert check['governed'] and tool.calls == 0
+    result = tool.execute(inputs)
+    assert result.success and tool.calls == 1
+    frozen = json.loads(attempt(tmp_path).read_text())
+    assert 'reference_image_paths' not in frozen['submitted_inputs']
+    assert {row['role'] for row in frozen['input_assets']} == {'first_frame', 'last_frame'}
+    # Snapshot paths differ from original board paths, but immutable bytes match.
+    from lib.production_execution import _check_motion_inputs
+    _check_motion_inputs(contract, 'entry', frozen['submitted_inputs'], tmp_path)
+
+
+@pytest.mark.parametrize('change', ['missing_first', 'missing_last', 'changed_first', 'changed_last',
+                                  'unapproved_first', 'unapproved_last', 'wrong_role',
+                                  'failed_first_review', 'failed_last_review', 'stale_first_review',
+                                  'missing_cast', 'partial_cast', 'wrong_cast'])
+def test_native_pin_identity_requires_reviewed_exact_pair_and_start_cast(tmp_path, change):
+    inputs, scope, contract = _reviewed_pin_request(tmp_path)
+    if change.startswith('missing_') and change != 'missing_cast':
+        inputs.pop('first_frame' if change == 'missing_first' else 'last_frame')
+    elif change.startswith('changed_'):
+        Path(inputs['first_frame' if change == 'changed_first' else 'last_frame']).write_bytes(b'changed board')
+    elif change.startswith('unapproved_'):
+        path = tmp_path / 'assets/unapproved.svg'; path.write_bytes(b'unapproved board')
+        inputs['first_frame' if change == 'unapproved_first' else 'last_frame'] = str(path)
+    elif change == 'wrong_role':
+        inputs['first_frame'], inputs['last_frame'] = inputs['last_frame'], inputs['first_frame']
+    else:
+        board = next(a for a in contract['assets'] if a['role'] == (
+            'end_frame' if change == 'failed_last_review' else 'start_frame'))
+        if change.startswith('failed_'): board['review']['status'] = 'fail'
+        elif change == 'stale_first_review': board['review']['subject_sha256'] = '0' * 64
+        else:
+            board['cast_ids'] = [] if change == 'missing_cast' else ['patient'] if change == 'partial_cast' else ['doctor']
+            # Fresh planning approval cannot manufacture cast identity in a board.
+            from tests.lib.test_shot_contract import refresh
+            refresh(contract)
+            scope['approval_plan_sha256'] = approval_plan_digest(contract)
+        (tmp_path / 'shot_contract.json').write_text(json.dumps(contract))
+    # Rebind this exact negative request so approval digest does not mask its
+    # missing pin, missing review, wrong native role or identity-coverage defect.
+    scope['requests']['entry'] = planned_request_digest(inputs, project_dir=tmp_path)
+    write_scopes(tmp_path, scope)
+    tool = MotionTool()
+    with pytest.raises(ProductionGovernanceError):
+        preflight(tool, inputs)
+    assert tool.calls == 0 and not (tmp_path / 'production_attempts').exists()
+
+
+@pytest.mark.parametrize('operation,guided', [('reference_to_video', False), ('first_last_frame', True)])
+def test_native_pins_do_not_replace_guided_or_reference_operation_identity_refs(tmp_path, operation, guided):
+    inputs, _, contract = _reviewed_pin_request(tmp_path)
+    inputs['operation'] = operation
+    if guided:
+        contract['shots'][0]['reference_mode'] = 'reference_guided'
+    from lib.production_execution import _check_motion_inputs
+    with pytest.raises(ProductionGovernanceError, match='identity_reference'):
+        _check_motion_inputs(contract, 'entry', inputs, tmp_path)
+
+
+def test_native_pin_identity_exemption_does_not_drop_other_reference_assets(tmp_path):
+    inputs, scope, contract = _reviewed_pin_request(tmp_path)
+    path = tmp_path / 'assets/prop.svg'; path.write_bytes(b'reviewed prop')
+    from tests.lib.test_shot_contract import refresh
+    reference = {'id': 'prop', 'role': 'reference_image', 'path': str(path),
+                 'sha256': file_sha256(path), 'cast_ids': []}
+    reference['review'] = copy.deepcopy(contract['assets'][0]['review'])
+    reference['review']['subject_sha256'] = reference['sha256']
+    contract['assets'].append(reference)
+    contract['shots'][0]['asset_ids'].append('prop')
+    refresh(contract)
+    from lib.production_execution import _check_motion_inputs
+    with pytest.raises(ProductionGovernanceError, match='reference_image prop'):
+        _check_motion_inputs(contract, 'entry', inputs, tmp_path)

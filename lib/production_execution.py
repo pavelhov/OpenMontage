@@ -583,6 +583,19 @@ def _check_motion_inputs(contract, shot_id, inputs, root, *, policy_composite=Fa
                  'reference_video': {'reference_video_paths','reference_video_path'},
                  'reference_audio': {'reference_audio_paths','reference_audio_path'}}
     guided = shot.get('reference_mode', contract.get('reference_mode')) == 'reference_guided'
+    # Eligibility has already validated these boards' bytes, cast-identity
+    # reviews and upstream provenance. Only an exact native pair can carry
+    # identity in place of auxiliary reference submissions on a boarded route.
+    local_assets = [assets[aid] for aid in shot['asset_ids']]
+    pin_boards = {
+        role: [a for a in local_assets if a['role'] == role]
+        for role in ('start_frame', 'end_frame')
+    }
+    reviewed_pin_pair = not guided and inputs.get('operation') == 'first_last_frame'
+    for role, boards in pin_boards.items():
+        reviewed_pin_pair = reviewed_pin_pair and len(boards) == 1 and any(
+            key in role_keys[role] and digest == boards[0]['sha256'] for key, digest in actual)
+    start_cast = set(pin_boards['start_frame'][0]['cast_ids']) if reviewed_pin_pair else set()
     submitted_asset_ids = set(shot['asset_ids'])
     submitted_asset_ids.update(a['id'] for a in contract['assets'] if a['role'] == 'identity_reference'
                                and set(a['cast_ids']).intersection(shot['cast_ids']))
@@ -599,6 +612,9 @@ def _check_motion_inputs(contract, shot_id, inputs, root, *, policy_composite=Fa
             keys = None  # rooted named prep/actual board proof already validated every member
         if asset['role'] == 'identity_reference' and not guided and inputs.get('operation') == 'image_to_video':
             keys = None  # approved single-image method carries identity through reviewed start board
+        if (asset['role'] == 'identity_reference' and reviewed_pin_pair
+                and set(asset['cast_ids']).intersection(shot['cast_ids']).issubset(start_cast)):
+            keys = None  # exact reviewed native start/end pins carry the declared cast
         if keys and not any(key in keys and digest == asset['sha256'] for key, digest in actual):
             _fail(f'shot {shot_id}: submitted inputs omit or change {asset["role"]} {asset_id}')
     approved_hashes = {assets[item]['sha256'] for item in submitted_asset_ids}
