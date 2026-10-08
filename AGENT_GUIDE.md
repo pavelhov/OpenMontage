@@ -467,6 +467,24 @@ separately and accurately. See
 `docs/implementation/2026-10-07-openart-live-720p-test.md` and
 `docs/implementation/2026-10-07-openart-model-controls.md`.
 
+### OpenArt MCP Episode Planning
+
+OpenMontage owns governed execution; choose MCP or CLI at proposal based on shot
+controls and current agent-environment availability. MCP needs the installed
+connector; terminal Python or CLI alone cannot invoke it. CLI 0.1.1 remains
+useful for simple text-to-video/start-frame image-to-video and standalone
+automation. MCP exposes exact-form controls where supported; this is not a
+same-model quality claim. Never silently switch transports, accounts, or billing.
+The MCP episode proposal names shots, exact route/account/project/model/mode,
+source categories, and bounded source/batch counts. Disclose unknown upload
+exposure and show available request-applicable generation credit estimates as
+estimates; actual charge has no enforceable ceiling. One approval can cover
+this scope and generation policy. After sources pass review, verify each batch
+and cumulative files/counts against the approved human scope (the wrapper does
+not parse it), then create the exact per-batch authorization linked to that
+approval. Preserve separate local upload/generation artifacts and all exact
+request checks. See `docs/OPENART_MCP.md`.
+
 A boarded episode may mark an independent, text-only cutaway with
 `shot.reference_mode: "reference_free"` for OpenArt text-to-video. The shot
 cannot have local cast, visible speakers, dialogue, assets or upstream sources,

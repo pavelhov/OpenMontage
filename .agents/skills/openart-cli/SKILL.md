@@ -14,6 +14,14 @@ Use this skill whenever a plan touches the OpenArt CLI video route
 reference is `docs/OPENART_CLI.md`. Prompt guidance is in
 `skills/creative/prompting/openart-prompting.md`.
 
+OpenMontage owns governed execution; the CLI and MCP are provider connections
+selected during proposal from required controls and current environment
+availability. Official CLI 0.1.1 remains usable for standalone automation and
+simple text-to-video or start-frame image-to-video. MCP requires the installed
+agent connector and exposes full exact-form controls where available. This is a
+capability distinction, not a quality claim for the same model. Never silently
+switch transports, accounts, or billing routes.
+
 ## What the route is
 
 - It is an explicit-only, credit-billed subscription CLI route, separate from Grok CLI
