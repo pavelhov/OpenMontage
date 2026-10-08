@@ -291,6 +291,7 @@ Cross-cutting skills that apply to all pipelines:
 | Reviewer | `meta/reviewer.md` | Self-review protocol after every stage |
 | Prompt Audit | `meta/prompt-audit.md` | Pre/critique/post prompt audit with provider, reference-role, continuity, and rewrite checks |
 | Checkpoint Protocol | `meta/checkpoint-protocol.md` | When/how to checkpoint and request human approval |
+| Shot Preparation Overlap | `meta/shot-preparation-overlap.md` | Prepare unbound later-shot candidates while an eligible reviewed target proceeds under the unchanged canonical plan |
 | Skill Creator | `meta/skill-creator.md` | Dynamically create new skills during pipeline runs |
 | Animation Runtime Selector | `meta/animation-runtime-selector.md` | Choose render runtime + animation library per scene |
 | Taste Direction | `meta/taste-direction.md` | Convert a brief into taste dials, anti-patterns, and reference strategy for proposal/playbook/atelier work |
