@@ -1,5 +1,7 @@
 # OpenArt subscription CLI (guarded video route)
 
+OpenMontage owns the governed execution; the CLI and MCP are provider connections. Select the connection during episode proposal by matching the required controls to current route and agent-environment availability. The official CLI 0.1.1 remains useful for standalone automation and simple text-to-video or start-frame image-to-video. MCP uses the agent-installed connector and supports the full controls declared by each exact form, including end frames, reference roles, or audio where available. This difference describes controls, not better quality for the same model. Never silently switch accounts, billing routes, or transports.
+
 OpenMontage drives the official OpenArt CLI (`openart`, verified version 0.1.1, see
 https://github.com/OpenArt-AI/cli) as an explicit-only sibling of the Grok CLI route.
 The transport is `tools/_openart_cli.py`. Setup, qualification and recovery go
