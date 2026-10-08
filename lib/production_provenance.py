@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError
 
 from lib.shot_contract import (
     ASSET_PREDICATES, CRITICAL_PREDICATES, PROJECT_PREDICATES, SHOT_PREDICATES,
@@ -247,6 +248,11 @@ def _validate_attempt_provenance(
         require(isinstance(current_upstream, dict) and selection_digest(current_upstream) == selection_digest(selection)
                 and review_digest(current_upstream.get('review')) == review_digest(selection['review']),
                 'upstream selection changed since this attempt')
+        # Original source authority is frozen above. Appended listening evidence
+        # belongs to current eligibility; it cannot revoke unchanged generation
+        # facts. Current selected original media must still match its hashes.
+        for role in ('output', 'outgoing_frame'):
+            bound_file(current_upstream[role], root, 'current upstream ' + role)
 
     submitted = request['submitted_inputs']
     frozen_openart = execution.load_openart_frozen(request) if openart else None
@@ -314,8 +320,8 @@ def _validate_attempt_provenance(
                 from lib.production_request import validate_frozen_preparation_history
                 validate_frozen_preparation_history(request, frozen_openart, root)
             else:
-                from lib.production_request import validate_frozen_preparation
-                validate_frozen_preparation(request, frozen_openart, root)
+                from lib.production_request import _validate_frozen_preparation_original
+                _validate_frozen_preparation_original(request, frozen_openart, root)
         elif not _ALLOW_OPENART_COMPONENT_PREPARATION:
             fail('OpenArt immutable preparation snapshot missing')
         return _validate_openart_result(root, directory, request, frozen_openart, expected_output, bound_file, read, require)
@@ -570,7 +576,7 @@ def validate_attempt_provenance(
         )
     except ProductionGovernanceError:
         raise
-    except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError) as exc:
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError, ValidationError) as exc:
         raise ProductionGovernanceError(f'attempt provenance: incomplete/invalid evidence ({exc})') from exc
 
 
@@ -743,14 +749,52 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
             and scope.get('story_revision') == story_revision, 'current scope identity/approval differs')
     evidence = execution._inside(scope['evidence']['path'], root)
     require(file_sha256(evidence) == scope['evidence']['sha256'], 'approval evidence bytes differ')
-    source = preparation.source_packet(root, shot_id, provider='openart_mcp', native=native)
-    require(preparation.digest(source['binding']) == authority['compiled_source_binding_sha256'],
-            'canonical reviewed source changed')
+    source = preparation._historical_source_packet(root, shot_id, provider='openart_mcp', native=native)
     profile = connector.load_profile(native['model'], native['mode'], require='candidate' if retained['purpose'] == 'qualification' else 'qualified')
     if 'derived_from_policy' in scope:
         from lib.production_autonomy import validate_policy_mcp_attempt
         validate_policy_mcp_attempt(root, scope, inputs=inputs, native=native, profile=profile, authority=authority['billing'])
-    proof = preparation.validate_preparation(inputs, native, profile)
+    # Historical preparation is replayed against its original immutable source
+    # packet. Later upstream observations may change the global contract hash;
+    # current relevant planning, references and selected subjects stay exact.
+    import base64
+    import copy
+    import hashlib
+    from lib.production_continuity import shot_planning_digest
+    snapshot_path = jobs._path(root, attempt_id).parent / 'evidence.json'
+    snapshot = jobs._read(snapshot_path)
+    require(preparation.digest(snapshot) == retained['evidence_snapshot_sha256'], 'frozen preparation snapshot changed')
+    files = snapshot['files']
+    for name, binding in files.items():
+        raw = base64.b64decode(binding['bytes_base64'], validate=True)
+        require(hashlib.sha256(raw).hexdigest() == binding['sha256'], 'frozen source bytes changed')
+    contract_name = str(execution._artifact_path(root, 'shot_contract.json').relative_to(root))
+    frozen_contract = json.loads(base64.b64decode(files[contract_name]['bytes_base64'], validate=True))
+    current_contract = execution.load_shot_contract(root)
+    packet = snapshot['source_packet']
+    frozen_shots = [item for item in frozen_contract['shots'] if item['id'] == shot_id]
+    require(len(frozen_shots) == 1 and frozen_shots[0] == packet['shot'], 'frozen source shot differs')
+    require(contract_digest(frozen_contract) == packet['binding']['contract_sha256']
+            and preparation.digest([frozen_contract['project_review'], frozen_shots[0].get('review')])
+                == packet['binding']['reviews_sha256'], 'frozen contract/reviews differ')
+    require(shot_planning_digest(frozen_contract, shot_id) == shot_planning_digest(current_contract, shot_id),
+            'current MCP planning semantics changed')
+    require(preparation.digest(snapshot['scope']) == authority['scope_sha256'], 'frozen scope differs')
+    stable = set(packet['binding']) - {'contract_sha256', 'reviews_sha256'}
+    require(set(source['binding']) == set(packet['binding'])
+            and all(source['binding'][key] == packet['binding'][key] for key in stable),
+            'canonical reviewed source/reference/upstream changed')
+    reconstructed = copy.deepcopy(source)
+    reconstructed['binding'] = copy.deepcopy(packet['binding'])
+    reconstructed['shot']['review'] = frozen_shots[0].get('review')
+    require(preparation.digest(reconstructed) == preparation.digest(packet)
+            and preparation.digest(packet['binding']) == authority['compiled_source_binding_sha256'],
+            'frozen original packet derivation differs')
+    compiled, review = snapshot['compiled'], snapshot['review']
+    require(preparation._read(root, 'compiled_request-' + inputs['compiled_request_id'] + '.json') == compiled
+            and preparation._read(root, 'preparation_review-' + inputs['preparation_review_id'] + '.json') == review,
+            'original preparation sidecars changed')
+    proof = preparation.validate_preparation_evidence(compiled, review, inputs, native, profile, reconstructed)
     if retained['purpose'] == 'qualification':
         from lib.provider_qualification import validate_qualification_stage
         validate_qualification_stage(root, inputs, authority['request_sha256'], native=native, profile=profile)

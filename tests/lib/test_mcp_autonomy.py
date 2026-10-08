@@ -54,6 +54,11 @@ def test_fresh_three_provider_policy_does_not_migrate_old_hash():
 
 @pytest.fixture
 def seam(tmp_path, monkeypatch):
+    # Retain the real report reader before this seam replaces the ledger reader.
+    # A first report import under the patch would leak an empty snapshot alias
+    # into later CLI tests after monkeypatch restores the ledger module.
+    from lib import production_autonomy_report  # noqa: F401
+
     p, sha = install(tmp_path, policy())
     inputs = copy.deepcopy(retained_fixture(tmp_path)['entry']['planned_request_template']['inputs'])
     inputs.update(project_dir=str(tmp_path), model='h3-turbo', mode='image2video',
@@ -80,6 +85,7 @@ def seam(tmp_path, monkeypatch):
     import lib
     monkeypatch.setattr(lib, 'openart_mcp', fake, raising=False)
     monkeypatch.setattr(preparation, 'validate_preparation', lambda *args: {'compiled_sha256': H('fixture compiled')})
+    monkeypatch.setattr(pa, '_historical_current_preparation', lambda *args: {'compiled_sha256': H('fixture compiled')})
     monkeypatch.setattr(pa, 'lock_proof', lambda *args, **kw: H('fixture locks'))
     monkeypatch.setattr(pa, 'cross_provider_block', lambda *args: [])
     monkeypatch.setattr(execution, '_attempts', lambda _: [])
@@ -224,3 +230,51 @@ def test_mcp_report_canonical_native_aspect_has_no_false_baseline_change(seam, m
     rows, _, _ = _mcp_policy_rows(root, p, sha)
     assert rows[0]['settings']['aspect_ratio'] == '16:9'
     assert 'aspect_ratio' not in rows[0]['baseline_delta']['settings_changes']
+
+
+def test_historical_mcp_replay_survives_revocation_but_new_admission_is_strict(seam):
+    root, _, sha, inputs, profile, native, _ = seam
+    scope = pa.derive_scope(root, inputs, provider='openart_mcp')
+    inputs['governance']['scope_id'] = scope['id']
+    path = root / 'artifacts/decision_log.json'
+    log = json.loads(path.read_text())
+    log['decisions'].append({**copy.deepcopy(log['decisions'][0]), 'decision_id': 'revocation',
+                             'selected': 'strict', 'user_approved': True})
+    path.write_text(json.dumps(log))
+    assert pa.load_active_policy(root)[0] is None
+    # Collection/provenance replay proves the retained approving policy.
+    assert pa.validate_policy_mcp_attempt(root, scope, inputs=inputs, native=native, profile=profile) == sha
+    with pytest.raises(pa.AutonomyError, match='Strict'):
+        pa.rooted_policy_mcp_authority(root, inputs, scope, native, profile)
+    tampered = copy.deepcopy(scope)
+    tampered['derived_from_policy']['policy_sha256'] = H('other policy')
+    with pytest.raises(pa.AutonomyError):
+        pa.validate_policy_mcp_attempt(root, tampered, inputs=inputs, native=native, profile=profile)
+
+
+from tests.integration.test_openart_mcp_autonomy import lifecycle  # noqa: E402,F401
+
+
+def test_actual_historical_mcp_replay_after_revocation_uses_retained_lock_context(lifecycle):
+    """Real lock_proof/prepare/begin: no seam stubs the active-policy dependency."""
+    root, _, sha, inputs, native, profile, jobs = lifecycle
+    jobs.prepare(root, attempt_id='policy-original', generation_inputs=inputs,
+                 authority_fn=execution.prepare_openart_mcp_handoff)
+    jobs.begin(root, 'policy-original', authority_fn=execution.prepare_openart_mcp_handoff)
+    jobs.receive(root, 'policy-original', outcome={'historyId': 'fixture-original', 'status': 'PENDING'})
+    scope = next(s for s in json.loads((root / 'production_scopes.json').read_text())['scopes']
+                 if s['id'] == inputs['governance']['scope_id'])
+    assert pa.validate_policy_mcp_attempt(root, scope, inputs=inputs, native=native, profile=profile) == sha
+    path = root / 'artifacts/decision_log.json'
+    log = json.loads(path.read_text())
+    log['decisions'].append({**copy.deepcopy(log['decisions'][0]), 'decision_id': 'revocation',
+                             'selected': 'strict', 'user_approved': True})
+    path.write_text(json.dumps(log))
+    assert pa.load_active_policy(root)[0] is None
+    assert pa.validate_policy_mcp_attempt(root, scope, inputs=inputs, native=native, profile=profile) == sha
+    with pytest.raises(pa.AutonomyError, match='Strict'):
+        pa.rooted_policy_mcp_authority(root, inputs, scope, native, profile)
+    with pytest.raises(pa.AutonomyError, match='Strict'):
+        pa.lock_proof(root, 'entry', inputs=inputs, native=native, profile=profile)
+    with pytest.raises((pa.AutonomyError, ValueError)):
+        pa.derive_scope(root, inputs, provider='openart_mcp')

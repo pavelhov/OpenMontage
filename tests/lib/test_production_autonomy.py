@@ -532,3 +532,138 @@ def test_retained_actor_voice_reference_rejects_role_flex(tmp_path, flex_kind):
     install_existing(tmp_path, policy, templates={'entry': template})
     with pytest.raises(pa.AutonomyError, match='conflict'):
         pa.require_active_policy(tmp_path)
+
+
+@pytest.fixture
+def access_fallback_context(tmp_path, monkeypatch, request):
+    from tests.lib.test_episode_production_controls import native_episode_context
+    return native_episode_context(tmp_path, monkeypatch, request)
+
+
+def test_access_fallback_derives_and_begins_only_with_current_approval_and_shared_cap(access_fallback_context):
+    from lib import production_execution as execution
+    from lib import episode_production_controls as controls
+    from tests.lib.test_episode_production_controls import activate
+    from tests.integration.test_openart_alternate_model_repair import _begin, _alternate, _compile, ORIGINAL
+    context = access_fallback_context
+    root, policy, _, inputs, native, _, timing, jobs = context
+    planning = {name: (root / f'artifacts/{name}.json').read_bytes()
+        for name in ('shot_contract', 'script', 'scene_plan')}
+    activate(root, 2, alternate='different_provider_or_media_model')
+    _begin(context, inputs, ORIGINAL, native)
+    jobs.record_status(root, ORIGINAL, result={'historyId': 'fixture-' + ORIGINAL,
+        'status': 'FAILED', 'error': 'Synthetic terminal provider access refusal'})
+    assert execution.load_attempt_result(root, ORIGINAL)['status'] == 'failed'
+    assert jobs._load(root, ORIGINAL)['output'] is None
+    original_dir = root / 'openart_mcp/attempts' / ORIGINAL
+    original_state = (original_dir / 'state.json').read_bytes()
+    assert not (original_dir / 'rejection.json').exists()
+    assert not list((original_dir / 'rejections').glob('*.json'))
+    candidate, alternate_native, _ = _alternate(context)
+    assert candidate['model'] != inputs['model']
+    scopes = (root / 'production_scopes.json').read_bytes()
+    kwargs = {'provider': 'openart_mcp', 'phase': 'repair', 'replaces_attempt_ids': [ORIGINAL],
+        'repair_basis': 'access_fallback'}
+    with pytest.raises(pa.AutonomyError, match='access fallback is not approved'):
+        pa.derive_scope(root, candidate, **kwargs)
+    assert (root / 'production_scopes.json').read_bytes() == scopes
+    activate(root, 2, alternate='different_provider_or_media_model', fallback=True, name='fallback-approved')
+    repair = pa.derive_scope(root, candidate, **kwargs)
+    assert repair['repair_basis'] == 'access_fallback'
+    candidate['governance']['scope_id'] = repair['id']
+    jobs.prepare(root, attempt_id='access-alternate', generation_inputs=candidate,
+        authority_fn=execution.prepare_openart_mcp_handoff)
+    assert controls.generation_usage(root)['total'] == 1
+    activate(root, 2, alternate='different_provider_or_media_model', name='fallback-withdrawn')
+    with pytest.raises(ValueError, match='access fallback is not approved'):
+        jobs.begin(root, 'access-alternate', authority_fn=execution.prepare_openart_mcp_handoff)
+    assert jobs.attempt_state(root, 'access-alternate')['status'] == 'prepared'
+    activate(root, 2, alternate='different_provider_or_media_model', fallback=True, name='fallback-restored')
+    envelope = jobs.begin(root, 'access-alternate', authority_fn=execution.prepare_openart_mcp_handoff)
+    assert envelope['arguments'] == alternate_native['body']
+    frozen = jobs.frozen_request(root, 'access-alternate')
+    assert frozen['authority']['scope']['repair_basis'] == 'access_fallback'
+    assert frozen['authority']['billing']['enforceable_credit_ceiling'] is False
+    assert frozen['native']['account_binding'] == native['account_binding']
+    usage = controls.generation_usage(root)
+    assert usage['total'] == usage['per_shot']['entry'] == 2 and usage['repair']['entry'] == 1
+    # A second terminal failure is still accountable; the shared episode cap
+    # refuses a third alternate while the retained policy permits three.
+    jobs.receive(root, 'access-alternate', outcome={'historyId': 'fixture-access-alternate'})
+    jobs.record_status(root, 'access-alternate', result={'historyId': 'fixture-access-alternate',
+        'status': 'FAILED', 'error': 'Synthetic second terminal access refusal'})
+    third = copy.deepcopy(inputs)
+    third['output_path'] = str(root / 'third-access.mp4')
+    third, _, _ = _compile(root, third, 'third-access', timing)
+    with pytest.raises(pa.AutonomyError, match='episode generation limit reached'):
+        pa.derive_scope(root, third, provider='openart_mcp', phase='repair',
+            replaces_attempt_ids=['access-alternate'], repair_basis='access_fallback')
+    assert policy['caps']['max_attempts_per_shot'] == 3
+    assert controls.generation_usage(root)['total'] == 2
+    assert (original_dir / 'state.json').read_bytes() == original_state
+    assert not (original_dir / 'rejection.json').exists()
+    assert not list((original_dir / 'rejections').glob('*.json'))
+    assert {name: (root / f'artifacts/{name}.json').read_bytes() for name in planning} == planning
+
+
+def test_access_fallback_refuses_same_native_model_even_with_alternate_repair_disabled(access_fallback_context):
+    from lib import episode_production_controls as controls
+    from tests.lib.test_episode_production_controls import activate
+    from tests.integration.test_openart_alternate_model_repair import _begin, _compile, ORIGINAL
+    context = access_fallback_context
+    root, _, _, inputs, native, _, timing, jobs = context
+    activate(root, 2, fallback=True)
+    _begin(context, inputs, ORIGINAL, native)
+    jobs.record_status(root, ORIGINAL, result={'historyId': 'fixture-' + ORIGINAL,
+        'status': 'FAILED', 'error': 'Synthetic terminal provider access refusal'})
+    candidate = copy.deepcopy(inputs)
+    candidate['output_path'] = str(root / 'same-model-access.mp4')
+    candidate, _, _ = _compile(root, candidate, 'same-model-access', timing)
+    assert candidate['model'] == jobs.frozen_request(root, ORIGINAL)['generation_inputs']['model']
+    scopes = (root / 'production_scopes.json').read_bytes()
+    with pytest.raises(pa.AutonomyError, match='different provider or media model'):
+        pa.derive_scope(root, candidate, provider='openart_mcp', phase='repair',
+            replaces_attempt_ids=[ORIGINAL], repair_basis='access_fallback')
+    assert (root / 'production_scopes.json').read_bytes() == scopes
+    assert controls.generation_usage(root)['total'] == 1
+    assert not (root / 'openart_mcp/attempts' / ORIGINAL / 'rejection.json').exists()
+
+
+@pytest.mark.parametrize('original_state', ['pending', 'uncertain', 'collection_error'])
+def test_access_fallback_never_substitutes_uncertain_or_uncollected_original(access_fallback_context, original_state):
+    from lib import production_execution as execution
+    from lib import episode_production_controls as controls
+    from tests.lib.test_episode_production_controls import activate
+    from tests.integration.test_openart_alternate_model_repair import _alternate, ORIGINAL
+    context = access_fallback_context
+    root, _, _, inputs, _, _, _, jobs = context
+    activate(root, 2, alternate='different_provider_or_media_model', fallback=True)
+    jobs.prepare(root, attempt_id=ORIGINAL, generation_inputs=inputs,
+        authority_fn=execution.prepare_openart_mcp_handoff)
+    jobs.begin(root, ORIGINAL, authority_fn=execution.prepare_openart_mcp_handoff)
+    if original_state == 'uncertain':
+        jobs.receive(root, ORIGINAL, error='Synthetic interrupted connector receipt')
+    else:
+        jobs.receive(root, ORIGINAL, outcome={'historyId': 'fixture-' + ORIGINAL})
+        if original_state == 'collection_error':
+            jobs.record_status(root, ORIGINAL, result={'historyId': 'fixture-' + ORIGINAL, 'status': 'COMPLETED',
+                'resources': [{'id': 'original-video', 'mediaType': 'video',
+                    'url': 'https://fixture.invalid/original.mp4'}]})
+            with pytest.raises(ValueError, match='downloaded original media file required'):
+                jobs.collect(root, ORIGINAL, downloaded_path=str(root / 'missing-download.mp4'))
+            assert jobs.attempt_state(root, ORIGINAL)['status'] == 'completed'
+    original_dir = root / 'openart_mcp/attempts' / ORIGINAL
+    retained_state = (original_dir / 'state.json').read_bytes()
+    scopes = (root / 'production_scopes.json').read_bytes()
+    candidate, _, _ = _alternate(context)
+    with pytest.raises(pa.AutonomyError, match='pending|uncertain|unresolved'):
+        pa.derive_scope(root, candidate, provider='openart_mcp', phase='repair',
+            replaces_attempt_ids=[ORIGINAL], repair_basis='access_fallback')
+    with pytest.raises(ValueError):
+        jobs.prepare(root, attempt_id='forbidden-substitute', generation_inputs=candidate,
+            authority_fn=execution.prepare_openart_mcp_handoff)
+    assert [row['attempt_id'] for row in jobs.list_attempts(root)] == [ORIGINAL]
+    assert (original_dir / 'state.json').read_bytes() == retained_state
+    assert (root / 'production_scopes.json').read_bytes() == scopes
+    assert not (original_dir / 'rejection.json').exists()
+    assert controls.generation_usage(root)['total'] == 1

@@ -186,6 +186,45 @@ def require_active_policy(root):
     return policy, sha, decision_id
 
 
+def load_historical_policy(root, scope):
+    """``(policy, sha, decision_id)`` that approved an already-derived scope.
+
+    Historical validation needs the retained policy bytes and the user approval
+    decision that existed when the scope was derived; it does not require that
+    policy to still be current (a later revocation stops new admission only).
+    Prospective derivation keeps using :func:`require_active_policy`."""
+    root = Path(root)
+    derived = scope.get('derived_from_policy') if isinstance(scope, dict) else None
+    if not isinstance(derived, dict):
+        raise AutonomyError('malformed historical derived policy scope')
+    path = root / POLICY_ARTIFACT
+    if not path.is_file():
+        raise AutonomyError('historical policy artifact missing')
+    policy = _json(path)
+    errors = schema_errors(policy)
+    if errors:
+        raise AutonomyError('historical policy schema: ' + '; '.join(errors))
+    baselines = retained_baselines(root, policy)
+    sha = digest(evidence_content(policy, baselines))
+    for retained in baselines.values():
+        for asset in retained['projection']['assets']:
+            if not asset.get('upstream_source') and hashlib.sha256(_inside(root, asset['path']).read_bytes()).hexdigest() != asset['sha256']:
+                raise AutonomyError('retained original static source bytes changed')
+    if derived.get('policy_sha256') != sha:
+        raise AutonomyError('historical attempt policy bytes differ')
+    decision_id = derived.get('decision_id')
+    approvals = [d for d in _decision_entries(root) if isinstance(d, dict) and d.get('decision_id') == decision_id
+                 and d.get('category') == ACTIVATION_CATEGORY and d.get('subject') == ACTIVATION_SUBJECT
+                 and d.get('selected') == f'auto_continue:{sha}' and d.get('user_approved') is True]
+    if len(approvals) != 1:
+        raise AutonomyError('historical policy approval decision missing')
+    marker = _json(root / 'project.json')
+    if not isinstance(marker, dict) or marker.get('project_id') != policy['project_id'] \
+            or scope.get('story_revision', policy['story_revision']) != policy['story_revision']:
+        raise AutonomyError('historical policy project/story differs')
+    return policy, sha, decision_id
+
+
 # ---------------------------------------------------------------- conflicts
 
 UNKNOWN_BILLING = 'unknown_cost_no_ceiling'
@@ -516,9 +555,10 @@ def _diff(a, b, path=''):
     return [] if a == b else [path or '$']
 
 
-def contract_delta(root, shot_id, candidate):
+def contract_delta(root, shot_id, candidate, *, policy=None):
     """Compare only against retained evidence, never against a caller baseline."""
-    policy, _, _ = require_active_policy(root)
+    if policy is None:
+        policy, _, _ = require_active_policy(root)
     baseline = retained_baselines(root, policy)[shot_id]['projection']
     if candidate.get('contract_snapshot') != current_projection(root, shot_id)['contract_snapshot'] or candidate.get('scene_snapshot') != current_projection(root, shot_id)['scene_snapshot']:
         raise AutonomyError('candidate global planning differs from validated current bytes')
@@ -696,20 +736,49 @@ def eligible_routes(policy, shot_id, menu):
 
 # ---------------------------------------------------------------- lock proof
 
-def lock_proof(root, shot_id, *, inputs, native, profile):
-    return _root_lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile)
+def lock_proof(root, shot_id, *, inputs, native, profile, policy_context=None):
+    """Prospective callers omit ``policy_context`` and require the active policy.
+    Only retained-authority replay passes its already-proved (policy, sha)."""
+    return _root_lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile,
+                            policy_context=policy_context)
 
 
-def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None):
+def _historical_current_preparation(root, inputs, native, profile):
+    """Validate current named preparation for retained-authority replay only.
+
+    Uses the original-review historical source packet and the shared evidence
+    validator; prospective admission keeps ``preparation.validate_preparation``.
+    """
+    from lib import production_request as preparation
+    try:
+        compiled = preparation._read(Path(root), 'compiled_request-' + preparation._id(inputs['compiled_request_id']) + '.json')
+        review = preparation._read(Path(root), 'preparation_review-' + preparation._id(inputs['preparation_review_id']) + '.json')
+        packet = preparation._historical_source_packet(root, inputs['governance']['shot_id'],
+                                                       provider=native.get('provider', 'openart_cli'), native=native)
+        return preparation.validate_preparation_evidence(compiled, review, inputs, native, profile, packet)
+    except (ValueError, KeyError) as exc:
+        raise AutonomyError(f'historical named preparation is incomplete: {exc}') from exc
+
+
+def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None, policy_context=None):
     """Derive locks from rooted actual submitted bytes and named preparation evidence."""
     from lib import production_request as preparation
     from lib.production_execution import _paths, _clean, _artifact_path
-    policy, sha, _ = require_active_policy(root)
+    if historical is None and policy_context is None:
+        policy, sha, _ = require_active_policy(root)
+    elif historical is None:
+        # Retained-authority replay: the caller already proved the historical policy.
+        policy, sha = policy_context
+    else:
+        policy, sha = historical['policy'], historical['policy_sha256']
     retained = retained_baselines(root, policy)[shot_id]
     projection = retained['projection']
-    contract_delta(root, shot_id, current_projection(root, shot_id))
+    contract_delta(root, shot_id, current_projection(root, shot_id), policy=policy)
     if historical is None:
-        preparation.validate_preparation(inputs, native, profile)
+        if policy_context is None:
+            preparation.validate_preparation(inputs, native, profile)
+        else:
+            _historical_current_preparation(root, inputs, native, profile)
         compiled = _json(_artifact_path(Path(root), 'compiled_request-' + preparation._id(inputs['compiled_request_id']) + '.json'))
         review = _json(_artifact_path(Path(root), 'preparation_review-' + preparation._id(inputs['preparation_review_id']) + '.json'))
     else:
@@ -844,7 +913,7 @@ def openart_allowance_id(sha):
 def _scope_record(policy, sha, decision_id, *, shot_id, provider, request_digest, approval_plan_sha256,
                  derivation_index, lock_digest, compiled_request_sha256=None, preparation_review_id=None,
                  resolved_upstream=None, phase='first_pass', replaces_attempt_ids=None, credit_authorization_sha256=None,
-                 unknown_cost_authorization_sha256=None):
+                 unknown_cost_authorization_sha256=None, repair_basis='critical_review'):
     """Normal v1.0 production scope for one attempt; exact single-shot scope."""
     if shot_id not in policy['shots']:
         raise AutonomyError(f'{shot_id} has no approved baseline')
@@ -868,6 +937,12 @@ def _scope_record(policy, sha, decision_id, *, shot_id, provider, request_digest
     }
     if phase == 'repair':
         scope['replaces_attempt_ids'] = list(replaces_attempt_ids)
+    if repair_basis == 'access_fallback':
+        if phase != 'repair':
+            raise AutonomyError('access fallback is a repair basis')
+        scope['repair_basis'] = 'access_fallback'
+    elif repair_basis != 'critical_review':
+        raise AutonomyError('unknown repair basis')
     if provider == 'openart_mcp':
         if credit_authorization_sha256 is not None:
             raise AutonomyError('MCP exact-credit ceiling is not qualified')
@@ -961,9 +1036,11 @@ def rooted_policy_mcp_authority(root, inputs, scope, native, profile, *, exclude
 
 def validate_policy_mcp_attempt(root, scope, *, inputs, native, profile, authority=None, return_authority=False):
     """Reprove a retained connector policy origin without editing its journal."""
-    policy, sha, decision_id, material = _scope_material(root, inputs, 'openart_mcp', derived_unknown_id=scope['id'])
+    policy, sha, decision_id, material = _scope_material(root, inputs, 'openart_mcp', derived_unknown_id=scope['id'],
+                                                         historical_scope=scope)
     expected = _scope_record(policy, sha, decision_id, derivation_index=scope['derived_from_policy']['derivation_index'],
-        phase=scope['phase'], replaces_attempt_ids=scope.get('replaces_attempt_ids'), **material)
+        phase=scope['phase'], replaces_attempt_ids=scope.get('replaces_attempt_ids'),
+        repair_basis=scope.get('repair_basis', 'critical_review'), **material)
     scopes = _json(Path(root) / 'production_scopes.json')['scopes']
     if scope != expected or len([s for s in scopes if s == expected]) != 1:
         raise AutonomyError('historical MCP scope differs from retained rooted policy')
@@ -994,10 +1071,12 @@ def _refuse_unknown_cost(inputs, *, derived_unknown_id=None, allow_evidence=Fals
         raise AutonomyError('unknown-cost Auto-continue is unavailable; use separate Strict approval')
 
 
-def _scope_material(root, inputs, provider, observation=None, *, derived_unknown_id=None):
+def _scope_material(root, inputs, provider, observation=None, *, derived_unknown_id=None, historical_scope=None):
     _refuse_unknown_cost(inputs, derived_unknown_id=derived_unknown_id, allow_evidence=True)
     from lib import production_request as preparation, production_execution as execution
-    policy, sha, decision_id = require_active_policy(root)
+    # Historical replay proves the retained approving policy; only new admission needs an active one.
+    policy, sha, decision_id = (load_historical_policy(root, historical_scope) if historical_scope is not None
+                                else require_active_policy(root))
     unknown = _is_unknown(_provider_spec(policy, provider))
     if provider not in {'openart_cli', 'openart_mcp'} and _is_unknown(_openart_spec(policy)) and any(key in inputs for key in ('unknown_cost_evidence_id', 'unknown_cost_authorization_id')):
         raise AutonomyError('unknown-cost authority is OpenArt-only')
@@ -1044,8 +1123,13 @@ def _scope_material(root, inputs, provider, observation=None, *, derived_unknown
         profile = {'source': 'real'}
     else:
         raise AutonomyError('route outside subscription CLI policy')
-    proof = preparation.validate_preparation(inputs, native, profile)
-    locks = lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile)
+    if historical_scope is None:
+        proof = preparation.validate_preparation(inputs, native, profile)
+        locks = lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile)
+    else:
+        proof = _historical_current_preparation(root, inputs, native, profile)
+        locks = lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile,
+                           policy_context=(policy, sha))
     contract = execution.load_shot_contract(root)
     own_shot = next(s for s in contract['shots'] if s['id'] == shot_id)
     selected = execution.load_selected_attempts(root)
@@ -1093,12 +1177,20 @@ def validate_derived_scope(root, scope, *, inputs, observation=None):
         raise AutonomyError('derived scope is not retained exactly once')
     index = policy_scopes.index(scope)
     phase = scope.get('phase')
-    if phase == 'repair':
+    basis = scope.get('repair_basis', 'critical_review')
+    if phase == 'repair' and basis == 'access_fallback':
+        from lib import episode_production_controls as episode_controls
+        effective = episode_controls.effective_controls(root)
+        if effective is None or effective['access_fallback'] is not True:
+            raise AutonomyError('access fallback is not approved in current episode controls')
+        _validate_access_fallback(root, material['shot_id'], scope.get('replaces_attempt_ids'),
+                                  scope['provider'], inputs.get('model'))
+    elif phase == 'repair':
         _validate_repair_evidence(root, material['shot_id'], scope.get('replaces_attempt_ids'))
     counts = root_attempt_counts(root, policy, exclude_scope_id=scope['id'])
     check_caps(policy, material['shot_id'], counts, phase)
     expected = _scope_record(policy, sha, decision_id, derivation_index=index, phase=phase,
-                             replaces_attempt_ids=scope.get('replaces_attempt_ids'), **material)
+                             replaces_attempt_ids=scope.get('replaces_attempt_ids'), repair_basis=basis, **material)
     if expected != scope:
         raise AutonomyError('derived scope differs from authoritative current replay')
     if scope['provider'] == 'openart_cli':
@@ -1180,7 +1272,135 @@ def _validate_repair_evidence(root, shot_id, replacement_ids):
             raise AutonomyError('repair requires verified generated-output or terminal-failure evidence')
 
 
-def derive_scope(root, inputs, *, provider, observation=None, phase='first_pass', replaces_attempt_ids=None):
+# Grok adapter categories that are confirmed terminal provider/access refusals.
+# Recoverable protocol/artifact/CLI failures never qualify as access fallback originals.
+_GROK_TERMINAL_ACCESS_CATEGORIES = frozenset({'spending_limit', 'auth', 'tier', 'zdr_storage', 'permission_policy'})
+
+
+def _grok_terminal_no_result_proof(directory, request, result):
+    """Re-derive Grok terminal access proof from retained canonical evidence.
+
+    The wrapper label alone is not proof: the stream parser can classify a
+    terminal category from a stream that also holds a completed tool update.
+    Require raw/result parity, session identity, provider text that classifies
+    to the same category, and retained native session logs with no completed
+    tool update (the only evidence an original collection can recover from)."""
+    from urllib.parse import quote
+    from tools._grok_cli_media import _classify_message
+    raw_path = directory / 'raw_result.json'
+    if not raw_path.is_file() or _json(raw_path) != result.get('result'):
+        raise AutonomyError('access fallback original raw result differs from its journal')
+    data = result['result'].get('data') or {}
+    category = data.get('error_category')
+    sid = request.get('cli_session_id')
+    prefix = f'Grok CLI {category} error: '
+    error = result['result'].get('error')
+    if (category not in _GROK_TERMINAL_ACCESS_CATEGORIES or not sid
+            or data.get('session_id') != sid or data.get('dispatch_session_id') != sid
+            or data.get('retry_attempted') is not False or data.get('fallback_attempted') is not False
+            or not isinstance(error, str) or not error.startswith(prefix)
+            or _classify_message(error[len(prefix):], dispatched=True).category != category):
+        raise AutonomyError('access fallback original is not a confirmed terminal provider/access failure')
+    diagnostics = data.get('diagnostics') or {}
+    if any(isinstance(item, dict) and item.get('tool_completion_observed')
+           for item in diagnostics.values()):
+        raise AutonomyError('access fallback original recorded a completed native tool update')
+    submitted = request.get('submitted_inputs') or {}
+    cwd = Path(submitted.get('cwd') or Path(submitted.get('output_path', '.')).parent).resolve()
+    session = Path(data.get('session_directory') or '').expanduser()
+    if session.name != sid or session.parent.name != quote(str(cwd), safe=''):
+        raise AutonomyError('access fallback original session directory differs from its request')
+    if session.is_symlink():
+        raise AutonomyError('access fallback original session directory cannot be a symlink')
+    for name in ('updates.jsonl', 'events.jsonl'):
+        log = session / name
+        if log.is_symlink():
+            raise AutonomyError('access fallback original session log cannot be a symlink')
+        if not log.exists():
+            continue
+        for line in log.read_text(errors='replace').splitlines():
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            params = row.get('params')
+            event = params['update'] if isinstance(params, dict) and isinstance(params.get('update'), dict) else row
+            kind = event.get('type') or event.get('sessionUpdate')
+            if kind == 'tool_completed' or (kind == 'tool_call_update'
+                                            and str(event.get('status', '')).lower() == 'completed'):
+                raise AutonomyError('access fallback original retains a completed native tool update')
+
+
+def _validate_access_fallback(root, shot_id, replacement_ids, provider, model):
+    """Episode-approved access fallback: each original is a confirmed terminal
+    provider/access failure with no usable output, and the fallback uses a
+    different provider or media model. Uncertain, never-dispatched or
+    collection-error originals never qualify; no review is fabricated."""
+    from lib import production_execution as execution
+    from lib.episode_production_controls import _media_model
+    model = _media_model(provider, model)
+    attempts = {a['attempt_id']: a for a in execution._attempts(root)}
+    if (not isinstance(replacement_ids, list) or not replacement_ids or
+            len(replacement_ids) != len(set(replacement_ids))):
+        raise AutonomyError('access fallback requires unique actual replacement attempts')
+    for aid in replacement_ids:
+        request = attempts.get(aid)
+        if not request or request['shot_id'] != shot_id or production_kind(request) != 'motion':
+            raise AutonomyError('access fallback must name actual same-shot motion attempts')
+        if request.get('provider') == 'openart_mcp':
+            from lib import openart_mcp_jobs as mcp_jobs
+            if execution.load_attempt_result(root, aid).get('status') != 'failed':
+                raise AutonomyError('access fallback original is not a confirmed terminal failure')
+            mcp_jobs.terminal_failure_record(root, aid)
+            old_provider = 'openart_mcp'
+            old_model = mcp_jobs.frozen_request(root, aid).get('generation_inputs', {}).get('model')
+        else:
+            directory = Path(root) / 'production_attempts' / aid
+            if (directory / 'reconciliation.json').exists() or (directory / 'local_continuation_claim.json').exists():
+                raise AutonomyError('access fallback original has reconciled or continued state')
+            result = _json(directory / 'result.json') if (directory / 'result.json').is_file() else {}
+            data = (result.get('result') or {}).get('data') or {}
+            if (result.get('status') != 'failed' or result.get('exception') is not None
+                    or result.get('output') is not None or result.get('preserved_output') is not None
+                    or (result.get('result') or {}).get('success') is not False
+                    or data.get('dispatch_status') != 'failed'):
+                raise AutonomyError('access fallback original is not a confirmed terminal no-output failure')
+            old_provider = (request.get('scope') or {}).get('provider')
+            old_model = (request.get('submitted_inputs') or {}).get('model')
+            # Generic no-output shape is not enough: require the provider's canonical terminal proof.
+            if old_provider == 'grok_cli':
+                _grok_terminal_no_result_proof(directory, request, result)
+            elif old_provider == 'openart_cli':
+                from lib import openart_jobs as jobs
+                try:
+                    jobs.verify_terminal_failure(aid, execution.load_openart_frozen(request)['profile'])
+                except Exception as exc:
+                    raise AutonomyError(f'access fallback original lacks verified terminal failure proof: {exc}') from exc
+            else:
+                raise AutonomyError('access fallback original provider has no canonical terminal failure proof')
+        old_model = _media_model(old_provider, old_model)
+        if old_provider == provider and (model is None or model == old_model):
+            raise AutonomyError('access fallback must use a different provider or media model')
+
+
+def _controls_admission(root, shot_id, provider, inputs, phase, replaces_attempt_ids, repair_basis):
+    from lib import episode_production_controls as episode_controls
+    if episode_controls.effective_controls(root) is None:
+        if repair_basis != 'critical_review':
+            raise AutonomyError('access fallback requires approved episode controls')
+        return
+    try:
+        episode_controls.require_admission(
+            root, shot_id=shot_id, provider=provider, model=inputs.get('model'), purpose=phase,
+            replaces_attempt_ids=tuple(replaces_attempt_ids or ()), repair_basis=repair_basis)
+    except episode_controls.EpisodeControlsError as exc:
+        raise AutonomyError(str(exc))
+
+
+def derive_scope(root, inputs, *, provider, observation=None, phase='first_pass', replaces_attempt_ids=None,
+                 repair_basis='critical_review'):
     """Append a normal exact one-attempt scope under the project lock, without CLI calls."""
     from lib import production_execution as execution
     root = Path(root).resolve()
@@ -1198,9 +1418,14 @@ def derive_scope(root, inputs, *, provider, observation=None, phase='first_pass'
         used_scopes = {a['scope_id'] for a in execution._attempts(root)}
         if any(s['id'] not in used_scopes and shot_id in s.get('requests', {}) and 'derived_from_policy' in s for s in scopes):
             raise AutonomyError('an undispatched derived scope already exists for this shot')
+        if repair_basis not in ('critical_review', 'access_fallback'):
+            raise AutonomyError('unknown repair basis')
+        _controls_admission(root, shot_id, provider, inputs, phase, replaces_attempt_ids, repair_basis)
         check_caps(policy, shot_id, root_attempt_counts(root, policy), phase)
         index = sum('derived_from_policy' in s for s in scopes)
-        if phase == 'repair':
+        if phase == 'repair' and repair_basis == 'access_fallback':
+            _validate_access_fallback(root, shot_id, replaces_attempt_ids, provider, inputs.get('model'))
+        elif phase == 'repair':
             _validate_repair_evidence(root, shot_id, replaces_attempt_ids)
         elif any(a['shot_id'] == shot_id and production_kind(a) == 'motion' for a in execution._attempts(root)):
             raise AutonomyError('first_pass cannot authorize a corrective reroll')
@@ -1208,7 +1433,7 @@ def derive_scope(root, inputs, *, provider, observation=None, phase='first_pass'
         material.pop('credit_authorization_sha256', None)
         material.pop('unknown_cost_authorization_sha256', None)
         scope = _scope_record(policy, sha, decision_id, derivation_index=index, phase=phase,
-                              replaces_attempt_ids=replaces_attempt_ids, **material)
+                              replaces_attempt_ids=replaces_attempt_ids, repair_basis=repair_basis, **material)
         if provider == 'openart_mcp':
             profile, native = _prepare_mcp_policy_native(root, policy, shot_id, inputs)
             scope['unknown_cost_authorization_sha256'] = digest(_mcp_policy_terms(root, policy, sha, decision_id, scope, inputs, native))
@@ -1418,6 +1643,11 @@ def root_attempt_counts(root, policy, *, exclude_scope_id=None):
             raise AutonomyError('multiple undispatched scopes for same shot')
         open_shots.add(shot)
         records['scope:' + scope['id']] = (shot, scope['phase'], scope['id'], scope['requests'][shot])
+    from lib import episode_production_controls as episode_controls
+    if episode_controls.effective_controls(root) is not None:
+        # Opted-in episodes: canonical never-submitted preparations cost no slot.
+        excluded = set(episode_controls.generation_usage(root)['excluded_never_submitted'])
+        records = {aid: value for aid, value in records.items() if aid not in excluded}
     return attempt_counts([{'attempt_id': aid, 'shot_id': value[0], 'phase': value[1]}
                            for aid, value in records.items()])
 
@@ -1435,10 +1665,10 @@ def validate_policy_attempt(root, request, scope, frozen_contract, *, frozen_ope
     derived = scope['derived_from_policy']
     if not isinstance(derived, dict):
         raise AutonomyError('malformed historical derived policy scope')
-    policy, sha, decision_id = require_active_policy(root)
+    policy, sha, decision_id = load_historical_policy(root, scope)
     shot_id = request['shot_id']
     if derived.get('policy_sha256') != sha or derived.get('decision_id') != decision_id:
-        raise AutonomyError('historical attempt policy is inactive')
+        raise AutonomyError('historical attempt policy differs')
     if scope['approved_by'] != f'policy:{sha}' or scope['evidence'] != policy['evidence']:
         raise AutonomyError('historical policy approval authority differs')
     if scope['requests'] != {shot_id: request['request_sha256']} or scope['attempts_per_shot'] != {shot_id: 1}:
@@ -1480,13 +1710,12 @@ def validate_policy_attempt(root, request, scope, frozen_contract, *, frozen_ope
     restored['governance'] = {'scope_id': scope['id'], 'shot_id': shot_id}
     restored['compiled_request_id'] = payload['compiled'].get('compiled_request_id', request['scope']['derived_from_policy'].get('compiled_request_id', 'historical'))
     restored['preparation_review_id'] = derived['preparation_review_id']
-    preparation._validate_compiled(payload['compiled'], restored, native, profile, payload['source_packet'])
-    preparation._schema('preparation_review', payload['review'])
+    try:
+        preparation.validate_preparation_evidence(payload['compiled'], payload['review'], restored, native, profile,
+                                                  payload['source_packet'])
+    except ValueError as exc:
+        raise AutonomyError(f'historical named preparation is incomplete: {exc}') from exc
     review = payload['review']
-    if profile['source'] == 'real' and review['evidence_kind'] != 'reviewed':
-        raise AutonomyError('historical fixture preparation cannot certify live provider')
-    if review['review_id'] != derived['preparation_review_id'] or review['subject_sha256'] != digest(payload['compiled']) or review['status'] != 'pass' or {p['name'] for p in review['predicates']} != preparation.PREDICATES or len(review['predicates']) != len(preparation.PREDICATES) or any(p['status'] != 'pass' for p in review['predicates']):
-        raise AutonomyError('historical named preparation is incomplete')
     current = current_projection(root, shot_id)
     frozen_shot = next(s for s in frozen_contract['shots'] if s['id'] == shot_id)
     own_shot = copy.deepcopy(frozen_shot)
@@ -1494,7 +1723,7 @@ def validate_policy_attempt(root, request, scope, frozen_contract, *, frozen_ope
     own_shot['upstream'] = [{k: v for k, v in u.items() if k not in {'attempt_id', 'output_sha256', 'outgoing_frame_sha256', 'review_sha256'}} for u in own_shot.get('upstream', [])]
     if own_shot != current['shot']:
         raise AutonomyError('historical own-shot semantics changed')
-    locks = _root_lock_proof(root, shot_id, inputs=restored, native=native, profile=profile, historical=payload)
+    locks = _root_lock_proof(root, shot_id, inputs=restored, native=native, profile=profile, historical={**payload, 'policy': policy, 'policy_sha256': sha})
     if locks != derived['lock_digest'] or digest(payload['compiled']) != derived['compiled_request_sha256']:
         raise AutonomyError('historical actual lock/compilation proof differs')
     selected = _json(directory / 'selected_attempts.json')
@@ -1515,7 +1744,8 @@ def validate_policy_attempt(root, request, scope, frozen_contract, *, frozen_ope
         if binding.authorization_sha256 != material[key]:
             raise AutonomyError('historical private credit authorization differs')
     expected = _scope_record(policy, sha, decision_id, derivation_index=derived['derivation_index'],
-        phase=scope['phase'], replaces_attempt_ids=scope.get('replaces_attempt_ids'), **material)
+        phase=scope['phase'], replaces_attempt_ids=scope.get('replaces_attempt_ids'),
+        repair_basis=scope.get('repair_basis', 'critical_review'), **material)
     scopes = _json(root / 'production_scopes.json')['scopes']
     if scope != expected or len([s for s in scopes if s == expected]) != 1:
         raise AutonomyError('historical derived scope differs from rooted authority')

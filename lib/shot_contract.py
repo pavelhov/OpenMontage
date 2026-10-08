@@ -120,6 +120,30 @@ def validate_shot_contract(
     outgoing_frame (both path/sha256), and review. It must not be reconstructed
     from the expected bindings stored in this contract.
     """
+    return _validate_shot_contract(contract, project_dir=project_dir, shot_id=shot_id,
+        story_revision=story_revision, selected_upstream=selected_upstream,
+        resolve_successors=True)
+
+
+def _validate_original_shot_contract(
+    contract: dict, *, project_dir: str | Path, shot_id: str,
+    story_revision: str | None = None, selected_upstream: dict | None = None,
+) -> dict[str, Any]:
+    """Check original source facts for retained generation-authority replay only.
+
+    Embedded original reviews, including explicitly authorized draft unknowns,
+    retain their exact expected hashes. This does not establish current listening
+    evidence or eligibility under an appended review successor.
+    """
+    return _validate_shot_contract(contract, project_dir=project_dir, shot_id=shot_id,
+        story_revision=story_revision, selected_upstream=selected_upstream,
+        resolve_successors=False)
+
+
+def _validate_shot_contract(
+    contract, *, project_dir, shot_id, story_revision, selected_upstream,
+    resolve_successors,
+):
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -292,8 +316,17 @@ def validate_shot_contract(
                 errors.append(f"{label}.{key}: selected hash changed or missing")
             else:
                 check_file(record, f"{label}.{key}")
-        review = selection.get("review")
-        if not isinstance(review, dict) or review_digest(review) != binding["review_sha256"]:
-            errors.append(f"{label}: selected review changed or missing")
+        try:
+            if resolve_successors:
+                from lib.production_review_successors import resolve_selection_review
+                review = resolve_selection_review(root, upstream_id, selection,
+                    expected_review_sha256=binding["review_sha256"])
+            else:
+                review = selection.get("review")
+                if review_digest(review) != binding["review_sha256"]:
+                    raise ValueError("historical original review differs")
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            errors.append(f"{label}: selected review changed or missing ({exc})")
+            continue
         check_review(review, selection_digest(selection), UPSTREAM_PREDICATES, f"{label}.review", allow_draft=True, selection=selection, upstream_id=upstream_id)
     return result()
