@@ -158,6 +158,31 @@ dependent shot must use the selected upstream attempt and observed outgoing
 frame, with required continuity review; a planned or prepared board cannot
 substitute for that evidence.
 
+## Current Board Inventory and Prompt Pack
+
+Prepare one current cast/prop inventory and all board text before generating
+new images. Each reused reference keeps exact current bytes, story/role
+applicability and its original observation. One image can serve multiple roles
+when the observation covers each state. Explicit missing slots stay unresolved;
+a pre-board packet is not a reviewed-motion packet.
+
+Schedule image dependencies separately: an end-from-start image needs the
+actual imported start image, while unrelated prompts/nodes can proceed. Shared
+cast and payoff boards receive priority by their shot unblock count. Prepared
+frame pairs do not require prior video outputs unless the authored motion plan
+explicitly declares an actual outgoing-frame dependency. Required native frame
+pins still need matching exact route support; an intended ending board alone
+adds no native control.
+
+Use the canonical image lifecycle described in
+[`../meta/shot-preparation-overlap.md`](../meta/shot-preparation-overlap.md), then
+retain one persistent reviewer's role observation. Preserve cosmetic warnings
+and continue; target only essential cast/story/staging corrections within the
+existing image scope and allowance. Transfer the same observation to applicable
+project/delivery records instead of repeating the pixel review. Changed promoted
+bytes stale affected packets/bindings/reviews; unchanged applicable roles carry.
+Run the fresh exact canonical motion dry-run before existing governed dispatch.
+
 ## Animatic and Approved-Keyframe-to-Motion Handoff
 
 Use `scene_plan.metadata.visual_development.animatic_keyframes[scene_id]` to
