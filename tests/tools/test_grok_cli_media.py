@@ -1497,3 +1497,20 @@ def test_media_tools_omit_write_edit_and_read_deny_for_sealed_media(tmp_path):
         "MCPTool(*)",
     ]
     assert set(deny_values) == EXPECTED_FULL_DENIES
+
+
+@pytest.mark.parametrize('boundary', [' ', '\t', '\n\r', '\v\f', ' \t\r\n'])
+def test_sealed_prompt_ascii_boundaries_only_are_equivalent(boundary):
+    from tools._grok_cli_media import _sealed_arguments_match
+    assert _sealed_arguments_match({'prompt':'action'}, {'prompt':boundary+'action'+boundary})
+
+
+@pytest.mark.parametrize('field,observed,expected', [
+    ('prompt','one  action','one action'), ('prompt','action\u00a0','action'),
+    ('first_frame','frame.png ','frame.png'), ('first_frame','frame.png\n','frame.png'),
+    ('images',['frame.png\t'],['frame.png']), ('resolution_name','720p ','720p'),
+    ('aspect_ratio','9:16 ','9:16'), ('duration',6,5),
+])
+def test_sealed_prompt_equivalence_does_not_relax_other_controls(field, observed, expected):
+    from tools._grok_cli_media import _sealed_arguments_match
+    assert not _sealed_arguments_match({field:observed}, {field:expected})

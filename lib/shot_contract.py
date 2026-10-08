@@ -147,7 +147,7 @@ def validate_shot_contract(
         except (KeyError, TypeError, ValueError, OSError) as exc:
             errors.append(f"{label}: unreadable bound asset ({exc})")
 
-    def check_review(review, subject, required, label, *, allow_draft=False):
+    def check_review(review, subject, required, label, *, allow_draft=False, selection=None, upstream_id=None):
         # Upstream review records enter from outside the schema-validated plan.
         review_schema = {"$defs": schema["$defs"], "$ref": "#/$defs/review"}
         malformed = list(Draft202012Validator(review_schema).iter_errors(review))
@@ -156,7 +156,10 @@ def validate_shot_contract(
             return
         if review["story_revision"] != revision or review["subject_sha256"] != subject:
             errors.append(f"{label}: stale review binding (story revision or subject hash)")
-        provisional = allow_draft and provisional_audio_review(review, root)
+        from lib.production_draft import accepted_draft_predicate
+        accepted = accepted_draft_predicate(selection, root, shot_id=upstream_id) if allow_draft and selection else None
+        audio_provisional = allow_draft and provisional_audio_review(review, root)
+        provisional = audio_provisional or accepted is not None
         if review["status"] != "pass" and not provisional:
             errors.append(f"{label}: review is {review['status']}")
         seen = set()
@@ -168,7 +171,7 @@ def validate_shot_contract(
             critical = name in CRITICAL_PREDICATES or predicate.get("severity", "critical") == "critical"
             if name in CRITICAL_PREDICATES and predicate.get("severity") == "cosmetic":
                 errors.append(f"{label}.{name}: required critical predicate cannot be cosmetic")
-            deferred = provisional and name == "speaker_source" and predicate["status"] == "unknown"
+            deferred = (audio_provisional and name == "speaker_source" and predicate["status"] == "unknown") or (name == accepted and predicate["status"] == "fail")
             if predicate["status"] != "pass":
                 (errors if critical and not deferred else warnings).append(f"{label}.{name}: {predicate['status']}: {predicate['evidence']}")
         for name in sorted(required - seen):
@@ -292,5 +295,5 @@ def validate_shot_contract(
         review = selection.get("review")
         if not isinstance(review, dict) or review_digest(review) != binding["review_sha256"]:
             errors.append(f"{label}: selected review changed or missing")
-        check_review(review, selection_digest(selection), UPSTREAM_PREDICATES, f"{label}.review", allow_draft=True)
+        check_review(review, selection_digest(selection), UPSTREAM_PREDICATES, f"{label}.review", allow_draft=True, selection=selection, upstream_id=upstream_id)
     return result()
