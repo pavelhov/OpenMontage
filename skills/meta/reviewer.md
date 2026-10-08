@@ -9,8 +9,11 @@ Every stage gets reviewed. No exceptions. The review quality determines whether 
 At a given stage/shot boundary, one owner performs one substantive semantic
 review. The production owner may rely on that current, passing review and its
 bound evidence; do not repeat the same review as a worker/parent handoff or
-create another reviewer pass by default. Re-review only when a specific defect,
-uncertainty, or changed binding requires it. Keep critical unknowns blocked.
+create another reviewer pass by default. The parent checks current bindings,
+required-predicate completeness and contradictory evidence; reopen only the
+missing predicate or named dispute. Re-review changed bytes/bindings and the
+specific defect or uncertainty they affect. Keep critical unknowns blocked;
+complete final-master AV review remains required.
 
 ## Critique Quality (CHAI Rules)
 
@@ -365,10 +368,15 @@ certify a final, even if every spot check passes. Keep it inspectable as a draft
    filenames alone. Required cast, cast count, completed action, speaker/source,
    possession, transformation, outgoing boundary, payoff, and late-cast evidence
    are critical and cannot be downgraded to cosmetic.
-2. For shot and asset review, inspect evidence targeted to the required
-   predicates: representative frames and focused intervals around action,
-   identity, and continuity. Do not extract or inspect every frame by default;
-   expand inspection only to resolve a concrete uncertainty or defect.
+2. For shot and asset review, inspect evidence targeted to required
+   predicates, using 0.5-second frame sampling for normal shots and
+   0.25-second sampling for contact, dialogue or other high-risk shots, plus
+   the exact first and last decoded frames. Inspect focused intervals around
+   action, identity, speaker synchronization and continuity. Dense every-frame
+   inspection is only for a named uncertain window; record the uncertainty
+   and bounds rather than scanning the whole episode densely by default.
+   Sampling does not establish a missing critical predicate: keep it unknown
+   until the focused evidence resolves it.
    At final certification, watch **and listen to the complete composed master in synchronized playback**,
    including the opening, every scene/transition, dialogue, and full ending.
    Frame sampling, transcripts, duration probes, or audio-only listening cannot

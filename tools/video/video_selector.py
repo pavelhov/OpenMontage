@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from lib.video_model_selection import MODEL_SELECTION_INTENT_SCHEMA
+from lib.video_model_selection import AUDIO_OUTPUT_SUPPORTED, MODEL_SELECTION_INTENT_SCHEMA, audio_output_conflict
 
 from tools.base_tool import (
     BaseTool,
@@ -582,6 +582,10 @@ class VideoSelector(BaseTool):
         if getattr(tool, "provider", None) != "openart_mcp":
             adapted.pop("preferred_tool", None)
             adapted.pop("hosting_provider", None)
+        if getattr(tool, "provider", None) == "openart_mcp" and pinned is not None and adapted.get("native_audio") is True:
+            # Output requirement already checked against per-route audio evidence
+            # by _missing_pinned_controls; the exact form has no such field.
+            adapted.pop("native_audio")
         if tool.input_schema.get("additionalProperties") is False and getattr(tool, "provider", None) != "openart_mcp":
             for key in ("preferred_provider", "preferred_provider_gap", "allowed_providers", "task_context", "target_operation"):
                 adapted.pop(key, None)
@@ -890,6 +894,7 @@ class VideoSelector(BaseTool):
             return []
         supports = getattr(tool, "supports", {}) or {}
         missing: list[str] = []
+        pinned_audio = None
         if getattr(tool, 'provider', None) in {'openart_cli', 'openart_mcp'} and hasattr(tool, '_model_catalog'):
             entry = (tool._model_catalog().get(inputs.get('model'), {}).get('modes', {}).get(inputs.get('mode')) or {})
             if not entry and getattr(tool, 'provider', None) == 'openart_mcp':
@@ -898,10 +903,17 @@ class VideoSelector(BaseTool):
                 missing.append('exact MCP model/mode is not a production-ready native route for this account')
             caps = entry.get('native_capabilities')
             if caps:
+                # Audio output (documented default or exposed switch) is separate
+                # from the switch itself; an explicit native_params audio value is
+                # still checked against the exact form param below.
+                audio = entry.get('audio_capability')
+                if not isinstance(audio, dict):
+                    from lib.video_route_evidence import audio_capability
+                    audio = audio_capability(tool.provider, inputs.get('model'), inputs.get('mode'), caps)
+                pinned_audio = audio
                 supports = {**supports, 'first_last_frame': caps['roles']['last_frame']['supported'],
                             'multiple_reference_images': caps['roles']['reference_image']['supported'],
-                            'native_audio': any(caps['params'].get(field, {}).get('binding') in {'flag', 'native_param'}
-                                for field in ('generateAudio', 'generateSound', 'audio'))}
+                            'native_audio': audio.get('native_output') in AUDIO_OUTPUT_SUPPORTED}
                 if caps.get('unreachable'):
                     missing.append('native_mode: ' + str(caps.get('unreachable_reason')))
                 roles = [a.get('role') for a in inputs.get('input_assets', []) if isinstance(a, dict)]
@@ -918,6 +930,12 @@ class VideoSelector(BaseTool):
         if (inputs.get("native_audio") or inputs.get("voices") or inputs.get("voice")
                 or inputs.get("generate_audio")) and supports.get("native_audio") is not True:
             missing.append("native_audio")
+        if inputs.get("native_audio") is True:
+            conflict = audio_output_conflict(pinned_audio, inputs.get("native_params"))
+            if conflict == "conflicting_controls:native_audio":
+                missing.append("native_audio: conflicts with explicit audio-off native_params or form default off")
+            elif conflict:
+                missing.append("native_audio: exact form audio switch omitted without a declared default")
         refs = inputs.get("reference_image_paths") or inputs.get("reference_image_urls")
         if (isinstance(refs, (list, tuple)) and len(refs) > 1
                 and supports.get("multiple_reference_images") is not True):

@@ -144,13 +144,16 @@ class OpenArtMCPVideo(BaseTool):
             for role, spec in route.get("native_capabilities", {}).get("roles", {}).items()
             if spec.get("supported") is True
         }
-        audio_routes = [
-            {"model": model, "mode": mode}
-            for model, mode, route in qualified_routes
-            if any(name in {"audio", "generateAudio", "generateSound"}
-                   and spec.get("binding") in {"native_param", "flag"}
-                   for name, spec in route.get("native_capabilities", {}).get("params", {}).items())
-        ]
+        # Per-route audio facts: a form without an audio field is "no toggle",
+        # not "no audio". Default output comes only from bounded provider docs.
+        audio_by_route = {(model, mode): route.get("audio_capability") or {} for model, mode, route in qualified_routes}
+        audio_routes = [{"model": model, "mode": mode} for (model, mode), audio in audio_by_route.items()
+                        if audio.get("explicit_toggle", {}).get("available") is True]
+        audio_output = {
+            status: [{"model": model, "mode": mode} for (model, mode), audio in audio_by_route.items()
+                     if audio.get("native_output", "unknown") == status]
+            for status in ("supported_toggle", "supported_default", "unknown", "unsupported")
+        }
         conditional = {
             "first_last_frame": "first_frame" in supported_roles and "last_frame" in supported_roles,
             "reference_image": "reference_image" in supported_roles,
@@ -193,6 +196,10 @@ class OpenArtMCPVideo(BaseTool):
             auto_continue_policy_active=None,
             supports={**info.get("supports", {}), "conditional_model_modes": mode_support},
             conditional_capabilities=conditional,
+            # native_audio above lists explicit on/off forms only. Output status
+            # is per exact route; unknown is never false, and no route here
+            # claims observed connector audio or dialogue fidelity.
+            native_audio_output=audio_output,
         )
         return info
 

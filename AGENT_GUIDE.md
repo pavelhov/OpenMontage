@@ -394,10 +394,15 @@ providers, using only observed fields:
   evidence and grants no extra production authority. `not_live` is unavailable.
   Do not invent model IDs,
   audio, end-frame pins, rates or defaults.
-- **Controls and limitations.** Read `controls` and `limitations`. When a
-  control is false (end-frame pin, native audio, multiple references), say it
-  is unavailable on that route. A pinned request that needs it fails before any
-  credit reservation. Never paper over it with a prompt rewrite.
+- **Controls and limitations.** Read `controls` and `limitations`. When an
+  exact native control is false (end-frame pin, explicit audio toggle, multiple
+  references), say that control is unavailable on that route. Keep native
+  audio output, an exposed on/off switch, audio-reference support and observed
+  dialogue fidelity separate. A missing audio form field means no exposed
+  switch, not proof of silent output. Use the canonical route's documented
+  default-output evidence where available; keep unobserved output and dialogue
+  fidelity explicitly unverified. A required native frame pin without a
+  matching control fails before any credit reservation. Never paper over it with a prompt rewrite.
   OpenArt `native_capabilities` keeps provider form controls separate from the
   exact local CLI transport. The October 7 official CLI 0.1.1 surface supports
   prompt, duration, aspect ratio, resolution and one `--image` start frame for
@@ -478,10 +483,21 @@ cleanliness, preserve that request as `model_selection_intent`. Show and approve
 the exact provider/model pool and its account, billing mode, production stages
 and attempt limits; ranking cannot expand that pool. `exact` never substitutes.
 `prefer` can choose an already-approved eligible alternative while planning;
-`auto` ranks only within the approved pool. During execution, a semantic review
-may authorize a repair route only after the original attempt is terminal and
-review names a critical defect that the alternate can address. The alternate
-must already be in that shot's approved pool, the intent must permit it (`exact`
+`auto` ranks only within the approved pool. Use the shared canonical chooser
+(`lib.video_model_selection.choose_video_route`) through the selector or route
+planner, rather than separate director rankings. It orders compiled eligible
+requests without adding controls, changing the request or granting authority;
+scene guidance is suggestive evidence, not a benchmark or ordering override.
+During execution, a semantic review informs an explicit producer repair
+decision only after the original attempt is terminal and the review names a
+critical defect the proposed remedy can address. Record defect evidence,
+failed predicates, remedy (`prompt_staging`, `model_change` or `edit`), exact
+selected route and actual request delta. Validate the decision through the
+canonical repair helper and existing governance path; never blindly select
+the next candidate. An edit handoff retains failed predicates until the edited
+bytes pass their required review and does not itself authorize generation.
+For a model change, the alternate must already be in that shot's approved pool,
+and the intent must permit it (`exact`
 never changes), and the repair needs a fresh governed scope or valid retained
 Auto-continue authority, with cumulative caps, continuity locks and all other
 request checks intact. This is a reviewed repair decision, not an automatic
@@ -824,7 +840,7 @@ Revisions can be linked. A later revision's prior snapshot must have the same pl
 
 The reviewer is a meta skill (`skills/meta/reviewer.md`). Agents supply semantic judgments; the engine enforces required evidence and current bindings. Critical prerequisites block motion and final certification.
 
-- Self-review after every stage execution, before checkpointing.
+- Review after every stage execution, before checkpointing, with one substantive semantic verdict at each stage/shot boundary bound to current bytes and required predicates. Keep one persistent producer accountable; the parent checks bindings and completeness and opens only a missing predicate or named dispute, not a second complete pixel review by default.
 - Load `review_focus` items from the pipeline manifest for the current stage.
 - Review-round and budget limits never turn missing, unknown, unreviewed, or failed critical predicates into a pass. Stop with an honest draft and unresolved findings when the approved repair allowance is exhausted.
 - Findings categorized: critical (must fix), suggestion (should fix), nitpick (nice-to-have).

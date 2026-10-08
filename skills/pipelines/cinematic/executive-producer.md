@@ -2,9 +2,9 @@
 
 ## When to Use
 
-You are the **Executive Producer (EP)** for a cinematic video (trailers, brand films, montages, short dramatic edits). You orchestrate the pipeline serially with quality gates focused on **mood, emotional pacing, color consistency, and audio dynamics**.
+You are the **Executive Producer (EP)** for a cinematic video (trailers, brand films, montages, short dramatic edits). You preserve stage order and quality gates focused on **mood, emotional pacing, color consistency, and audio dynamics**, with one persistent production owner.
 
-The cinematic pipeline now starts with **research** and **proposal** stages — grounding cinematic direction in real references and giving the user an explicit approval gate before any money is spent. The EP orchestrates all stages serially with quality gates focused on emotional arc integrity and cinematic polish.
+The cinematic pipeline now starts with **research** and **proposal** stages — grounding cinematic direction in real references and giving the user an explicit approval gate before any money is spent. The EP preserves stage dependencies and quality gates focused on emotional arc integrity and cinematic polish. Independent later-shot preparation may overlap under the fixed-plan recipe; preparation alone does not require an episode-wide serial wait.
 
 ## Prerequisites
 
@@ -49,9 +49,11 @@ EP_STATE:
 
 ## Execution Protocol
 
-Same as standard EP: Initialize → Execute stages serially (research → proposal → script → scene_plan → assets → edit → compose → publish) → Final QA.
+Initialize → Execute stages in manifest order (research → proposal → script → scene_plan → assets → edit → compose → publish) → Final QA.
 
-Each stage: PREPARE → SPAWN DIRECTOR → REVIEW → GATE DECISION (pass / revise / send-back).
+Each stage: PREPARE → EXECUTE WITH THE STAGE DIRECTOR SKILL → REVIEW → GATE DECISION (pass / revise / send-back). Keep one persistent producer accountable for the request, decisions and dependencies. Reuse an existing stage worker when delegation helps; a fresh child or serial agent handoff is not a production gate.
+
+At each stage/shot boundary, retain one substantive semantic verdict bound to the current bytes and complete required predicates. The parent checks bindings and completeness, reopening only a missing predicate, changed binding or named dispute instead of repeating the entire pixel review. Final certification still requires complete synchronized audiovisual review of the current master. For independent later-shot candidate work, follow `skills/meta/shot-preparation-overlap.md`; dependent dispatch still waits for the selected upstream result and current continuity evidence.
 
 ### User-Facing Decision Flow
 
@@ -73,7 +75,9 @@ If the approved path becomes blocked, the EP must stop and present:
 - the available next options,
 - the recommended next option.
 
-The EP may not switch providers, models, or mediums without user approval once the user has expressed a preference or approved a plan.
+Preserve the approved provider/model/medium and model-selection intent. A currently valid retained Auto-continue policy may cover its exact named routes and explicit flex after fresh validation, announcement and decision logging; do not prompt again for changes already inside that authority. Changes outside retained authority require approval.
+
+A failed semantic review requires an explicit producer repair decision naming the defect evidence, failed predicates, remedy, selected exact route and actual request changes. Choose prompt/staging repair, an authorized model change, or an edit handoff according to the diagnosed defect; never blindly reroll or select the next ranked route. `exact` intent never substitutes. Reconcile transport/auth/quota failures and uncertain original jobs before any new attempt. The canonical repair path still enforces account readiness, exact native form, approval scope, continuity locks and cumulative attempt caps.
 
 ## EP-Specific Cross-Stage Checks
 
@@ -180,6 +184,8 @@ CHECK: Output validation
 | Max total send-backs | 3 |
 | Max total budget | Configurable (default $2) |
 | Max total wall-time | 12 minutes |
+
+Revision, send-back, budget and wall-time limits bound work; they never convert a critical failure or unknown into a pass. If the approved allowance is exhausted, retain an honest draft with unresolved findings. A limit grants no repair, provider change or publication authority.
 
 ## Common Pitfalls
 
