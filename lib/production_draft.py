@@ -255,18 +255,44 @@ def _attempt_order(root, row):
     return (path.stat().st_mtime_ns if path.exists() else 0, row.get('scope_attempt_index', 0))
 
 
-def _candidate(root, shot_id, attempt_id, output, revision, selected):
+def _candidate_provenance(root, shot_id, attempt_id, output, revision, *, allow_historical=False):
     from lib.production_provenance import validate_attempt_provenance
-    proof = validate_attempt_provenance(root, attempt_id, shot_id=shot_id,
-                                        story_revision=revision, expected_output=output)
+    try:
+        return validate_attempt_provenance(root, attempt_id, shot_id=shot_id,
+                                          story_revision=revision, expected_output=output), False
+    except ValueError as exc:
+        continuity_error = any(message in str(exc) for message in (
+            'upstream selection changed since this attempt', 'canonical reviewed source/reference/upstream changed',
+            'stale source/reference/review/upstream bindings'))
+        if not allow_historical or not continuity_error:
+            raise
+        from lib.production_provenance import validate_creator_repair_source_provenance
+        proof = validate_creator_repair_source_provenance(root, attempt_id, shot_id=shot_id,
+            story_revision=revision, expected_output=output)
+        if proof.get('historical_upstream_changed') is False:
+            raise exc
+        return proof, True
+
+
+def _continuity_source_warning():
+    return {'name': 'continuity_source_changed', 'status': 'unknown', 'severity': 'critical',
+            'evidence': 'Retained clip used an earlier reviewed upstream selection. Current continuity needs review after the selected repair.'}
+
+
+def _candidate(root, shot_id, attempt_id, output, revision, selected, *, historical_source=False):
+    proof, historical_source = _candidate_provenance(root, shot_id, attempt_id, output, revision,
+                                                    allow_historical=historical_source)
     path = Path(output['path'])
     path = path if path.is_absolute() else root / path
     timing = (proof or {}).get('derived_timing') if isinstance(proof, dict) else None
     duration = timing['duration_seconds'] if timing else _probe(path)['duration_seconds']
     review, findings = _current_findings(root, shot_id, attempt_id, output['sha256'], revision, selected)
-    strict = review is not None and review['status'] == 'pass'
+    strict = not historical_source and review is not None and review['status'] == 'pass'
     # A strict pass may still disclose cosmetic findings; provisional stays provisional.
     status = review['status'] if review is not None else ('fail' if findings else 'unknown')
+    if historical_source:
+        status = 'unknown'
+        findings = [*findings, _continuity_source_warning()]
     return {'shot_id': shot_id, 'status': 'candidate', 'attempt_id': attempt_id,
             'output': {'path': _rel(root, path), 'sha256': output['sha256']},
             'duration_seconds': duration, 'strict_selected': strict,
@@ -288,18 +314,50 @@ def first_cut_candidates(project_dir):
     contract = execution.load_shot_contract(root)
     selected = execution.load_selected_attempts(root)
     attempts = [a for a in execution._attempts(root) if a.get('story_revision') == revision]
+    from lib.production_repair_batches import (creator_repair_candidates, suppressed_creator_repair_attempts,
+                                                creator_repair_source_candidates, accepted_first_cut_candidates)
+    creator_candidates = creator_repair_candidates(root)
+    suppressed = suppressed_creator_repair_attempts(root)
+    retained_sources = creator_repair_source_candidates(root)
+    accepted_candidates = accepted_first_cut_candidates(root)
     rows, by_shot = [], {}
     for shot in contract['shots']:
         sid = shot['id']
         selection = selected.get(sid)
         row = None
-        if _selection_review(root, sid, selection, revision) is not None:
+        creator_attempt = creator_candidates.get(sid)
+        if creator_attempt is not None:
+            try:
+                state = execution.load_attempt_result(root, creator_attempt)
+                row = _candidate(root, sid, creator_attempt, state['output'], revision, selected)
+            except (execution.ProductionGovernanceError, OSError, ValueError, KeyError,
+                    TypeError, subprocess.SubprocessError):
+                row = None
+        accepted = accepted_candidates.get(sid)
+        if row is None and accepted is not None:
+            try:
+                row = _candidate(root, sid, accepted['attempt_id'], accepted['output'], revision, selected,
+                                 historical_source=True)
+            except (execution.ProductionGovernanceError, OSError, ValueError, KeyError,
+                    TypeError, subprocess.SubprocessError):
+                row = None
+        if row is None and _selection_review(root, sid, selection, revision) is not None:
             try:
                 row = _candidate(root, sid, selection['attempt_id'], selection['output'], revision, selected)
             except (execution.ProductionGovernanceError, OSError, ValueError, KeyError,
                     TypeError, subprocess.SubprocessError):
                 row = None
-        own = sorted((a for a in attempts if a.get('shot_id') == sid),
+        retained = retained_sources.get(sid)
+        if row is None and retained is not None:
+            try:
+                # Historical source-only inclusion preserves playable old footage
+                # during partial repairs and reports its stale continuity openly.
+                row = _candidate(root, sid, retained['attempt_id'], retained['output'], revision,
+                                 selected, historical_source=True)
+            except (execution.ProductionGovernanceError, OSError, ValueError, KeyError,
+                    TypeError, subprocess.SubprocessError):
+                row = None
+        own = sorted((a for a in attempts if a.get('shot_id') == sid and a['attempt_id'] not in suppressed),
                      key=lambda a: _attempt_order(root, a), reverse=True)
         states = []
         if row is None:
@@ -442,10 +500,21 @@ def _findings_digest(root, clips, *, current):
     if current:
         revision = execution._read(root / 'project.json')['story_revision']
         selected = execution.load_selected_attempts(root)
-    return execution._digest([{'shot_id': clip['shot_id'],
-        'findings': _current_findings(root, clip['shot_id'], clip['attempt_id'], clip['output']['sha256'],
-                                      revision, selected)[1] if current else clip['findings']}
-        for clip in clips])
+    findings = []
+    for clip in clips:
+        values = clip['findings']
+        if current:
+            values = _current_findings(root, clip['shot_id'], clip['attempt_id'], clip['output']['sha256'],
+                                       revision, selected)[1]
+            try:
+                _, historical = _candidate_provenance(root, clip['shot_id'], clip['attempt_id'],
+                    clip['output'], revision, allow_historical=True)
+            except (ValueError, OSError, KeyError, TypeError):
+                historical = False
+            if historical:
+                values = [*values, _continuity_source_warning()]
+        findings.append({'shot_id': clip['shot_id'], 'findings': values})
+    return execution._digest(findings)
 
 
 def _cut_reasons(root, cut):

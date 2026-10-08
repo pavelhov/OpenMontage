@@ -526,7 +526,8 @@ def _attempts(root):
         from lib.openart_mcp_jobs import list_attempts
     except ImportError:
         return rows
-    rows.extend(list_attempts(root))
+    rows.extend({**row, 'story_revision': row['scope_snapshot']['story_revision']}
+                for row in list_attempts(root))
     own = _MCP_REVALIDATING.get()
     return [row for row in rows if row.get('attempt_id') != own]
 
@@ -917,6 +918,11 @@ def preflight(tool, inputs, *, _local_continuation=None):
         if (not isinstance(replaces, list) or not replaces or not set(replaces).issubset(eligible)
                 or not set(replaces).intersection(item['attempt_id'] for item in previous)):
             _fail('repair scope must name existing exact attempts to replace')
+        if scope.get('repair_basis') == 'creator_batch':
+            from lib.production_repair_batches import validate_creator_repair_intent
+            validate_creator_repair_intent(root, scope.get('creator_repair'), shot_id=shot_id,
+                provider=provider, model=_clean(inputs).get('model'),
+                replaces_attempt_ids=scope.get('replaces_attempt_ids'), inputs=inputs)
     from lib import episode_production_controls as episode_controls
     try:
         controls = episode_controls.effective_controls(root) if kind == 'motion' else None
@@ -946,7 +952,7 @@ def preflight(tool, inputs, *, _local_continuation=None):
             episode_controls.require_admission(
                 root, shot_id=shot_id, provider=provider, model=_clean(inputs).get('model'), purpose=purpose,
                 replaces_attempt_ids=tuple(scope.get('replaces_attempt_ids') or ()), exclude_attempt_id=resumed,
-                repair_basis=scope.get('repair_basis', 'critical_review'))
+                repair_basis=scope.get('repair_basis', 'critical_review'), creator_repair=scope.get('creator_repair'))
         except episode_controls.EpisodeControlsError as exc:
             _fail(str(exc))
     if any(_inside(item.get('submitted_inputs', {}).get('output_path', ''), root) == output

@@ -136,7 +136,16 @@ def _historical_source_packet(project_dir, shot_id, *, provider="openart_cli", n
         check_native_controls=check_native_controls, historical=True)
 
 
-def _source_packet(project_dir, shot_id, *, provider, native, check_native_controls, historical):
+def _creator_repair_source_packet(project_dir, shot_id, *, native, contract, selected):
+    """Source-only projection; provenance must bind these original snapshots.
+    Prospective preparation/dispatch never reads caller-supplied source facts.
+    """
+    return _source_packet(project_dir, shot_id, provider='openart_mcp', native=native,
+        check_native_controls=True, historical=True, original_sources=(contract, selected))
+
+
+def _source_packet(project_dir, shot_id, *, provider, native, check_native_controls, historical,
+                   original_sources=None):
     from lib.production_execution import approval_plan_digest, load_selected_attempts
     root = Path(project_dir).resolve()
     contract = _read(root, 'shot_contract.json')
@@ -144,6 +153,8 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
     if marker.get('governance', {}).get('mode') != 'strict' or marker.get('governance', {}).get('version') != '1.0':
         raise ValueError('strict enrollment required for OpenArt preparation/upload approval')
     selected = load_selected_attempts(root)
+    if original_sources is not None:
+        contract, selected = original_sources
     if historical:
         from lib.shot_contract import _validate_original_shot_contract
         validate_sources = _validate_original_shot_contract
