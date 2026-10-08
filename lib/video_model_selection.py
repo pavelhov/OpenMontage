@@ -674,15 +674,22 @@ def validate_repair_decision(decision, *, review, original_route, intent,
             fail("invalid_model_selection_intent", str(exc))
         if checked["mode"] == "exact":
             fail("exact_intent", "an exact model pin permits only same-route prompt/staging repair")
-        if selected["model"] is None:
-            fail("managed_reroll_not_model_change", "a managed route without a selectable model is not a model change")
-        if selected["model"] == original["model"]:
-            fail("same_model_reroll", "model_change must select a different model")
+        # A different media route is either a different provider (including a
+        # managed provider whose media model is null, e.g. Grok) or, on the same
+        # provider, a different selectable media model. Agent model, mode or
+        # prompt alone never count.
+        if selected["provider"] == original["provider"]:
+            if selected["model"] is None:
+                fail("managed_reroll_not_model_change", "a managed route without a selectable model is not a model change")
+            if selected["model"] == original["model"]:
+                fail("same_model_reroll", "model_change must select a different model")
         if not selection_intent_allows_route(checked, selected["provider"], selected["model"], selected["tool"]):
             fail("outside_approved_pool", "selected_route is outside the approved intent")
-        for key in ("model", "mode"):
-            if proposed_request.get(key) != selected[key]:
-                fail("request_route_mismatch", "proposed request " + key + " differs from selected_route")
+        if proposed_request.get("model") != selected["model"]:
+            fail("request_route_mismatch", "proposed request model differs from selected_route")
+        proposed_mode = proposed_request.get("mode", proposed_request.get("operation"))
+        if selected["mode"] is not None and proposed_mode != selected["mode"]:
+            fail("request_route_mismatch", "proposed request mode differs from selected_route")
     # The proposed request must target exactly selected_route; rejected, never rewritten.
     # Keys absent from the request (managed/operation-only requests) are not invented.
     for key, field in (("model", "model"), ("mode", "mode"), ("provider", "provider"),

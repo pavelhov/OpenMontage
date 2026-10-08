@@ -1,0 +1,187 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "episode_production_controls",
+  "type": "object",
+  "required": [
+    "version",
+    "project_id",
+    "records"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": "1.0"
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "record_id",
+          "recorded_at",
+          "project_id",
+          "story_revision",
+          "previous_sha256",
+          "evidence",
+          "authority"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "controls",
+              "provider_restriction"
+            ]
+          },
+          "record_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "recorded_at": {
+            "type": "string"
+          },
+          "project_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "story_revision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "previous_sha256": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "evidence": {
+            "type": "object",
+            "required": [
+              "path",
+              "sha256",
+              "approved_by"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "approved_by": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "authority": {
+            "type": "object",
+            "required": [
+              "kind",
+              "grants"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "episode_controls_approval"
+              },
+              "grants": {
+                "type": "array",
+                "maxItems": 0
+              }
+            }
+          },
+          "controls": {
+            "type": "object",
+            "required": [
+              "max_generations_per_shot",
+              "alternate_repair",
+              "access_fallback"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "max_generations_per_shot": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "alternate_repair": {
+                "enum": [
+                  "different_provider_or_media_model",
+                  "disabled"
+                ]
+              },
+              "access_fallback": {
+                "type": "boolean"
+              }
+            }
+          },
+          "restriction": {
+            "type": "object",
+            "required": [
+              "providers",
+              "reason"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "providers": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "properties": {
+              "kind": {
+                "const": "controls"
+              }
+            },
+            "required": [
+              "controls"
+            ],
+            "not": {
+              "required": [
+                "restriction"
+              ]
+            }
+          },
+          {
+            "properties": {
+              "kind": {
+                "const": "provider_restriction"
+              }
+            },
+            "required": [
+              "restriction"
+            ],
+            "not": {
+              "required": [
+                "controls"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

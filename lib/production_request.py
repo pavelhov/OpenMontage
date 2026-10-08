@@ -121,6 +121,22 @@ def _manifest_requirement_binding(manifest, shot_id):
 
 def source_packet(project_dir, shot_id, *, provider="openart_cli", native=None, check_native_controls=True):
     """Resolve authoritative closed contract, explicit scene→script mapping and bytes."""
+    return _source_packet(project_dir, shot_id, provider=provider, native=native,
+        check_native_controls=check_native_controls, historical=False)
+
+
+def _historical_source_packet(project_dir, shot_id, *, provider="openart_cli", native=None, check_native_controls=True):
+    """Reconstruct current original source facts for retained authority replay.
+
+    Callers must independently bind this projection to their trusted retained
+    contract/preparation snapshots. No current listening or dispatch authority
+    follows from this packet; prospective readers always use ``source_packet``.
+    """
+    return _source_packet(project_dir, shot_id, provider=provider, native=native,
+        check_native_controls=check_native_controls, historical=True)
+
+
+def _source_packet(project_dir, shot_id, *, provider, native, check_native_controls, historical):
     from lib.production_execution import approval_plan_digest, load_selected_attempts
     root = Path(project_dir).resolve()
     contract = _read(root, 'shot_contract.json')
@@ -128,8 +144,13 @@ def source_packet(project_dir, shot_id, *, provider="openart_cli", native=None, 
     if marker.get('governance', {}).get('mode') != 'strict' or marker.get('governance', {}).get('version') != '1.0':
         raise ValueError('strict enrollment required for OpenArt preparation/upload approval')
     selected = load_selected_attempts(root)
-    checked = validate_shot_contract(contract, project_dir=root, shot_id=shot_id,
-                                    story_revision=marker['story_revision'], selected_upstream=selected)
+    if historical:
+        from lib.shot_contract import _validate_original_shot_contract
+        validate_sources = _validate_original_shot_contract
+    else:
+        validate_sources = validate_shot_contract
+    checked = validate_sources(contract, project_dir=root, shot_id=shot_id,
+                               story_revision=marker['story_revision'], selected_upstream=selected)
     if not checked['eligible']:
         raise ValueError('; '.join(checked['errors']))
     if contract['project_id'] != marker['project_id']:
@@ -634,6 +655,16 @@ def validate_preparation(inputs, native, profile):
     compiled = _read(root, 'compiled_request-' + _id(inputs.get('compiled_request_id')) + '.json')
     review = _read(root, 'preparation_review-' + _id(inputs.get('preparation_review_id')) + '.json')
     packet = source_packet(root, inputs['governance']['shot_id'], provider=native.get('provider', 'openart_cli'), native=native)
+    return validate_preparation_evidence(compiled, review, inputs, native, profile, packet)
+
+
+def validate_preparation_evidence(compiled, review, inputs, native, profile, packet):
+    """Validate supplied preparation evidence; callers own loading and authority.
+
+    Current and retained historical callers share these exact compiled/native,
+    semantic-review and live-evidence requirements. This does not choose a source
+    packet, relax current planning checks, or grant dispatch authority.
+    """
     _validate_compiled(compiled, inputs, native, profile, packet)
     _schema('preparation_review', review)
     if review['review_id'] != inputs['preparation_review_id']:
@@ -742,7 +773,7 @@ def freeze_preparation(attempt_id, inputs, native, profile):
     return {'snapshot_id': aid, 'snapshot_sha256': hashlib.sha256(raw).hexdigest(), **proof}
 
 
-def _validate_frozen_preparation(request, frozen, project_dir, *, current_required):
+def _validate_frozen_preparation(request, frozen, project_dir, *, current_required, original_reviews=False):
     """Replay the frozen preparation against current source and frozen native body."""
     from tools import _openart_cli as cli
     proof = request['openart']['preparation_snapshot']
@@ -771,25 +802,29 @@ def _validate_frozen_preparation(request, frozen, project_dir, *, current_requir
     inputs = _paths(inputs, Path(project_dir).resolve(), restore)
     packet = data['source_packet']
     if current_required:
-        current = source_packet(project_dir, request['shot_id'], native=frozen['native'])
+        reconstruct = _historical_source_packet if original_reviews else source_packet
+        current = reconstruct(project_dir, request['shot_id'], native=frozen['native'])
         stable = set(packet['binding']) - {'contract_sha256', 'reviews_sha256'}
         if any(current['binding'][key] != packet['binding'][key] for key in stable):
             raise ValueError('stale source/reference/review/upstream bindings')
-    _validate_compiled(data['compiled'], inputs, frozen['native'], frozen['profile'], packet)
-    review = data['review']
-    _schema('preparation_review', review)
-    if review['review_id'] != inputs['preparation_review_id']:
-        raise ValueError('frozen named preparation review ID differs')
-    if review['subject_sha256'] != digest(data['compiled']) or review['status'] != 'pass' or len(review['predicates']) != len(PREDICATES) or {p['name'] for p in review['predicates']} != PREDICATES or any(p['status'] != 'pass' for p in review['predicates']):
-        raise ValueError('frozen preparation review is incomplete')
-    if frozen['profile']['source'] == 'real' and review['evidence_kind'] != 'reviewed':
-        raise ValueError('fixture-only preparation cannot certify live provider')
+    validate_preparation_evidence(data['compiled'], data['review'], inputs,
+        frozen['native'], frozen['profile'], packet)
     return proof
 
 
 def validate_frozen_preparation(request, frozen, project_dir):
     """Certify preparation against current planning and immutable native bytes."""
     return _validate_frozen_preparation(request, frozen, project_dir, current_required=True)
+
+
+def _validate_frozen_preparation_original(request, frozen, project_dir):
+    """Re-prove retained generation with current source bytes/original reviews.
+
+    Current stable planning/reference/selected subjects still have to match the
+    frozen packet. Separate current eligibility readers validate audio successors.
+    """
+    return _validate_frozen_preparation(request, frozen, project_dir,
+        current_required=True, original_reviews=True)
 
 
 def validate_frozen_preparation_history(request, frozen, project_dir):

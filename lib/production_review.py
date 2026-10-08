@@ -198,8 +198,9 @@ def validate_final_review(
             continue
         for key in ('output', 'outgoing_frame'):
             check_file(selection.get(key), f'selected.{shot_id}.{key}')
-        selected_review = selection.get('review')
         try:
+            from lib.production_review_successors import resolve_selection_review
+            selected_review = resolve_selection_review(root, shot_id, selection)
             malformed = list(Draft202012Validator(selected_review_schema).iter_errors(selected_review))
             if malformed:
                 raise ValueError(malformed[0].message)
@@ -213,7 +214,7 @@ def validate_final_review(
                     or scene['selection_sha256'] != selection_digest(selection)
                     or scene['review_sha256'] != review_digest(selected_review)):
                 errors.append(f'scenes.{shot_id}: selected attempt/output/review changed')
-        except (ValueError, KeyError, TypeError) as exc:
+        except (OSError, ValueError, KeyError, TypeError) as exc:
             errors.append(f'selected.{shot_id}: malformed review or binding ({exc})')
         try:
             from lib.production_provenance import validate_attempt_provenance

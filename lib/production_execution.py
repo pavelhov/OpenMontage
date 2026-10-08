@@ -917,9 +917,38 @@ def preflight(tool, inputs, *, _local_continuation=None):
         if (not isinstance(replaces, list) or not replaces or not set(replaces).issubset(eligible)
                 or not set(replaces).intersection(item['attempt_id'] for item in previous)):
             _fail('repair scope must name existing exact attempts to replace')
-    used = sum(item['scope_id'] in lineage and item['shot_id'] == shot_id for item in attempts)
-    if used > allowance or (used == allowance and _local_continuation is None):
-        _fail('approved attempt allowance exhausted')
+    from lib import episode_production_controls as episode_controls
+    try:
+        controls = episode_controls.effective_controls(root) if kind == 'motion' else None
+    except episode_controls.EpisodeControlsError as exc:
+        _fail(str(exc))
+    if controls is None:
+        used = sum(item['scope_id'] in lineage and item['shot_id'] == shot_id for item in attempts)
+        if used > allowance or (used == allowance and _local_continuation is None):
+            _fail('approved attempt allowance exhausted')
+    else:
+        # Opted-in episodes count trusted generation occurrences: proven
+        # never-submitted preparations and status/collection cost no slot, so
+        # the scope allowance (still binding) is measured the same way.
+        resumed = _local_continuation['attempt_id'] if _local_continuation is not None else _MCP_REVALIDATING.get()
+        try:
+            usage = episode_controls.generation_usage(root)
+        except episode_controls.EpisodeControlsError as exc:
+            _fail(str(exc))
+        lineage_ids = {item['attempt_id'] for item in attempts if item['scope_id'] in lineage}
+        used = sum(1 for item in usage['occurrences'] if item['counted'] and item['shot_id'] == shot_id
+                   and item['attempt_id'] in lineage_ids and item['attempt_id'] != resumed)
+        if used >= allowance:
+            _fail('approved attempt allowance exhausted')
+        purpose = ('local_continuation' if _local_continuation is not None
+                   else 'mcp_begin' if _MCP_REVALIDATING.get() else phase)
+        try:
+            episode_controls.require_admission(
+                root, shot_id=shot_id, provider=provider, model=_clean(inputs).get('model'), purpose=purpose,
+                replaces_attempt_ids=tuple(scope.get('replaces_attempt_ids') or ()), exclude_attempt_id=resumed,
+                repair_basis=scope.get('repair_basis', 'critical_review'))
+        except episode_controls.EpisodeControlsError as exc:
+            _fail(str(exc))
     if any(_inside(item.get('submitted_inputs', {}).get('output_path', ''), root) == output
            for item in attempts if _local_continuation is None or item['attempt_id'] != _local_continuation['attempt_id']):
         _fail('output path already reserved; reconcile the original attempt')

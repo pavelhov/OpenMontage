@@ -127,3 +127,56 @@ def test_recovery_crash_after_canonical_copy_resumes_without_another_call(reject
     assert recovered.success
     assert len(p.transport.native_requests)==len(execution._attempts(p.root))==1
     for name,raw in frozen.items(): assert (directory/name).read_bytes()==raw
+
+
+def test_recoverable_protocol_rejected_original_never_qualifies_for_access_fallback(rejected):
+    from lib import production_autonomy as pa
+    from tests.lib.test_episode_production_controls import activate
+    p, aid, directory, request, frozen = rejected
+    activate(p.root, 2, alternate='different_provider_or_media_model', fallback=True)
+    with pytest.raises(pa.AutonomyError, match='terminal'):
+        pa._validate_access_fallback(p.root, 'entry', [aid], 'openart_mcp', 'minimax-hailuo-02')
+    for name, raw in frozen.items():
+        assert (directory/name).read_bytes() == raw
+    assert collect(rejected, dry_run=False).success
+    assert len(p.transport.native_requests) == 1
+
+
+@pytest.mark.parametrize('shape', ['completed_wrong_raw_output', 'failed_beside_completed'])
+def test_completed_native_update_labeled_terminal_never_qualifies_for_access_fallback(production, monkeypatch, shape):
+    """The wrapper label is not proof: retained native logs must show no completed update."""
+    from lib import production_autonomy as pa
+    from tests.lib.test_episode_production_controls import activate
+    p = production
+    activate(p.root, 2, alternate='different_provider_or_media_model', fallback=True)
+    inputs = copy.deepcopy(p.inputs['entry'])
+    inputs.pop('preferred_provider', None)
+    inputs.pop('allowed_providers', None)
+    inputs['cwd'] = str(p.root)
+    p.scope['requests']['entry'] = execution.planned_request_digest(inputs, project_dir=p.root)
+    p.persist_scope()
+    def transport(argv, **kwargs):
+        result = p.transport(argv, **kwargs)
+        if '--prompt-file' not in argv: return result
+        events = [json.loads(line) for line in result.stdout.splitlines()]
+        if shape == 'completed_wrong_raw_output':
+            events[1]['rawOutput']['type'] = 'Unexpected'
+            events[1]['content'] = 'spending limit reached'
+        else:
+            events.insert(1, {'type':'tool_call_update', 'toolCallId':'native-1', 'status':'failed',
+                              'content':'HTTP 403 personal-team-blocked:spending-limit'})
+        stream = '\n'.join(json.dumps(e) for e in events)
+        (p.transport.original_sessions[events[-1]['sessionId']]['artifact'].parent.parent/'events.jsonl').write_text(stream)
+        return subprocess.CompletedProcess(argv, 0, stream, '')
+    monkeypatch.setattr('tools._grok_cli_media._run_process', transport)
+    result = p.cli.execute(inputs)
+    aid = result.data['production_attempt_id']
+    directory = p.root/'production_attempts'/aid
+    assert not result.success and result.data['error_category'] == 'spending_limit'
+    assert result.data['dispatch_status'] == 'failed'
+    frozen = {name:(directory/name).read_bytes() for name in ('request.json','raw_result.json','result.json')}
+    with pytest.raises(pa.AutonomyError, match='completed native tool update'):
+        pa._validate_access_fallback(p.root, 'entry', [aid], 'openart_mcp', 'minimax-hailuo-02')
+    for name, raw in frozen.items():
+        assert (directory/name).read_bytes() == raw
+    assert len(p.transport.native_requests) == 1

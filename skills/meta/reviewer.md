@@ -91,8 +91,8 @@ Count findings by severity:
 
 | Scenario | Action |
 |----------|--------|
-| 0 critical, any suggestions/nitpicks | **Pass** — proceed to checkpoint. Note suggestions for the record. |
-| 1+ critical findings, or required evidence missing/unknown/unreviewed | **Revise or block** — diagnose, obtain applicable repair authorization, resolve required findings, then re-review matching media. |
+| 0 critical, any disclosed usable minor flaws, suggestions, or nitpicks | **Pass with warnings** — proceed to checkpoint, name the remaining flaws clearly, and do not request an extra reviewer pass solely for them. |
+| 1+ critical findings, or required evidence missing/unknown/unreviewed | **Revise or block** — diagnose, obtain applicable repair authorization, resolve required findings, then re-review matching media. Warnings cannot erase or downgrade a critical finding. Unknown required AV remains unknown; an explicitly authorized draft policy may allow draft continuation, never final certification. Cosmetic warnings alone do not authorize generation repair. |
 | Approved budget/attempt allowance exhausted with critical findings | **Draft/blocked** — report unresolved defects. Neither budget nor round count authorizes a pass or further paid generation. |
 
 ### Step 7: Record Review
