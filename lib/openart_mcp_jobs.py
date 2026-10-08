@@ -12,12 +12,18 @@ import stat
 import subprocess
 import tempfile
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from lib import openart_mcp as mcp
 
 _ID = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$')
 TERMINAL = {'COMPLETED', 'FAILED', 'CANCELLED'}
 _ALLOW_FIXTURE_QUALIFICATION = False
+
+def _event(state, kind, **details):
+    """Local operation observations, never inferred provider service clocks."""
+    state.setdefault('events', []).append({'kind': kind, 'observed_at': datetime.now(timezone.utc).isoformat(),
+        'attempt_id': state['attempt_id'], **details})
 
 def _fail(kind, message):
     raise mcp.OpenArtMCPError(kind, message)
@@ -117,6 +123,7 @@ def prepare(project_dir, *, attempt_id, generation_inputs, authority_fn):
     root = _root(project_dir); aid = _id(attempt_id)
     with _lock(root):
         if _path(root, aid).exists(): _fail('original_exists', 'original attempt cannot be replaced or reused')
+        started_at = datetime.now(timezone.utc).isoformat()
         if Path(generation_inputs.get('project_dir','')).resolve() != root: _fail('project_invalid', 'generation root differs')
         authority, native = _authority(generation_inputs, None, authority_fn)
         evidence = _capture_evidence(root,generation_inputs,native,authority)
@@ -127,6 +134,8 @@ def prepare(project_dir, *, attempt_id, generation_inputs, authority_fn):
         state = {'version':'1.0', 'provider':'openart_mcp', 'attempt_id':aid, 'status':'prepared',
             'frozen':frozen, 'frozen_sha256':mcp.digest(frozen), 'authority_sha256':mcp.digest(authority),
             'begin_envelope':None, 'receipt':None, 'status_observations':[], 'events':[], 'output':None}
+        state['events'].append({'kind': 'prepare_started', 'observed_at': started_at, 'attempt_id': aid})
+        _event(state, 'prepared')
         _save(root, aid, state)
         return {'attempt_id':aid, 'status':'prepared', 'authority_sha256':state['authority_sha256'],
             'transport':'agent_mediated_connector', 'dispatch_status':'prepared_not_submitted'}
@@ -142,7 +151,7 @@ def begin(project_dir, attempt_id, *, authority_fn):
             _fail('authority_changed', 'approval/account/native/source drifted after preparation')
         envelope = {'tool':'mcp__codex_apps__openart_openart_generate_video', 'arguments':copy.deepcopy(native['body'])}
         state['begin_envelope'] = envelope; state['status'] = 'uncertain'
-        state['events'].append({'kind':'begin_consumed_before_handoff', 'envelope_sha256':mcp.digest(envelope)})
+        _event(state, 'begin_consumed_before_handoff', envelope_sha256=mcp.digest(envelope))
         _save(root, aid, state)  # consumed durably before the agent can call the connector
         return envelope
 
@@ -157,9 +166,10 @@ def receive(project_dir, attempt_id, *, outcome=None, error=None):
                 return attempt_state(root, aid)
             _fail('receipt_exists', 'original connector receipt cannot be replaced')
         if error is not None or not isinstance(outcome, dict) or not isinstance(outcome.get('historyId'), str) or not outcome.get('historyId'):
-            state['status']='uncertain'; state['events'].append({'kind':'uncertain', 'error':str(error) if error is not None else 'missing original historyId'})
+            state['status']='uncertain'; _event(state, 'uncertain', error=str(error) if error is not None else 'missing original historyId')
         else:
             state['receipt']=copy.deepcopy(outcome); state['receipt_sha256']=mcp.digest(outcome); state['status']='submitted'
+            _event(state, 'submission_receipt_retained', history_id=outcome['historyId'])
         _save(root, aid, state)
         return attempt_state(root, aid)
 
@@ -185,6 +195,7 @@ def record_status(project_dir, attempt_id, *, result):
             if mcp.digest(previous[-1]) != mcp.digest(result): _fail('terminal_changed', 'terminal original status cannot be replaced')
             return attempt_state(root, aid)
         state['status_observations'].append(copy.deepcopy(result))
+        _event(state, 'status_observed', history_id=receipt['historyId'], status=result['status'])
         state['status'] = {'COMPLETED':'completed','FAILED':'failed','CANCELLED':'failed'}.get(result['status'],'submitted')
         _save(root, aid, state); return attempt_state(root, aid)
 
@@ -219,6 +230,8 @@ def collect(project_dir, attempt_id, *, downloaded_path):
                 _fail('output_changed','collected original output changed')
             return attempt_state(root, aid)
         if state['status'] != 'completed': _fail('original_not_completed', 'only the completed original can be collected')
+        _event(state, 'collection_started', history_id=state['receipt']['historyId'])
+        _save(root, aid, state)
         terminal = _terminal(state, {'COMPLETED'})
         videos = [_video_resource(terminal)]
         supplied = Path(downloaded_path).expanduser()
@@ -250,6 +263,7 @@ def collect(project_dir, attempt_id, *, downloaded_path):
             # Crash recovery: finalize only the identical already-preserved original.
         if __import__('hashlib').sha256(destination.read_bytes()).hexdigest() != sha: _fail('output_changed', 'collected output bytes differ')
         state['output']={'path':str(destination),'sha256':sha}; state['resource']=copy.deepcopy(videos[0]); state['status']='collected'
+        _event(state, 'collected', history_id=state['receipt']['historyId'], output_sha256=sha)
         _save(root, aid, state); return attempt_state(root, aid)
 
 def attempt_state(project_dir, attempt_id):
@@ -623,6 +637,8 @@ def download_original(project_dir, attempt_id):
         if path.exists():_fail('download_uncertain','unreceipted original download exists; review it before another download')
         from lib import openart_download
         from urllib.parse import urlsplit
+        _event(state, 'download_started', history_id=state['receipt']['historyId'], resource_id=resource['id'])
+        _save(root, aid, state)
         try:
             downloaded=openart_download.collect_output(url,path,allowed_hosts={urlsplit(url).hostname},
                 output_root=directory,max_bytes=512*1024*1024,timeout=60,
@@ -634,5 +650,7 @@ def download_original(project_dir, attempt_id):
             'final_url':final_url,'redirect_chain':downloaded['redirect_chain'],'resource_sha256':mcp.digest(resource),'terminal_sha256':mcp.digest(terminal),
             'path':str(path),'sha256':_sha(path),'bytes':size,'provenance':'read_only_original_resource_download'}
         _write(directory/'download-receipt.json',receipt)
-        state['download_receipt']=receipt;state['download_receipt_sha256']=mcp.digest(receipt);_save(root,aid,state)
+        state['download_receipt']=receipt;state['download_receipt_sha256']=mcp.digest(receipt)
+        _event(state, 'download_retained', history_id=receipt['history_id'], resource_id=resource['id'], output_sha256=receipt['sha256'])
+        _save(root, aid, state)
         return {'downloaded_path':str(path),'sha256':receipt['sha256'],'history_id':receipt['history_id']}

@@ -1466,14 +1466,23 @@ def _execute_governed(tool, inputs, invoke):
     if openart_binding:
         active.update(openart_binding=openart_binding, openart_profile=profile, openart_native=native, openart_deadline=openart_prepared['deadline'] if openart_prepared else None)
     token = _ACTIVE.set(active)
+    from lib.events import emit_event
+    observation = {'attempt_id': session_id, 'request_sha256': checked['request_sha256'],
+                   'project_id': checked['marker']['project_id'],
+                   'story_revision': checked['marker']['story_revision'],
+                   'shot_id': checked['shot_id'], 'scope_id': scope['id'], 'tool': tool.name,
+                   'media_kind': checked['kind']}
+    emit_event(root, {'event': 'governed-invocation-start', **observation})
     try:
         result = invoke(submitted)
     except BaseException as exc:
+        emit_event(root, {'event': 'governed-invocation-error', **observation})
         _save_result(directory, error=exc)
         raise
     else:
+        emit_event(root, {'event': 'governed-invocation-return', **observation})
         try:
-            _save_result(directory, result=result)
+            retained = _save_result(directory, result=result)
         except BaseException as exc:
             # Preserve the raw return before fallible output copying, then record
             # uncertainty if storage still permits it. Never report persistence success.
@@ -1484,6 +1493,9 @@ def _execute_governed(tool, inputs, invoke):
                 except (OSError, ValueError):
                     pass
             raise
+        emit_event(root, {'event': 'governed-result-retained', **observation,
+                         'status': retained['status'],
+                         'output_sha256': (retained.get('output') or {}).get('sha256')})
         result.data['production_attempt_id'] = session_id
         result.data['production_request_sha256'] = checked['request_sha256']
         return result

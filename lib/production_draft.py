@@ -422,6 +422,7 @@ def compose_first_cut(project_dir, *, audio_path=None, compose=None):
     """Render a new versioned preview from current candidates and record it immutably."""
     from lib import production_execution as execution
     from lib.shot_contract import contract_digest
+    from lib.events import emit_event
     root = Path(project_dir).resolve()
     marker = execution._read(root / 'project.json')
     contract = execution.load_shot_contract(root)
@@ -461,12 +462,21 @@ def compose_first_cut(project_dir, *, audio_path=None, compose=None):
         if compose is None:
             from tools.video.video_compose import VideoCompose
             compose = VideoCompose().execute
-        result = compose(inputs)
+        observation = {'project_id': marker['project_id'], 'story_revision': marker['story_revision'],
+                       'cut_sequence': sequence, 'output_path': _rel(root, output)}
+        emit_event(root, {'event': 'first-cut-compose-start', **observation})
+        try:
+            result = compose(inputs)
+        except BaseException:
+            emit_event(root, {'event': 'first-cut-compose-error', **observation})
+            raise
+        emit_event(root, {'event': 'first-cut-compose-return', **observation, 'success': result.success})
         try:
             if not result.success:
                 raise RuntimeError(result.error or 'compose failed')
             technical = _probe(output)
             export = {'path': _rel(root, output), 'sha256': file_sha256(output)}
+            emit_event(root, {'event': 'first-cut-export-verified', **observation, 'export': export})
         except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
             error = str(exc)
             log_path = directory / 'render_error.log'
@@ -492,6 +502,10 @@ def compose_first_cut(project_dir, *, audio_path=None, compose=None):
     import hashlib
     path = root / _CUTS / (hashlib.sha256(json.dumps(record, indent=2).encode()).hexdigest() + '.json')
     execution._write_new(path, record)
+    emit_event(root, {'event': 'first-cut-retained', 'project_id': marker['project_id'],
+                     'story_revision': marker['story_revision'], 'cut_sequence': sequence,
+                     'first_cut': {'path': _rel(root, path), 'sha256': file_sha256(path)},
+                     'export': export, 'status': record['status']})
     return {'path': str(path), 'sha256': file_sha256(path), **record}
 
 
@@ -601,7 +615,14 @@ def record_first_cut_acceptance(project_dir, cut, *, accepted_by, evidence, disc
         (root / _ACCEPTANCES).mkdir(exist_ok=True)
         import hashlib
         path = root / _ACCEPTANCES / (hashlib.sha256(json.dumps(acceptance, indent=2).encode()).hexdigest() + '.json')
+        new = not path.exists()
         execution._write_new(path, acceptance)
+        if new:
+            from lib.events import emit_event
+            emit_event(root, {'event': 'first-cut-accepted', 'project_id': record['project_id'],
+                             'story_revision': record['story_revision'], 'first_cut': acceptance['first_cut'],
+                             'export': record['export'], 'disclosure': acceptance.get('disclosure'),
+                             'acceptance': {'path': _rel(root, path), 'sha256': file_sha256(path)}})
         return {'path': str(path), 'sha256': file_sha256(path)}
 
 
