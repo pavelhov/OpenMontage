@@ -550,8 +550,29 @@ def first_cut_status(project_dir, cut):
     return {'status': 'stale' if reasons else 'current', 'reasons': reasons}
 
 
-def record_first_cut_acceptance(project_dir, cut, *, accepted_by, evidence):
-    """Creator accepts this exact export and disclosed findings; never certification."""
+def disclosure_clip_map(record):
+    """Complete stable clip map a disclosure binds: 1-based number, identity,
+    exact source output and master interval for every placed clip, in order."""
+    return [{'number': index, 'shot_id': clip['shot_id'], 'attempt_id': clip['attempt_id'],
+             'output': clip['output'], 'master_start': clip['master_start'], 'master_end': clip['master_end']}
+            for index, clip in enumerate(record['clips'], 1)]
+
+
+def _check_disclosure(root, cut, record, disclosure):
+    """A disclosure sidecar must describe this exact cut record, export and complete clip map."""
+    from lib import production_execution as execution
+    sidecar = execution._read(_bound(root, disclosure))
+    if sidecar.get('first_cut') != cut or sidecar.get('export') != record['export']:
+        raise ValueError('disclosure does not describe this exact first cut and export')
+    if sidecar.get('clips') != disclosure_clip_map(record):
+        raise ValueError('disclosure clip map differs from the complete first-cut record')
+
+
+def record_first_cut_acceptance(project_dir, cut, *, accepted_by, evidence, disclosure=None):
+    """Creator accepts this exact export and disclosed findings; never certification.
+
+    ``disclosure`` optionally binds the exact {path, sha256} actual-export review
+    sidecar the creator saw; acceptance goes stale when that file changes."""
     from lib import production_execution as execution
     root = Path(project_dir).resolve()
     if not isinstance(accepted_by, str) or not accepted_by.strip():
@@ -563,6 +584,9 @@ def record_first_cut_acceptance(project_dir, cut, *, accepted_by, evidence):
         if record['export'] is None:
             raise ValueError('first-cut acceptance requires an actual export')
         _bound(root, evidence)
+        if disclosure is not None:
+            _check_disclosure(root, {'path': _rel(root, root / cut['path']), 'sha256': cut['sha256']},
+                              record, disclosure)
         acceptance = {'version': '1.0', 'kind': 'creator_first_cut_acceptance', 'not_certification': True,
                       'project_id': record['project_id'], 'story_revision': record['story_revision'],
                       'first_cut': {'path': _rel(root, root / cut['path']), 'sha256': cut['sha256']},
@@ -571,6 +595,9 @@ def record_first_cut_acceptance(project_dir, cut, *, accepted_by, evidence):
                       'sources': {clip['shot_id']: clip['output']['sha256'] for clip in record['clips']},
                       'status_at_acceptance': record['status'], 'accepted_by': accepted_by,
                       'evidence': {'path': _rel(root, root / evidence['path']), 'sha256': evidence['sha256']}}
+        if disclosure is not None:
+            acceptance['disclosure'] = {'path': _rel(root, root / disclosure['path']),
+                                        'sha256': disclosure['sha256']}
         (root / _ACCEPTANCES).mkdir(exist_ok=True)
         import hashlib
         path = root / _ACCEPTANCES / (hashlib.sha256(json.dumps(acceptance, indent=2).encode()).hexdigest() + '.json')
@@ -585,5 +612,10 @@ def first_cut_acceptance_status(project_dir, acceptance):
     path = (root / acceptance['path']).resolve()
     if path.parent != root / _ACCEPTANCES or not path.is_file() or file_sha256(path) != acceptance['sha256']:
         return {'status': 'stale', 'reasons': ['acceptance_changed']}
-    reasons = _cut_reasons(root, execution._read(path)['first_cut'])
+    record = execution._read(path)
+    reasons = _cut_reasons(root, record['first_cut'])
+    if 'disclosure' in record:
+        bound = root / record['disclosure']['path']
+        if not bound.is_file() or file_sha256(bound) != record['disclosure']['sha256']:
+            reasons.append('disclosure_changed')
     return {'status': 'stale' if reasons else 'current', 'reasons': reasons}

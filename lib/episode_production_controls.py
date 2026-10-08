@@ -310,6 +310,15 @@ def _media_model(provider, model):
     return None if provider in _MANAGED_MEDIA_PROVIDERS else model
 
 
+def alternate_route_eligible(original_provider, original_model, provider, model):
+    """True when (provider, model) is an alternate to the original route: a
+    different provider or a different reported media model. Mode, tool or
+    route key alone never makes an alternate."""
+    original_model = _media_model(original_provider, original_model)
+    model = _media_model(provider, model)
+    return original_provider != provider or (model is not None and model != original_model)
+
+
 def generation_usage(project_dir):
     """Trusted per-shot motion generation occurrences from journals and MCP state.
 
@@ -402,20 +411,20 @@ def generation_admission(project_dir, *, shot_id, provider, model=None, purpose,
     limit = effective['max_generations_per_shot']
     if limit is not None and used >= limit:
         reasons.append(f'episode generation limit reached for {shot_id} ({used}/{limit})')
-    model = _media_model(provider, model)
     routes = {i['attempt_id']: (i['provider'], i['model']) for i in usage['occurrences']}
     # MCP begin replays the repair route rule so an amendment between prepare
     # and begin cannot let a same-route reroll through.
     if repairing and not creator_item and effective['alternate_repair'] == 'different_provider_or_media_model':
         for original in replaces_attempt_ids or ():
             old_provider, old_model = routes.get(original, (None, None))
-            if old_provider == provider and (model is None or model == old_model):
+            if not alternate_route_eligible(old_provider, old_model, provider, model):
                 reasons.append(f'repair of {original} must use a different provider or media model')
     elif (not creator_item and repair_basis != 'access_fallback'
           and (purpose == 'repair' or (purpose == 'mcp_begin' and replaces_attempt_ids))
           and effective['alternate_repair'] == 'disabled'):
         # Ordinary critical repair stays on the original route; the separately
         # preapproved access fallback keeps its own different-route rule.
+        model = _media_model(provider, model)
         for original in replaces_attempt_ids or ():
             old_provider, old_model = routes.get(original, (None, None))
             if old_provider != provider or (model is not None and old_model is not None and model != old_model):
