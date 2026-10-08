@@ -52,7 +52,7 @@ Each tool's `agent_skills[]` field bridges Layer 1 → Layer 3. See `skills/INDE
 - **Artifacts are canonical:** `brief`, `script`, `scene_plan`, `asset_manifest`, `edit_decisions`, `render_report`, `publish_log`
 - **Every tool inherits from `tools/base_tool.py`** (ToolContract)
 - **Checkpoint policy** lives in pipeline manifest (`human_approval_default` per stage) + `skills/meta/checkpoint-protocol.md`
-- **Reviewer** is a meta skill (`skills/meta/reviewer.md`), advisory, max 2 rounds
+- **Reviewer** is a meta skill (`skills/meta/reviewer.md`): one substantive current-byte verdict per stage/shot boundary. A two-round target is an advisory planning budget, never a forced pass; missing, unknown or failed critical predicates remain blocked. Parent handoffs check bindings and completeness and reopen only a missing predicate or named dispute, without a duplicate full pixel review.
 - **Cost tracker** (`tools/cost_tracker.py`) manages budget: estimate -> reserve -> reconcile
 - **Canonical artifacts** validated against JSON schemas in `schemas/artifacts/`
 

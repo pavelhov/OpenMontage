@@ -227,6 +227,7 @@ def load_profile(model, mode, *, require='supported'):
     return view
 
 def model_catalog():
+    from lib.video_route_evidence import audio_capability
     result = {}
     for row in video_catalog():
         profile = load_profile(row['model'], row['mode'], require='candidate')
@@ -234,7 +235,9 @@ def model_catalog():
         result.setdefault(row['model'], {'display_name':row.get('display_name'), 'modes':{}})['modes'][row['mode']] = {
             **row, 'native_capabilities':profile['native_capabilities'], 'profile_status':view['profile_status'],
             'production_ready':view['production_ready'] is True, 'profile_sha256':profile['profile_sha256'],
-            'readiness':view['readiness'], 'empirical_result_status':view['readiness']['empirical_result']['status']}
+            'readiness':view['readiness'], 'empirical_result_status':view['readiness']['empirical_result']['status'],
+            # Separate audio facts; outside profile_sha256 so retained profiles are unchanged.
+            'audio_capability':audio_capability('openart_mcp', row['model'], row['mode'], profile['native_capabilities'])}
     return result
 
 def _check_profile(profile):

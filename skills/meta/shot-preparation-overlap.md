@@ -25,9 +25,13 @@ shot result.
 Preparation for a declared independent later shot may overlap the current
 reviewed shot's generation when it leaves that request and its dependency
 closure unchanged. Keep one production owner for the active request and reuse
-its current passing review; a second reviewer pass is needed only for a concrete
-uncertainty, defect, or changed binding. The later shot still needs its own
-current review and exact authority before promotion or dispatch.
+its current passing review. A parent verifies bindings and required-predicate
+completeness and opens only a missing predicate, named dispute or changed
+binding, without a second complete pixel review by default. The later shot
+still needs its own current review and exact authority before promotion or
+dispatch. Do not impose an episode-wide serial wait on independent, unbound
+preparation; enforce real dependencies when the candidate is promoted or the
+exact request needs current upstream selections and hashes.
 
 ## Operator sequence
 

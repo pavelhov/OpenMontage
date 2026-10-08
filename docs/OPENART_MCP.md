@@ -70,3 +70,7 @@ If an exact ending pin is required, add a native `last_frame` asset and use `ope
 Keep the resulting clip review separate from transport success: native controls do not guarantee perfect one-shot quality.
 
 The MCP route uses the agent-mediated connector and does not call the OpenArt CLI or reuse CLI credentials. Do not infer MCP controls or authority from CLI qualification.
+
+## Audio capability
+
+`model_catalog` reports a per-route `audio_capability` outside the immutable profile hash, so profiles and frozen requests are unchanged. It separates native output (`supported_toggle` from a form switch, `supported_default` from hosted-provider documentation, or `unknown`), the explicit switch, reference audio, connector observation (`not_tested`) and dialogue fidelity (`unverified`). `explicit_toggle.defaults` records the exact form default for each switch, or `null` when the form declares none. A required `native_audio` output only qualifies when the effective switch value is `true`. PixVerse V6 (`generateAudio` default `false`) therefore needs an explicit `true`. The H3 forms expose no audio field, and the engine never injects one. A form without a switch does not mean the route is silent. See `lib/video_route_evidence.py` for the exact routes and sources.

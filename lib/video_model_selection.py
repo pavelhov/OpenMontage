@@ -10,6 +10,12 @@ from copy import deepcopy
 import math
 
 from tools.base_tool import ToolStatus
+from lib.video_route_evidence import audio_capability, audio_output_conflict, explicit_audio_off, scene_model_guidance  # noqa: F401 (re-export)
+
+ROUTE_PLANNER_API = {"name": "openmontage.video_route_planner", "version": 1}
+FIT_BASIS = "control_fit_and_transport_evidence_heuristic_not_quality_benchmark"
+AUDIO_OUTPUT_SUPPORTED = frozenset({"supported_default", "supported_toggle"})
+ROUTE_KEYS = ("provider", "tool", "model", "mode")
 
 POOL_ITEM_SCHEMA = {
     "type": "object", "additionalProperties": False,
@@ -27,8 +33,9 @@ MODEL_SELECTION_INTENT_SCHEMA = {
         "approved_pool": {"type": "array", "minItems": 1, "uniqueItems": True, "items": POOL_ITEM_SCHEMA},
     },
     "allOf": [
-        {"if": {"properties": {"mode": {"const": "prefer"}}}, "then": {"required": ["model"]}},
-        {"if": {"properties": {"mode": {"const": "exact"}}},
+        # Managed routes (e.g. grok_cli) have no backend model id; exact and
+        # prefer may name the provider alone, matching a model-less pool entry.
+        {"if": {"properties": {"mode": {"enum": ["exact", "prefer"]}}},
          "then": {"anyOf": [{"required": ["model"]}, {"required": ["provider"]}]}},
     ],
 }
@@ -92,6 +99,10 @@ def _requested_controls(inputs):
         controls.append('first_last_frame')
     if any(params.get(k) is True for k in ('audio', 'generateAudio', 'generateSound')):
         controls.append('native_audio')
+    # An explicit on/off value (True or False) needs an exposed form switch;
+    # native_audio alone is an output requirement a default-audio route meets.
+    if any(isinstance(params.get(k), bool) for k in ('audio', 'generateAudio', 'generateSound')):
+        controls.append('native_audio_toggle')
     if sum(role in {'reference_image', 'character_reference', 'environment_reference'} for role in roles) > 1:
         controls.append('multiple_reference_images')
     if any(inputs.get(k) for k in ("last_image_path", "last_image_url", "last_frame", "endpoint_requirement_id")) or inputs.get("operation") == "first_last_frame":
@@ -225,8 +236,25 @@ def _candidate(tool, item, inputs):
             from lib.production_execution import _openart_mcp_controls
             try:
                 profile = mcp.load_profile(model, native_mode, require="supported")
+                if inputs.get('native_audio') is False:
+                    # Audio-off is an explicit control; it needs an exposed form switch.
+                    audio = audio_capability(tool.provider, model, native_mode, profile.get('native_capabilities') or {})
+                    if audio['explicit_toggle']['available'] is not True:
+                        return None, "missing_controls:native_audio_toggle"
+                    return None, "unsupported_setting:native_audio"  # use native_params for an exposed switch
+                if inputs.get('native_audio') is True:
+                    # Required audio output vs the effective exact-form switch
+                    # (explicit value, else form default); never rewrite settings.
+                    conflict = audio_output_conflict(
+                        audio_capability(tool.provider, model, native_mode, profile.get('native_capabilities') or {}),
+                        inputs.get('native_params'))
+                    if conflict:
+                        return None, conflict
                 controls = deepcopy(inputs)
                 controls.pop('model_selection_intent', None)
+                # Top-level native_audio is an output requirement checked below,
+                # never a form parameter; it is not sent to the connector.
+                controls.pop('native_audio', None)
                 controls.update(model=model, mode=native_mode)
                 mcp.prepare_native_request(_openart_mcp_controls(controls), profile)
                 # Exact form compilation above proved this request, while global
@@ -235,7 +263,11 @@ def _candidate(tool, item, inputs):
                 role_caps, param_caps = capabilities.get('roles') or {}, capabilities.get('params') or {}
                 metadata = deepcopy(metadata)
                 metadata['first_last_frame'] = all(role_caps.get(role, {}).get('supported') is True for role in ('first_frame', 'last_frame'))
-                metadata['native_audio'] = any(key in param_caps for key in ('audio', 'generateAudio', 'generateSound'))
+                audio = audio_capability(tool.provider, model, native_mode, capabilities)
+                metadata['audio'] = audio
+                metadata['native_audio'] = audio['native_output'] in AUDIO_OUTPUT_SUPPORTED
+                metadata['native_audio_toggle'] = audio['explicit_toggle']['available'] is True
+                metadata['reference_audio'] = audio['reference_audio']['available'] is True
                 requested_roles = [a.get('role') for a in inputs.get('input_assets', []) if isinstance(a, dict)
                                    and a.get('role') in {'reference_image', 'character_reference', 'environment_reference'}]
                 metadata['multiple_reference_images'] = bool(requested_roles) and all(role_caps.get(role, {}).get('supported') is True for role in requested_roles)
@@ -257,8 +289,11 @@ def _candidate(tool, item, inputs):
     checker = getattr(tool, "is_operation_available", None)
     if callable(checker) and not checker(operation):
         return None, "operation_unavailable"
+    # Non-MCP routes publish no separate switch fact; an explicit on/off value
+    # there keeps the previous whole-route native_audio requirement.
+    fallback = dict(supports, native_audio_toggle=supports.get('native_audio_toggle', supports.get('native_audio')))
     missing = [name for name in _requested_controls(inputs)
-               if metadata.get(name, supports.get(name)) is not True]
+               if metadata.get(name, fallback.get(name)) is not True]
     if missing:
         return None, "missing_controls:" + ",".join(missing)
     for key in ("last_image_path", "last_image_url", "last_frame", "keyframes", "voices"):
@@ -279,6 +314,10 @@ def _candidate(tool, item, inputs):
         return None, "unqualified_model_references"
     if any(inputs.get(k) for k in reference_keys) and supports.get("reference_image") is not True:
         return None, "missing_controls:reference_image"
+    requested = _requested_controls(inputs)
+    if tool.provider == "openart_mcp":
+        # Requirement already verified against per-route audio evidence above.
+        inputs = {key: value for key, value in inputs.items() if key != "native_audio"}
     input_error = _validate_provider_inputs(tool, inputs, props)
     if input_error:
         return None, input_error
@@ -323,10 +362,13 @@ def _candidate(tool, item, inputs):
     if native_mode:
         request["mode"] = native_mode
     # No assertions about video cleanliness. Only observed control fit and proof.
-    fit = len(_requested_controls(inputs)) + int(bool(metadata.get("result_proof_id")))
-    return {"provider": tool.provider, "tool": tool.name, "model": model,
-            "fit_score": fit, "fit_basis": "control_fit_and_transport_evidence_heuristic_not_quality_benchmark",
-            "cost": _cost(tool, info, metadata, request), "request": request}, None
+    fit = len(requested) + int(bool(metadata.get("result_proof_id")))
+    row = {"provider": tool.provider, "tool": tool.name, "model": model,
+           "fit_score": fit, "fit_basis": FIT_BASIS,
+           "cost": _cost(tool, info, metadata, request), "request": request}
+    if metadata.get("audio"):
+        row["audio"] = deepcopy(metadata["audio"])
+    return row, None
 
 
 def plan_video_model_selection(inputs, tools):
@@ -376,19 +418,20 @@ def plan_video_model_selection(inputs, tools):
             rejected.append({**item, "code": "route_not_found"})
     if not eligible:
         return _blocked("no_eligible_model", "No approved model fits the required controls and qualification.", rejected)
-    if mode == "exact" and len(eligible) != 1:
-        return _blocked("ambiguous_exact_model", "Name the provider/tool for this exact model.", rejected)
-    preferred_rows = [row for row in eligible if preferred(row)] if mode == "prefer" else []
-    choice_pool = preferred_rows or eligible
-    if goal == "best_value" and mode != "exact" and not preferred_rows:
-        costs = [row["cost"] for row in choice_pool]
-        if any(cost["status"] == "unknown" for cost in costs) or len({cost["unit"] for cost in costs}) != 1:
-            return _blocked("cost_not_comparable", "Best value requires applicable costs in one comparable unit; unknown cost is not zero.", rejected)
-        selected = min(choice_pool, key=lambda row: (row["cost"]["amount"], -row["fit_score"]))
-    elif len(choice_pool) == 1:
-        selected = choice_pool[0]
-    else:
-        selected = max(choice_pool, key=lambda row: row["fit_score"])
+    candidates = [{"route": {"provider": row["provider"], "tool": row["tool"], "model": row["model"],
+                             "mode": row["request"].get("mode")},
+                   "status": "eligible_for_planning", "request": row["request"], "blockers": [],
+                   "evidence": {"fit_score": row["fit_score"], "cost": row["cost"], "controls": {},
+                                **({"audio": row["audio"]} if row.get("audio") else {})}}
+                  for row in eligible]
+    # Every control was already proven by _candidate; the shared chooser only orders.
+    choice = choose_video_route(candidates, intent)
+    if choice["status"] != "planned":
+        blocker = choice["blockers"][0]
+        message = {"no_eligible_model": "No approved model fits the required controls and qualification.",
+                   "ambiguous_exact_model": "Name the provider/tool for this exact model."}.get(blocker["code"], blocker["message"])
+        return _blocked(blocker["code"], message, rejected)
+    selected = eligible[candidates.index(next(c for c in candidates if c["route"] == choice["selected"]["route"]))]
     return {"status": "planned", "intent": intent, "goal": goal,
             "selected": {key: value for key, value in selected.items() if key != "request"},
             "planned_request": selected["request"],
@@ -398,3 +441,260 @@ def plan_video_model_selection(inputs, tools):
                             "Control fit and transport proof do not establish cast/dialogue or comparative quality.",
                             "Tied fit uses approved pool order; no vendor ranking is assumed.",
                             "Dispatch readiness and unresolved original jobs remain governed by the selected route."]}
+
+
+def _route(value):
+    value = value if isinstance(value, dict) else {}
+    return {key: value.get(key) for key in ROUTE_KEYS}
+
+
+def _control_met(name, evidence):
+    controls = evidence.get("controls") if isinstance(evidence.get("controls"), dict) else {}
+    audio = evidence.get("audio") if isinstance(evidence.get("audio"), dict) else None
+    if audio is not None and name == "native_audio":
+        # Output requirement: documented default or exposed switch; unknown never satisfies it.
+        return audio.get("native_output") in AUDIO_OUTPUT_SUPPORTED
+    if audio is not None and name == "native_audio_toggle":
+        return (audio.get("explicit_toggle") or {}).get("available") is True
+    if audio is not None and name == "reference_audio":
+        return (audio.get("reference_audio") or {}).get("available") is True
+    return controls.get(name) is True
+
+
+def choose_video_route(candidates, intent, *, requirements=None, account_priority=None,
+                       scene_profile=None, selected_route=None):
+    """Order and choose among already compiled candidate rows. Pure; no authority.
+
+    candidates: [{route:{provider,tool,model,mode}, status, request, source?, blockers?,
+                  evidence:{fit_score:int>=0, controls:{}, cost:{status,amount,unit}, audio?}}]
+    Ordering is fit_score desc, then the optional account_priority subset, then
+    approved_pool order. best_value requires every cost known in one unit.
+    scene_profile only attaches suggestive guidance; it never reorders.
+    The returned request is the caller's own compiled request, unchanged.
+    """
+    def blocked(code, message, rejected=()):
+        return {"status": "blocked", "selected": None, "ordered": [], "rejected": list(rejected),
+                "blockers": [{"code": code, "message": message}], "basis": FIT_BASIS,
+                "authority": "none", "limitations": limitations}
+
+    limitations = ["Planning grants no dispatch, billing or retry authority.",
+                   "Fit is control coverage plus transport evidence, not cast/dialogue or comparative quality.",
+                   "Documented default audio is hosted-provider evidence, not connector-observed output."]
+    try:
+        intent = validate_model_selection_intent(intent)
+    except (ValueError, TypeError) as exc:
+        return blocked("invalid_model_selection_intent", str(exc))
+    mode, goal, pool = intent["mode"], intent.get("goal", "balanced"), intent["approved_pool"]
+    try:
+        guidance = scene_model_guidance(scene_profile) if scene_profile is not None else None
+    except ValueError as exc:
+        return blocked("unknown_scene_profile", str(exc))
+
+    def pool_index(route):
+        for index, item in enumerate(pool):
+            if (item["provider"] == route["provider"] and item.get("model") == route["model"]
+                    and (not item.get("tool") or item["tool"] == route["tool"])):
+                return index
+        return None
+
+    priority = []
+    for item in account_priority or []:
+        route = _route(item.get("route", item) if isinstance(item, dict) else None)
+        if pool_index(route) is None:
+            return blocked("priority_outside_approved_pool", "Account priority may only order routes inside the approved pool.")
+        priority.append(route)
+
+    def priority_index(route):
+        for index, item in enumerate(priority):
+            if all(item[k] is None or item[k] == route[k] for k in ROUTE_KEYS):
+                return index
+        return len(priority)
+
+    if selected_route is not None:
+        wanted = _route(selected_route)
+        if (wanted["model"] != intent.get("model") or intent.get("provider") and wanted["provider"] != intent["provider"]
+                or pool_index(wanted) is None):
+            return blocked("selected_route_outside_intent", "selected_route must be the instructed model inside the approved pool.")
+        if mode == "auto":
+            return blocked("selected_route_outside_intent", "selected_route applies only to prefer or exact intent.")
+    else:
+        wanted = None
+
+    required = list((requirements or {}).get("controls") or [])
+    eligible, rejected = [], []
+    for candidate in candidates or []:
+        route = _route(candidate.get("route"))
+        evidence = candidate.get("evidence") if isinstance(candidate.get("evidence"), dict) else {}
+        # Rejected rows keep every caller field (blockers, observation, source).
+        reject = lambda code: rejected.append({**deepcopy(candidate), "route": route, "code": code})
+        if candidate.get("status") != "eligible_for_planning" or candidate.get("blockers"):
+            reject("candidate_excluded")
+            continue
+        if not selection_intent_allows_route(intent, route["provider"], route["model"], route["tool"]):
+            reject("outside_approved_pool")
+            continue
+        if mode == "exact" and wanted and route != wanted:
+            reject("outside_exact_route")
+            continue
+        request = candidate.get("request") if isinstance(candidate.get("request"), dict) else {}
+        conflict = "native_audio" in required and audio_output_conflict(evidence.get("audio"), request.get("native_params"))
+        if conflict:
+            reject(conflict)
+            continue
+        missing = [name for name in required if not _control_met(name, evidence)]
+        if missing:
+            reject("missing_controls:" + ",".join(missing))
+            continue
+        fit = evidence.get("fit_score", 0)
+        if isinstance(fit, bool) or not isinstance(fit, int) or fit < 0:
+            reject("invalid_fit_score")
+            continue
+        eligible.append((candidate, route, fit))
+    if not eligible:
+        return blocked("no_eligible_model", "No approved candidate fits the required controls.", rejected)
+    if mode == "exact" and len(eligible) != 1:
+        return blocked("ambiguous_exact_model", "Name the exact provider/tool/mode for this model.", rejected)
+
+    order_key = lambda entry: (-entry[2], priority_index(entry[1]), pool_index(entry[1]))
+    ordered = sorted(eligible, key=order_key)
+    preferred = []
+    if mode == "prefer":
+        exact_wanted = [entry for entry in ordered if wanted and entry[1] == wanted]
+        preferred = exact_wanted or [entry for entry in ordered if entry[1]["model"] == intent.get("model")
+                                      and (not intent.get("provider") or entry[1]["provider"] == intent["provider"])]
+        if wanted and not exact_wanted:
+            limitations.append("preferred_route_not_eligible")
+        ordered = preferred + [entry for entry in ordered if entry not in preferred]
+    # An eligible preferred model wins outright; best_value compares the open pool only.
+    if goal == "best_value" and mode != "exact" and not preferred:
+        costs = [(entry[0].get("evidence") or {}).get("cost") or {} for entry in ordered]
+        if (any(c.get("status") == "unknown" or not isinstance(c.get("amount"), (int, float))
+                or isinstance(c.get("amount"), bool) for c in costs) or len({c.get("unit") for c in costs}) != 1):
+            return blocked("cost_not_comparable",
+                           "Best value requires applicable costs in one comparable unit; unknown cost is not zero.", rejected)
+        ordered = sorted(ordered, key=lambda e: (e[0]["evidence"]["cost"]["amount"],) + order_key(e))
+    selected = ordered[0]
+    # Chosen/ordered rows are the caller's own rows (all provenance kept) plus
+    # the normalized route and validated fit_score.
+    view = lambda entry: {**deepcopy(entry[0]), "route": entry[1], "fit_score": entry[2],
+                          "evidence": deepcopy(entry[0].get("evidence") or {})}
+    result = {"status": "planned", "selected": view(selected), "ordered": [view(e) for e in ordered],
+              "rejected": rejected, "blockers": [], "basis": FIT_BASIS, "authority": "none",
+              "limitations": limitations}
+    if guidance is not None:
+        result["scene_guidance"] = guidance
+    return result
+
+
+# Per-attempt plumbing, same set as production_autonomy._validate_request_delta:
+# a new output path or timeout is not a creative repair.
+REQUEST_PLUMBING_KEYS = frozenset({
+    "output_path", "cli_session_id", "timeout_seconds", "cwd", "allow_unknown_cost",
+    "native_dry_run_receipt_id", "native_dry_run_receipt_sha256"})
+
+
+def request_delta(original, proposed):
+    """Top-level creative request difference {key: {before, after}}, excluding governance and plumbing."""
+    from lib.production_execution import GOVERNANCE_KEYS
+    original, proposed = original or {}, proposed or {}
+    ignored = set(GOVERNANCE_KEYS) | {"model_selection_intent"} | REQUEST_PLUMBING_KEYS
+    return {key: {"before": deepcopy(original.get(key)), "after": deepcopy(proposed.get(key))}
+            for key in sorted(set(original) | set(proposed))
+            if key not in ignored and original.get(key) != proposed.get(key)}
+
+
+def failed_critical_predicates(review):
+    """Named failed critical predicates (same rule as repair evidence validation)."""
+    from lib.shot_contract import CRITICAL_PREDICATES
+    names = []
+    for p in (review or {}).get("predicates") or []:
+        if (isinstance(p, dict) and p.get("status") == "fail" and isinstance(p.get("name"), str) and p["name"]
+                and (p["name"] in CRITICAL_PREDICATES or p.get("severity", "critical") == "critical")
+                and not (p["name"] in CRITICAL_PREDICATES and p.get("severity") == "cosmetic")):
+            names.append(p["name"])
+    return list(dict.fromkeys(names))
+
+
+REPAIR_REMEDIES = ("prompt_staging", "model_change", "edit")
+
+
+def validate_repair_decision(decision, *, review, original_route, intent,
+                             original_request=None, proposed_request=None):
+    """Validate an explicit producer repair decision. Grants no authority.
+
+    The producer diagnoses; this only checks the decision is coherent with the
+    actual failed critical predicates, intent and request difference. Edit
+    returns needs_engine_handoff to existing editing + QC; the failed verdict
+    stays failed and generation caps do not apply to it.
+    """
+    def fail(code, message):
+        raise ValueError(code + ": " + message)
+
+    if not isinstance(decision, dict):
+        fail("missing_producer_decision", "a repair needs an explicit producer decision")
+    for key in ("decision_id", "producer", "remedy", "rationale", "addresses_predicates",
+                "defect_evidence", "request_delta", "selected_route"):
+        if key not in decision:
+            fail("missing_field", key)
+    for key in ("decision_id", "producer", "rationale"):
+        if not isinstance(decision[key], str) or not decision[key].strip():
+            fail("empty_field", key)
+    if not decision["defect_evidence"]:
+        fail("empty_field", "defect_evidence")
+    remedy = decision["remedy"]
+    if remedy not in REPAIR_REMEDIES:
+        fail("unknown_remedy", repr(remedy))
+    failed = failed_critical_predicates(review)
+    if not isinstance(review, dict) or review.get("status") != "fail" or not failed:
+        fail("no_failed_critical_predicates", "review names no failed critical predicate")
+    addressed = decision["addresses_predicates"]
+    if not isinstance(addressed, list) or not addressed or not set(addressed) <= set(failed):
+        fail("predicates_not_failed", "addresses_predicates must be a non-empty subset of " + repr(failed))
+    original, selected = _route(original_route), _route(decision["selected_route"])
+    result = deepcopy(decision)
+    result.update(grants_authority=False, failed_predicates=failed, selected_route=selected)
+    if remedy in ("prompt_staging", "edit") and selected != original:
+        fail("route_changed", remedy + " must keep the exact original provider/tool/model/mode")
+    if remedy == "edit":
+        handoff = decision.get("edit_handoff")
+        if not isinstance(handoff, dict) or not isinstance(handoff.get("tool"), str) or not handoff["tool"] \
+                or not isinstance(handoff.get("inputs"), dict) or not handoff["inputs"]:
+            fail("invalid_edit_handoff", "edit needs edit_handoff {tool, inputs}")
+        if not decision["request_delta"]:
+            fail("empty_field", "request_delta must describe the reviewed edit operations")
+        result.update(status="needs_engine_handoff", predicates_remain_failed=failed)
+        return result
+    for label, req in (("original_request", original_request), ("proposed_request", proposed_request)):
+        if not isinstance(req, dict) or not req:
+            fail("missing_" + label, "generation repair needs the actual non-empty " + label)
+    if remedy == "model_change":
+        try:
+            checked = validate_model_selection_intent(intent)
+        except (ValueError, TypeError) as exc:
+            fail("invalid_model_selection_intent", str(exc))
+        if checked["mode"] == "exact":
+            fail("exact_intent", "an exact model pin permits only same-route prompt/staging repair")
+        if selected["model"] is None:
+            fail("managed_reroll_not_model_change", "a managed route without a selectable model is not a model change")
+        if selected["model"] == original["model"]:
+            fail("same_model_reroll", "model_change must select a different model")
+        if not selection_intent_allows_route(checked, selected["provider"], selected["model"], selected["tool"]):
+            fail("outside_approved_pool", "selected_route is outside the approved intent")
+        for key in ("model", "mode"):
+            if proposed_request.get(key) != selected[key]:
+                fail("request_route_mismatch", "proposed request " + key + " differs from selected_route")
+    # The proposed request must target exactly selected_route; rejected, never rewritten.
+    # Keys absent from the request (managed/operation-only requests) are not invented.
+    for key, field in (("model", "model"), ("mode", "mode"), ("provider", "provider"),
+                       ("preferred_provider", "provider"), ("hosting_provider", "provider"), ("tool", "tool"), ("preferred_tool", "tool")):
+        if key in proposed_request and proposed_request[key] != selected[field]:
+            fail("request_route_mismatch", "proposed request " + key + " differs from selected_route")
+    if "allowed_providers" in proposed_request and proposed_request["allowed_providers"] != [selected["provider"]]:
+        fail("request_route_mismatch", "proposed allowed_providers must be exactly the selected provider")
+    actual = request_delta(original_request, proposed_request)
+    if not actual:
+        fail("identical_reroll", "proposed request is identical to the original")
+    if decision["request_delta"] != actual:
+        fail("request_delta_mismatch", "request_delta must equal request_delta(original, proposed)")
+    result.update(status="valid_generation_decision")
+    return result

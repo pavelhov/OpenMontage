@@ -390,7 +390,7 @@ def test_canonical_mcp_native_controls_are_requested():
     from lib.video_model_selection import _requested_controls
     assert set(_requested_controls({'native_params': {'generateSound': True}, 'input_assets': [
         {'role': 'last_frame'}, {'role': 'character_reference'}, {'role': 'environment_reference'}]})) == {
-            'first_last_frame', 'native_audio', 'multiple_reference_images'}
+            'first_last_frame', 'native_audio', 'native_audio_toggle', 'multiple_reference_images'}
 
 
 # Actual native source receipts are synthetic and isolated by these fixtures.
