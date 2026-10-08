@@ -151,6 +151,13 @@ state. If a mismatch is intentional, state the editorial bridge (cutaway,
 match cut, dissolve, reset, or visible transition); do not disguise an
 uncontrolled discontinuity as style.
 
+Shot-local preparation and review may overlap only under the fixed-plan
+boundary described in [`../meta/shot-preparation-overlap.md`](../meta/shot-preparation-overlap.md).
+This does not waive the target's dependency closure or shared reviews. A
+dependent shot must use the selected upstream attempt and observed outgoing
+frame, with required continuity review; a planned or prepared board cannot
+substitute for that evidence.
+
 ## Animatic and Approved-Keyframe-to-Motion Handoff
 
 Use `scene_plan.metadata.visual_development.animatic_keyframes[scene_id]` to
