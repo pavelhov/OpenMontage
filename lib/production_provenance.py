@@ -153,11 +153,19 @@ def _validate_attempt_provenance(
     current = execution.load_shot_contract(root)
     require(contract['project_id'] == marker['project_id'] and contract['story_revision'] == story_revision, 'frozen contract story/project differs')
     from lib import production_continuity as continuity
+    local_continuation_applicable = False
+    if not _historical_source and (directory / 'local_continuation_claim.json').exists():
+        local_continuation_applicable = execution._same_original_local_grok_applicability(
+            root, request, retained_continuation=True)
     policy_derived = 'derived_from_policy' in scope
     if policy_derived:
         from lib.production_autonomy import validate_policy_attempt
         validate_policy_attempt(root, request, scope, contract,
                                 frozen_openart=execution.load_openart_frozen(request) if openart else None)
+    elif local_continuation_applicable:
+        # The validated once-only original claim proves exact own-shot authority;
+        # unrelated later shot semantics grant no new generation or carry scope.
+        pass
     else:
         # The frozen scope must still equal its own frozen contract. A later
         # approved repair may change another shot's own static board (which
