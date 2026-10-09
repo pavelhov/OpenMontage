@@ -1097,10 +1097,80 @@ _LOCAL_CONTINUATION_FILES = ('request.json', 'result.json', 'raw_result.json',
                              'shot_contract.json', 'selected_attempts.json')
 
 
-def _local_grok_failure(directory, request):
-    """Recognize only the retained pre-CLI empty-optional-reference defect."""
+def _local_grok_missing_output_cwd(directory, request, prior, raw, *, retained_continuation=False):
+    """Replay the exact 0.4.0 pre-compatibility cwd failure, never a label alone.
+
+    That adapter resolves cwd before its first CLI process; its OSError wrapper
+    emits this exact shape. Later process failures use capability/headless or a
+    non-null version. Modern journals additionally retain the local phase.
+    Original records remain immutable; continuation claims bind their hashes.
+    """
+    import errno
+    import os
+    from tools._grok_cli_media import MODEL_PROVENANCE, PINNED_MODEL
+    from tools.video.grok_cli_video import build_native_video_request
+    submitted = request.get('submitted_inputs', {})
+    output = Path(submitted.get('output_path', '')).expanduser()
+    cwd = output.parent
+    if (not output.is_absolute() or not cwd.is_absolute()
+            or submitted.get('cwd', str(cwd)) != str(cwd)
+            or submitted.get('cli_session_id') != request.get('attempt_id')
+            or request.get('tool_name') != 'grok_cli_video'
+            or request.get('scope', {}).get('provider') != 'grok_cli'
+            or request.get('media_kind') != 'motion'
+            or submitted.get('operation') != 'first_last_frame'
+            or prior.get('status') != 'failed' or prior.get('result') != raw
+            or any(prior.get(k) is not None for k in ('output', 'preserved_output', 'exception'))
+            or raw.get('success') is not False or raw.get('artifacts') != []
+            or raw.get('error') != 'Grok CLI invalid_argument error: ' + str(
+                FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), str(cwd)))):
+        return False
+    native = build_native_video_request(submitted, adapter_version='0.4.0', provider='grok_cli')
+    if not {'first_frame', 'last_frame'}.issubset(native['arguments']):
+        return False
+    receipt = dict(native['receipt'], cli_version=None, session_id=request['attempt_id'],
+                   dispatch_status='not_dispatched', submission_evidence='unconfirmed')
+    endpoints = {item['role']: {'path': item['path'], 'sha256': item['sha256']}
+                 for item in native['input_assets'] if item['role'] in {'first_frame', 'last_frame'}}
+    expected = {'provider': 'grok_cli', 'model': PINNED_MODEL, **MODEL_PROVENANCE,
+                'cli_version': None, 'error_category': 'invalid_argument',
+                'dispatch_status': 'not_dispatched', 'retry_attempted': False,
+                'fallback_attempted': False, 'diagnostics': {},
+                'session_id': request['attempt_id'], 'dispatch_session_id': request['attempt_id'],
+                'conditioning_receipt': receipt,
+                'endpoint_conditioning': {'requirement_id': submitted.get('endpoint_requirement_id'),
+                    'first_frame': endpoints.get('first_frame'), 'last_frame': endpoints.get('last_frame'),
+                    'constraint': 'endpoints_only', 'request_sha256': receipt['request_sha256']}}
+    data = raw.get('data', {})
+    if isinstance(data, dict) and 'local_setup_evidence' in data:
+        expected['local_setup_evidence'] = {'version': '1.0', 'phase': 'cwd_resolution',
+            'cli_launch_started': False, 'cwd': str(cwd), 'output_path': str(output)}
+    if data != expected:
+        return False
+    root = directory.parent.parent
+    if not retained_continuation and (output.exists() or any(directory.glob('output.*'))
+            or any((directory / name).exists() or (directory / name).is_symlink()
+                   for name in ('provider_request.json', 'provider_result.json', 'reconciliation.json'))):
+        return False
+    # Bind native receipt hashes to the actual frozen request and all input bytes.
+    _local_grok_inputs(root, request)
+    bases = {Path.home() / '.grok/sessions', root / 'sessions'}
+    if os.environ.get('GROK_SESSIONS_ROOT'):
+        bases.add(Path(os.environ['GROK_SESSIONS_ROOT']).expanduser())
+    aid = request['attempt_id']
+    if not retained_continuation and any((base / aid).exists() or (base / aid).is_symlink()
+           or any(base.glob('*/' + aid)) for base in bases):
+        return False
+    return True
+
+
+def _local_grok_failure(directory, request, *, retained_continuation=False):
+    """Recognize only retained, exactly bound local pre-CLI defects."""
     prior = _read(directory / 'result.json')
     raw = _read(directory / 'raw_result.json')
+    if _local_grok_missing_output_cwd(directory, request, prior, raw,
+                                      retained_continuation=retained_continuation):
+        return raw
     data = raw.get('data', {})
     expected = {'provider': 'grok_cli', 'cli_version': None,
                 'session_id': request['attempt_id'], 'dispatch_session_id': request['attempt_id'],
@@ -1136,7 +1206,9 @@ def validate_local_grok_continuation_record(project_dir, request):
     for name, digest in claim['original_sha256'].items():
         if file_sha256(directory / name) != digest:
             _fail('local continuation original evidence changed: ' + name)
-    _local_grok_failure(directory, request)
+    # Only after validating the hash-bound once-only claim may real later
+    # continuation session/output evidence coexist with the original refusal.
+    _local_grok_failure(directory, request, retained_continuation=True)
     return claim
 
 

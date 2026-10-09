@@ -1514,3 +1514,62 @@ def test_sealed_prompt_ascii_boundaries_only_are_equivalent(boundary):
 def test_sealed_prompt_equivalence_does_not_relax_other_controls(field, observed, expected):
     from tools._grok_cli_media import _sealed_arguments_match
     assert not _sealed_arguments_match({field:observed}, {field:expected})
+
+
+def test_default_missing_output_parent_is_prepared_before_cli(monkeypatch, tmp_path):
+    import tools._grok_cli_media as media
+
+    calls = []
+    output = tmp_path / "assets" / "videos" / "clip.mp4"
+
+    def compatibility(path, *, cwd):
+        assert cwd == output.parent and cwd.is_dir()
+        calls.append(cwd)
+        raise media.GrokCLIContractError("version", "offline stop before generation")
+
+    monkeypatch.setattr(media, "_verify_compatibility", compatibility)
+    result = media.execute_grok_cli_media(
+        tool_name="reference_to_video",
+        arguments={},
+        output_path=str(output),
+        cwd=str(output.parent),
+        grok_path="/offline/grok",
+        sessions_root=str(tmp_path / "sessions"),
+        timeout_seconds=30,
+        media_kind="video",
+        session_id="reserved-id",
+    )
+    assert result.data["error_category"] == "version"
+    assert calls == [output.parent]
+
+
+def test_explicit_missing_cwd_has_authoritative_local_phase_and_no_process(
+    monkeypatch, tmp_path
+):
+    import tools._grok_cli_media as media
+
+    def no_process(*args, **kwargs):
+        pytest.fail("local setup must not launch any CLI process")
+
+    monkeypatch.setattr(media, "_run_process", no_process)
+    cwd = tmp_path / "missing-cwd"
+    output = tmp_path / "output" / "clip.mp4"
+    result = media.execute_grok_cli_media(
+        tool_name="reference_to_video",
+        arguments={},
+        output_path=str(output),
+        cwd=str(cwd),
+        grok_path="/offline/grok",
+        sessions_root=str(tmp_path / "sessions"),
+        timeout_seconds=30,
+        media_kind="video",
+        session_id="reserved-id",
+    )
+    assert result.data["dispatch_status"] == "not_dispatched"
+    assert result.data["local_setup_evidence"] == {
+        "version": "1.0",
+        "phase": "cwd_resolution",
+        "cli_launch_started": False,
+        "cwd": str(cwd),
+        "output_path": str(output),
+    }

@@ -280,3 +280,157 @@ def test_original_continuation_recovery_after_result_write_failure(reserved, mon
         assert (directory / name).read_bytes() == raw
     assert (directory / 'local_continuation_claim.json').read_bytes() == claim
     assert len(p.transport.native_requests) == len(execution._attempts(p.root)) == 1
+
+
+@pytest.fixture(params=["legacy", "phase"])
+def missing_cwd_reserved(production, monkeypatch, request):
+    """Retain the 0.4.0 journal shape from the exact strict-cwd failure site."""
+    p = production
+    inputs = copy.deepcopy(p.inputs["entry"])
+    inputs.pop("preferred_provider", None)
+    inputs.pop("allowed_providers", None)
+    inputs.pop("cwd", None)
+    inputs["output_path"] = str(p.root / "assets" / "videos" / "entry.mp4")
+    p.scope["requests"]["entry"] = execution.planned_request_digest(
+        inputs, project_dir=p.root
+    )
+    p.persist_scope()
+    with monkeypatch.context() as old:
+        # The old cwd check ran before this existing output-parent preparer.
+        old.setattr(
+            "tools._grok_cli_media._prepare_output_path", lambda path: Path(path)
+        )
+        result = p.cli.execute(inputs)
+    assert not result.success and not p.transport.native_requests
+    aid = result.data["production_attempt_id"]
+    directory = p.root / "production_attempts" / aid
+    raw = read(directory / "raw_result.json")
+    if request.param == "legacy":
+        raw["data"].pop("local_setup_evidence", None)
+    retained = read(directory / "result.json")
+    retained["result"] = raw
+    for name, value in [("raw_result.json", raw), ("result.json", retained)]:
+        (directory / name).chmod(0o644)
+        save(directory / name, value)
+    request = read(directory / "request.json")
+    frozen = {
+        name: (directory / name).read_bytes()
+        for name in execution._LOCAL_CONTINUATION_FILES
+    }
+    return p, aid, directory, request, frozen
+
+
+def test_missing_output_parent_continues_original_once_without_rewriting_history(
+    missing_cwd_reserved,
+):
+    from lib import episode_production_controls as controls
+
+    p, aid, directory, request, frozen = missing_cwd_reserved
+    usage = controls.generation_usage(p.root)
+    assert usage["excluded_never_submitted"] == [aid]
+    assert usage["total"] == 0
+    assert continue_attempt(missing_cwd_reserved)["provider_calls"] == 0
+    result = continue_attempt(missing_cwd_reserved, dry_run=False)
+    assert result.success, result.error
+    assert result.data["production_attempt_id"] == aid
+    assert controls.generation_usage(p.root)["total"] == 1
+    assert len(execution._attempts(p.root)) == len(p.transport.native_requests) == 1
+    selected = p.select("entry", result)
+    validate_attempt_provenance(
+        p.root,
+        aid,
+        shot_id="entry",
+        story_revision=p.story["story_revision"],
+        expected_output=selected["output"],
+    )
+    for name, original in frozen.items():
+        assert (directory / name).read_bytes() == original
+    with pytest.raises(execution.ProductionGovernanceError, match="already claimed"):
+        continue_attempt(missing_cwd_reserved, dry_run=False)
+    assert len(p.transport.native_requests) == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "version",
+        "receipt",
+        "provider",
+        "error_cwd",
+        "session",
+        "provider_begin",
+        "output",
+        "after_launch",
+        "request_hash",
+        "phase",
+        "request_output",
+        "request_cwd",
+        "frozen_hash",
+    ],
+)
+def test_missing_cwd_legacy_proof_rejects_unbound_or_launched_attempts(
+    missing_cwd_reserved, change
+):
+    from lib import episode_production_controls as controls
+
+    p, aid, directory, request, _ = missing_cwd_reserved
+    raw = read(directory / "raw_result.json")
+    retained = read(directory / "result.json")
+    if change == "version":
+        raw["data"]["conditioning_receipt"]["adapter_version"] = "unknown"
+    elif change == "receipt":
+        raw["data"]["conditioning_receipt"]["submitted_arguments"]["duration"] += 1
+    elif change == "provider":
+        raw["data"]["provider"] = "other"
+    elif change == "error_cwd":
+        raw["error"] = raw["error"].replace("/videos", "/other")
+    elif change == "session":
+        (
+            Path(p.cli._sessions_root)
+            / quote(
+                str(Path(request["submitted_inputs"]["output_path"]).parent), safe=""
+            )
+            / aid
+        ).mkdir(parents=True)
+    elif change == "provider_begin":
+        save(directory / "provider_request.json", {})
+    elif change == "output":
+        output = Path(request["submitted_inputs"]["output_path"])
+        output.parent.mkdir(parents=True)
+        output.write_bytes(b"possible original")
+    elif change == "phase":
+        raw["data"]["local_setup_evidence"] = {
+            "version": "1.0",
+            "phase": "after_cli_launch",
+            "cli_launch_started": True,
+            "cwd": str(Path(request["submitted_inputs"]["output_path"]).parent),
+            "output_path": request["submitted_inputs"]["output_path"],
+        }
+    elif change in {"request_output", "request_cwd", "frozen_hash"}:
+        tampered = copy.deepcopy(request)
+        if change == "request_output":
+            tampered["submitted_inputs"]["output_path"] = str(p.root / "other" / "clip.mp4")
+        elif change == "request_cwd":
+            tampered["submitted_inputs"]["cwd"] = str(p.root / "other")
+        else:
+            tampered["request_sha256"] = "0" * 64
+        (directory / "request.json").chmod(0o644)
+        save(directory / "request.json", tampered)
+    elif change == "after_launch":
+        raw["data"]["dispatch_status"] = "indeterminate"
+        raw["data"]["cli_version"] = "1.0.34"
+    else:
+        with pytest.raises(execution.ProductionGovernanceError):
+            execution.continue_local_grok_attempt(
+                p.cli, p.root, aid, request_sha256="0" * 64, dry_run=False
+            )
+        assert not p.transport.native_requests
+        return
+    retained["result"] = raw
+    for name, value in [("raw_result.json", raw), ("result.json", retained)]:
+        (directory / name).chmod(0o644)
+        save(directory / name, value)
+    assert controls.generation_usage(p.root)["total"] == 1
+    with pytest.raises(execution.ProductionGovernanceError):
+        continue_attempt(missing_cwd_reserved, dry_run=False)
+    assert not p.transport.native_requests
