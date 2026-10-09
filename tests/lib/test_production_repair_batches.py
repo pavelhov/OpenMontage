@@ -103,6 +103,50 @@ def test_same_model_pass_unwanted_does_not_change_global_policy_or_reviews(p):
     assert len(p.transport.native_requests) == 2
 
 
+@pytest.mark.parametrize('mapping', ['exact', 'legacy'])
+def test_native_tool_mapping_keeps_exact_and_legacy_callers_compatible(p, mapping):
+    enable(p.root)
+    first = p.generate('entry'); p.select('entry', first)
+    cut = draft.compose_first_cut(p.root, compose=fake_cut)
+    item = batch_item(p, 'entry', first.data['production_attempt_id'])
+    item['inputs'].pop('preferred_provider')
+    item['inputs'].pop('allowed_providers')
+    batches.record_creator_repair_batch(p.root, batch_id='mapping', cut=cut_binding(cut),
+        items=[item], evidence=approval(p.root, 'creator-intent'))
+    exact_scope(p, item, 'mapping-scope')
+    batches.prepare_repair_item(p.root, 'mapping', 'item', scope_id='mapping-scope')
+    key = ('grok_cli', 'grok_cli_video')
+    # A correct exact key takes precedence over an unusable legacy entry.
+    tools = {key: p.cli, 'grok_cli': None} if mapping == 'exact' else {'grok_cli': p.cli}
+    receipt = batches.resume_repair_batch(p.root, 'mapping', tools=tools)
+    assert receipt['errors'] == [] and receipt['items'][0]['state'] == 'completed', receipt
+    assert len(p.transport.native_requests) == 2
+    assert batches.resume_repair_batch(p.root, 'mapping', tools=tools)['actions'] == []
+    assert len(p.transport.native_requests) == 2
+
+
+@pytest.mark.parametrize('invalid', ['none', 'wrong_tool', 'wrong_provider'])
+def test_invalid_exact_native_mapping_never_falls_back_to_legacy_entry(p, invalid):
+    from types import SimpleNamespace
+    enable(p.root)
+    first = p.generate('entry'); p.select('entry', first)
+    cut = draft.compose_first_cut(p.root, compose=fake_cut)
+    item = batch_item(p, 'entry', first.data['production_attempt_id'])
+    batches.record_creator_repair_batch(p.root, batch_id='invalid-mapping', cut=cut_binding(cut),
+        items=[item], evidence=approval(p.root, 'creator-intent'))
+    exact_scope(p, item, 'mapping-scope')
+    batches.prepare_repair_item(p.root, 'invalid-mapping', 'item', scope_id='mapping-scope')
+    tool = {'none': None,
+            'wrong_tool': SimpleNamespace(name='wrong_video', provider='grok_cli'),
+            'wrong_provider': SimpleNamespace(name='grok_cli_video', provider='other')}[invalid]
+    receipt = batches.resume_repair_batch(p.root, 'invalid-mapping',
+        tools={('grok_cli', 'grok_cli_video'): tool, 'grok_cli': p.cli})
+    assert receipt['errors'] == [{'item_id': 'item',
+        'error': 'exact canonical tool required to execute this repair item'}]
+    assert receipt['actions'] == [] and receipt['items'][0]['state'] == 'planned'
+    assert len(p.transport.native_requests) == 1
+
+
 def test_failed_and_unplayable_replacement_preserves_original_candidate(p, monkeypatch):
     enable(p.root)
     first = p.generate('entry'); selected = p.select('entry', first)

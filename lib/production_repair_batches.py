@@ -426,9 +426,11 @@ def repair_batch_status(project_dir, batch_id):
 def resume_repair_batch(project_dir, batch_id, *, tools=None, observation=None):
     """Run only unsubmitted items through canonical tools; emit MCP handoffs.
 
-    tools maps provider -> BaseTool for native routes. Host connector envelopes
-    are returned to the agent, never invoked here. Submitted/uncertain originals
-    are returned for status/collection, with their original attempt identities.
+    tools maps (provider, tool name) -> BaseTool for exact native routes. Existing
+    provider -> BaseTool entries remain supported when the exact key is absent;
+    an invalid exact entry never falls back to the provider entry. Host connector
+    envelopes are returned to the agent, never invoked here. Submitted/uncertain
+    originals are returned for status/collection with original attempt identities.
     """
     from lib import openart_mcp_jobs as jobs
     root, _ = _root(project_dir)
@@ -453,7 +455,8 @@ def resume_repair_batch(project_dir, batch_id, *, tools=None, observation=None):
                 envelope = jobs.begin(root, aid, authority_fn=execution.prepare_openart_mcp_handoff)
                 actions.append({'item_id': item['item_id'], 'attempt_id': aid, 'operation': 'host_handoff', 'envelope': envelope})
             else:
-                tool = tools.get(provider)
+                key = (provider, item['selected_route']['tool'])
+                tool = tools[key] if key in tools else tools.get(provider)
                 if tool is None or not ((tool.name == item['selected_route']['tool'] and tool.provider == provider)
                         or (tool.name == 'video_selector' and tool.provider == 'selector'
                             and inputs.get('preferred_provider') == provider and inputs.get('allowed_providers') == [provider])):
