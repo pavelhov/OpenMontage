@@ -692,6 +692,62 @@ class TestPipelineInstructionArchitecture:
 # ---- Agent context files ----
 
 class TestAgentContextFiles:
+    def test_proposal_accepts_one_supplied_concept_and_keeps_required_package(self):
+        from jsonschema.exceptions import ValidationError
+        proposal = sample_artifact("proposal_packet")
+        proposal["concept_options"] = proposal["concept_options"][:1]
+        validate_artifact("proposal_packet", proposal)
+        for field in ("selected_concept", "production_plan", "cost_estimate", "approval"):
+            incomplete = {key: value for key, value in proposal.items() if key != field}
+            with pytest.raises(ValidationError):
+                validate_artifact("proposal_packet", incomplete)
+        with pytest.raises(ValidationError):
+            validate_artifact("proposal_packet", {**proposal, "concept_options": []})
+        with pytest.raises(ValidationError):
+            validate_artifact("proposal_packet", {**proposal, "production_plan": {
+                key: value for key, value in proposal["production_plan"].items() if key != "render_runtime"
+            }})
+
+    def test_guide_routes_current_stage_to_existing_owners(self):
+        contents = (PROJECT_ROOT / "AGENT_GUIDE.md").read_text(encoding="utf-8")
+        for owner in (
+            "skills/meta/checkpoint-protocol.md", "skills/meta/reviewer.md",
+            "skills/meta/shot-preparation-overlap.md", "docs/OPENART_CLI.md",
+            "docs/OPENART_MCP.md", "docs/VIDEO_MODEL_SELECTION.md",
+            "docs/PRODUCTION_DERIVED_EDITS.md",
+        ):
+            assert f"]({owner})" in contents
+            assert (PROJECT_ROOT / owner).is_file()
+        assert "current stage" in contents
+        assert "Music is a critical part of any video" not in contents
+        assert "Music Plan (Mandatory)" not in contents
+
+    def test_guide_distinguishes_first_cut_from_certification_and_legacy(self):
+        contents = (PROJECT_ROOT / "AGENT_GUIDE.md").read_text(encoding="utf-8")
+        assert "first_cut" in contents
+        assert "absent" in contents and "disabled" in contents
+        assert "record_creator_repair_batch" in contents
+        assert "first-cut acceptance" in contents
+        assert "cosmetic" in contents.lower()
+
+    def test_cinematic_owner_reuses_selected_direction_and_explicit_audio_choice(self):
+        guide_runtime = (PROJECT_ROOT / "AGENT_GUIDE.md").read_text().split(
+            "### Present Both Composition Runtimes (HARD RULE)", 1)[1].split(
+            "### Composition Authoring Mode", 1)[0]
+        assert "unresolved" in guide_runtime
+        assert "already-approved" in guide_runtime
+        director = (PROJECT_ROOT / "skills/pipelines/cinematic/proposal-director.md").read_text()
+        assert "## Current brief and retained choices" in director
+        assert "already selected" in director
+        assert "unresolved" in director
+        assert "explicit no-added-music" in director
+        assert "Music Plan (Mandatory for Cinematic)" not in director
+        assert "Music Plan (when unresolved)" in director
+        assert "provider_menu_summary" in director
+        assert "render_runtime_selection" in director
+        assert "human_approval_default" in director
+        assert "checkpoint-protocol.md" in director
+
     def test_agent_guide_contains_canonical_sections(self):
         contents = (PROJECT_ROOT / "AGENT_GUIDE.md").read_text(encoding="utf-8")
         for header in (

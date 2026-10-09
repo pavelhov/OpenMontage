@@ -705,3 +705,31 @@ def validate_repair_decision(decision, *, review, original_route, intent,
         fail("request_delta_mismatch", "request_delta must equal request_delta(original, proposed)")
     result.update(status="valid_generation_decision")
     return result
+
+
+def validate_creator_repair_decision(item, *, proposed_request, intent=None):
+    """An exact human item may replace minor or unwanted footage. No authority
+    is granted here: retained scope/policy and native controls still authorize it.
+    Same-model rerolls are intentional and do not invent critical predicates.
+    """
+    if not isinstance(item, dict) or not isinstance(item.get('changes'), str) or not item['changes'].strip():
+        raise ValueError('creator repair requires the stated per-item changes')
+    raw = item.get('selected_route')
+    if not isinstance(raw, dict) or set(raw) != {'provider', 'tool', 'model', 'mode'}:
+        raise ValueError('creator repair needs an exact provider/tool/model/mode route')
+    selected = _route(raw)
+    if any(not isinstance(selected[k], str) or not selected[k].strip() for k in ('provider', 'tool')):
+        raise ValueError('creator repair requires provider and tool')
+    if any(selected[k] is not None and (not isinstance(selected[k], str) or not selected[k]) for k in ('model', 'mode')):
+        raise ValueError('creator repair model/mode must be exact strings or null')
+    if selected['provider'] in {'grok_cli', 'grok_video'} and selected['model'] is not None:
+        raise ValueError('Grok media model is unreported; creator route model must be null')
+    if intent is not None and not selection_intent_allows_route(intent, selected['provider'], selected['model'], selected['tool']):
+        raise ValueError('creator repair route violates existing exact model intent or approved pool')
+    for key, field in (('model', 'model'), ('mode', 'mode'), ('preferred_provider', 'provider'),
+                       ('hosting_provider', 'provider'), ('preferred_tool', 'tool')):
+        if key in proposed_request and proposed_request[key] != selected[field]:
+            raise ValueError('creator repair request route mismatch: ' + key)
+    if 'allowed_providers' in proposed_request and proposed_request['allowed_providers'] != [selected['provider']]:
+        raise ValueError('creator repair requires the exact singleton provider')
+    return {'selected_route': selected, 'changes': item['changes'], 'grants_authority': False}

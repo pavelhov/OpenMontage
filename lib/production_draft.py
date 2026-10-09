@@ -1,11 +1,13 @@
-"""Creator acceptance of one duplicate-bill defect in existing footage, draft only.
+"""Creator draft evidence: duplicate-bill exceptions and first-cut previews.
 
-This records an exception, never a semantic pass or generation authority.
+Both record creator decisions only, never a semantic pass, certification,
+publication or generation authority.
 """
 from __future__ import annotations
 
 import copy
 import json
+import subprocess
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
@@ -155,3 +157,491 @@ def append_creator_draft_exception(project_dir, record):
         path = directory / (digest + '.json')
         execution._write_new(path, copy.deepcopy(record))
         return {'path': str(path), 'sha256': file_sha256(path)}
+
+
+# ---------------------------------------------------------------------------
+# First cut: playable attributable candidates, preview export, creator acceptance.
+# Explicit calls only; never writes checkpoints, reserves attempts or repairs.
+
+_CUTS, _ACCEPTANCES = 'production_first_cuts', 'production_first_cut_acceptances'
+
+
+def _probe(path):
+    """Current-byte technical evidence for a playable media file."""
+    process = subprocess.run(
+        ['ffprobe', '-v', 'error', '-show_entries',
+         'format=duration:stream=codec_type,codec_name,width,height', '-of', 'json', str(path)],
+        capture_output=True, text=True, check=True, timeout=30)
+    data = json.loads(process.stdout)
+    streams = data.get('streams', [])
+    video = next((s for s in streams if s.get('codec_type') == 'video'), None)
+    audio = next((s for s in streams if s.get('codec_type') == 'audio'), None)
+    if video is None:
+        raise ValueError('no video stream')
+    return {'duration_seconds': round(float(data['format']['duration']), 3),
+            'video_codec': video.get('codec_name'), 'audio_codec': audio and audio.get('codec_name'),
+            'has_audio': audio is not None, 'width': video.get('width'), 'height': video.get('height')}
+
+
+def _rel(root, path):
+    path = Path(path).resolve()
+    return str(path.relative_to(root)) if path.is_relative_to(root) else str(path)
+
+
+def _selection_review(root, shot_id, selection, revision):
+    """Canonical current review of a selection, or None when invalid or stale.
+
+    Reuses successor resolution and the selection binding (schema, story
+    revision, selection_digest subject, unique predicates)."""
+    if not isinstance(selection, dict):
+        return None
+    from lib.production_review_successors import resolve_selection_review
+    try:
+        review = resolve_selection_review(root, shot_id, selection)
+        _review(review, selection_digest(selection), revision)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return review
+
+
+def _dependency_ok(root, shot_id, selection, review):
+    """Upstream status gate shared with shot_contract.check_review(allow_draft=True)."""
+    return review is not None and (review['status'] == 'pass' or provisional_audio_review(review, root)
+                                   or accepted_draft_predicate(selection, root, shot_id=shot_id) is not None)
+
+
+def _current_findings(root, shot_id, attempt_id, output_sha, revision, selected):
+    """Single findings resolution for candidates and cut/acceptance currency.
+
+    A current selection of these exact bytes supersedes older rejections: its
+    resolved review's non-pass predicates (cosmetic, unknown) are the findings.
+    Otherwise retained rejections bound to the bytes and revision apply."""
+    from lib import production_execution as execution
+    selection = selected.get(shot_id)
+    review = None
+    if (isinstance(selection, dict) and selection.get('attempt_id') == attempt_id
+            and (selection.get('output') or {}).get('sha256') == output_sha):
+        review = _selection_review(root, shot_id, selection, revision)
+    if review is not None:
+        reviews = [review]
+    else:
+        reviews = []
+        for base in (root / 'production_attempts', root / 'openart_mcp' / 'attempts'):
+            for path in sorted((base / attempt_id / 'rejections').glob('*.json')):
+                rejection = execution._read(path)
+                if (rejection.get('subject_sha256') == output_sha
+                        and rejection.get('story_revision', revision) == revision):
+                    reviews.append(rejection)
+    found, seen = [], set()
+    for item in (p for r in reviews for p in r.get('predicates', [])):
+        if item.get('status') == 'pass':
+            continue
+        entry = {'name': item.get('name'), 'status': item.get('status'),
+                 'severity': item.get('severity', 'critical'), 'evidence': item.get('evidence')}
+        key = json.dumps(entry, sort_keys=True, default=str)
+        if key not in seen:
+            seen.add(key)
+            found.append(entry)
+    return review, found
+
+
+def _attempt_order(root, row):
+    """Retained creation chronology: the file each attempt writes once at creation
+    (native request.json, MCP evidence.json), then its scope attempt index."""
+    if row.get('provider') == 'openart_mcp':
+        path = root / 'openart_mcp' / 'attempts' / row['attempt_id'] / 'evidence.json'
+    else:
+        path = root / 'production_attempts' / row['attempt_id'] / 'request.json'
+    return (path.stat().st_mtime_ns if path.exists() else 0, row.get('scope_attempt_index', 0))
+
+
+def _candidate_provenance(root, shot_id, attempt_id, output, revision, *, allow_historical=False):
+    from lib.production_provenance import validate_attempt_provenance
+    output = {**output, 'path': str((root / output['path']).resolve())}
+    try:
+        return validate_attempt_provenance(root, attempt_id, shot_id=shot_id,
+                                          story_revision=revision, expected_output=output), False
+    except ValueError as exc:
+        continuity_error = any(message in str(exc) for message in (
+            'upstream selection changed since this attempt', 'canonical reviewed source/reference/upstream changed',
+            'stale source/reference/review/upstream bindings', 'current MCP planning semantics changed'))
+        if not allow_historical or not continuity_error:
+            raise
+        from lib.production_provenance import validate_creator_repair_source_provenance
+        proof = validate_creator_repair_source_provenance(root, attempt_id, shot_id=shot_id,
+            story_revision=revision, expected_output=output)
+        if (proof.get('historical_upstream_changed') is False
+                and not proof.get('historical_source_changed')):
+            raise exc
+        return proof, True
+
+
+def _continuity_source_warning(proof):
+    if proof.get('historical_upstream_changed') is False:
+        return {'name': 'source_applicability_changed', 'status': 'unknown', 'severity': 'critical',
+                'evidence': 'Retained clip matches its original approved shot and source bytes. Unrelated episode planning changed; current cut applicability needs review.'}
+    return {'name': 'continuity_source_changed', 'status': 'unknown', 'severity': 'critical',
+            'evidence': 'Retained clip used an earlier reviewed upstream selection. Current continuity needs review after the selected repair.'}
+
+
+def _candidate(root, shot_id, attempt_id, output, revision, selected, *, historical_source=True):
+    proof, historical_source = _candidate_provenance(root, shot_id, attempt_id, output, revision,
+                                                    allow_historical=historical_source)
+    path = Path(output['path'])
+    path = path if path.is_absolute() else root / path
+    timing = (proof or {}).get('derived_timing') if isinstance(proof, dict) else None
+    duration = timing['duration_seconds'] if timing else _probe(path)['duration_seconds']
+    review, findings = _current_findings(root, shot_id, attempt_id, output['sha256'], revision, selected)
+    strict = not historical_source and review is not None and review['status'] == 'pass'
+    # A strict pass may still disclose cosmetic findings; provisional stays provisional.
+    status = review['status'] if review is not None else ('fail' if findings else 'unknown')
+    if historical_source:
+        status = 'unknown'
+        findings = [*findings, _continuity_source_warning(proof)]
+    return {'shot_id': shot_id, 'status': 'candidate', 'attempt_id': attempt_id,
+            'output': {'path': _rel(root, path), 'sha256': output['sha256']},
+            'duration_seconds': duration, 'strict_selected': strict,
+            'review': status, 'findings': findings}
+
+
+def first_cut_candidates(project_dir):
+    """One row per planned shot, contract order: a playable candidate or a precise gap.
+
+    Missing reasons: no_attempt, original_pending{status} (newest non-terminal
+    native or MCP state), attempt_failed (all attempts terminally failed),
+    unplayable (provenance or current-byte probe failed), upstream_blocked
+    (no attempt and the contract upstream is not strictly selected).
+    """
+    from lib import production_execution as execution
+    root = Path(project_dir).resolve()
+    marker = execution._read(root / 'project.json')
+    revision = marker['story_revision']
+    contract = execution.load_shot_contract(root)
+    selected = execution.load_selected_attempts(root)
+    attempts = [a for a in execution._attempts(root) if a.get('story_revision') == revision]
+    from lib.production_repair_batches import (creator_repair_candidates, suppressed_creator_repair_attempts,
+                                                creator_repair_source_candidates, accepted_first_cut_candidates)
+    creator_candidates = creator_repair_candidates(root)
+    suppressed = suppressed_creator_repair_attempts(root)
+    retained_sources = creator_repair_source_candidates(root)
+    accepted_candidates = accepted_first_cut_candidates(root)
+    rows, by_shot = [], {}
+    for shot in contract['shots']:
+        sid = shot['id']
+        selection = selected.get(sid)
+        row = None
+        creator_attempt = creator_candidates.get(sid)
+        if creator_attempt is not None:
+            try:
+                state = execution.load_attempt_result(root, creator_attempt)
+                row = _candidate(root, sid, creator_attempt, state['output'], revision, selected)
+            except (execution.ProductionGovernanceError, OSError, ValueError, KeyError,
+                    TypeError, subprocess.SubprocessError):
+                row = None
+        accepted = accepted_candidates.get(sid)
+        if row is None and accepted is not None:
+            try:
+                row = _candidate(root, sid, accepted['attempt_id'], accepted['output'], revision, selected,
+                                 historical_source=True)
+            except (execution.ProductionGovernanceError, OSError, ValueError, KeyError,
+                    TypeError, subprocess.SubprocessError):
+                row = None
+        if row is None and _selection_review(root, sid, selection, revision) is not None:
+            try:
+                row = _candidate(root, sid, selection['attempt_id'], selection['output'], revision, selected)
+            except (execution.ProductionGovernanceError, OSError, ValueError, KeyError,
+                    TypeError, subprocess.SubprocessError):
+                row = None
+        retained = retained_sources.get(sid)
+        if row is None and retained is not None:
+            try:
+                # Historical source-only inclusion preserves playable old footage
+                # during partial repairs and reports its stale continuity openly.
+                row = _candidate(root, sid, retained['attempt_id'], retained['output'], revision,
+                                 selected, historical_source=True)
+            except (execution.ProductionGovernanceError, OSError, ValueError, KeyError,
+                    TypeError, subprocess.SubprocessError):
+                row = None
+        own = sorted((a for a in attempts if a.get('shot_id') == sid and a['attempt_id'] not in suppressed),
+                     key=lambda a: _attempt_order(root, a), reverse=True)
+        states = []
+        if row is None:
+            for attempt in own:
+                try:
+                    state = execution.load_attempt_result(root, attempt['attempt_id'])
+                except execution.ProductionGovernanceError:
+                    state = {'status': 'uncertain'}
+                states.append(state.get('status'))
+                if state.get('status') == 'generated' and row is None:
+                    try:
+                        row = _candidate(root, sid, attempt['attempt_id'], state['output'], revision, selected)
+                    except (execution.ProductionGovernanceError, OSError, ValueError, KeyError,
+                            TypeError, subprocess.SubprocessError) as exc:
+                        states[-1] = 'unplayable:' + str(exc)[:200]
+        if row is None:
+            # An upstream counts only when its own row is a playable candidate
+            # (current bytes and provenance) and its review passes the canonical gate.
+            upstream = [b['shot_id'] for b in shot.get('upstream', [])
+                        if by_shot.get(b['shot_id'], {}).get('status') != 'candidate'
+                        or not _dependency_ok(root, b['shot_id'], selected.get(b['shot_id']),
+                                              _selection_review(root, b['shot_id'], selected.get(b['shot_id']), revision))]
+            pending = [s for s in states if s not in ('generated', 'failed') and not str(s).startswith('unplayable')]
+            if pending:
+                # Non-terminal native/MCP state (uncertain, prepared, submitted,
+                # awaiting receipt, completed-not-collected): truthful pending.
+                row = {'reason': 'original_pending', 'detail': {'status': pending[0]}}
+            elif any(str(s).startswith('unplayable') for s in states):
+                row = {'reason': 'unplayable',
+                       'detail': {'error': next(s for s in states if str(s).startswith('unplayable'))[11:]}}
+            elif states:
+                row = {'reason': 'attempt_failed', 'detail': {'attempts': len(states)}}
+            elif upstream:
+                prior = by_shot.get(upstream[0], {})
+                why = ('failed' if prior.get('review') == 'fail' else
+                       'unreviewed' if prior.get('status') == 'candidate' else 'missing')
+                row = {'reason': 'upstream_blocked', 'detail': {'upstream_shot_id': upstream[0], 'why': why}}
+            else:
+                row = {'reason': 'no_attempt', 'detail': {}}
+            row = {'shot_id': sid, 'status': 'missing', **row}
+        by_shot[sid] = row
+        rows.append(row)
+    return rows
+
+
+def _cut_records(root):
+    from lib import production_execution as execution
+    return [(path, execution._read(path)) for path in sorted((root / _CUTS).glob('*.json'))]
+
+
+def latest_first_cut(project_dir):
+    """Highest-sequence first-cut record with its binding, or None."""
+    root = Path(project_dir).resolve()
+    records = _cut_records(root)
+    if not records:
+        return None
+    path, record = max(records, key=lambda item: item[1]['sequence'])
+    return {'path': str(path), 'sha256': file_sha256(path), **record}
+
+
+def compose_first_cut(project_dir, *, audio_path=None, compose=None):
+    """Render a new versioned preview from current candidates and record it immutably."""
+    from lib import production_execution as execution
+    from lib.shot_contract import contract_digest
+    from lib.events import emit_event
+    root = Path(project_dir).resolve()
+    marker = execution._read(root / 'project.json')
+    contract = execution.load_shot_contract(root)
+    shots = {shot['id']: shot for shot in contract['shots']}
+    rows = first_cut_candidates(root)
+    clips = [row for row in rows if row['status'] == 'candidate']
+    missing = [row for row in rows if row['status'] == 'missing']
+    dialogue = any(shots[row['shot_id']].get('dialogue') for row in clips)
+    if audio_path and dialogue:
+        raise ValueError('external audio cannot replace approved native dialogue in a first cut')
+    sequence = 1 + max([record['sequence'] for _, record in _cut_records(root)], default=0)
+    while True:
+        directory = root / 'renders' / 'first_cut' / f'v{sequence:03d}'
+        try:
+            directory.mkdir(parents=True)
+            break
+        except FileExistsError:
+            sequence += 1
+    cursor, placed = 0.0, []
+    for row in clips:
+        start, cursor = cursor, round(cursor + row['duration_seconds'], 3)
+        placed.append({'shot_id': row['shot_id'], 'attempt_id': row['attempt_id'], 'output': row['output'],
+                       'master_start': round(start, 3), 'master_end': cursor,
+                       'review': row['review'], 'findings': row['findings']})
+    export = technical = error = log = None
+    if placed:
+        first = _probe(root / placed[0]['output']['path'])
+        edit = {'version': '1.0', 'render_runtime': 'ffmpeg',
+                'cuts': [{'id': clip['shot_id'], 'source': str(root / clip['output']['path']), 'in_seconds': 0,
+                          'out_seconds': clip['master_end'] - clip['master_start']} for clip in placed],
+                'metadata': {'preserve_source_audio': not audio_path,
+                             'compose_target': {'width': first['width'], 'height': first['height'], 'fit': 'pad'}}}
+        output = directory / 'first_cut.mp4'
+        inputs = {'operation': 'compose', 'edit_decisions': edit, 'output_path': str(output)}
+        if audio_path:
+            inputs['audio_path'] = str(audio_path)
+        if compose is None:
+            from tools.video.video_compose import VideoCompose
+            compose = VideoCompose().execute
+        observation = {'project_id': marker['project_id'], 'story_revision': marker['story_revision'],
+                       'cut_sequence': sequence, 'output_path': _rel(root, output)}
+        emit_event(root, {'event': 'first-cut-compose-start', **observation})
+        try:
+            result = compose(inputs)
+        except BaseException:
+            emit_event(root, {'event': 'first-cut-compose-error', **observation})
+            raise
+        emit_event(root, {'event': 'first-cut-compose-return', **observation, 'success': result.success})
+        try:
+            if not result.success:
+                raise RuntimeError(result.error or 'compose failed')
+            technical = _probe(output)
+            export = {'path': _rel(root, output), 'sha256': file_sha256(output)}
+            emit_event(root, {'event': 'first-cut-export-verified', **observation, 'export': export})
+        except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+            error = str(exc)
+            log_path = directory / 'render_error.log'
+            log_path.write_text(error + '\n')
+            log = {'path': _rel(root, log_path), 'sha256': file_sha256(log_path)}
+    # Audio is required only by included dialogue (native clip bytes must carry it;
+    # padded export silence proves nothing) or an explicit external track.
+    # Approved silent coverage completes without any audio stream.
+    audio_required = bool(dialogue or audio_path)
+    audio_missing = [row['shot_id'] for row in clips if shots[row['shot_id']].get('dialogue')
+                     and not _probe(root / row['output']['path'])['has_audio']]
+    complete = (export is not None and not missing and not audio_missing
+                and (technical['has_audio'] or not audio_path)
+                and abs(technical['duration_seconds'] - cursor) <= 0.05 + 0.04 * len(placed))
+    record = {'version': '1.0', 'kind': 'first_cut', 'sequence': sequence, 'project_id': marker['project_id'],
+              'story_revision': marker['story_revision'], 'contract_sha256': contract_digest(contract),
+              'status': 'complete' if complete else ('render_failed' if error else 'incomplete'),
+              'export': export, 'technical': technical, 'clips': placed, 'missing': missing,
+              'audio': 'external_replacement' if audio_path else 'native_source',
+              'audio_required': audio_required, 'audio_missing': audio_missing,
+              'render_error': error, 'render_log': log}
+    (root / _CUTS).mkdir(exist_ok=True)
+    import hashlib
+    path = root / _CUTS / (hashlib.sha256(json.dumps(record, indent=2).encode()).hexdigest() + '.json')
+    execution._write_new(path, record)
+    emit_event(root, {'event': 'first-cut-retained', 'project_id': marker['project_id'],
+                     'story_revision': marker['story_revision'], 'cut_sequence': sequence,
+                     'first_cut': {'path': _rel(root, path), 'sha256': file_sha256(path)},
+                     'export': export, 'status': record['status']})
+    return {'path': str(path), 'sha256': file_sha256(path), **record}
+
+
+def _findings_digest(root, clips, *, current):
+    from lib import production_execution as execution
+    if current:
+        revision = execution._read(root / 'project.json')['story_revision']
+        selected = execution.load_selected_attempts(root)
+    findings = []
+    for clip in clips:
+        values = clip['findings']
+        if current:
+            values = _current_findings(root, clip['shot_id'], clip['attempt_id'], clip['output']['sha256'],
+                                       revision, selected)[1]
+            try:
+                proof, historical = _candidate_provenance(root, clip['shot_id'], clip['attempt_id'],
+                    clip['output'], revision, allow_historical=True)
+            except (ValueError, OSError, KeyError, TypeError):
+                historical = False
+            if historical:
+                values = [*values, _continuity_source_warning(proof)]
+        findings.append({'shot_id': clip['shot_id'], 'findings': values})
+    return execution._digest(findings)
+
+
+def _cut_reasons(root, cut):
+    """Stale reasons for a first-cut binding {path, sha256}; empty when current."""
+    from lib import production_execution as execution
+    from lib.shot_contract import contract_digest
+    path = (root / cut['path']).resolve()
+    if (path.parent != root / _CUTS or not path.is_file() or file_sha256(path) != cut['sha256']
+            or path.name != cut['sha256'] + '.json'):
+        return ['record_changed']
+    record = execution._read(path)
+    reasons = []
+    if record['export'] is None or not (root / record['export']['path']).is_file() \
+            or file_sha256(root / record['export']['path']) != record['export']['sha256']:
+        reasons.append('export_changed')
+    for clip in record['clips']:
+        source = root / clip['output']['path']
+        if not source.is_file() or file_sha256(source) != clip['output']['sha256']:
+            reasons.append('source_changed:' + clip['shot_id'])
+    if execution._read(root / 'project.json')['story_revision'] != record['story_revision']:
+        reasons.append('story_revision_changed')
+    if contract_digest(execution.load_shot_contract(root)) != record['contract_sha256']:
+        reasons.append('contract_changed')
+    if _findings_digest(root, record['clips'], current=True) != _findings_digest(root, record['clips'], current=False):
+        reasons.append('findings_changed')
+    if max(r['sequence'] for _, r in _cut_records(root)) > record['sequence']:
+        reasons.append('superseded')
+    return reasons
+
+
+def first_cut_status(project_dir, cut):
+    reasons = _cut_reasons(Path(project_dir).resolve(), cut)
+    return {'status': 'stale' if reasons else 'current', 'reasons': reasons}
+
+
+def disclosure_clip_map(record):
+    """Complete stable clip map a disclosure binds: 1-based number, identity,
+    exact source output and master interval for every placed clip, in order."""
+    return [{'number': index, 'shot_id': clip['shot_id'], 'attempt_id': clip['attempt_id'],
+             'output': clip['output'], 'master_start': clip['master_start'], 'master_end': clip['master_end']}
+            for index, clip in enumerate(record['clips'], 1)]
+
+
+def _check_disclosure(root, cut, record, disclosure):
+    """A disclosure sidecar must describe this exact cut record, export and complete clip map."""
+    from lib import production_execution as execution
+    sidecar = execution._read(_bound(root, disclosure))
+    if sidecar.get('first_cut') != cut or sidecar.get('export') != record['export']:
+        raise ValueError('disclosure does not describe this exact first cut and export')
+    if sidecar.get('clips') != disclosure_clip_map(record):
+        raise ValueError('disclosure clip map differs from the complete first-cut record')
+
+
+def record_first_cut_acceptance(project_dir, cut, *, accepted_by, evidence, disclosure=None):
+    """Creator accepts this exact export and disclosed findings; never certification.
+
+    ``disclosure`` optionally binds the exact {path, sha256} actual-export review
+    sidecar the creator saw; acceptance goes stale when that file changes."""
+    from lib import production_execution as execution
+    root = Path(project_dir).resolve()
+    if not isinstance(accepted_by, str) or not accepted_by.strip():
+        raise ValueError('first-cut acceptance requires accepted_by')
+    with execution._lock(root):
+        if set(cut) != {'path', 'sha256'} or _cut_reasons(root, cut):
+            raise ValueError('first-cut acceptance requires the current first-cut record')
+        record = execution._read((root / cut['path']).resolve())
+        if record['export'] is None:
+            raise ValueError('first-cut acceptance requires an actual export')
+        _bound(root, evidence)
+        if disclosure is not None:
+            _check_disclosure(root, {'path': _rel(root, root / cut['path']), 'sha256': cut['sha256']},
+                              record, disclosure)
+        acceptance = {'version': '1.0', 'kind': 'creator_first_cut_acceptance', 'not_certification': True,
+                      'project_id': record['project_id'], 'story_revision': record['story_revision'],
+                      'first_cut': {'path': _rel(root, root / cut['path']), 'sha256': cut['sha256']},
+                      'export': record['export'],
+                      'findings_sha256': _findings_digest(root, record['clips'], current=False),
+                      'sources': {clip['shot_id']: clip['output']['sha256'] for clip in record['clips']},
+                      'status_at_acceptance': record['status'], 'accepted_by': accepted_by,
+                      'evidence': {'path': _rel(root, root / evidence['path']), 'sha256': evidence['sha256']}}
+        if disclosure is not None:
+            acceptance['disclosure'] = {'path': _rel(root, root / disclosure['path']),
+                                        'sha256': disclosure['sha256']}
+        (root / _ACCEPTANCES).mkdir(exist_ok=True)
+        import hashlib
+        path = root / _ACCEPTANCES / (hashlib.sha256(json.dumps(acceptance, indent=2).encode()).hexdigest() + '.json')
+        new = not path.exists()
+        execution._write_new(path, acceptance)
+        if new:
+            from lib.events import emit_event
+            emit_event(root, {'event': 'first-cut-accepted', 'project_id': record['project_id'],
+                             'story_revision': record['story_revision'], 'first_cut': acceptance['first_cut'],
+                             'export': record['export'], 'disclosure': acceptance.get('disclosure'),
+                             'acceptance': {'path': _rel(root, path), 'sha256': file_sha256(path)}})
+        return {'path': str(path), 'sha256': file_sha256(path)}
+
+
+def first_cut_acceptance_status(project_dir, acceptance):
+    """current only while acceptance, cut record, export, sources and findings are unchanged."""
+    from lib import production_execution as execution
+    root = Path(project_dir).resolve()
+    path = (root / acceptance['path']).resolve()
+    if path.parent != root / _ACCEPTANCES or not path.is_file() or file_sha256(path) != acceptance['sha256']:
+        return {'status': 'stale', 'reasons': ['acceptance_changed']}
+    record = execution._read(path)
+    reasons = _cut_reasons(root, record['first_cut'])
+    if 'disclosure' in record:
+        bound = root / record['disclosure']['path']
+        if not bound.is_file() or file_sha256(bound) != record['disclosure']['sha256']:
+            reasons.append('disclosure_changed')
+    return {'status': 'stale' if reasons else 'current', 'reasons': reasons}

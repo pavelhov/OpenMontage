@@ -21,6 +21,9 @@ from lib.shot_contract import (
     selection_digest, provisional_audio_review,
 )
 from schemas.artifacts import load_schema
+from lib.production_trim_validation import (
+    trimmed_outgoing_timestamp, _validate_trimmed_cut, _validate_trim_sampling,
+)
 
 
 _ALLOW_OPENART_FIXTURE_PROVENANCE = False  # module test seam, never caller-authorized
@@ -28,7 +31,7 @@ _ALLOW_OPENART_COMPONENT_PREPARATION = False  # isolated U2 component fixtures o
 
 def _validate_attempt_provenance(
     project_dir: str | Path, attempt_id: str, *, shot_id: str,
-    story_revision: str, expected_output: dict[str, str],
+    story_revision: str, expected_output: dict[str, str], _historical_source=False,
 ) -> dict[str, Any]:
     """Return validated ``request`` and authoritative ``result``, or fail closed.
 
@@ -244,15 +247,18 @@ def _validate_attempt_provenance(
             require(isinstance(selection.get(role), dict) and selection[role].get('sha256') == binding[role + '_sha256'], 'frozen upstream hash differs')
         require(review_digest(selection.get('review')) == binding['review_sha256'], 'frozen upstream review differs')
         bound_review(selection['review'], selection_digest(selection), UPSTREAM_PREDICATES, 'frozen upstream review', allow_draft=True, selection=selection, upstream_id=binding['shot_id'])
-        current_upstream = current_selected.get(binding['shot_id'])
-        require(isinstance(current_upstream, dict) and selection_digest(current_upstream) == selection_digest(selection)
-                and review_digest(current_upstream.get('review')) == review_digest(selection['review']),
-                'upstream selection changed since this attempt')
-        # Original source authority is frozen above. Appended listening evidence
-        # belongs to current eligibility; it cannot revoke unchanged generation
-        # facts. Current selected original media must still match its hashes.
+        # A historical creator repair source still proves the immutable actual
+        # upstream bytes/review used by its original request. It never establishes
+        # current continuity eligibility after another selection is promoted.
         for role in ('output', 'outgoing_frame'):
-            bound_file(current_upstream[role], root, 'current upstream ' + role)
+            bound_file(selection[role], root, 'frozen upstream ' + role)
+        if not _historical_source:
+            current_upstream = current_selected.get(binding['shot_id'])
+            require(isinstance(current_upstream, dict) and selection_digest(current_upstream) == selection_digest(selection)
+                    and review_digest(current_upstream.get('review')) == review_digest(selection['review']),
+                    'upstream selection changed since this attempt')
+            for role in ('output', 'outgoing_frame'):
+                bound_file(current_upstream[role], root, 'current upstream ' + role)
 
     submitted = request['submitted_inputs']
     frozen_openart = execution.load_openart_frozen(request) if openart else None
@@ -580,6 +586,38 @@ def validate_attempt_provenance(
         raise ProductionGovernanceError(f'attempt provenance: incomplete/invalid evidence ({exc})') from exc
 
 
+def validate_creator_repair_source_provenance(project_dir, attempt_id, *, shot_id,
+                                             story_revision, expected_output):
+    """Historical, source-only proof for an exact creator item or draft clip.
+
+    Own current story/planning, native authority, actual original bytes, frozen
+    upstream media and passing original source reviews still bind. MCP replay
+    permits unrelated shot details to change while preserving current globals,
+    story/order and this shot's exact planning/script/scene/static references.
+    Equality to the *current* upstream selection is omitted. This result grants no strict
+    selection, continuity or certification eligibility.
+    """
+    from lib.production_execution import ProductionGovernanceError
+    try:
+        root = Path(project_dir).resolve()
+        output = {**expected_output, 'path': str((root / expected_output['path']).resolve())}
+        record = root / 'production_derived_edits' / output['sha256'] / 'record.json'
+        if record.exists():
+            proof = validate_derived_edit(root, record, attempt_id=attempt_id, shot_id=shot_id,
+                story_revision=story_revision, expected_output=output, _historical_source=True)
+        elif (root / 'openart_mcp' / 'attempts' / attempt_id).is_dir():
+            proof = _validate_mcp_attempt(root, attempt_id, shot_id=shot_id,
+                story_revision=story_revision, expected_output=output, _historical_source=True)
+        else:
+            proof = _validate_attempt_provenance(root, attempt_id, shot_id=shot_id,
+                story_revision=story_revision, expected_output=output, _historical_source=True)
+        return {**proof, 'historical_source_only': True}
+    except ProductionGovernanceError:
+        raise
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError, ValidationError) as exc:
+        raise ProductionGovernanceError(f'creator source provenance: incomplete/invalid evidence ({exc})') from exc
+
+
 def _aac_sha256(path):
     """Recompute elementary AAC bytes, rather than trusting a receipt claim."""
     import hashlib
@@ -596,7 +634,7 @@ def _aac_sha256(path):
 
 
 def validate_derived_edit(project_dir, record_path, *, attempt_id, shot_id,
-                          story_revision, expected_output, record=None):
+                          story_revision, expected_output, record=None, _historical_source=False):
     """Validate an exact approved local edit after complete native-parent proof.
 
     No predicate exception is introduced. Native journals remain authoritative
@@ -636,7 +674,7 @@ def validate_derived_edit(project_dir, record_path, *, attempt_id, shot_id,
         directory = root / 'production_derived_edits' / value['output']['sha256']
         require(path == directory / 'record.json', 'record must be hash-addressed outside native attempts')
         native = _validate_attempt_provenance(root, attempt_id, shot_id=shot_id,
-            story_revision=story_revision, expected_output=value['parent_output'])
+            story_revision=story_revision, expected_output=value['parent_output'], _historical_source=_historical_source)
         require(value['project_id'] == native['request']['project_id'], 'project differs from native parent')
         output = bound(value['output'], 'derived output')
         preserved = bound(value['preserved_output'], 'preserved derived output')
@@ -646,49 +684,53 @@ def validate_derived_edit(project_dir, record_path, *, attempt_id, shot_id,
                 'separate preserved derived bytes required')
         outgoing = bound(value['outgoing_frame'], 'actual derived outgoing frame')
         recipe = read(value['recipe'], 'exact local recipe')
-        require(recipe.get('operation') == 'local_existing_footage_edit'
+        require(recipe.get('operation') in {'local_existing_footage_edit', 'canonical_video_trimmer_cut'}
                 and recipe.get('input') == value['parent_output']
                 and execution._inside(recipe.get('output_path', ''), root) == output,
                 'recipe parent/output differs')
-        window = recipe.get('time_window_seconds')
-        require(isinstance(window, list) and len(window) == 2
-                and all(type(t) in (int, float) for t in window)
-                and 0 <= window[0] < window[1] <= native['result']['result']['data']['duration_seconds'],
-                'bounded edit window required')
-        require(all(isinstance(recipe.get(k), dict) and bool(recipe[k]) for k in ('mask', 'displacement'))
-                and isinstance(recipe.get('command_argv'), list) and bool(recipe['command_argv'])
-                and all(isinstance(arg, str) for arg in recipe['command_argv'])
-                and isinstance(recipe.get('ffmpeg_version'), str) and bool(recipe['ffmpeg_version'])
-                and recipe.get('audio_mode') == 'stream_copy', 'complete deterministic local recipe required')
-        mask = recipe['mask']
-        bound({'path': mask.get('path'), 'sha256': mask.get('sha256')}, 'retained displacement mask')
-        argv = recipe['command_argv']
-        inputs = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == '-i']
-        implementation = bound({'path': str(bound(value['recipe'], 'recipe').parent / recipe.get('implementation', '')),
-                                'sha256': recipe.get('implementation_sha256')}, 'retained local pixel edit implementation')
-        require(implementation.suffix == '.py', 'local pipe edit needs retained implementation')
-        require(Path(argv[0]).name == 'ffmpeg' and argv[-1] == str(output)
-                and inputs == ['pipe:0', value['parent_output']['path']]
-                and '-c:a' in argv and argv[argv.index('-c:a') + 1] == 'copy',
-                'recipe must edit only native input and retained mask with copied audio')
         receipt = read(value['execution_receipt'], 'actual edit receipt')
-        require(receipt.get('tool') == 'local_numpy_masked_edit' and receipt.get('provider') == 'local'
-                and receipt.get('encoder') == 'ffmpeg' and receipt.get('receipt_author') == 'build_edit.py'
-                and receipt.get('canonical_registry_used') is False
-                and receipt.get('success') is True and receipt.get('generation') is False
-                and receipt.get('input') == value['parent_output']
-                and receipt.get('recipe') == value['recipe'] and receipt.get('output') == value['output'],
-                'successful explicit local existing-footage edit receipt required')
-        tool_result = receipt.get('tool_result', {})
-        require(tool_result.get('success') is True and tool_result.get('command_exit_code') == 0
-                and value['output'] in tool_result.get('artifacts', []),
-                'actual local execution result omits bound derived output')
-        audio = receipt.get('audio', {})
-        require(audio.get('mode') == 'stream_copy' and isinstance(audio.get('input_sha256'), str)
-                and re.fullmatch(r'[0-9a-f]{64}', audio['input_sha256'])
-                and audio['input_sha256'] == audio.get('output_sha256'), 'stream-copy audio evidence missing/different')
-        require(_aac_sha256(bound(value['parent_output'], 'native audio input')) == audio['input_sha256']
-                and _aac_sha256(output) == audio['output_sha256'], 'actual elementary AAC bytes differ')
+        derived_timing = None
+        if recipe['operation'] == 'canonical_video_trimmer_cut':
+            derived_timing = _validate_trimmed_cut(value, recipe, receipt, native, bound, require, _aac_sha256)
+        else:
+            window = recipe.get('time_window_seconds')
+            require(isinstance(window, list) and len(window) == 2
+                    and all(type(t) in (int, float) for t in window)
+                    and 0 <= window[0] < window[1] <= native['result']['result']['data']['duration_seconds'],
+                    'bounded edit window required')
+            require(all(isinstance(recipe.get(k), dict) and bool(recipe[k]) for k in ('mask', 'displacement'))
+                    and isinstance(recipe.get('command_argv'), list) and bool(recipe['command_argv'])
+                    and all(isinstance(arg, str) for arg in recipe['command_argv'])
+                    and isinstance(recipe.get('ffmpeg_version'), str) and bool(recipe['ffmpeg_version'])
+                    and recipe.get('audio_mode') == 'stream_copy', 'complete deterministic local recipe required')
+            mask = recipe['mask']
+            bound({'path': mask.get('path'), 'sha256': mask.get('sha256')}, 'retained displacement mask')
+            argv = recipe['command_argv']
+            inputs = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == '-i']
+            implementation = bound({'path': str(bound(value['recipe'], 'recipe').parent / recipe.get('implementation', '')),
+                                    'sha256': recipe.get('implementation_sha256')}, 'retained local pixel edit implementation')
+            require(implementation.suffix == '.py', 'local pipe edit needs retained implementation')
+            require(Path(argv[0]).name == 'ffmpeg' and argv[-1] == str(output)
+                    and inputs == ['pipe:0', value['parent_output']['path']]
+                    and '-c:a' in argv and argv[argv.index('-c:a') + 1] == 'copy',
+                    'recipe must edit only native input and retained mask with copied audio')
+            require(receipt.get('tool') == 'local_numpy_masked_edit' and receipt.get('provider') == 'local'
+                    and receipt.get('encoder') == 'ffmpeg' and receipt.get('receipt_author') == 'build_edit.py'
+                    and receipt.get('canonical_registry_used') is False
+                    and receipt.get('success') is True and receipt.get('generation') is False
+                    and receipt.get('input') == value['parent_output']
+                    and receipt.get('recipe') == value['recipe'] and receipt.get('output') == value['output'],
+                    'successful explicit local existing-footage edit receipt required')
+            tool_result = receipt.get('tool_result', {})
+            require(tool_result.get('success') is True and tool_result.get('command_exit_code') == 0
+                    and value['output'] in tool_result.get('artifacts', []),
+                    'actual local execution result omits bound derived output')
+            audio = receipt.get('audio', {})
+            require(audio.get('mode') == 'stream_copy' and isinstance(audio.get('input_sha256'), str)
+                    and re.fullmatch(r'[0-9a-f]{64}', audio['input_sha256'])
+                    and audio['input_sha256'] == audio.get('output_sha256'), 'stream-copy audio evidence missing/different')
+            require(_aac_sha256(bound(value['parent_output'], 'native audio input')) == audio['input_sha256']
+                    and _aac_sha256(output) == audio['output_sha256'], 'actual elementary AAC bytes differ')
         sampled = read(value['outgoing_receipt'], 'actual outgoing sampling receipt')
         require(sampled.get('tool') == 'frame_sampler' and sampled.get('input') == value['output']
                 and sampled.get('outgoing_frame') == value['outgoing_frame'],
@@ -697,6 +739,8 @@ def validate_derived_edit(project_dir, record_path, *, attempt_id, shot_id,
         require(sample_result.get('success') is True and any(
             execution._inside(f.get('path', ''), root) == outgoing
             for f in sample_result.get('data', {}).get('frames', [])), 'actual sampler result omits outgoing frame')
+        if derived_timing:
+            _validate_trim_sampling(value, sampled, derived_timing, outgoing, require)
         approval = value['approval']
         require(isinstance(approval, dict) and set(approval) == {'approved_by', 'evidence'}
                 and isinstance(approval['approved_by'], str) and bool(approval['approved_by']), 'named edit approval required')
@@ -706,14 +750,16 @@ def validate_derived_edit(project_dir, record_path, *, attempt_id, shot_id,
                 and accepted.get('derived_edit_sha256') == execution._digest(bindings), 'approval is stale/not exact')
         bound(accepted.get('authorization'), 'retained user edit authorization')
         return {**native, 'selected_output': value['output'], 'derived_edit': value,
-                'selected_outgoing_frame': value['outgoing_frame']}
+                'selected_outgoing_frame': value['outgoing_frame'],
+                **({'derived_timing': derived_timing} if derived_timing else {})}
     except execution.ProductionGovernanceError:
         raise
     except (OSError, ValueError, TypeError, KeyError, AttributeError, IndexError) as exc:
         raise execution.ProductionGovernanceError('derived edit: malformed retained evidence: ' + str(exc)) from exc
 
 
-def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, expected_output):
+def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, expected_output,
+                          _historical_source=False):
     """Agent-recorded original connector provenance, never a Python remote call."""
     from lib import production_execution as execution, production_request as preparation
     from lib import openart_mcp as connector, openart_mcp_jobs as jobs
@@ -749,11 +795,8 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
             and scope.get('story_revision') == story_revision, 'current scope identity/approval differs')
     evidence = execution._inside(scope['evidence']['path'], root)
     require(file_sha256(evidence) == scope['evidence']['sha256'], 'approval evidence bytes differ')
-    source = preparation._historical_source_packet(root, shot_id, provider='openart_mcp', native=native)
+    source = None if _historical_source else preparation._historical_source_packet(root, shot_id, provider='openart_mcp', native=native)
     profile = connector.load_profile(native['model'], native['mode'], require='candidate' if retained['purpose'] == 'qualification' else 'qualified')
-    if 'derived_from_policy' in scope:
-        from lib.production_autonomy import validate_policy_mcp_attempt
-        validate_policy_mcp_attempt(root, scope, inputs=inputs, native=native, profile=profile, authority=authority['billing'])
     # Historical preparation is replayed against its original immutable source
     # packet. Later upstream observations may change the global contract hash;
     # current relevant planning, references and selected subjects stay exact.
@@ -768,8 +811,10 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
     for name, binding in files.items():
         raw = base64.b64decode(binding['bytes_base64'], validate=True)
         require(hashlib.sha256(raw).hexdigest() == binding['sha256'], 'frozen source bytes changed')
-    contract_name = str(execution._artifact_path(root, 'shot_contract.json').relative_to(root))
-    frozen_contract = json.loads(base64.b64decode(files[contract_name]['bytes_base64'], validate=True))
+    def frozen_artifact(name):
+        path = str(execution._artifact_path(root, name + '.json').relative_to(root))
+        return json.loads(base64.b64decode(files[path]['bytes_base64'], validate=True))
+    frozen_contract = frozen_artifact('shot_contract')
     current_contract = execution.load_shot_contract(root)
     packet = snapshot['source_packet']
     frozen_shots = [item for item in frozen_contract['shots'] if item['id'] == shot_id]
@@ -777,8 +822,87 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
     require(contract_digest(frozen_contract) == packet['binding']['contract_sha256']
             and preparation.digest([frozen_contract['project_review'], frozen_shots[0].get('review')])
                 == packet['binding']['reviews_sha256'], 'frozen contract/reviews differ')
-    require(shot_planning_digest(frozen_contract, shot_id) == shot_planning_digest(current_contract, shot_id),
+    def historical_shot_plan(contract):
+        # Source-only preview may outlive an unrelated shot's planning edit.
+        # Keep globals/story/order and the current shot/static closure exact;
+        # prospective readers retain the whole-plan continuity rule below.
+        scoped = copy.deepcopy(contract)
+        scoped['shots'] = [shot if shot['id'] == shot_id else {'id': shot['id']}
+                           for shot in scoped['shots']]
+        return shot_planning_digest(scoped, shot_id)
+    planning_digest = historical_shot_plan if _historical_source else lambda c: shot_planning_digest(c, shot_id)
+    require(planning_digest(frozen_contract) == planning_digest(current_contract),
             'current MCP planning semantics changed')
+    historical_selected = {}
+    upstream_changed = False
+    source_changed = False
+    if _historical_source:
+        frozen_script, frozen_scene_plan = frozen_artifact('script'), frozen_artifact('scene_plan')
+        current_script = preparation._read(root, 'script.json')
+        current_scene_plan = preparation._read(root, 'scene_plan.json')
+        def scoped_artifacts(script, scene_plan):
+            preparation._schema('script', script)
+            preparation._schema('scene_plan', scene_plan)
+            scoped_scene = copy.deepcopy(scene_plan)
+            scenes = [scene for scene in scene_plan['scenes'] if scene['id'] == shot_id]
+            require(len(scenes) == 1, 'current MCP scene missing or duplicated')
+            scoped_scene['scenes'] = [scene if scene['id'] == shot_id else {'id': scene['id']}
+                                      for scene in scoped_scene['scenes']]
+            cards = scoped_scene.get('metadata', {}).get('visual_development', {}).get('shot_cards')
+            if isinstance(cards, dict):
+                metadata = scoped_scene['metadata']
+                visual = metadata['visual_development']
+                own_cards = {key: card for key, card in cards.items() if key == shot_id}
+                if own_cards:
+                    visual['shot_cards'] = own_cards
+                else:
+                    visual.pop('shot_cards')
+                if not visual:
+                    metadata.pop('visual_development')
+                if not metadata:
+                    scoped_scene.pop('metadata')
+            scoped_script = copy.deepcopy(script)
+            sid = scenes[0].get('script_section_id')
+            require(len([section for section in script['sections'] if section['id'] == sid]) == 1,
+                    'current MCP mapped script section missing or duplicated')
+            scoped_script['sections'] = [section if section['id'] == sid else {'id': section['id']}
+                                        for section in scoped_script['sections']]
+            return scoped_script, scoped_scene
+        require(scoped_artifacts(frozen_script, frozen_scene_plan)
+                == scoped_artifacts(current_script, current_scene_plan),
+                'current MCP relevant script/scene planning changed')
+        source_changed = (execution.approval_plan_digest(current_contract) != packet['binding']['approval_plan_sha256']
+                          or preparation.digest(current_script) != packet['binding']['script_sha256']
+                          or preparation.digest(current_scene_plan) != packet['binding']['scene_plan_sha256'])
+        current_selected = execution.load_selected_attempts(root)
+        histories = [execution._read(path) for path in (root / 'production_selections').glob('*.json')]
+        for binding in packet['binding']['upstream']:
+            sid = binding['shot_id']
+            available = [current_selected.get(sid)] + [row.get('selection') for row in histories if row.get('shot_id') == sid]
+            matches = {preparation.digest(row): row for row in available if isinstance(row, dict)
+                and preparation.digest(row) == binding['selection_sha256']
+                and review_digest(row.get('review')) == binding['review_sha256']}
+            require(len(matches) == 1, 'original upstream selection history missing or changed')
+            selection = next(iter(matches.values()))
+            validate_creator_repair_source_provenance(root, selection['attempt_id'], shot_id=sid,
+                story_revision=story_revision, expected_output=selection['output'])
+            historical_selected[sid] = selection
+            upstream_changed |= preparation.digest(current_selected.get(sid)) != binding['selection_sha256']
+        # Static reference review/bytes stay current; only a declared upstream
+        # asset may use its original packet's bound outgoing media and review.
+        frozen_assets = {a['id']: a for a in frozen_contract['assets']}
+        current_assets = {a['id']: a for a in current_contract['assets']}
+        for reference in packet['binding']['references']:
+            original = frozen_assets[reference['id']]
+            if original.get('upstream_source'):
+                continue
+            current = current_assets.get(reference['id'], {})
+            require(current.get('sha256') == reference['sha256']
+                    and review_digest(current.get('review')) == reference['review_sha256'],
+                    'current MCP static reference review/bytes changed')
+        source = preparation._creator_repair_source_packet(root, shot_id, native=native,
+            contract=frozen_contract, selected=historical_selected,
+            script=frozen_script, scene_plan=frozen_scene_plan)
     require(preparation.digest(snapshot['scope']) == authority['scope_sha256'], 'frozen scope differs')
     stable = set(packet['binding']) - {'contract_sha256', 'reviews_sha256'}
     require(set(source['binding']) == set(packet['binding'])
@@ -795,12 +919,20 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
             and preparation._read(root, 'preparation_review-' + inputs['preparation_review_id'] + '.json') == review,
             'original preparation sidecars changed')
     proof = preparation.validate_preparation_evidence(compiled, review, inputs, native, profile, reconstructed)
+    source_billing = None
+    if 'derived_from_policy' in scope:
+        from lib.production_autonomy import _validate_retained_packet_policy_mcp_attempt
+        selected = historical_selected if _historical_source else {
+            b['shot_id']: execution.load_selected_attempts(root)[b['shot_id']] for b in packet['binding']['upstream']}
+        source_billing = _validate_retained_packet_policy_mcp_attempt(root, scope, inputs=inputs, native=native, profile=profile,
+            compiled=compiled, review=review, selected=selected, authority=authority['billing'],
+            _original_contract=frozen_contract if _historical_source else None)
     if retained['purpose'] == 'qualification':
         from lib.provider_qualification import validate_qualification_stage
         validate_qualification_stage(root, inputs, authority['request_sha256'], native=native, profile=profile)
     require(preparation.digest(proof) == preparation.digest(authority['preparation']), 'compiled preparation evidence differs')
     from lib.openart_mcp_dispatch import validate_billing_authority
-    billing = validate_billing_authority(inputs, {'root': root, 'scope': scope, 'marker': marker,
+    billing = source_billing or validate_billing_authority(inputs, {'root': root, 'scope': scope, 'marker': marker,
         'shot_id': shot_id, 'request_sha256': authority['request_sha256'],
         'scope_attempt_index': authority['scope_attempt_index']}, native,
         historical_authority=authority['billing'], profile=profile)
@@ -822,4 +954,6 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
                'submitted_inputs': inputs, 'request_sha256': authority['request_sha256'],
                'transport': 'agent_mediated_connector', 'tool_name': 'openart_mcp_video'}
     return {'request': request, 'result': {'status': 'generated', 'output': output},
+            **({'historical_upstream_changed': upstream_changed,
+                'historical_source_changed': source_changed or upstream_changed} if _historical_source else {}),
             'connector_provenance': retained}

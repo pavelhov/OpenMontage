@@ -14,6 +14,13 @@ where to cut, what to remove, how to pace, and how to structure the final edit.
 | `frame_sampler` | Sample frames to evaluate visual quality at potential cut points |
 | `video_compose` | Assemble the final edit |
 
+For an authorized cut from a governed provider attempt that must remain
+selectable with truthful provenance, follow
+[Retaining an approved canonical video cut](../../docs/PRODUCTION_DERIVED_EDITS.md).
+It binds the actual trimmer return, retained interval audio, final decoded-frame
+sampling, exact root approval and fresh derived review through the existing
+`record_derived_edit` and `record_selection` utilities.
+
 ## Editing Principles for Talking Heads
 
 ### What to Cut

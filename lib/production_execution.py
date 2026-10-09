@@ -526,7 +526,8 @@ def _attempts(root):
         from lib.openart_mcp_jobs import list_attempts
     except ImportError:
         return rows
-    rows.extend(list_attempts(root))
+    rows.extend({**row, 'story_revision': row['scope_snapshot']['story_revision']}
+                for row in list_attempts(root))
     own = _MCP_REVALIDATING.get()
     return [row for row in rows if row.get('attempt_id') != own]
 
@@ -917,6 +918,11 @@ def preflight(tool, inputs, *, _local_continuation=None):
         if (not isinstance(replaces, list) or not replaces or not set(replaces).issubset(eligible)
                 or not set(replaces).intersection(item['attempt_id'] for item in previous)):
             _fail('repair scope must name existing exact attempts to replace')
+        if scope.get('repair_basis') == 'creator_batch':
+            from lib.production_repair_batches import validate_creator_repair_intent
+            validate_creator_repair_intent(root, scope.get('creator_repair'), shot_id=shot_id,
+                provider=provider, model=_clean(inputs).get('model'),
+                replaces_attempt_ids=scope.get('replaces_attempt_ids'), inputs=inputs)
     from lib import episode_production_controls as episode_controls
     try:
         controls = episode_controls.effective_controls(root) if kind == 'motion' else None
@@ -946,7 +952,7 @@ def preflight(tool, inputs, *, _local_continuation=None):
             episode_controls.require_admission(
                 root, shot_id=shot_id, provider=provider, model=_clean(inputs).get('model'), purpose=purpose,
                 replaces_attempt_ids=tuple(scope.get('replaces_attempt_ids') or ()), exclude_attempt_id=resumed,
-                repair_basis=scope.get('repair_basis', 'critical_review'))
+                repair_basis=scope.get('repair_basis', 'critical_review'), creator_repair=scope.get('creator_repair'))
         except episode_controls.EpisodeControlsError as exc:
             _fail(str(exc))
     if any(_inside(item.get('submitted_inputs', {}).get('output_path', ''), root) == output
@@ -969,6 +975,18 @@ def preflight(tool, inputs, *, _local_continuation=None):
         try:
             validate_qualification_stage(root, inputs, digest, native=openart[1], profile=openart[0])
         except (ValueError, KeyError, TypeError, OSError) as exc:
+            _fail(str(exc))
+    if kind == 'image' and provider == 'grok_cli':
+        # Grok image calls share the episode image ceiling with native board
+        # images. Keep this read-only admission in factual preflight so dry-runs
+        # expose exhaustion and same-slot pending originals before dispatch.
+        # Dispatch repeats preflight under the project lock, preserving the
+        # race-safe check immediately before any reservation or provider call.
+        from lib.production_images import check_grok_image_admission
+        try:
+            check_grok_image_admission(root, scope=scope, shot_id=shot_id,
+                                       request_sha256=digest)
+        except ValueError as exc:
             _fail(str(exc))
     return {'openart':openart, 'governed': True, 'root': root, 'marker': marker, 'scope': scope,
             'shot_id': shot_id, 'kind': kind, 'contract': contract, 'request_sha256': digest,
@@ -1051,6 +1069,26 @@ def _save_result(directory, result=None, error=None, *, prefix=""):
               'output': output, 'exception': public_error}
     _write_new(directory / (prefix + 'result.json'), record)
     return record
+
+
+def _observe_retained_output(root, request, record):
+    """Observe a newly published successful recovery; never backfill replay clocks."""
+    try:
+        output = record.get('output') or {}
+        if (record.get('status') != 'generated' or not output.get('sha256')
+                or (record.get('preserved_output') or {}).get('sha256') != output['sha256']):
+            return
+        from lib.events import emit_event
+        identity = {key: request[key] for key in ('attempt_id', 'request_sha256', 'project_id',
+                    'story_revision', 'shot_id', 'scope_id', 'media_kind')}
+        if not all(identity.values()) or not request['tool_name']:
+            return
+        emit_event(root, {'event': 'governed-result-retained', **identity,
+                         'tool': request['tool_name'], 'status': 'generated',
+                         'output_sha256': output['sha256']})
+    except Exception:
+        # Timing remains best-effort after canonical evidence has been published.
+        pass
 
 
 
@@ -1240,7 +1278,8 @@ def _execute_local_grok_continuation(tool, inputs, invoke):
         _save_result(directory, error=exc, prefix='local_continuation_')
         raise
     else:
-        _save_result(directory, result=result, prefix='local_continuation_')
+        retained = _save_result(directory, result=result, prefix='local_continuation_')
+        _observe_retained_output(root, request, retained)
         result.data['production_attempt_id'] = request['attempt_id']
         result.data['production_request_sha256'] = request['request_sha256']
         return result
@@ -1456,14 +1495,23 @@ def _execute_governed(tool, inputs, invoke):
     if openart_binding:
         active.update(openart_binding=openart_binding, openart_profile=profile, openart_native=native, openart_deadline=openart_prepared['deadline'] if openart_prepared else None)
     token = _ACTIVE.set(active)
+    from lib.events import emit_event
+    observation = {'attempt_id': session_id, 'request_sha256': checked['request_sha256'],
+                   'project_id': checked['marker']['project_id'],
+                   'story_revision': checked['marker']['story_revision'],
+                   'shot_id': checked['shot_id'], 'scope_id': scope['id'], 'tool': tool.name,
+                   'media_kind': checked['kind']}
+    emit_event(root, {'event': 'governed-invocation-start', **observation})
     try:
         result = invoke(submitted)
     except BaseException as exc:
+        emit_event(root, {'event': 'governed-invocation-error', **observation})
         _save_result(directory, error=exc)
         raise
     else:
+        emit_event(root, {'event': 'governed-invocation-return', **observation})
         try:
-            _save_result(directory, result=result)
+            retained = _save_result(directory, result=result)
         except BaseException as exc:
             # Preserve the raw return before fallible output copying, then record
             # uncertainty if storage still permits it. Never report persistence success.
@@ -1474,6 +1522,9 @@ def _execute_governed(tool, inputs, invoke):
                 except (OSError, ValueError):
                     pass
             raise
+        emit_event(root, {'event': 'governed-result-retained', **observation,
+                         'status': retained['status'],
+                         'output_sha256': (retained.get('output') or {}).get('sha256')})
         result.data['production_attempt_id'] = session_id
         result.data['production_request_sha256'] = checked['request_sha256']
         return result
@@ -1707,6 +1758,7 @@ def reconcile_attempt(project_dir, attempt_id, result, *, request_sha256):
                   'output':{'path':str(output),'sha256':digest},
                   'preserved_output':{'path':str(preserved),'sha256':digest}}
         _write_new(directory / 'reconciliation.json', record)
+        _observe_retained_output(root, request, record)
         return record
 
 
@@ -2135,6 +2187,7 @@ def collect_openart_attempt(project_dir, attempt_id, *, request_sha256, timeout=
             result.artifacts = [str(output)]
         record['result'] = asdict(result)
         _write_new(directory / 'reconciliation.json', record)
+        _observe_retained_output(root, request, record)
         return record
 
 

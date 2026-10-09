@@ -47,8 +47,8 @@
         },
         "additionalProperties": false
       },
-      "minItems": 3,
-      "description": "At least 3 genuinely different concept directions"
+      "minItems": 1,
+      "description": "One actual supplied or selected premise is sufficient; offer three distinct directions when the brief is open. Preserve retained genuine alternatives without inventing new choices."
     },
     "selected_concept": {
       "type": "object",

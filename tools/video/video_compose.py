@@ -338,6 +338,14 @@ class VideoCompose(BaseTool):
         operation = inputs["operation"]
         start = time.time()
 
+        # Approved native dialogue/source audio must never be silently replaced.
+        metadata = (inputs.get("edit_decisions") or {}).get("metadata") or {}
+        if metadata.get("preserve_source_audio") and inputs.get("audio_path"):
+            return ToolResult(
+                success=False,
+                error="preserve_source_audio forbids replacing native source audio with audio_path",
+            )
+
         try:
             if operation == "compose":
                 result = self._compose(inputs)

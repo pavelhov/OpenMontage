@@ -71,6 +71,7 @@ class VideoTrimmer(BaseTool):
                 },
             },
             "codec": {"type": "string", "default": "copy"},
+            "reason": {"type": "string", "description": "Reason for a retained local cut"},
         },
     }
 
@@ -103,6 +104,8 @@ class VideoTrimmer(BaseTool):
         return result
 
     def _cut(self, inputs: dict[str, Any]) -> ToolResult:
+        from lib.shot_contract import file_sha256
+
         input_path = Path(inputs["input_path"])
         if not input_path.exists():
             return ToolResult(success=False, error=f"Input not found: {input_path}")
@@ -127,7 +130,9 @@ class VideoTrimmer(BaseTool):
             cmd.extend(["-c:v", codec, "-c:a", "aac"])
         cmd.append(str(output_path))
 
-        self.run_command(cmd)
+        input_binding = {"path": str(input_path), "sha256": file_sha256(input_path)}
+        completed = self.run_command(cmd)
+        output_binding = {"path": str(output_path), "sha256": file_sha256(output_path)}
 
         return ToolResult(
             success=True,
@@ -137,6 +142,14 @@ class VideoTrimmer(BaseTool):
                 "output": str(output_path),
                 "start_seconds": start_s,
                 "end_seconds": end_s,
+                "cut_receipt": {
+                    "version": "1.0", "tool": self.name, "provider": self.provider,
+                    "adapter_version": self.version, "operation": "cut",
+                    "input": input_binding, "output": output_binding,
+                    "submitted_inputs": dict(inputs),
+                    "command_argv": list(completed.args),
+                    "command_exit_code": completed.returncode,
+                },
             },
             artifacts=[str(output_path)],
         )

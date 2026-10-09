@@ -175,3 +175,31 @@ def test_planned_board_cannot_impersonate_selected_observed_outgoing_frame(produ
     dry_run(p, 'interior', blocked='path/hash differ from current selected outgoing frame')
     assert len(p.transport.native_requests) == 1
     assert len(list((p.root / 'production_attempts').glob('*/request.json'))) == 1
+
+
+def test_prepared_frame_pair_does_not_invent_a_predecessor_wait(production):
+    """A deliberately independent shot can start before chronological entry."""
+    p = production
+    p.contract['shots'][1]['upstream'] = []
+    sign_planning_reviews(p.contract)
+    p.persist_contract()
+    p.scope['approval_plan_sha256'] = approval_plan_digest(p.contract)
+    p.persist_scope()
+    # Future local reviews can remain unfinished under the fixed authored plan.
+    del p.contract['shots'][2]['review']
+    p.persist_contract()
+    dry_run(p, 'interior')
+    assert not list((p.root / 'production_attempts').glob('*/request.json'))
+
+
+def test_cosmetic_board_warning_continues_but_essential_staging_blocks(production):
+    p = production
+    board = next(asset for asset in p.contract['assets'] if asset['id'] == 'entry-start')
+    board['review']['predicates'].append({'name': 'minor_shading', 'status': 'fail',
+        'severity': 'cosmetic', 'evidence': 'Synthetic minor aesthetic warning; action reads.'})
+    p.persist_contract()
+    dry_run(p, 'entry')
+    board['review']['predicates'].append({'name': 'physical_staging', 'status': 'fail',
+        'severity': 'critical', 'evidence': 'Synthetic essential contact geometry failure.'})
+    p.persist_contract()
+    dry_run(p, 'entry', blocked='physical_staging')

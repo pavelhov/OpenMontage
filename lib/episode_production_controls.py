@@ -113,8 +113,8 @@ def _evidence(root, evidence):
 
 
 def _check_controls(controls):
-    if not isinstance(controls, dict) or set(controls) != CONTROL_KEYS:
-        _fail('controls must be exactly ' + ', '.join(sorted(CONTROL_KEYS)))
+    if not isinstance(controls, dict) or not CONTROL_KEYS <= set(controls) or set(controls) - CONTROL_KEYS - {'first_cut'}:
+        _fail('controls require ' + ', '.join(sorted(CONTROL_KEYS)) + '; only first_cut is optional')
     limit = controls['max_generations_per_shot']
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
         _fail('max_generations_per_shot must be an integer >= 1')
@@ -122,7 +122,10 @@ def _check_controls(controls):
         _fail('alternate_repair must be one of ' + ', '.join(ALTERNATE_MODES))
     if not isinstance(controls['access_fallback'], bool):
         _fail('access_fallback must be boolean')
-    return dict(controls)
+    if 'first_cut' in controls and (not isinstance(controls['first_cut'], dict)
+            or set(controls['first_cut']) != {'enabled'} or not isinstance(controls['first_cut']['enabled'], bool)):
+        _fail('first_cut must be exactly {enabled: boolean}')
+    return copy.deepcopy(controls)
 
 
 def _effective(data, marker):
@@ -149,6 +152,12 @@ def effective_controls(project_dir):
     """None for legacy projects; otherwise current-story effective controls."""
     root = _root(project_dir)
     return _effective(_load(root), _marker(root))
+
+
+def first_cut_enabled(project_dir):
+    """Episode opt-in; absent controls and older records remain default-off."""
+    effective = effective_controls(project_dir)
+    return bool(effective and (effective.get('first_cut') or {}).get('enabled'))
 
 
 def _append(root, kind, key, payload, evidence):
@@ -301,6 +310,15 @@ def _media_model(provider, model):
     return None if provider in _MANAGED_MEDIA_PROVIDERS else model
 
 
+def alternate_route_eligible(original_provider, original_model, provider, model):
+    """True when (provider, model) is an alternate to the original route: a
+    different provider or a different reported media model. Mode, tool or
+    route key alone never makes an alternate."""
+    original_model = _media_model(original_provider, original_model)
+    model = _media_model(provider, model)
+    return original_provider != provider or (model is not None and model != original_model)
+
+
 def generation_usage(project_dir):
     """Trusted per-shot motion generation occurrences from journals and MCP state.
 
@@ -359,7 +377,7 @@ def shot_usage(project_dir, shot_id, *, exclude_attempt_id=None):
 
 def generation_admission(project_dir, *, shot_id, provider, model=None, purpose,
                          replaces_attempt_ids=(), exclude_attempt_id=None,
-                         repair_basis='critical_review'):
+                         repair_basis='critical_review', creator_repair=None):
     """Whether one new generation for shot_id may proceed under episode controls.
 
     -> {admitted, reasons, limit, used, controls_present}. Controls only narrow;
@@ -370,7 +388,16 @@ def generation_admission(project_dir, *, shot_id, provider, model=None, purpose,
     effective = effective_controls(root)
     if effective is None:
         return {'admitted': True, 'reasons': [], 'limit': None, 'used': None, 'controls_present': False}
+    creator_item = False
+    if repair_basis == 'creator_batch':
+        from lib.production_repair_batches import validate_creator_repair_intent
+        validate_creator_repair_intent(root, creator_repair, shot_id=shot_id, provider=provider,
+            model=model, replaces_attempt_ids=list(replaces_attempt_ids))
+        creator_item = True
     reasons = []
+    repairing = purpose == 'repair' or purpose == 'mcp_begin' and bool(replaces_attempt_ids)
+    if repairing and (effective.get('first_cut') or {}).get('enabled') and repair_basis == 'critical_review':
+        reasons.append('first-cut mode defers creative generation until an exact creator-selected repair')
     if provider in effective['restricted_providers']:
         reasons.append(f'provider {provider} is restricted for this episode')
     usage = generation_usage(root)
@@ -384,20 +411,20 @@ def generation_admission(project_dir, *, shot_id, provider, model=None, purpose,
     limit = effective['max_generations_per_shot']
     if limit is not None and used >= limit:
         reasons.append(f'episode generation limit reached for {shot_id} ({used}/{limit})')
-    model = _media_model(provider, model)
     routes = {i['attempt_id']: (i['provider'], i['model']) for i in usage['occurrences']}
     # MCP begin replays the repair route rule so an amendment between prepare
     # and begin cannot let a same-route reroll through.
-    if (purpose == 'repair' or (purpose == 'mcp_begin' and replaces_attempt_ids)) and effective['alternate_repair'] == 'different_provider_or_media_model':
+    if repairing and not creator_item and effective['alternate_repair'] == 'different_provider_or_media_model':
         for original in replaces_attempt_ids or ():
             old_provider, old_model = routes.get(original, (None, None))
-            if old_provider == provider and (model is None or model == old_model):
+            if not alternate_route_eligible(old_provider, old_model, provider, model):
                 reasons.append(f'repair of {original} must use a different provider or media model')
-    elif (repair_basis != 'access_fallback'
+    elif (not creator_item and repair_basis != 'access_fallback'
           and (purpose == 'repair' or (purpose == 'mcp_begin' and replaces_attempt_ids))
           and effective['alternate_repair'] == 'disabled'):
         # Ordinary critical repair stays on the original route; the separately
         # preapproved access fallback keeps its own different-route rule.
+        model = _media_model(provider, model)
         for original in replaces_attempt_ids or ():
             old_provider, old_model = routes.get(original, (None, None))
             if old_provider != provider or (model is not None and old_model is not None and model != old_model):

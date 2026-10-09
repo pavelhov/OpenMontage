@@ -123,6 +123,18 @@
               },
               "access_fallback": {
                 "type": "boolean"
+              },
+              "first_cut": {
+                "type": "object",
+                "required": [
+                  "enabled"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                }
               }
             }
           },

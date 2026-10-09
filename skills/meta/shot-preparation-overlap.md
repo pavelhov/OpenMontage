@@ -5,6 +5,54 @@ already reviewed target shot moves through its existing governed path. This is
 a sequencing option inside the current production contract; it does not create
 independent per-shot authoring scopes or change any production gate.
 
+## Prepare boards before waiting for motion
+
+For new boarded episodes, prepare one shared current cast/prop inventory and
+complete text prompt pack. Record unresolved board slots explicitly instead of
+using absent image paths as ready motion evidence. Reuse exact current reference
+bytes only with story/role applicability and the retained semantic observation;
+reuse is zero generation. `lib.production_images.build_preboard_packet` is the
+pre-board boundary; it does not weaken reviewed-motion source packets.
+
+Keep the static-image DAG separate from the actual outgoing-video DAG. An end
+image derived from a start image waits for imported start-image bytes, while its
+text and unrelated nodes prepare immediately. Prepared reviewed start/end pairs
+are the default. Chronology adds no predecessor wait; only declared actual
+upstream footage/outgoing-frame requirements serialize motion. Prioritize ready
+shared cast/payoff nodes by the number of shots their byte/review completion
+unblocks, then let the existing canonical dry-run decide exact motion readiness.
+The whole storyboard need not finish first when the target and shared
+prerequisites are current under the fixed complete plan below.
+
+Native image calls remain agent-host operations. Reserve through
+`lib.production_images.reserve_native_image`, emit exactly one admitted envelope
+with `begin_native_image`, invoke the real host tool once, retain its actual
+return, and import attributable original bytes with `import_native_image`.
+A local call ID is not a provider job ID. Unknown original acceptance stays
+counted and unresolved; do not re-invoke it. The host surface is one prompt,
+optional ordered reference paths and transparency. No `n`, batch, concurrency,
+forced resolution or provider switch is implied. Exact scope and approved image
+allowance remain binding across supported routes.
+
+Studio's bounded `prepare_boards.py` consumer retains inventory/text once,
+materializes exact source packets as dependency bytes arrive, and uses that
+canonical lifecycle. Its `production_entry.py` adapter exposes `prepare-boards`,
+`board-status`, `prepare-board-request`, `reserve-board-image`,
+`begin-board-image`, `import-board-image`, `review-board`, `board-observations`
+and `ready-video-work`. Queue candidates are preparation facts; only a fresh
+canonical dry-run can permit the unchanged exact request.
+
+Name one persistent substantive board reviewer. Reuse one exact-byte observation
+for its applicable roles and transfer it unchanged into project/delivery records.
+Minor aesthetic findings proceed with warnings. Essential cast, story or staging
+failures stay critical and permit only a targeted correction within current
+image authority; unknown/missing essential evidence remains blocking. Review
+later ready boards while preparation/rendering continues. Changed board
+promotion stales affected source packets, derived bindings and observations;
+unchanged valid roles carry. Preparation promotion does not itself alter frozen
+motion plans or grant dispatch. Record actual preparation, import, review and
+promotion boundaries; absent provider timestamps remain unknown.
+
 ## Keep the canonical plan fixed
 
 The existing shot contract can validate one requested target and its dependency
