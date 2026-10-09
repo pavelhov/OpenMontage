@@ -108,7 +108,8 @@
                   "never_submitted",
                   "tool_return",
                   "imported",
-                  "failed"
+                  "failed",
+                  "host_exception"
                 ]
               },
               "observed_at": {
@@ -291,6 +292,33 @@
             "sha256",
             "media_type",
             "source"
+          ]
+        },
+        "host_exception": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "kind": {
+              "const": "agent_recorded_host_exception"
+            },
+            "arguments_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "kind",
+            "arguments_sha256"
           ]
         }
       },

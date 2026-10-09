@@ -301,6 +301,9 @@ def image_call_status(project_dir, call_id):
     call = _call(_load(root),call_id)
     status = {key:copy.deepcopy(value) for key,value in call.items()
               if key not in {'packet','host_arguments','submitted_arguments'}}
+    if call.get('host_exception') and call['state'] in PENDING:
+        status['backend_submission_status'] = 'unknown'
+        status['next_action'] = 'collect_original_or_authoritative_reconciliation'
     if call.get('output'):
         output = call['output']
         def current(path):
@@ -437,6 +440,61 @@ def mark_image_uncertain(project_dir, call_id, *, reason):
         if call['state'] not in PENDING: raise ValueError('terminal image call cannot become uncertain')
         if call['state'] != 'uncertain':
             call['state'] = 'uncertain'; _event(call,'uncertain',reason=reason); _write(root,value)
+        return copy.deepcopy(call)
+
+
+def record_native_image_host_exception(project_dir, call_id, *, host_exception):
+    """Retain a raised host exception without manufacturing a tool result.
+
+    Agent-recorded JSON must bind {call_id, tool_name, arguments, exception:
+    {message, optional type}, optional tool_call_id} to the emitted envelope.
+    This proves the observed exception, never backend acceptance or termination.
+    The original stays counted and blocks replacement until an authentic return
+    can be collected with import_native_image. Python never invokes the host.
+    """
+    root,_ = _root(project_dir)
+    path = _bound_file(root,host_exception,'host exception')
+    raw = path.read_bytes(); receipt = json.loads(raw)
+    if hashlib.sha256(raw).hexdigest() != host_exception['sha256']:
+        raise ValueError('host exception bytes changed during recording')
+    allowed = {'call_id','tool_name','arguments','exception','tool_call_id'}
+    if not isinstance(receipt,dict) or set(receipt) - allowed:
+        raise ValueError('host exception requires observed exception evidence, not a result or terminal assertion')
+    exception = receipt.get('exception')
+    if (not isinstance(exception,dict) or set(exception) - {'message','type'}
+            or not isinstance(exception.get('message'),str) or not exception['message'].strip()
+            or ('type' in exception and (not isinstance(exception['type'],str) or not exception['type'].strip()))
+            or ('tool_call_id' in receipt and (not isinstance(receipt['tool_call_id'],str)
+                                               or not receipt['tool_call_id'].strip()))):
+        raise ValueError('host exception requires a nonempty actual exception message and optional type/call ID')
+    with _ex()._lock(root):
+        value = _load(root); call = _call(value,call_id)
+        if 'submitted_arguments' not in call:
+            raise ValueError('host exception requires the original emitted invocation envelope')
+        if (receipt.get('call_id') != call_id or receipt.get('tool_name') != NATIVE_TOOL
+                or receipt.get('arguments') != call['submitted_arguments']):
+            raise ValueError('host exception call, tool or exact submitted arguments differ')
+        if call.get('host_exception'):
+            if call['host_exception']['sha256'] != host_exception['sha256']:
+                raise ValueError('image call already binds a different actual host exception')
+            _bound_file(root,call['host_exception'],'retained host exception')
+            return copy.deepcopy(call)
+        if call.get('host_receipt'):
+            raise ValueError('actual host return already retained; host exception cannot be recorded')
+        if call['state'] not in PENDING:
+            raise ValueError('terminal image call cannot record a new host exception')
+        directory = root/'production_images'/call_id; directory.mkdir(parents=True,exist_ok=True)
+        preserved = directory/'host-exception.json'
+        if preserved.exists() and preserved.read_bytes() != raw:
+            raise ValueError('retained original host exception differs')
+        if not preserved.exists(): preserved.write_bytes(raw); preserved.chmod(0o444)
+        call['host_exception'] = {'kind':'agent_recorded_host_exception',
+            'path':str(preserved.relative_to(root)), 'sha256':host_exception['sha256'],
+            'arguments_sha256':digest(call['submitted_arguments'])}
+        _event(call,'host_exception',receipt_sha256=host_exception['sha256'],error=exception['message'])
+        call['state'] = 'uncertain'
+        _event(call,'uncertain',reason='Host raised an exception without a result; backend submission remains unknown.')
+        _write(root,value)
         return copy.deepcopy(call)
 
 
