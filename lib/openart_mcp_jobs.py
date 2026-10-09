@@ -465,21 +465,55 @@ def _inside(root, path):
     if not resolved.is_relative_to(root): _fail('source_invalid','source/evidence must belong to approved project')
     return resolved
 
-def _approved_source(root, path, sha):
+def _reviewed_source(root, path, sha):
+    """Current physical source and every alias review, independent of shot eligibility."""
+    from jsonschema import Draft202012Validator
+    from schemas.artifacts import load_schema
     from lib.production_execution import _artifact_path
-    from lib.shot_contract import validate_shot_contract
+    from lib.shot_contract import ASSET_PREDICATES, CRITICAL_PREDICATES
     try: contract=json.loads(_artifact_path(root,'shot_contract.json').read_text())
     except (OSError,ValueError): _fail('source_unapproved','retained source contract required')
     marker=json.loads((root/'project.json').read_text())
     if contract.get('project_id')!=marker.get('project_id') or contract.get('story_revision')!=marker.get('story_revision'):
         _fail('source_unapproved','reviewed source contract project/story is stale')
-    assets=[a for a in contract['assets'] if a.get('sha256')==sha and _inside(root,a['path'])==path]
-    if len(assets)!=1: _fail('source_unapproved','exact source bytes require one reviewed project asset')
-    asset=assets[0]
+    if not Draft202012Validator(load_schema('shot_contract')).is_valid(contract):
+        _fail('source_unapproved','reviewed source contract schema is invalid')
+    if len({a['id'] for a in contract['assets']})!=len(contract['assets']):
+        _fail('source_unapproved','reviewed source contract asset IDs are ambiguous')
+    # Uploads bind one physical file; the contract can give its bytes multiple
+    # roles. Every alias must bind those current bytes and its own current review.
+    assets=[a for a in contract['assets'] if a.get('path') and _inside(root,a['path'])==path]
+    if not assets or any(a.get('sha256')!=sha for a in assets):
+        _fail('source_unapproved','exact source bytes require current reviewed project assets')
+    for asset in assets:
+        review=asset.get('review',{});predicates=review.get('predicates',[])
+        names={p['name'] for p in predicates}
+        if (review.get('story_revision')!=marker['story_revision'] or review.get('subject_sha256')!=sha
+                or review.get('status')!='pass' or len(names)!=len(predicates) or not ASSET_PREDICATES<=names
+                or any((p['name'] in CRITICAL_PREDICATES and p.get('severity')=='cosmetic')
+                    or (p['status']!='pass' and (p['name'] in CRITICAL_PREDICATES or p.get('severity','critical')=='critical'))
+                    for p in predicates)):
+            _fail('source_unapproved','current critical source review does not approve every exact source alias')
+    return contract,marker,assets
+
+def _approved_source(root, path, sha):
+    from lib.production_execution import load_selected_attempts
+    from lib.shot_contract import validate_shot_contract
+    contract,marker,assets=_reviewed_source(root,path,sha)
+    # New transfers require actual required-source coverage in eligible shots;
+    # sharing a cast never supplies that authority.
+    pending={a['id'] for a in assets}; selected=load_selected_attempts(root)
     for shot in contract['shots']:
-        if asset['id'] in shot['asset_ids'] or set(asset.get('cast_ids',[])).intersection(shot.get('cast_ids',[])):
-            checked=validate_shot_contract(contract,project_dir=root,shot_id=shot['id'],story_revision=marker['story_revision'])
-            if checked['eligible']: return contract
+        required=set(shot['asset_ids'])
+        if contract.get('reference_mode')!='reference_free':required.add(contract.get('payoff_asset_id'))
+        cast=set(contract['late_cast_ids']) | set(shot['cast_ids']) | set(contract['payoff_speaker_ids'])
+        required.update(a['id'] for a in assets if a['role']=='identity_reference' and cast.intersection(a['cast_ids']))
+        applicable=pending.intersection(required)
+        if applicable:
+            checked=validate_shot_contract(contract,project_dir=root,shot_id=shot['id'],story_revision=marker['story_revision'],selected_upstream=selected)
+            if checked['eligible']:
+                pending.difference_update(applicable)
+                if not pending:return contract
     _fail('source_unapproved','current critical source/shot review does not approve exact source bytes')
 
 def _media_type(path):
@@ -586,7 +620,10 @@ def record_upload_receipt(project_dir, *, upload_id, result):
 def resolve_input_asset(project_dir, asset, *, account_binding, openart_project_id=None):
     root=_root(project_dir);path=_inside(root,asset['source_path']);sha=_sha(path)
     if asset.get('source_sha256',sha)!=sha:_fail('source_changed','caller source hash differs from actual bytes')
-    _approved_source(root,path,sha)
+    # The original upload proved transfer eligibility. Native rebuilds recheck
+    # current source reviews/bytes and immutable receipts; target-shot eligibility
+    # belongs to governed preparation, including historical source-packet replay.
+    _reviewed_source(root,path,sha)
     identifier=asset.get('upload_id',asset.get('reference_id'));matches=[]
     store=_state_root(create=False)/'mcp-uploads'
     if store.exists():
