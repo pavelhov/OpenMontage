@@ -314,7 +314,7 @@ def image_call_status(project_dir, call_id):
     return status
 
 
-def _admission(root, scope, slot_id, route, *, exclude_call_id=None):
+def _admission(root, scope, slot_id, route, *, exclude_call_id=None, ignore_pending_call_id=None):
     limit = scope.get('image_allowance')
     if type(limit) is not int or limit < 1:
         raise ValueError('approved image scope lacks a positive image allowance')
@@ -323,7 +323,8 @@ def _admission(root, scope, slot_id, route, *, exclude_call_id=None):
             or route not in routes):
         raise ValueError('image route is outside the approved supported routes')
     rows = [r for r in image_usage(root)['occurrences'] if r['counted'] and r['call_id'] != exclude_call_id]
-    if any(r['slot_id'] == slot_id and r['state'] in PENDING for r in rows):
+    if any(r['slot_id'] == slot_id and r['state'] in PENDING
+            and r['call_id'] != ignore_pending_call_id for r in rows):
         raise ValueError('an uncertain or pending original image blocks replacement')
     # The ceiling is episode-wide. Historic supported image journals count too;
     # moving a request to another exact scope cannot reset cumulative usage.
@@ -356,8 +357,58 @@ def check_grok_image_admission(project_dir, *, scope, shot_id, request_sha256):
     return _admission(root,_scope(root,shared_id),shot_id,'grok_cli')
 
 
-def reserve_native_image(project_dir, packet, slot_id, arguments, *, output_path, scope_id, call_id=None):
-    """Atomically reserve one exact approved native call, without emitting args."""
+def _unique_recovery_output(root, value, target, *, exclude_call_id=None):
+    paths = [call['output_path'] for call in value['calls'] if call['call_id'] != exclude_call_id]
+    for request_path in (root/'production_attempts').glob('*/request.json'):
+        output = _read(request_path).get('submitted_inputs',{}).get('output_path')
+        if output: paths.append(output)
+    if target.exists() or any(_ex()._inside(path,root)==target for path in paths):
+        raise ValueError('native exception recovery requires a unique new output path')
+
+
+def _exception_recovery_original(root, value, original_id, slot_id, *, successor_id=None):
+    """Qualify one native exception; this never closes or discounts its original."""
+    original = _call(value,original_id)
+    marker = _root(root)[1]
+    if original.get('replaces_host_exception'):
+        raise ValueError('native exception recovery cannot chain from a successor')
+    if any(call.get('replaces_host_exception',{}).get('call_id') == original_id
+            and call['call_id'] != successor_id for call in value['calls']):
+        raise ValueError('native host exception already has an admitted successor')
+    if (original['route'] != NATIVE_ROUTE or original['tool_name'] != NATIVE_TOOL
+            or original['project_id'] != marker['project_id'] or original['story_revision'] != marker['story_revision']
+            or original['slot_id'] != slot_id):
+        raise ValueError('native exception recovery has incompatible project/story/slot/route binding')
+    if (original['state'] != 'uncertain' or 'submitted_arguments' not in original
+            or not original.get('host_exception') or original.get('host_receipt') or original.get('output')):
+        raise ValueError('recovery needs an unresolved emitted native exception without actual return or output')
+    evidence = original['host_exception']
+    receipt = _read(_bound_file(root,evidence,'original host exception'))
+    exception = receipt.get('exception') if isinstance(receipt,dict) else None
+    if (not isinstance(receipt,dict) or set(receipt)-{'call_id','tool_name','arguments','exception','tool_call_id'}
+            or receipt.get('call_id') != original_id or receipt.get('tool_name') != NATIVE_TOOL
+            or receipt.get('arguments') != original['submitted_arguments']
+            or evidence['arguments_sha256'] != digest(original['submitted_arguments'])
+            or not isinstance(exception,dict) or set(exception)-{'message','type'}
+            or not isinstance(exception.get('message'),str) or not exception['message'].strip()
+            or not any(event['kind']=='host_exception' and event['details'].get('receipt_sha256')==evidence['sha256']
+                       for event in original['events'])):
+        raise ValueError('original native exception evidence differs from emitted call')
+    link = {'call_id':original_id,'receipt_sha256':evidence['sha256'],'request_sha256':original['request_sha256']}
+    if successor_id:
+        successor = _call(value,successor_id)
+        if successor.get('replaces_host_exception') != link:
+            raise ValueError('native exception recovery link changed')
+    return link
+
+
+def reserve_native_image(project_dir, packet, slot_id, arguments, *, output_path, scope_id, call_id=None, replace_exception_call_id=None):
+    """Reserve an exact approved native call, optionally one linked exception recovery.
+
+    Explicit recovery preserves the counted uncertain original and admits only
+    one separate native successor with unique output; no exception is terminal.
+    Omitted replace_exception_call_id keeps ordinary pending-original blocking.
+    """
     root, marker = _root(project_dir)
     call_id = call_id or 'image-' + uuid.uuid4().hex
     if not isinstance(call_id,str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}',call_id):
@@ -370,14 +421,29 @@ def reserve_native_image(project_dir, packet, slot_id, arguments, *, output_path
         value = _load(root)
         existing = next((c for c in value['calls'] if c['call_id'] == call_id),None)
         if existing:
-            if existing['request_sha256'] != sha or existing['scope_id'] != scope_id:
-                raise ValueError('local call ID already binds another exact request')
+            if (existing['request_sha256'] != sha or existing['scope_id'] != scope_id
+                    or existing.get('replaces_host_exception',{}).get('call_id') != replace_exception_call_id):
+                raise ValueError('local call ID already binds another exact request or linked exception recovery')
+            if replace_exception_call_id is not None:
+                original = _call(value,replace_exception_call_id)
+                _bound_file(root,original.get('host_exception'),'original host exception')
+                expected = {'call_id':replace_exception_call_id,
+                    'receipt_sha256':original['host_exception']['sha256'],'request_sha256':original['request_sha256']}
+                if existing['replaces_host_exception'] != expected:
+                    raise ValueError('native exception recovery link changed')
             return {k:copy.deepcopy(v) for k,v in existing.items() if k not in {'host_arguments','packet'}}
         if (root/'production_attempts'/call_id/'request.json').exists():
             raise ValueError('local image call ID collides with provider session')
         scope = _scope(root,scope_id)
         if scope.get('provider') != NATIVE_ROUTE: raise ValueError('native scope locks a different provider route')
-        admission = _admission(root,scope,slot_id,NATIVE_ROUTE)
+        recovery = None
+        if replace_exception_call_id is not None:
+            if not isinstance(replace_exception_call_id,str) or not replace_exception_call_id.strip():
+                raise ValueError('native exception recovery requires the original call ID')
+            recovery = _exception_recovery_original(root,value,replace_exception_call_id,slot_id)
+            target = _ex()._inside(output_path,root)
+            _unique_recovery_output(root,value,target)
+        admission = _admission(root,scope,slot_id,NATIVE_ROUTE,ignore_pending_call_id=replace_exception_call_id)
         peers = [r for r in image_usage(root)['occurrences'] if r['counted'] and r['scope_id'] == scope_id and r['slot_id'] == slot_id]
         allowance = scope.get('attempts_per_shot',{}).get(slot_id)
         if type(allowance) is not int or allowance < 1 or len(peers) >= allowance:
@@ -391,6 +457,7 @@ def reserve_native_image(project_dir, packet, slot_id, arguments, *, output_path
             'request_sha256':sha,'packet':copy.deepcopy(packet),
             'host_arguments':_native_arguments(packet,arguments),
             'output_path':str(_ex()._inside(output_path,root).relative_to(root)), 'events':[]}
+        if recovery is not None: call['replaces_host_exception'] = recovery
         call['events'].append({'kind':'packet_ready','observed_at':packet['prepared_at'],'details':{'packet_sha256':packet['packet_sha256']}})
         _event(call,'reserved',used=admission['used'],limit=admission['limit'])
         value['calls'].append(call); _write(root,value)
@@ -409,7 +476,13 @@ def begin_native_image(project_dir, call_id):
         scope = _scope(root,call['scope_id'])
         if digest(scope) != call['scope_sha256']:
             raise ValueError('native image approval changed after reservation')
-        _admission(root,scope,call['slot_id'],NATIVE_ROUTE,exclude_call_id=call_id)
+        original_id = call.get('replaces_host_exception',{}).get('call_id')
+        if original_id:
+            _exception_recovery_original(root,value,original_id,call['slot_id'],successor_id=call_id)
+            target = _ex()._inside(call['output_path'],root)
+            _unique_recovery_output(root,value,target,exclude_call_id=call_id)
+        _admission(root,scope,call['slot_id'],NATIVE_ROUTE,exclude_call_id=call_id,
+                   ignore_pending_call_id=original_id)
         arguments = copy.deepcopy(call['host_arguments'])
         snapshots = root/'production_images'/call_id/'inputs'
         if arguments.get('referenced_image_paths'):
@@ -449,8 +522,10 @@ def record_native_image_host_exception(project_dir, call_id, *, host_exception):
     Agent-recorded JSON must bind {call_id, tool_name, arguments, exception:
     {message, optional type}, optional tool_call_id} to the emitted envelope.
     This proves the observed exception, never backend acceptance or termination.
-    The original stays counted and blocks replacement until an authentic return
-    can be collected with import_native_image. Python never invokes the host.
+    The original stays counted and blocks ordinary replacement. One explicit
+    linked native successor may use reserve_native_image's exception recovery;
+    late authentic returns remain collectable with import_native_image.
+    Python never invokes the host.
     """
     root,_ = _root(project_dir)
     path = _bound_file(root,host_exception,'host exception')

@@ -162,7 +162,10 @@ attempt output paths. Constructing a scope/template does not authorize it.
 
 Reuse canonical `lib.production_execution` attempts, original-session reconciliation
 and reviewed selections. A fresh exact governed dry-run immediately precedes
-execution. Unknown originals are collected/reconciled, never resubmitted. Preserve
+execution. Unknown originals are collected/reconciled, never resubmitted. The preparation
+owner permits one explicitly linked native-to-native successor for a retained
+emitted host exception, within exact scope and remaining allowance; the unknown
+original remains counted and independently collectable. Preserve
 original/rejected bytes and cumulative allowances. Prepared independent frame
 pairs do not wait on unrelated videos; actual upstream footage/outgoing-frame
 needs remain serial and require current eligible selections. The preparation owner
@@ -196,7 +199,8 @@ Candidate inclusion is separate from strict selection/upstream eligibility. No
 automatic `critical_review` creative reroll of existing footage is allowed in this
 mode. Confirmed terminal no-output access fallback may use only an already-approved
 compatible alternate within cumulative allowance and existing exact/account/billing
-locks; uncertain originals require collection. Cosmetic or unknown AV findings never
+locks; uncertain originals require collection except the preparation owner's
+explicit bounded native host-exception successor. Cosmetic or unknown AV findings never
 create automatic repair authority.
 
 `lib.production_draft` owns composition, current-cut bindings and first-cut acceptance;
