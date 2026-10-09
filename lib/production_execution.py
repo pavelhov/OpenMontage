@@ -1059,6 +1059,26 @@ def _save_result(directory, result=None, error=None, *, prefix=""):
     return record
 
 
+def _observe_retained_output(root, request, record):
+    """Observe a newly published successful recovery; never backfill replay clocks."""
+    try:
+        output = record.get('output') or {}
+        if (record.get('status') != 'generated' or not output.get('sha256')
+                or (record.get('preserved_output') or {}).get('sha256') != output['sha256']):
+            return
+        from lib.events import emit_event
+        identity = {key: request[key] for key in ('attempt_id', 'request_sha256', 'project_id',
+                    'story_revision', 'shot_id', 'scope_id', 'media_kind')}
+        if not all(identity.values()) or not request['tool_name']:
+            return
+        emit_event(root, {'event': 'governed-result-retained', **identity,
+                         'tool': request['tool_name'], 'status': 'generated',
+                         'output_sha256': output['sha256']})
+    except Exception:
+        # Timing remains best-effort after canonical evidence has been published.
+        pass
+
+
 
 _LOCAL_PIN_ERROR = 'Grok CLI invalid_argument error: reference_to_video requires between 1 and 14 local image path(s)'
 _LOCAL_CONTINUATION_FILES = ('request.json', 'result.json', 'raw_result.json',
@@ -1246,7 +1266,8 @@ def _execute_local_grok_continuation(tool, inputs, invoke):
         _save_result(directory, error=exc, prefix='local_continuation_')
         raise
     else:
-        _save_result(directory, result=result, prefix='local_continuation_')
+        retained = _save_result(directory, result=result, prefix='local_continuation_')
+        _observe_retained_output(root, request, retained)
         result.data['production_attempt_id'] = request['attempt_id']
         result.data['production_request_sha256'] = request['request_sha256']
         return result
@@ -1729,6 +1750,7 @@ def reconcile_attempt(project_dir, attempt_id, result, *, request_sha256):
                   'output':{'path':str(output),'sha256':digest},
                   'preserved_output':{'path':str(preserved),'sha256':digest}}
         _write_new(directory / 'reconciliation.json', record)
+        _observe_retained_output(root, request, record)
         return record
 
 
@@ -2157,6 +2179,7 @@ def collect_openart_attempt(project_dir, attempt_id, *, request_sha256, timeout=
             result.artifacts = [str(output)]
         record['result'] = asdict(result)
         _write_new(directory / 'reconciliation.json', record)
+        _observe_retained_output(root, request, record)
         return record
 
 
