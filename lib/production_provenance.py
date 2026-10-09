@@ -691,7 +691,7 @@ def validate_derived_edit(project_dir, record_path, *, attempt_id, shot_id,
         receipt = read(value['execution_receipt'], 'actual edit receipt')
         derived_timing = None
         if recipe['operation'] == 'canonical_video_trimmer_cut':
-            derived_timing = _validate_trimmed_cut(value, recipe, receipt, native, bound, require, _aac_sha256)
+            derived_timing = _validate_trimmed_cut(value, recipe, receipt, native, bound, require, _aac_sha256, root)
         else:
             window = recipe.get('time_window_seconds')
             require(isinstance(window, list) and len(window) == 2
@@ -740,7 +740,7 @@ def validate_derived_edit(project_dir, record_path, *, attempt_id, shot_id,
             execution._inside(f.get('path', ''), root) == outgoing
             for f in sample_result.get('data', {}).get('frames', [])), 'actual sampler result omits outgoing frame')
         if derived_timing:
-            _validate_trim_sampling(value, sampled, derived_timing, outgoing, require)
+            _validate_trim_sampling(value, sampled, derived_timing, outgoing, require, root)
         approval = value['approval']
         require(isinstance(approval, dict) and set(approval) == {'approved_by', 'evidence'}
                 and isinstance(approval['approved_by'], str) and bool(approval['approved_by']), 'named edit approval required')
