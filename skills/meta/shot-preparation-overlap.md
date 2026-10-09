@@ -24,6 +24,16 @@ unblocks, then let the existing canonical dry-run decide exact motion readiness.
 The whole storyboard need not finish first when the target and shared
 prerequisites are current under the fixed complete plan below.
 
+Retained historical footage uses the engine's source-only shot applicability
+projection: exact global story and shot order, queried shot semantics and its
+relevant static references/roles remain bound. Later unrelated shots may add
+endpoint boards or materialize their own source roles without making earlier
+originals unplayable. Frozen calls, scopes, approvals, native inputs and actual
+outputs remain unchanged. This permits attributable draft inclusion with a
+critical applicability warning and retention of actual failed-output reviews;
+it grants no strict selection, certification or new repair/generation authority.
+Prospective approvals and carried scopes retain the full planning digest.
+
 Native image calls remain agent-host operations. Reserve through
 `lib.production_images.reserve_native_image`, emit exactly one admitted envelope
 with `begin_native_image`, invoke the real host tool once, retain its actual

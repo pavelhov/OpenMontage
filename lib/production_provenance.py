@@ -144,6 +144,7 @@ def _validate_attempt_provenance(
     contract = read(directory / 'shot_contract.json')
     selected_snapshot = read(directory / 'selected_attempts.json')
     current_selected = execution.load_selected_attempts(root)
+    historical_upstream_changed = False
     schema = load_schema('shot_contract')
     malformed = list(Draft202012Validator(schema).iter_errors(contract))
     require(not malformed, 'frozen shot contract is incomplete')
@@ -151,6 +152,7 @@ def _validate_attempt_provenance(
     require(request['contract_sha256'] == digest, 'frozen contract digest differs from reservation')
     current = execution.load_shot_contract(root)
     require(contract['project_id'] == marker['project_id'] and contract['story_revision'] == story_revision, 'frozen contract story/project differs')
+    from lib import production_continuity as continuity
     policy_derived = 'derived_from_policy' in scope
     if policy_derived:
         from lib.production_autonomy import validate_policy_attempt
@@ -161,7 +163,6 @@ def _validate_attempt_provenance(
         # approved repair may change another shot's own static board (which
         # changes the global plan digest); this attempt stays eligible only
         # when its shot-scoped planning projection is unchanged.
-        from lib import production_continuity as continuity
         planning = contract
         try:
             # An authorized append-only planning revision maps the current plan
@@ -193,15 +194,25 @@ def _validate_attempt_provenance(
             require(scope.get('approval_plan_sha256') == execution.approval_plan_digest(planning),
                     'approved planning semantics changed')
             # Fast path: unchanged global plan keeps the original exact rule.
-            same_shot_plan = (execution.approval_plan_digest(planning) == execution.approval_plan_digest(current)
-                              or continuity.shot_planning_digest(planning, shot_id)
-                              == continuity.shot_planning_digest(current, shot_id))
+            planning_digest = (continuity.historical_shot_planning_digest if _historical_source
+                               else continuity.shot_planning_digest)
+            same_shot_plan = (planning_digest(planning, shot_id) == planning_digest(current, shot_id)
+                or (not _historical_source and execution.approval_plan_digest(planning)
+                    == execution.approval_plan_digest(current)))
             if 'carried_from' in scope:
                 scopes = read(root / 'production_scopes.json').get('scopes', [])
                 continuity.validate_carried_scope(root, scope, planning, scopes)
         except (KeyError, TypeError) as exc:
             fail(f'shot planning continuity unreadable: {exc}')
         require(same_shot_plan, 'approved planning semantics changed')
+    if _historical_source:
+        current_assets = {asset['id']:asset for asset in current.get('assets', [])}
+        frozen_shot = next(shot for shot in contract['shots'] if shot['id'] == shot_id)
+        for asset_id in continuity._closure(contract,frozen_shot):
+            asset = current_assets.get(asset_id)
+            require(asset is not None, 'current historical static source missing')
+            if not asset.get('upstream_source'):
+                bound_file(asset,root,'current historical static source')
     shots = [shot for shot in contract['shots'] if shot['id'] == shot_id]
     require(len(shots) == 1, 'reserved shot missing or duplicated in contract')
     shot = shots[0]
@@ -252,6 +263,9 @@ def _validate_attempt_provenance(
         # current continuity eligibility after another selection is promoted.
         for role in ('output', 'outgoing_frame'):
             bound_file(selection[role], root, 'frozen upstream ' + role)
+        if _historical_source:
+            historical_upstream_changed |= (selection_digest(current_selected.get(binding['shot_id']) or {})
+                                           != selection_digest(selection))
         if not _historical_source:
             current_upstream = current_selected.get(binding['shot_id'])
             require(isinstance(current_upstream, dict) and selection_digest(current_upstream) == selection_digest(selection)
@@ -430,7 +444,10 @@ def _validate_attempt_provenance(
                 if original_receipt:
                     require({key: value for key, value in original_receipt.items() if key not in runtime_fields} == stable_receipt,
                             'reconciliation changed retained original controls')
-    return {'request': request, 'result': result}
+    return {'request': request, 'result': result,
+        **({'historical_upstream_changed':historical_upstream_changed,
+            'historical_source_changed': execution.approval_plan_digest(contract) != execution.approval_plan_digest(current)
+                                         or historical_upstream_changed} if _historical_source else {})}
 
 
 def _validate_openart_result(root, directory, request, frozen, expected_output, bound_file, read, require):
@@ -822,15 +839,9 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
     require(contract_digest(frozen_contract) == packet['binding']['contract_sha256']
             and preparation.digest([frozen_contract['project_review'], frozen_shots[0].get('review')])
                 == packet['binding']['reviews_sha256'], 'frozen contract/reviews differ')
-    def historical_shot_plan(contract):
-        # Source-only preview may outlive an unrelated shot's planning edit.
-        # Keep globals/story/order and the current shot/static closure exact;
-        # prospective readers retain the whole-plan continuity rule below.
-        scoped = copy.deepcopy(contract)
-        scoped['shots'] = [shot if shot['id'] == shot_id else {'id': shot['id']}
-                           for shot in scoped['shots']]
-        return shot_planning_digest(scoped, shot_id)
-    planning_digest = historical_shot_plan if _historical_source else lambda c: shot_planning_digest(c, shot_id)
+    from lib.production_continuity import historical_shot_planning_digest
+    digest_shot_plan = historical_shot_planning_digest if _historical_source else shot_planning_digest
+    planning_digest = lambda contract: digest_shot_plan(contract, shot_id)
     require(planning_digest(frozen_contract) == planning_digest(current_contract),
             'current MCP planning semantics changed')
     historical_selected = {}

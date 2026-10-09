@@ -257,3 +257,88 @@ def test_fixture_source_alone_cannot_skip_frozen_preparation(tmp_path, monkeypat
     monkeypatch.setattr(production_provenance, '_ALLOW_OPENART_COMPONENT_PREPARATION', False)
     with pytest.raises(ProductionGovernanceError, match='preparation snapshot missing'):
         validate_attempt_provenance(tmp_path, aid, shot_id='entry', story_revision='story-1', expected_output=collected['output'])
+
+
+def test_grok_historical_source_survives_later_shot_asset_materialization(production, monkeypatch, tmp_path):
+    import copy
+    from lib import production_draft as draft
+    from lib.production_provenance import validate_creator_repair_source_provenance
+    from tests.integration.test_first_pass_workflow import sign_planning_reviews
+    from tests.lib.test_production_repair_batches import enable
+
+    aid, directory, output = attempt(production)
+    contract = production.contract
+    own = contract["shots"][0]
+    later = contract["shots"][1]
+    board = copy.deepcopy(
+        next(
+            asset
+            for asset in contract["assets"]
+            if asset["id"] in later["asset_ids"] and asset["id"] not in own["asset_ids"]
+        )
+    )
+    board.update(id="later-new-endpoint", role="end_frame")
+    contract["assets"].append(board)
+    later["asset_ids"].append(board["id"])
+    sign_planning_reviews(contract)
+    production.persist_contract()
+    proof = validate_creator_repair_source_provenance(
+        production.root,
+        aid,
+        shot_id="entry",
+        story_revision=production.story["story_revision"],
+        expected_output=output,
+    )
+    assert proof["historical_source_only"]
+    with pytest.raises(ProductionGovernanceError, match="planning semantics"):
+        check(production, aid, output)
+    enable(production.root)
+    monkeypatch.setattr(draft, "_probe", lambda path: {"duration_seconds": 8})
+    row = next(row for row in draft.first_cut_candidates(production.root) if row["shot_id"] == "entry")
+    assert row["status"] == "candidate" and row["strict_selected"] is False
+    assert row["output"]["sha256"] == output["sha256"]
+
+
+@pytest.mark.parametrize(
+    "change", ["required_role", "own_source_added", "source_bytes", "source_review", "own_action", "story"]
+)
+def test_grok_historical_source_rejects_queried_shot_or_global_drift(production, change):
+    import copy
+    from lib.production_provenance import validate_creator_repair_source_provenance
+    from tests.integration.test_first_pass_workflow import sign_planning_reviews
+
+    aid, directory, output = attempt(production)
+    contract = production.contract
+    own = contract["shots"][0]
+    asset = next(
+        asset
+        for asset in contract["assets"]
+        if asset["id"] in own["asset_ids"] and not asset.get("upstream_source")
+    )
+    if change == "required_role":
+        asset["role"] = "reference_image" if asset["role"] != "reference_image" else "start_frame"
+    elif change == "own_source_added":
+        extra = copy.deepcopy(asset)
+        extra["id"] = "extra-source"
+        contract["assets"].append(extra)
+        own["asset_ids"].append(extra["id"])
+    elif change == "source_bytes":
+        (production.root / asset["path"]).write_bytes(b"Changed current source")
+    elif change == "source_review":
+        asset["review"]["reviewer"] = "Changed review"
+    elif change == "own_action":
+        own["dominant_action"] += " Different own action."
+    else:
+        contract["story"]["payoff"] += " Changed global story."
+    sign_planning_reviews(contract)
+    if change == "source_review":
+        asset["review"]["reviewer"] = "Changed review"
+    production.persist_contract()
+    with pytest.raises(ProductionGovernanceError):
+        validate_creator_repair_source_provenance(
+            production.root,
+            aid,
+            shot_id="entry",
+            story_revision=production.story["story_revision"],
+            expected_output=output,
+        )

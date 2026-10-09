@@ -2042,7 +2042,7 @@ def record_rejection(project_dir, attempt_id, review):
         # MCP originals live in the connector journal; the review binds to the frozen
         # authority scope and the intact collected original, never a fresh request.
         from lib import openart_mcp_jobs as mcp_jobs
-        from lib.production_provenance import validate_attempt_provenance
+        from lib.production_provenance import validate_creator_repair_source_provenance
         from lib.production_request import digest as request_digest
         with _lock(root):
             frozen = mcp_jobs.frozen_request(root, attempt_id)
@@ -2054,7 +2054,7 @@ def record_rejection(project_dir, attempt_id, review):
             state = load_attempt_result(root, attempt_id)
             if state['status'] != 'generated':
                 _fail('rejection requires a named failed review bound to the generated output')
-            validate_attempt_provenance(root, attempt_id, shot_id=authority['shot_id'],
+            validate_creator_repair_source_provenance(root, attempt_id, shot_id=authority['shot_id'],
                 story_revision=scope['story_revision'], expected_output=state['output'])
             invalid = list(validator.iter_errors(review))
             if (invalid or review.get('status') != 'fail'

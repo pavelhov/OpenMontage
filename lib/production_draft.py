@@ -264,7 +264,8 @@ def _candidate_provenance(root, shot_id, attempt_id, output, revision, *, allow_
     except ValueError as exc:
         continuity_error = any(message in str(exc) for message in (
             'upstream selection changed since this attempt', 'canonical reviewed source/reference/upstream changed',
-            'stale source/reference/review/upstream bindings', 'current MCP planning semantics changed'))
+            'stale source/reference/review/upstream bindings', 'current MCP planning semantics changed',
+            'approved planning semantics changed'))
         if not allow_historical or not continuity_error:
             raise
         from lib.production_provenance import validate_creator_repair_source_provenance
