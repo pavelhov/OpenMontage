@@ -976,6 +976,18 @@ def preflight(tool, inputs, *, _local_continuation=None):
             validate_qualification_stage(root, inputs, digest, native=openart[1], profile=openart[0])
         except (ValueError, KeyError, TypeError, OSError) as exc:
             _fail(str(exc))
+    if kind == 'image' and provider == 'grok_cli':
+        # Grok image calls share the episode image ceiling with native board
+        # images. Keep this read-only admission in factual preflight so dry-runs
+        # expose exhaustion and same-slot pending originals before dispatch.
+        # Dispatch repeats preflight under the project lock, preserving the
+        # race-safe check immediately before any reservation or provider call.
+        from lib.production_images import check_grok_image_admission
+        try:
+            check_grok_image_admission(root, scope=scope, shot_id=shot_id,
+                                       request_sha256=digest)
+        except ValueError as exc:
+            _fail(str(exc))
     return {'openart':openart, 'governed': True, 'root': root, 'marker': marker, 'scope': scope,
             'shot_id': shot_id, 'kind': kind, 'contract': contract, 'request_sha256': digest,
             'scope_attempt_index':scope_used, 'policy_validated': policy_validated}
@@ -1370,10 +1382,6 @@ def _execute_governed(tool, inputs, invoke):
         openart_prepared = credit_dispatch.prepare_dispatch(inputs, checked, session_id, dispatch_deadline)
     with _lock(root):
         checked = preflight(tool, inputs)  # allowance and source hashes rechecked under lock
-        if checked['kind'] == 'image' and checked['scope']['provider'] == 'grok_cli':
-            from lib.production_images import check_grok_image_admission
-            check_grok_image_admission(root, scope=checked['scope'],
-                shot_id=checked['shot_id'], request_sha256=checked['request_sha256'])
         openart_binding = None
         if checked.get('openart'):
             from lib import openart_jobs as jobs
