@@ -29,7 +29,7 @@ Native image calls remain agent-host operations. Reserve through
 with `begin_native_image`, invoke the real host tool once, retain its actual
 return, and import attributable original bytes with `import_native_image`.
 A local call ID is not a provider job ID. Unknown original acceptance stays
-counted and unresolved; do not re-invoke it. The host surface is one prompt,
+counted and unresolved; do not re-invoke its original envelope. The host surface is one prompt,
 optional ordered reference paths and transparency. No `n`, batch, concurrency,
 forced resolution or provider switch is implied. Exact scope and approved image
 allowance remain binding across supported routes.
@@ -44,9 +44,28 @@ Provenance is agent-recorded observation, never provider-attested; do not forge 
 exception separately from a later actual return and reports backend submission
 as unknown while unresolved. Short elapsed time and transport-error wording do
 not prove no submission or terminal failure. The original remains counted and
-blocks replacement; collect a delayed authentic return with `import_native_image`
-or escalate the missing authoritative reconciliation. A genuine retained
+blocks ordinary replacement; collect a delayed authentic return with `import_native_image`
+or use the explicit bounded native recovery below. A genuine retained
 `isError: true` tool result keeps the existing terminal-failure import behavior.
+
+For a recorded emitted native host exception with no actual return or output,
+`reserve_native_image(..., replace_exception_call_id=ORIGINAL_CALL_ID)` may admit
+one explicitly linked native successor for the same current project/story/slot.
+This is a separate generation with a new call ID and unique output path, exact
+approved request/scope/route and remaining episode and board-slot allowance.
+The original stays unknown and counted; its exception hash and original request
+digest bind the successor's `replaces_host_exception` record. Omission keeps the
+ordinary pending-original block. This seam does not apply to generic uncertainty,
+Grok/OpenArt jobs or chained successor exceptions, and one original can admit
+only one successor across scopes, even if the successor is later released.
+
+Immediately before emitting the successor's host envelope, the engine rechecks
+the original. An authentic original return arriving first blocks redundant
+successor emission; release that never-emitted child with
+`release_unsubmitted_image`. After both envelopes have emitted, collect both
+actual returns independently through `import_native_image`, preserving both
+calls, counts and original outputs. Never turn the exception into a forged
+terminal result, never discount the unknown original, and never reuse its envelope.
 
 Studio's bounded `prepare_boards.py` consumer retains inventory/text once,
 materializes exact source packets as dependency bytes arrive, and uses that

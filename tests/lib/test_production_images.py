@@ -474,3 +474,204 @@ def test_host_exception_cannot_replace_already_retained_actual_return(board_pack
         images.record_native_image_host_exception(root, call['call_id'], host_exception=exception_receipt(root, envelope))
     assert images.image_call_status(root, call['call_id']) == before
     assert not (root/'production_images'/call['call_id']/'host-exception.json').exists()
+
+
+def recovery_original(package, *, call_id='original'):
+    root, *_ = package
+    original = reserve(package, call_id=call_id)
+    envelope = images.begin_native_image(root, call_id)
+    receipt = exception_receipt(root, envelope)
+    images.record_native_image_host_exception(root, call_id, host_exception=receipt)
+    return original, envelope, receipt
+
+
+def recovery_scope(package, *, target='assets/images/recovery.png', scope_id='image-recovery'):
+    root, packet, args, _ = package
+    scopes = json.loads((root/'production_scopes.json').read_text())
+    scope = copy.deepcopy(scopes['scopes'][0])
+    scope.update(id=scope_id, image_allowance=5,
+        requests={'s1-start':images.image_request_digest(packet,'s1-start',args,output_path=target)},
+        attempts_per_shot={'s1-start':2})
+    scopes['scopes'].append(scope)
+    write(root/'production_scopes.json',scopes)
+    return scope, target
+
+
+def reserve_recovery(package, *, call_id='recovery', original='original', target='assets/images/recovery.png', scope_id='image-recovery'):
+    root, packet, args, _ = package
+    return images.reserve_native_image(root,packet,'s1-start',args,output_path=target,
+        scope_id=scope_id,call_id=call_id,replace_exception_call_id=original)
+
+
+def test_explicit_exception_successor_counts_both_and_emits_only_once(board_package):
+    root, *_ = board_package
+    original, _, receipt = recovery_original(board_package)
+    recovery_scope(board_package)
+    successor = reserve_recovery(board_package)
+    assert successor['state'] == 'reserved'
+    assert successor['replaces_host_exception'] == {
+        'call_id':'original','receipt_sha256':receipt['sha256'],'request_sha256':original['request_sha256']}
+    assert images.image_call_status(root,'original')['state'] == 'uncertain'
+    assert images.image_usage(root)['total'] == 2
+    assert reserve_recovery(board_package) == successor
+    envelope = images.begin_native_image(root,'recovery')
+    assert envelope['call_id'] == 'recovery'
+    with pytest.raises(ValueError,match='already emitted'):
+        images.begin_native_image(root,'recovery')
+    with pytest.raises(ValueError,match='another|linked|override'):
+        images.reserve_native_image(root,board_package[1],'s1-start',board_package[2],
+            output_path='assets/images/recovery.png',scope_id='image-recovery',call_id='recovery')
+
+
+def test_recovery_requires_recorded_exception_and_does_not_upgrade_reservation(board_package):
+    root, *_ = board_package
+    recovery_scope(board_package)
+    ordinary = reserve_recovery(board_package,original=None)
+    with pytest.raises(ValueError,match='another|linked|override'):
+        reserve_recovery(board_package,original='not-real')
+    images.release_unsubmitted_image(root,ordinary['call_id'],reason='Synthetic cancelled reservation')
+    call = reserve(board_package,call_id='original')
+    images.begin_native_image(root,call['call_id'])
+    images.mark_image_uncertain(root,call['call_id'],reason='No actual exception evidence')
+    with pytest.raises(ValueError,match='exception'):
+        reserve_recovery(board_package,call_id='new')
+    with pytest.raises(ValueError,match='pending|uncertain'):
+        reserve_recovery(board_package,call_id='ordinary-new',original=None)
+
+
+def test_only_one_successor_across_scopes_and_no_chained_recovery(board_package):
+    root, *_ = board_package
+    recovery_original(board_package)
+    recovery_scope(board_package)
+    reserve_recovery(board_package)
+    recovery_scope(board_package,target='assets/images/second.png',scope_id='second-scope')
+    with pytest.raises(ValueError,match='successor'):
+        reserve_recovery(board_package,call_id='second',target='assets/images/second.png',scope_id='second-scope')
+    envelope=images.begin_native_image(root,'recovery')
+    images.record_native_image_host_exception(root,'recovery',host_exception=exception_receipt(root,envelope,name='child-exception'))
+    with pytest.raises(ValueError,match='chain|successor'):
+        reserve_recovery(board_package,call_id='chained',original='recovery',target='assets/images/second.png',scope_id='second-scope')
+    assert images.image_usage(root)['total'] == 2
+
+
+def test_recovery_concurrent_reservations_admit_one_successor(board_package):
+    recovery_original(board_package)
+    recovery_scope(board_package)
+    recovery_scope(board_package,target='assets/images/other-recovery.png',scope_id='other-recovery')
+    def attempt(values):
+        call_id,target,scope_id=values
+        try:
+            return reserve_recovery(board_package,call_id=call_id,target=target,scope_id=scope_id)['call_id']
+        except ValueError:
+            return None
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes=list(pool.map(attempt,[('first','assets/images/recovery.png','image-recovery'),
+            ('second','assets/images/other-recovery.png','other-recovery')]))
+    assert sum(result is not None for result in outcomes) == 1
+    assert images.image_usage(board_package[0])['total'] == 2
+
+
+@pytest.mark.parametrize('defect',['tampered','stale_story','cross_slot','same_output','existing_output','wrong_route','episode_cap','slot_cap','wrong_request'])
+def test_recovery_preserves_exception_binding_authority_and_unique_output(board_package,defect):
+    root,packet,args,target=board_package
+    recovery_original(board_package)
+    recovery_scope(board_package)
+    if defect == 'tampered':
+        path=root/images.image_call_status(root,'original')['host_exception']['path']
+        path.chmod(0o644);path.write_text('{}')
+    elif defect == 'stale_story':
+        journal=json.loads((root/images.ARTIFACT).read_text());journal['calls'][0]['story_revision']='old-story'
+        write(root/images.ARTIFACT,journal)
+    elif defect == 'cross_slot':
+        journal=json.loads((root/images.ARTIFACT).read_text());journal['calls'][0]['slot_id']='different-slot'
+        write(root/images.ARTIFACT,journal)
+    elif defect == 'same_output':
+        target=board_package[3]
+    elif defect == 'existing_output':
+        path=root/'assets/images/recovery.png';path.write_bytes(PNG)
+    else:
+        scopes=json.loads((root/'production_scopes.json').read_text());scope=scopes['scopes'][-1]
+        if defect == 'wrong_route': scope['provider']='grok_cli'
+        if defect == 'episode_cap': scope['image_allowance']=1
+        if defect == 'slot_cap': scope['attempts_per_shot']['s1-start']=0
+        if defect == 'wrong_request': scope['requests']['s1-start']='0'*64
+        write(root/'production_scopes.json',scopes)
+    with pytest.raises(ValueError):
+        reserve_recovery(board_package,target=target if defect=='same_output' else 'assets/images/recovery.png')
+    assert images.image_usage(root)['total'] == 1
+
+
+@pytest.mark.parametrize('terminal_result',[None,{'isError':True,'error':'Synthetic actual terminal return'}])
+def test_original_return_before_child_emission_refuses_child_but_can_release(board_package,terminal_result):
+    root, *_ = board_package
+    _,envelope,_=recovery_original(board_package)
+    recovery_scope(board_package)
+    reserve_recovery(board_package)
+    images.import_native_image(root,'original',host_receipt=host_receipt(root,envelope,result=terminal_result))
+    with pytest.raises(ValueError,match='return|output|unresolved'):
+        images.begin_native_image(root,'recovery')
+    released=images.release_unsubmitted_image(root,'recovery',reason='Original actual return arrived before child host handoff')
+    assert released['state']=='never_submitted'
+    assert images.image_usage(root)['total']==1
+    with pytest.raises(ValueError,match='successor'):
+        reserve_recovery(board_package,call_id='third')
+
+
+def test_both_late_authentic_results_import_independently_after_child_emission(board_package):
+    root, *_ = board_package
+    _,original_envelope,_=recovery_original(board_package)
+    recovery_scope(board_package)
+    reserve_recovery(board_package)
+    child_envelope=images.begin_native_image(root,'recovery')
+    original=images.import_native_image(root,'original',host_receipt=host_receipt(root,original_envelope,name='original-return'))
+    child=images.import_native_image(root,'recovery',host_receipt=host_receipt(root,child_envelope,name='child-return'))
+    assert original['state']==child['state']=='imported'
+    assert original['output']['path'] != child['output']['path']
+    assert original['host_receipt']['sha256'] != child['host_receipt']['sha256']
+    assert images.image_usage(root)['total']==2
+    assert images.image_usage(root)['unresolved_originals']==[]
+
+
+@pytest.mark.parametrize('defect',['link','original_arguments','late_output'])
+def test_successor_revalidation_rejects_changed_link_or_output(board_package,defect):
+    root, *_ = board_package
+    recovery_original(board_package)
+    recovery_scope(board_package)
+    reserve_recovery(board_package)
+    if defect=='late_output':
+        (root/'assets/images/recovery.png').write_bytes(PNG)
+    else:
+        journal=json.loads((root/images.ARTIFACT).read_text())
+        if defect=='link': journal['calls'][1]['replaces_host_exception']['receipt_sha256']='0'*64
+        else: journal['calls'][0]['submitted_arguments']['prompt']='Changed emitted original'
+        write(root/images.ARTIFACT,journal)
+    with pytest.raises(ValueError):
+        images.begin_native_image(root,'recovery')
+    assert images.image_call_status(root,'recovery')['state']=='reserved'
+    assert images.image_usage(root)['total']==2
+
+
+def test_recovery_does_not_ignore_another_pending_original(board_package):
+    root, *_ = board_package
+    recovery_original(board_package)
+    recovery_scope(board_package)
+    journal=json.loads((root/images.ARTIFACT).read_text())
+    other=copy.deepcopy(journal['calls'][0]);other['call_id']='other-pending';other.pop('host_exception')
+    other['state']='submitted';other['events']=[event for event in other['events'] if event['kind'] not in {'host_exception','uncertain'}]
+    other['output_path']='assets/images/other-pending.png'
+    journal['calls'].append(other);write(root/images.ARTIFACT,journal)
+    with pytest.raises(ValueError,match='pending|uncertain'):
+        reserve_recovery(board_package)
+    assert images.image_usage(root)['total']==2
+
+
+def test_recovery_output_cannot_collide_with_existing_provider_session(board_package):
+    root, *_ = board_package
+    recovery_original(board_package)
+    recovery_scope(board_package)
+    write(root/'production_attempts/provider-original/request.json',{
+        'attempt_id':'provider-original','media_kind':'image','shot_id':'another-slot',
+        'scope_id':'provider-scope','scope':{'provider':'grok_cli'},
+        'submitted_inputs':{'output_path':str(root/'assets/images/recovery.png')}})
+    with pytest.raises(ValueError,match='unique|output'):
+        reserve_recovery(board_package)

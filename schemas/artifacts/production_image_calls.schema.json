@@ -320,6 +320,29 @@
             "kind",
             "arguments_sha256"
           ]
+        },
+        "replaces_host_exception": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "call_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+            },
+            "receipt_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "request_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "call_id",
+            "receipt_sha256",
+            "request_sha256"
+          ]
         }
       },
       "required": [
