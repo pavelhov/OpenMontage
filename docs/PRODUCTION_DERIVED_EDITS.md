@@ -21,6 +21,14 @@ skills before executing production edits.
    actual `ToolResult` through `dataclasses.asdict`. Its `data.cut_receipt`
    records the input/output hashes, actual command, return code, submitted
    inputs and historical adapter version. Never manufacture this return.
+   The Studio `production_entry.py dispatch --execute` route adds `project_dir`
+   to the submitted inputs and prints the complete `ToolResult`, including
+   `artifacts`. Retain those submitted inputs unchanged. Validation accepts the
+   documented cut and sampler keys alone, or those keys plus a `project_dir`
+   that resolves to the project being registered. Any other extra key, a
+   different project, or stripping `project_dir` from a receipt that recorded
+   it is rejected. A thin `success`/`data`/`error` return lacks `artifacts`
+   and cannot be registered; rerun the deterministic local cut instead.
 3. Retain the typed recipe and execution envelope shown below. Record audio
    evidence for the retained interval. A trimmed AAC stream normally differs
    from the full parent AAC stream; do not claim whole-clip unchanged audio.

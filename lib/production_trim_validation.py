@@ -12,6 +12,22 @@ from pathlib import Path
 from lib.shot_contract import file_sha256
 
 
+def _canonical_inputs(submitted, canonical_keys, root):
+    """Exact canonical keys, plus only Studio's resolved current-project context.
+
+    ``project_dir`` is nonsemantic dispatch context; it is retained, never
+    stripped, and must name exactly the project being validated.
+    """
+    if not isinstance(submitted, dict):
+        return False
+    keys = set(submitted)
+    if keys == canonical_keys:
+        return True
+    context = submitted.get('project_dir')
+    return (keys == canonical_keys | {'project_dir'} and root is not None and isinstance(context, str)
+            and bool(context) and Path(context).resolve() == Path(root).resolve())
+
+
 def trimmed_outgoing_timestamp(path):
     """Actual final decoded video PTS in FrameSampler's input-seek timeline.
 
@@ -37,7 +53,7 @@ def trimmed_outgoing_timestamp(path):
         raise ValueError('cannot probe actual final retained presentation timestamp') from exc
 
 
-def _validate_trimmed_cut(value, recipe, receipt, native, bound, require, aac_sha256):
+def _validate_trimmed_cut(value, recipe, receipt, native, bound, require, aac_sha256, root=None):
     """Bind and replay the exact canonical local cut on every validation.
 
     AAC hashes here describe the retained interval, never unchanged whole-clip
@@ -52,8 +68,8 @@ def _validate_trimmed_cut(value, recipe, receipt, native, bound, require, aac_sh
     require(set(recipe) == {'version', 'operation', 'input', 'output_path', 'submitted_inputs', 'reason'}
             and recipe['version'] == '1.0', 'complete typed canonical trim recipe required')
     submitted = recipe['submitted_inputs']
-    require(isinstance(submitted, dict) and set(submitted) == {
-        'operation', 'input_path', 'output_path', 'start_seconds', 'end_seconds', 'codec', 'reason'},
+    require(_canonical_inputs(submitted, {
+        'operation', 'input_path', 'output_path', 'start_seconds', 'end_seconds', 'codec', 'reason'}, root),
         'exact canonical cut inputs required')
     start, end, codec = submitted['start_seconds'], submitted['end_seconds'], submitted['codec']
     require(type(start) in (int, float) and type(end) in (int, float)
@@ -135,16 +151,20 @@ def _validate_trimmed_cut(value, recipe, receipt, native, bound, require, aac_sh
         require(False, 'cannot verify actual canonical trim media: ' + str(exc))
 
 
-def _validate_trim_sampling(value, sampled, timing, outgoing, require):
+def _validate_trim_sampling(value, sampled, timing, outgoing, require, root=None):
     """Require the actual final retained frame, not the native endpoint."""
     import subprocess
     import tempfile
     timestamp = timing['final_frame_timestamp_seconds']
     inputs = {'input_path': value['output']['path'], 'strategy': 'timestamps', 'timestamps': [timestamp],
         'format': 'png', 'output_dir': str(outgoing.parent)}
+    submitted = sampled.get('submitted_inputs')
+    canonical = _canonical_inputs(submitted, set(inputs), root)
+    if canonical and 'project_dir' in submitted:
+        inputs = {**inputs, 'project_dir': submitted['project_dir']}
     result = sampled.get('tool_result', {})
     frames = result.get('data', {}).get('frames', [])
-    require(sampled.get('provider') == 'ffmpeg' and sampled.get('submitted_inputs') == inputs
+    require(sampled.get('provider') == 'ffmpeg' and canonical and submitted == inputs
             and result.get('success') is True and result.get('data', {}).get('strategy') == 'timestamps'
             and result.get('data', {}).get('frame_count') == 1 and frames == [{
                 'path': str(outgoing), 'timestamp_seconds': timestamp, 'index': 0}],

@@ -206,6 +206,183 @@ def test_all_45_native_builders_use_canonical_ready_source_receipts(source_proje
             assert native['body']['params']['environmentReferenceImageUrl']=='https://fixture.example.test/1'
 
 
+def alias_source_contract(root, *, independent_shot=False):
+    """Synthetic payoff/end roles share one file, as an intentional physical alias."""
+    contract=json.loads((root/'artifacts/shot_contract.json').read_text())
+    end=next(a for a in contract['assets'] if a['id']=='end')
+    payoff=next(a for a in contract['assets'] if a['id']=='payoff')
+    payoff['path']=end['path'];payoff['sha256']=end['sha256']
+    payoff['review']['subject_sha256']=end['sha256']
+    if independent_shot:
+        other=copy.deepcopy(end);other.update(id='other-end',path='assets/other-end.svg')
+        (root/other['path']).write_bytes((root/end['path']).read_bytes())
+        contract['assets'].append(other)
+        shot=copy.deepcopy(contract['shots'][0]);shot['id']='independent'
+        shot['asset_ids']=['other-end' if aid=='end' else aid for aid in shot['asset_ids']]
+        contract['shots'].insert(0,shot)
+    return contract,end,payoff
+
+
+def prepare_alias_source_upload(root, end):
+    """Fresh synthetic one-file approval; the original four-file batch is preserved."""
+    from lib import openart_mcp_jobs as jobs
+    path=str((root/end['path']).resolve())
+    authority=json.loads((root/'artifacts/openart_mcp_upload_authorization-fixture.json').read_text())
+    authority['files']=[{'path':path,'sha256':end['sha256'],'type':'image'}]
+    (root/'artifacts/openart_mcp_upload_authorization-alias.json').write_text(json.dumps(authority))
+    return jobs.prepare_upload(root,files=[path],billing_declaration={'upload_authorization_id':'alias'},
+                               openart_project_id='fixture-project')
+
+
+@pytest.mark.parametrize('reverse_assets',[False,True])
+def test_source_transfer_accepts_current_same_path_payoff_and_end_aliases(source_project,reverse_assets):
+    from lib import openart_mcp_jobs as jobs
+    from tests.lib.test_shot_contract import refresh
+    root,assets,original,result=source_project
+    contract,end,_=alias_source_contract(root)
+    if reverse_assets:contract['assets'].reverse()
+    refresh(contract);(root/'artifacts/shot_contract.json').write_text(json.dumps(contract))
+    prepared=prepare_alias_source_upload(root,end)
+    frozen=json.loads((root/'openart_mcp/uploads'/f"{prepared['upload_id']}.json").read_text())['frozen']
+    assert len(frozen['manifest'])==len(frozen['source_snapshots'])==len(prepared['arguments']['files'])==1
+    assert frozen['manifest'][0]['sha256']==end['sha256']
+    row=copy.deepcopy(result['results'][1]);row['fileId']='synthetic-alias-file'
+    row['visualReference']['id']='synthetic-alias-ready'
+    recorded=jobs.record_upload_receipt(root,upload_id=prepared['upload_id'],
+                                      result={'projectId':'fixture-project','results':[row]})
+    resolved=jobs.resolve_input_asset(root,{'source_path':str(root/end['path']),
+        'source_sha256':end['sha256'],'upload_id':recorded['references'][0]['upload_id']},
+        account_binding=mcp.account_summary(),openart_project_id='fixture-project')
+    assert resolved['source_sha256']==end['sha256'] and resolved['upload_id']=='synthetic-alias-ready'
+    assert json.loads((root/'openart_mcp/uploads'/f"{original['upload_id']}.json").read_text())['status']=='recorded'
+    with pytest.raises(mcp.OpenArtMCPError,match='approved upload batch already consumed'):
+        prepare_alias_source_upload(root,end)
+
+
+@pytest.mark.parametrize('change',[
+    'failed_alias','stale_alias','wrong_alias_subject','missing_alias_predicate','invalid_alias_role',
+    'duplicate_alias_id','orphan_alias','unreviewed_orphan_alias','wrong_alias_sha',
+    'unreviewed_same_bytes_other_path','other_project_alias','stale_story','changed_bytes',
+    'failed_project_review','failed_shot_review',
+])
+def test_source_transfer_aliases_cannot_borrow_unrelated_review_authority(source_project,change):
+    from lib import openart_mcp_jobs as jobs
+    from lib.shot_contract import validate_shot_contract
+    from tests.lib.test_shot_contract import refresh
+    root,_,_,_=source_project
+    contract,end,payoff=alias_source_contract(root,independent_shot=True)
+    if change=='failed_alias':end['review']['status']='fail'
+    elif change=='stale_alias':end['review']['story_revision']='older-story'
+    elif change=='wrong_alias_subject':end['review']['subject_sha256']='f'*64
+    elif change=='missing_alias_predicate':end['review']['predicates'].pop()
+    elif change=='invalid_alias_role':end['role']='invented-role'
+    elif change=='duplicate_alias_id':contract['assets'].append(copy.deepcopy(end))
+    elif change in ('orphan_alias','unreviewed_orphan_alias'):
+        orphan=copy.deepcopy(end);orphan.update(id='unused-alias',role='reference_image')
+        if change=='unreviewed_orphan_alias':orphan['review']['status']='fail'
+        contract['assets'].append(orphan)
+    elif change=='wrong_alias_sha':end['sha256']='f'*64;end['review']['subject_sha256']=end['sha256']
+    elif change=='unreviewed_same_bytes_other_path':payoff['path']='assets/payoff.svg';end['review']['status']='fail'
+    elif change=='other_project_alias':payoff['path']=str(root.parent/'foreign.svg');Path(payoff['path']).write_bytes((root/end['path']).read_bytes())
+    elif change=='stale_story':contract['story_revision']='older-story'
+    elif change=='changed_bytes':(root/end['path']).write_bytes(b'Changed synthetic source')
+    elif change=='failed_project_review':contract['project_review']['status']='fail'
+    elif change=='failed_shot_review':contract['shots'][-1]['review']['status']='fail'
+    refresh(contract);(root/'artifacts/shot_contract.json').write_text(json.dumps(contract))
+    if change in ('failed_alias','stale_alias','wrong_alias_subject','missing_alias_predicate',
+                  'orphan_alias','unreviewed_orphan_alias','wrong_alias_sha',
+                  'unreviewed_same_bytes_other_path','failed_shot_review'):
+        assert validate_shot_contract(contract,project_dir=root,shot_id='independent')['eligible']
+    original_batches=set((root/'openart_mcp/uploads').glob('*.json'))
+    with pytest.raises(mcp.OpenArtMCPError):prepare_alias_source_upload(root,end)
+    assert set((root/'openart_mcp/uploads').glob('*.json'))==original_batches
+
+
+@pytest.mark.parametrize('change',[None,'selected_attempt','upstream_review'])
+def test_source_transfer_alias_eligibility_uses_current_selected_upstream(source_project,change):
+    from lib import openart_mcp_jobs as jobs
+    from lib import production_request as preparation
+    from tests.lib.test_shot_contract import dependency,refresh
+    root,assets,_,_=source_project
+    contract,end,_=alias_source_contract(root)
+    selected=dependency((contract,root))
+    # Only the dependent shot consumes this end alias; the earlier shot still
+    # reviews the global payoff alias but cannot approve the dependent role.
+    other=copy.deepcopy(end);other.update(id='other-end',path='assets/other-end.svg')
+    (root/other['path']).write_bytes((root/end['path']).read_bytes());contract['assets'].append(other)
+    contract['shots'][0]['asset_ids']=['other-end' if aid=='end' else aid for aid in contract['shots'][0]['asset_ids']]
+    refresh(contract);(root/'artifacts/shot_contract.json').write_text(json.dumps(contract))
+    if change=='selected_attempt':selected['entry']['attempt_id']='unapproved-replacement'
+    elif change=='upstream_review':selected['entry']['review']['status']='fail'
+    (root/'artifacts/selected_attempts.json').write_text(json.dumps(selected))
+    if change:
+        with pytest.raises(mcp.OpenArtMCPError):prepare_alias_source_upload(root,end)
+        profile=mcp.load_profile('fal-h3-max','image2video',require='candidate')
+        controls={'project_dir':str(root),'model':profile['model'],'mode':profile['mode'],
+            'prompt':'Synthetic current source check','openart_project_id':'fixture-project',
+            'native_params':{'duration':8,'resolution':'768P'},
+            'input_assets':[{'role':'first_frame',**assets['start']},{'role':'last_frame',**assets['end']}]}
+        native=mcp.prepare_native_request(controls,profile)
+        with pytest.raises(ValueError,match='selected attempt changed|selected review changed'):
+            preparation.source_packet(root,'interior',provider='openart_mcp',native=native)
+        with pytest.raises(mcp.OpenArtMCPError,match='unsupported public controls'):
+            mcp.prepare_native_request({**controls,'original_sources':True},profile)
+    else:
+        assert prepare_alias_source_upload(root,end)['generation_enabled'] is False
+
+
+def test_receipted_source_for_another_shot_cannot_pass_current_preparation(source_project,monkeypatch):
+    from lib import openart_mcp_jobs as jobs, production_execution as execution, production_request as preparation
+    from lib.shot_contract import validate_shot_contract
+    from tests.lib.test_shot_contract import refresh
+    from tests.lib.test_production_request import write
+    root,assets,_,_=source_project
+    contract=json.loads((root/'artifacts/shot_contract.json').read_text())
+    target_start=copy.deepcopy(next(a for a in contract['assets'] if a['id']=='start'))
+    target_start.update(id='target-start',path='assets/target-start.svg')
+    (root/target_start['path']).write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg"><text>Synthetic different shot B board</text></svg>')
+    target_start['sha256']=hashlib.sha256((root/target_start['path']).read_bytes()).hexdigest()
+    target_start['review']['subject_sha256']=target_start['sha256'];contract['assets'].append(target_start)
+    target=copy.deepcopy(contract['shots'][0]);target['id']='target'
+    target['asset_ids']=['target-start' if aid=='start' else aid for aid in target['asset_ids']]
+    contract['shots'].append(target);refresh(contract);write(root/'artifacts/shot_contract.json',contract)
+    assert validate_shot_contract(contract,project_dir=root,shot_id='target')['eligible']
+    write(root/'artifacts/scene_plan.json',{'version':'1.0','scenes':[
+        {'id':sid,'type':'generated','description':'Synthetic source role test','start_seconds':i*8,
+         'end_seconds':(i+1)*8,'script_section_id':sid} for i,sid in enumerate(('entry','target'))]})
+    write(root/'artifacts/script.json',{'version':'1.0','title':'Synthetic source role test','total_duration_seconds':16,
+        'sections':[{'id':sid,'text':'Synthetic current reviewed action.','start_seconds':i*8,'end_seconds':(i+1)*8}
+                    for i,sid in enumerate(('entry','target'))]})
+    authored=preparation.compile_provider_prompt(root,'target',provider='openart_mcp',model='fal-h3-max')
+    inputs={'project_dir':str(root),'model':'fal-h3-max','mode':'image2video','operation':'image_to_video',
+        'prompt':authored['prompt'],'native_params':{'duration':8,'resolution':'768P'},
+        'openart_project_id':'fixture-project','governance':{'shot_id':'target','scope_id':'target'},
+        'input_assets':[{'role':'first_frame',**assets['start']}],'output_path':str(root/'assets/target.mp4'),
+        'compiled_request_id':'target','preparation_review_id':'target','unknown_cost_authorization_id':'target'}
+    profile=mcp.load_profile(inputs['model'],inputs['mode'],require='candidate')
+    native=preparation.prep_builder('openart_mcp')(inputs,profile)
+    assert native['input_assets'][0]['source_sha256']!=target_start['sha256']
+    timing={'method':'segmented_estimate','duration_seconds':8,'language':'en','margin_seconds':.05,
+        'rationale':'Synthetic offline timing','overlap_policy':'serial','overlap_rationale':'Synthetic offline timing','segments':[],
+        'action_windows':[{'source_pointer':'/shot_contract/shots/1/'+key,'value_sha256':preparation.digest(target[key]),
+            'start_seconds':a,'end_seconds':b,'rationale':'Synthetic offline timing'}
+            for key,a,b in [('dominant_action',0,4),('completed_end_state',4,7.95)]]}
+    with pytest.raises(ValueError,match='approved start board'):
+        preparation.prepare_compiled_request(inputs,native,profile,coverage=authored['coverage'],timing=timing)
+    # Even a synthetic exact target-shot request approval cannot turn shot A's
+    # retained upload into shot B's required current source at preparation.
+    scope={'id':'target','provider':'openart_mcp','status':'approved','approved_by':'Synthetic offline creator',
+        'project_id':contract['project_id'],'story_revision':contract['story_revision'],'phase':'first_pass',
+        'evidence':{'path':'upload-approval.txt','sha256':hashlib.sha256((root/'upload-approval.txt').read_bytes()).hexdigest()},
+        'requests':{'target':execution.planned_request_digest(inputs,project_dir=root)},'attempts_per_shot':{'target':1},
+        'approval_plan_sha256':execution.approval_plan_digest(contract)}
+    write(root/'production_scopes.json',{'version':'1.0','scopes':[scope]})
+    monkeypatch.setattr(mcp,'_ALLOW_FIXTURE_PRODUCTION',True)
+    with pytest.raises(ValueError,match='start_frame|approved start board'):
+        jobs.prepare(root,attempt_id='invalid-target',generation_inputs=inputs,authority_fn=execution.prepare_openart_mcp_handoff)
+    assert not (root/'openart_mcp/attempts/invalid-target/state.json').exists()
+
+
 @pytest.mark.parametrize('change',['caller_sha','receipt_id','project','source_bytes','source_review','account','receipt_metadata','receipt_reseal','snapshot','upload_approval'])
 def test_canonical_ready_source_binding_tamper(source_project,observations,monkeypatch,change):
     from lib import openart_mcp_jobs as jobs

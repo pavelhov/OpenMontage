@@ -97,9 +97,14 @@ def trimmed(production, monkeypatch, request):
     registry.discover()
     tool = registry.get('video_trimmer')
     output = root / 'assets/video/retained-cut.mp4'
+    # Studio production_entry.dispatch submits its resolved project as context.
+    contexts = {None: {}, 'correct': {'project_dir': str(root.resolve())},
+        'wrong': {'project_dir': str(root.resolve().parent)},
+        'extra': {'project_dir': str(root.resolve()), 'caller_note': 'unexpected'}}
     inputs = {'operation': 'cut', 'input_path': parent['path'], 'output_path': str(output),
         'start_seconds': options.get('start', 0), 'end_seconds': options.get('end', 3.5), 'codec': options['codec'],
-        'reason': 'Retain completed action; exclude synthetic late red defect.'}
+        'reason': 'Retain completed action; exclude synthetic late red defect.',
+        **contexts[options.get('cut_context')]}
     result = tool.execute(inputs)
     assert result.success, result.error
     recipe = root / 'artifacts/trim-recipe.json'
@@ -120,7 +125,8 @@ def trimmed(production, monkeypatch, request):
         'tool_result': asdict(result)})
     frames = root / 'artifacts/trim-outgoing'
     sample_inputs = {'input_path': str(output), 'strategy': 'timestamps',
-        'timestamps': [final_timestamp(output)], 'format': 'png', 'output_dir': str(frames)}
+        'timestamps': [final_timestamp(output)], 'format': 'png', 'output_dir': str(frames),
+        **contexts[options.get('sample_context')]}
     sampler = registry.get('frame_sampler')
     sampled_result = sampler.execute(sample_inputs)
     assert sampled_result.success, sampled_result.error
@@ -438,3 +444,47 @@ def test_trim_needs_fresh_review_of_exact_derived_bytes(trimmed):
     next(p for p in selection['review']['predicates'] if p['name'] == 'speaker_source')['status'] = 'fail'
     with pytest.raises(ProductionGovernanceError, match='critical predicates'):
         record_selection(value.root, 'entry', selection)
+
+
+STUDIO = {'codec': 'libx264', 'audio': True, 'cut_context': 'correct', 'sample_context': 'correct'}
+
+
+@pytest.mark.parametrize('trimmed', [STUDIO], indirect=True)
+def test_studio_project_context_registers_exact_retained_receipts(trimmed):
+    value, _, _, record, result = trimmed
+    # The actual cut receipt keeps Studio's context; nothing is stripped.
+    assert result.data['cut_receipt']['submitted_inputs']['project_dir'] == str(value.root.resolve())
+    assert read(Path(record['outgoing_receipt']['path']))['submitted_inputs']['project_dir'] == str(value.root.resolve())
+    checked = record_derived_edit(value.root, record)
+    assert checked['derived_timing']['duration_seconds'] == 3.5
+    assert check(value, record)['selected_output'] == record['output']
+
+
+@pytest.mark.parametrize('trimmed, message', [
+    ({**STUDIO, 'cut_context': 'wrong'}, 'exact canonical cut inputs required'),
+    ({**STUDIO, 'cut_context': 'extra'}, 'exact canonical cut inputs required'),
+    ({**STUDIO, 'sample_context': 'wrong'}, 'actual final retained-frame sampling differs'),
+    ({**STUDIO, 'sample_context': 'extra'}, 'actual final retained-frame sampling differs'),
+], indirect=['trimmed'])
+def test_project_context_must_be_exactly_the_validated_project(trimmed, message):
+    value, _, _, record, _ = trimmed
+    with pytest.raises(ProductionGovernanceError, match=message):
+        record_derived_edit(value.root, record)
+
+
+@pytest.mark.parametrize('trimmed', [STUDIO], indirect=True)
+def test_recipe_cannot_strip_context_the_actual_cut_received(trimmed):
+    value, _, _, record, _ = trimmed
+    path = Path(record['recipe']['path'])
+    recipe = read(path)
+    del recipe['submitted_inputs']['project_dir']
+    save(path, recipe)
+    record['recipe'] = binding(path)
+    receipt = Path(record['execution_receipt']['path'])
+    data = read(receipt)
+    data['recipe'] = record['recipe']
+    save(receipt, data)
+    record['execution_receipt'] = binding(receipt)
+    reseal(record)
+    with pytest.raises(ProductionGovernanceError, match='actual canonical command/return/bindings differ'):
+        record_derived_edit(value.root, record)
