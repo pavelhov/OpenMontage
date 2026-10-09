@@ -63,6 +63,23 @@ def shot_planning_digest(contract, shot_id):
     return execution._digest(_projection(contract, _closure(contract, shots[0])))
 
 
+def historical_shot_planning_digest(contract, shot_id):
+    """Source-only applicability: globals/order, own semantics and static closure.
+
+    Later shots may materialize their own boards/roles without rewriting an
+    earlier authentic original. This projection grants no prospective approval,
+    selection or certification; their whole-plan digest remains unchanged.
+    """
+    shots = [shot for shot in contract.get('shots', []) if shot.get('id') == shot_id]
+    if len(shots) != 1:
+        _fail(f'shot {shot_id} missing or duplicated in contract')
+    closure = _closure(contract, shots[0])
+    plan = _projection(contract, closure)
+    plan['shots'] = [shot if shot['id'] == shot_id else {'id':shot['id']} for shot in plan['shots']]
+    plan['assets'] = [asset for asset in plan.get('assets', []) if asset['id'] in closure]
+    return execution._digest(plan)
+
+
 def _scope(scopes, scope_id):
     matches = [item for item in scopes if item.get('id') == scope_id]
     if len(matches) != 1:

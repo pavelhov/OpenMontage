@@ -202,3 +202,55 @@ def test_historical_preview_rejects_relevant_or_frozen_evidence_drift(retained, 
         check_original(retained)
     candidate = next(row for row in draft.first_cut_candidates(root) if row['shot_id'] == 'other')
     assert candidate['status'] == 'missing'
+
+
+def materialize_unrelated_assets(root):
+    contract = execution.load_shot_contract(root)
+    board = next(asset for asset in contract["assets"] if asset["id"] == "unrelated-board")
+    board["role"] = "reference_image"
+    endpoint = copy.deepcopy(board)
+    endpoint.update(id="unrelated-end", role="end_frame")
+    contract["assets"].append(endpoint)
+    contract["shots"][2]["asset_ids"].append(endpoint["id"])
+    refresh(contract)
+    save(root / "artifacts/shot_contract.json", contract)
+
+
+def test_unrelated_asset_materialization_retains_mcp_historical_draft_and_rejection(retained):
+    root, revision, jobs, child, _ = retained
+    materialize_unrelated_assets(root)
+    proof = check_original(retained)
+    assert proof["historical_source_only"]
+    candidate = next(row for row in draft.first_cut_candidates(root) if row["shot_id"] == "other")
+    assert candidate["status"] == "candidate" and candidate["strict_selected"] is False
+    assert candidate["output"]["sha256"] == child["output"]["sha256"]
+    review = copy.deepcopy(child["review"])
+    review.update(review_id="actual-source-defect", subject_sha256=child["output"]["sha256"], status="fail")
+    review["predicates"][0].update(status="fail", severity="critical")
+    assert execution.record_rejection(root, child["attempt_id"], review) == review
+    assert (
+        jobs.collect(root, child["attempt_id"], downloaded_path=child["output"]["path"])["status"]
+        == "collected"
+    )
+    with pytest.raises(ValueError):
+        check_original(retained, historical=False)
+
+
+@pytest.mark.parametrize("change", ["required_role", "own_source_added"])
+def test_materialization_of_queried_mcp_shot_still_rejects(retained, change):
+    root, *_ = retained
+    materialize_unrelated_assets(root)
+    contract = execution.load_shot_contract(root)
+    if change == "required_role":
+        own = next(
+            asset
+            for asset in contract["assets"]
+            if asset["id"] in contract["shots"][1]["asset_ids"] and not asset.get("upstream_source")
+        )
+        own["role"] = "reference_image" if own["role"] != "reference_image" else "start_frame"
+    else:
+        contract["shots"][1]["asset_ids"].append("unrelated-end")
+    refresh(contract)
+    save(root / "artifacts/shot_contract.json", contract)
+    with pytest.raises(ValueError):
+        check_original(retained)
