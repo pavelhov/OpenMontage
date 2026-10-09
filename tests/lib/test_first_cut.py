@@ -258,23 +258,7 @@ def test_mcp_attempts_order_by_retained_creation_chronology(tmp_path):
 
 
 def test_selected_pass_discloses_current_cosmetic_findings_once(p):
-    from lib.shot_contract import selection_digest
-    result = p.generate('entry')
-    aid = result.data['production_attempt_id']
-    output = {'path': result.artifacts[0], 'sha256': file_sha256(result.artifacts[0])}
-    old = attestation(output['sha256'], ['possession'])
-    old.update(status='fail', predicates=[{'name': 'possession', 'status': 'fail', 'evidence': 'old defect'}])
-    record_rejection(p.root, aid, old)
-    frame = p.root / 'assets/images/entry-frame.png'
-    frame.write_bytes(b'frame')
-    selection = {'attempt_id': aid, 'output': output,
-                 'outgoing_frame': {'path': str(frame), 'sha256': file_sha256(frame)}}
-    from lib.shot_contract import UPSTREAM_PREDICATES
-    review = attestation(selection_digest(selection), UPSTREAM_PREDICATES)
-    review['predicates'].append({'name': 'lighting_polish', 'status': 'fail', 'severity': 'cosmetic',
-                                 'evidence': 'slightly warm grade'})
-    selection['review'] = review
-    record_selection(p.root, 'entry', selection)
+    _select_entry_with_cosmetic(p)
     entry = rows(p)['entry']
     assert entry['strict_selected'] is True and entry['review'] == 'pass'
     assert [f['name'] for f in entry['findings']] == ['lighting_polish']

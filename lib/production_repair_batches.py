@@ -27,10 +27,9 @@ def _id(value):
 def _root(project_dir):
     root = Path(project_dir).expanduser().resolve()
     marker = execution._read(root / 'project.json')
-    if marker.get('governance') != {'version': '1.0', 'mode': 'strict'}:
-        # Marker may carry other governance metadata; only these fields bind.
-        if (marker.get('governance') or {}).get('version') != '1.0' or (marker.get('governance') or {}).get('mode') != 'strict':
-            raise ValueError('creator repair batches require a strict project')
+    # Marker may carry other governance metadata; only these fields bind.
+    if (marker.get('governance') or {}).get('version') != '1.0' or (marker.get('governance') or {}).get('mode') != 'strict':
+        raise ValueError('creator repair batches require a strict project')
     return root, marker
 
 
@@ -383,8 +382,16 @@ def repair_batch_status(project_dir, batch_id):
             original = execution.load_attempt_result(root, attempt['attempt_id'])
             state = original['status']
             row.update(attempt_id=attempt['attempt_id'], original_status=state, output=original.get('output'))
-            row['state'] = ('completed' if state == 'generated' else 'failed' if state == 'failed'
-                            else 'planned' if state == 'prepared' else 'uncertain' if state == 'uncertain' else 'submitted')
+            if state == 'generated':
+                row['state'] = 'completed'
+            elif state == 'failed':
+                row['state'] = 'failed'
+            elif state == 'prepared':
+                row['state'] = 'planned'
+            elif state == 'uncertain':
+                row['state'] = 'uncertain'
+            else:
+                row['state'] = 'submitted'
         row['closed'] = closed and row['state'] == 'planned'
         items.append(row)
     selected = {i['shot_id'] for i in batch['items']}
