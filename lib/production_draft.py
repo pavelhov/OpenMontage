@@ -257,29 +257,34 @@ def _attempt_order(root, row):
 
 def _candidate_provenance(root, shot_id, attempt_id, output, revision, *, allow_historical=False):
     from lib.production_provenance import validate_attempt_provenance
+    output = {**output, 'path': str((root / output['path']).resolve())}
     try:
         return validate_attempt_provenance(root, attempt_id, shot_id=shot_id,
                                           story_revision=revision, expected_output=output), False
     except ValueError as exc:
         continuity_error = any(message in str(exc) for message in (
             'upstream selection changed since this attempt', 'canonical reviewed source/reference/upstream changed',
-            'stale source/reference/review/upstream bindings'))
+            'stale source/reference/review/upstream bindings', 'current MCP planning semantics changed'))
         if not allow_historical or not continuity_error:
             raise
         from lib.production_provenance import validate_creator_repair_source_provenance
         proof = validate_creator_repair_source_provenance(root, attempt_id, shot_id=shot_id,
             story_revision=revision, expected_output=output)
-        if proof.get('historical_upstream_changed') is False:
+        if (proof.get('historical_upstream_changed') is False
+                and not proof.get('historical_source_changed')):
             raise exc
         return proof, True
 
 
-def _continuity_source_warning():
+def _continuity_source_warning(proof):
+    if proof.get('historical_upstream_changed') is False:
+        return {'name': 'source_applicability_changed', 'status': 'unknown', 'severity': 'critical',
+                'evidence': 'Retained clip matches its original approved shot and source bytes. Unrelated episode planning changed; current cut applicability needs review.'}
     return {'name': 'continuity_source_changed', 'status': 'unknown', 'severity': 'critical',
             'evidence': 'Retained clip used an earlier reviewed upstream selection. Current continuity needs review after the selected repair.'}
 
 
-def _candidate(root, shot_id, attempt_id, output, revision, selected, *, historical_source=False):
+def _candidate(root, shot_id, attempt_id, output, revision, selected, *, historical_source=True):
     proof, historical_source = _candidate_provenance(root, shot_id, attempt_id, output, revision,
                                                     allow_historical=historical_source)
     path = Path(output['path'])
@@ -292,7 +297,7 @@ def _candidate(root, shot_id, attempt_id, output, revision, selected, *, histori
     status = review['status'] if review is not None else ('fail' if findings else 'unknown')
     if historical_source:
         status = 'unknown'
-        findings = [*findings, _continuity_source_warning()]
+        findings = [*findings, _continuity_source_warning(proof)]
     return {'shot_id': shot_id, 'status': 'candidate', 'attempt_id': attempt_id,
             'output': {'path': _rel(root, path), 'sha256': output['sha256']},
             'duration_seconds': duration, 'strict_selected': strict,
@@ -521,12 +526,12 @@ def _findings_digest(root, clips, *, current):
             values = _current_findings(root, clip['shot_id'], clip['attempt_id'], clip['output']['sha256'],
                                        revision, selected)[1]
             try:
-                _, historical = _candidate_provenance(root, clip['shot_id'], clip['attempt_id'],
+                proof, historical = _candidate_provenance(root, clip['shot_id'], clip['attempt_id'],
                     clip['output'], revision, allow_historical=True)
             except (ValueError, OSError, KeyError, TypeError):
                 historical = False
             if historical:
-                values = [*values, _continuity_source_warning()]
+                values = [*values, _continuity_source_warning(proof)]
         findings.append({'shot_id': clip['shot_id'], 'findings': values})
     return execution._digest(findings)
 

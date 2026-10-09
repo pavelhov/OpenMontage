@@ -136,16 +136,18 @@ def _historical_source_packet(project_dir, shot_id, *, provider="openart_cli", n
         check_native_controls=check_native_controls, historical=True)
 
 
-def _creator_repair_source_packet(project_dir, shot_id, *, native, contract, selected):
+def _creator_repair_source_packet(project_dir, shot_id, *, native, contract, selected,
+                                 script, scene_plan):
     """Source-only projection; provenance must bind these original snapshots.
     Prospective preparation/dispatch never reads caller-supplied source facts.
     """
     return _source_packet(project_dir, shot_id, provider='openart_mcp', native=native,
-        check_native_controls=True, historical=True, original_sources=(contract, selected))
+        check_native_controls=True, historical=True, original_sources=(contract, selected),
+        original_artifacts=(script, scene_plan))
 
 
 def _source_packet(project_dir, shot_id, *, provider, native, check_native_controls, historical,
-                   original_sources=None):
+                   original_sources=None, original_artifacts=None):
     from lib.production_execution import approval_plan_digest, load_selected_attempts
     root = Path(project_dir).resolve()
     contract = _read(root, 'shot_contract.json')
@@ -199,7 +201,7 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
         if asset['id'] in shot['asset_ids'] or asset['id'] == payoff_id or asset['role'] == 'identity_reference':
             for key in ('id', 'role', 'cast_ids'):
                 rows.extend(_leaf(asset[key], f'/shot_contract/assets/{ai}/{key}'))
-    scene_plan = _read(root, 'scene_plan.json')
+    scene_plan = original_artifacts[1] if original_artifacts is not None else _read(root, 'scene_plan.json')
     _schema('scene_plan', scene_plan)
     from lib.production_execution import _artifact_path
     manifest_path = _artifact_path(root, 'asset_manifest.json')
@@ -225,7 +227,7 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
     scenes = [s for s in scene_plan['scenes'] if s['id'] == shot_id]
     if len(scenes) != 1 or not scenes[0].get('script_section_id'):
         raise ValueError('explicit scene.script_section_id mapping required')
-    script = _read(root, 'script.json')
+    script = original_artifacts[0] if original_artifacts is not None else _read(root, 'script.json')
     _schema('script', script)
     ids = [s['id'] for s in script['sections']]
     if len(ids) != len(set(ids)):

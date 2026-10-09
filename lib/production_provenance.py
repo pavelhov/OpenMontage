@@ -21,6 +21,9 @@ from lib.shot_contract import (
     selection_digest, provisional_audio_review,
 )
 from schemas.artifacts import load_schema
+from lib.production_trim_validation import (
+    trimmed_outgoing_timestamp, _validate_trimmed_cut, _validate_trim_sampling,
+)
 
 
 _ALLOW_OPENART_FIXTURE_PROVENANCE = False  # module test seam, never caller-authorized
@@ -588,8 +591,10 @@ def validate_creator_repair_source_provenance(project_dir, attempt_id, *, shot_i
     """Historical, source-only proof for an exact creator item or draft clip.
 
     Own current story/planning, native authority, actual original bytes, frozen
-    upstream media and passing original source reviews still bind. Only equality
-    to the *current* upstream selection is omitted. This result grants no strict
+    upstream media and passing original source reviews still bind. MCP replay
+    permits unrelated shot details to change while preserving current globals,
+    story/order and this shot's exact planning/script/scene/static references.
+    Equality to the *current* upstream selection is omitted. This result grants no strict
     selection, continuity or certification eligibility.
     """
     from lib.production_execution import ProductionGovernanceError
@@ -626,154 +631,6 @@ def _aac_sha256(path):
     if not result.stdout:
         raise ValueError('copied AAC stream is empty')
     return hashlib.sha256(result.stdout).hexdigest()
-
-
-def trimmed_outgoing_timestamp(path):
-    """Actual final decoded video PTS in FrameSampler's input-seek timeline.
-
-    Producers use this for timestamp sampling of CFR and VFR trims. The format
-    start time is subtracted because FFmpeg input ``-ss`` is relative to it.
-    """
-    import math
-    import subprocess
-    from fractions import Fraction
-    try:
-        probe = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v:0', '-show_frames',
-            '-show_entries', 'stream=time_base:format=start_time:frame=best_effort_timestamp',
-            '-of', 'json', str(path)], capture_output=True, text=True, timeout=30, check=True)
-        data = json.loads(probe.stdout)
-        time_base = Fraction(data['streams'][0]['time_base'])
-        origin = Fraction(data.get('format', {}).get('start_time', '0'))
-        final = max(int(frame['best_effort_timestamp']) * time_base for frame in data['frames'])
-        timestamp = float(final - origin)
-        if time_base <= 0 or not math.isfinite(timestamp) or timestamp < 0:
-            raise ValueError('invalid final presentation timestamp')
-        return timestamp
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError, IndexError, ZeroDivisionError) as exc:
-        raise ValueError('cannot probe actual final retained presentation timestamp') from exc
-
-
-def _validate_trimmed_cut(value, recipe, receipt, native, bound, require):
-    """Bind and replay the exact canonical local cut on every validation.
-
-    AAC hashes here describe the retained interval, never unchanged whole-clip
-    audio. Semantic/audio completeness remains the selection review's job.
-    """
-    import math
-    import subprocess
-    import tempfile
-    from fractions import Fraction
-    from tools.video.video_trimmer import VideoTrimmer
-
-    require(set(recipe) == {'version', 'operation', 'input', 'output_path', 'submitted_inputs', 'reason'}
-            and recipe['version'] == '1.0', 'complete typed canonical trim recipe required')
-    submitted = recipe['submitted_inputs']
-    require(isinstance(submitted, dict) and set(submitted) == {
-        'operation', 'input_path', 'output_path', 'start_seconds', 'end_seconds', 'codec', 'reason'},
-        'exact canonical cut inputs required')
-    start, end, codec = submitted['start_seconds'], submitted['end_seconds'], submitted['codec']
-    require(type(start) in (int, float) and type(end) in (int, float)
-            and math.isfinite(start) and math.isfinite(end)
-            and 0 <= start < end <= native['result']['result']['data']['duration_seconds'],
-            'bounded retained cut interval required')
-    require(submitted['operation'] == 'cut' and submitted['input_path'] == value['parent_output']['path']
-            and submitted['output_path'] == value['output']['path']
-            and isinstance(codec, str) and bool(codec)
-            and isinstance(recipe['reason'], str) and bool(recipe['reason'].strip())
-            and submitted['reason'] == recipe['reason'], 'canonical cut input/output/reason differs')
-    require(receipt.get('tool') == VideoTrimmer.name and receipt.get('provider') == VideoTrimmer.provider
-            and receipt.get('canonical_registry_used') is True and receipt.get('success') is True
-            and receipt.get('generation') is False and receipt.get('input') == value['parent_output']
-            and receipt.get('recipe') == value['recipe'] and receipt.get('output') == value['output'],
-            'successful canonical existing-footage cut receipt required')
-    result = receipt.get('tool_result', {})
-    data = result.get('data', {})
-    actual = data.get('cut_receipt', {})
-    require(result.get('success') is True and value['output']['path'] in result.get('artifacts', [])
-            and data.get('operation') == 'cut' and data.get('input') == submitted['input_path']
-            and data.get('output') == submitted['output_path'] and data.get('start_seconds') == start
-            and data.get('end_seconds') == end, 'actual canonical cut return differs')
-    command = actual.get('command_argv')
-    require(isinstance(command, list) and all(isinstance(arg, str) for arg in command)
-            and bool(command) and Path(command[0]).name.lower() in {'ffmpeg', 'ffmpeg.exe'},
-            'actual canonical FFmpeg invocation required')
-    expected = [command[0], '-y', '-i', submitted['input_path'], '-ss', str(start), '-to', str(end)]
-    expected += ['-c', 'copy'] if codec == 'copy' else ['-c:v', codec, '-c:a', 'aac']
-    expected.append(submitted['output_path'])
-    adapter_version = actual.get('adapter_version')
-    require(isinstance(adapter_version, str) and bool(re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][\w.-]+)?', adapter_version)),
-            'retained cut adapter version required')
-    require(actual == {'version': '1.0', 'tool': VideoTrimmer.name, 'provider': VideoTrimmer.provider,
-        'adapter_version': adapter_version, 'operation': 'cut', 'input': value['parent_output'],
-        'output': value['output'], 'submitted_inputs': submitted, 'command_argv': expected,
-        'command_exit_code': 0}, 'actual canonical command/return/bindings differ')
-    parent, output = bound(value['parent_output'], 'native trim input'), bound(value['output'], 'trim output')
-
-    def media(path):
-        probe = subprocess.run(['ffprobe', '-v', 'error',
-            '-show_entries', 'stream=codec_type,duration,avg_frame_rate', '-of', 'json', str(path)],
-            capture_output=True, text=True, timeout=30, check=True)
-        streams = json.loads(probe.stdout)['streams']
-        stream = next(stream for stream in streams if stream.get('codec_type') == 'video')
-        duration, fps = float(stream['duration']), float(Fraction(stream['avg_frame_rate']))
-        require(math.isfinite(duration) and math.isfinite(fps) and duration > 0 and fps > 0,
-                'actual trim video timing invalid')
-        return {'duration_seconds': duration, 'fps': fps}, any(stream.get('codec_type') == 'audio' for stream in streams)
-
-    try:
-        (source_timing, source_audio), (output_timing, output_audio) = media(parent), media(output)
-        require(end <= source_timing['duration_seconds'] + 0.0001
-                and abs(output_timing['duration_seconds'] - (end - start)) <= 1 / output_timing['fps'] + 0.0001,
-                'actual retained duration differs from cut interval (copy cuts may need re-encoding)')
-        audio = receipt.get('audio', {})
-        require(source_audio == output_audio, 'native source audio was lost or added by cut')
-        if source_audio:
-            mode = 'retained_interval_stream_copy' if codec == 'copy' else 'retained_interval_aac_reencode'
-            require(audio == {'mode': mode, 'input_sha256': _aac_sha256(parent),
-                'output_sha256': _aac_sha256(output), 'retained_interval_seconds': [start, end]},
-                'actual retained interval AAC evidence differs')
-        else:
-            require(audio == {'mode': 'no_audio', 'input_has_audio': False, 'output_has_audio': False,
-                'retained_interval_seconds': [start, end]}, 'actual no-audio interval evidence differs')
-        # On-disk records and in-memory imports have the same caller-writable
-        # evidence. Neither proves that registration ran, so both must replay.
-        with tempfile.TemporaryDirectory(prefix='openmontage-trim-proof-') as temporary:
-            replayed = Path(temporary) / output.name
-            # Receipt facts may name a resolved executable; never execute a
-            # caller-supplied binary path during verification.
-            subprocess.run(['ffmpeg', *expected[1:-1], str(replayed)],
-                           capture_output=True, timeout=120, check=True)
-            require(file_sha256(replayed) == value['output']['sha256'],
-                    'output is not the canonical retained interval cut')
-        output_timing['final_frame_timestamp_seconds'] = trimmed_outgoing_timestamp(output)
-        return output_timing
-    except (OSError, subprocess.SubprocessError, ValueError, KeyError, IndexError, ZeroDivisionError, StopIteration) as exc:
-        require(False, 'cannot verify actual canonical trim media: ' + str(exc))
-
-
-def _validate_trim_sampling(value, sampled, timing, outgoing, require):
-    """Require the actual final retained frame, not the native endpoint."""
-    import subprocess
-    import tempfile
-    timestamp = timing['final_frame_timestamp_seconds']
-    inputs = {'input_path': value['output']['path'], 'strategy': 'timestamps', 'timestamps': [timestamp],
-        'format': 'png', 'output_dir': str(outgoing.parent)}
-    result = sampled.get('tool_result', {})
-    frames = result.get('data', {}).get('frames', [])
-    require(sampled.get('provider') == 'ffmpeg' and sampled.get('submitted_inputs') == inputs
-            and result.get('success') is True and result.get('data', {}).get('strategy') == 'timestamps'
-            and result.get('data', {}).get('frame_count') == 1 and frames == [{
-                'path': str(outgoing), 'timestamp_seconds': timestamp, 'index': 0}],
-            'actual final retained-frame sampling differs')
-    try:
-        with tempfile.TemporaryDirectory(prefix='openmontage-trim-outgoing-') as temporary:
-            replayed = Path(temporary) / 'outgoing.png'
-            subprocess.run(['ffmpeg', '-y', '-ss', str(timestamp), '-i', value['output']['path'],
-                '-frames:v', '1', str(replayed)], capture_output=True, timeout=60, check=True)
-            require(file_sha256(replayed) == value['outgoing_frame']['sha256'],
-                    'outgoing bytes are not the actual final retained frame')
-    except (OSError, subprocess.SubprocessError) as exc:
-        require(False, 'cannot verify retained outgoing frame: ' + str(exc))
 
 
 def validate_derived_edit(project_dir, record_path, *, attempt_id, shot_id,
@@ -834,7 +691,7 @@ def validate_derived_edit(project_dir, record_path, *, attempt_id, shot_id,
         receipt = read(value['execution_receipt'], 'actual edit receipt')
         derived_timing = None
         if recipe['operation'] == 'canonical_video_trimmer_cut':
-            derived_timing = _validate_trimmed_cut(value, recipe, receipt, native, bound, require)
+            derived_timing = _validate_trimmed_cut(value, recipe, receipt, native, bound, require, _aac_sha256)
         else:
             window = recipe.get('time_window_seconds')
             require(isinstance(window, list) and len(window) == 2
@@ -954,8 +811,10 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
     for name, binding in files.items():
         raw = base64.b64decode(binding['bytes_base64'], validate=True)
         require(hashlib.sha256(raw).hexdigest() == binding['sha256'], 'frozen source bytes changed')
-    contract_name = str(execution._artifact_path(root, 'shot_contract.json').relative_to(root))
-    frozen_contract = json.loads(base64.b64decode(files[contract_name]['bytes_base64'], validate=True))
+    def frozen_artifact(name):
+        path = str(execution._artifact_path(root, name + '.json').relative_to(root))
+        return json.loads(base64.b64decode(files[path]['bytes_base64'], validate=True))
+    frozen_contract = frozen_artifact('shot_contract')
     current_contract = execution.load_shot_contract(root)
     packet = snapshot['source_packet']
     frozen_shots = [item for item in frozen_contract['shots'] if item['id'] == shot_id]
@@ -963,13 +822,58 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
     require(contract_digest(frozen_contract) == packet['binding']['contract_sha256']
             and preparation.digest([frozen_contract['project_review'], frozen_shots[0].get('review')])
                 == packet['binding']['reviews_sha256'], 'frozen contract/reviews differ')
-    require(shot_planning_digest(frozen_contract, shot_id) == shot_planning_digest(current_contract, shot_id),
+    def historical_shot_plan(contract):
+        # Source-only preview may outlive an unrelated shot's planning edit.
+        # Keep globals/story/order and the current shot/static closure exact;
+        # prospective readers retain the whole-plan continuity rule below.
+        scoped = copy.deepcopy(contract)
+        scoped['shots'] = [shot if shot['id'] == shot_id else {'id': shot['id']}
+                           for shot in scoped['shots']]
+        return shot_planning_digest(scoped, shot_id)
+    planning_digest = historical_shot_plan if _historical_source else lambda c: shot_planning_digest(c, shot_id)
+    require(planning_digest(frozen_contract) == planning_digest(current_contract),
             'current MCP planning semantics changed')
     historical_selected = {}
     upstream_changed = False
+    source_changed = False
     if _historical_source:
-        require(execution.approval_plan_digest(current_contract) == packet['binding']['approval_plan_sha256'],
-                'current MCP approved planning changed')
+        frozen_script, frozen_scene_plan = frozen_artifact('script'), frozen_artifact('scene_plan')
+        current_script = preparation._read(root, 'script.json')
+        current_scene_plan = preparation._read(root, 'scene_plan.json')
+        def scoped_artifacts(script, scene_plan):
+            preparation._schema('script', script)
+            preparation._schema('scene_plan', scene_plan)
+            scoped_scene = copy.deepcopy(scene_plan)
+            scenes = [scene for scene in scene_plan['scenes'] if scene['id'] == shot_id]
+            require(len(scenes) == 1, 'current MCP scene missing or duplicated')
+            scoped_scene['scenes'] = [scene if scene['id'] == shot_id else {'id': scene['id']}
+                                      for scene in scoped_scene['scenes']]
+            cards = scoped_scene.get('metadata', {}).get('visual_development', {}).get('shot_cards')
+            if isinstance(cards, dict):
+                metadata = scoped_scene['metadata']
+                visual = metadata['visual_development']
+                own_cards = {key: card for key, card in cards.items() if key == shot_id}
+                if own_cards:
+                    visual['shot_cards'] = own_cards
+                else:
+                    visual.pop('shot_cards')
+                if not visual:
+                    metadata.pop('visual_development')
+                if not metadata:
+                    scoped_scene.pop('metadata')
+            scoped_script = copy.deepcopy(script)
+            sid = scenes[0].get('script_section_id')
+            require(len([section for section in script['sections'] if section['id'] == sid]) == 1,
+                    'current MCP mapped script section missing or duplicated')
+            scoped_script['sections'] = [section if section['id'] == sid else {'id': section['id']}
+                                        for section in scoped_script['sections']]
+            return scoped_script, scoped_scene
+        require(scoped_artifacts(frozen_script, frozen_scene_plan)
+                == scoped_artifacts(current_script, current_scene_plan),
+                'current MCP relevant script/scene planning changed')
+        source_changed = (execution.approval_plan_digest(current_contract) != packet['binding']['approval_plan_sha256']
+                          or preparation.digest(current_script) != packet['binding']['script_sha256']
+                          or preparation.digest(current_scene_plan) != packet['binding']['scene_plan_sha256'])
         current_selected = execution.load_selected_attempts(root)
         histories = [execution._read(path) for path in (root / 'production_selections').glob('*.json')]
         for binding in packet['binding']['upstream']:
@@ -997,7 +901,8 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
                     and review_digest(current.get('review')) == reference['review_sha256'],
                     'current MCP static reference review/bytes changed')
         source = preparation._creator_repair_source_packet(root, shot_id, native=native,
-            contract=frozen_contract, selected=historical_selected)
+            contract=frozen_contract, selected=historical_selected,
+            script=frozen_script, scene_plan=frozen_scene_plan)
     require(preparation.digest(snapshot['scope']) == authority['scope_sha256'], 'frozen scope differs')
     stable = set(packet['binding']) - {'contract_sha256', 'reviews_sha256'}
     require(set(source['binding']) == set(packet['binding'])
@@ -1020,7 +925,8 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
         selected = historical_selected if _historical_source else {
             b['shot_id']: execution.load_selected_attempts(root)[b['shot_id']] for b in packet['binding']['upstream']}
         source_billing = _validate_retained_packet_policy_mcp_attempt(root, scope, inputs=inputs, native=native, profile=profile,
-            compiled=compiled, review=review, selected=selected, authority=authority['billing'])
+            compiled=compiled, review=review, selected=selected, authority=authority['billing'],
+            _original_contract=frozen_contract if _historical_source else None)
     if retained['purpose'] == 'qualification':
         from lib.provider_qualification import validate_qualification_stage
         validate_qualification_stage(root, inputs, authority['request_sha256'], native=native, profile=profile)
@@ -1048,5 +954,6 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
                'submitted_inputs': inputs, 'request_sha256': authority['request_sha256'],
                'transport': 'agent_mediated_connector', 'tool_name': 'openart_mcp_video'}
     return {'request': request, 'result': {'status': 'generated', 'output': output},
-            **({'historical_upstream_changed': upstream_changed} if _historical_source else {}),
+            **({'historical_upstream_changed': upstream_changed,
+                'historical_source_changed': source_changed or upstream_changed} if _historical_source else {}),
             'connector_provenance': retained}

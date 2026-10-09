@@ -193,6 +193,15 @@ def load_historical_policy(root, scope):
     decision that existed when the scope was derived; it does not require that
     policy to still be current (a later revocation stops new admission only).
     Prospective derivation keeps using :func:`require_active_policy`."""
+    return _load_historical_policy(root, scope)
+
+
+def _load_historical_policy(root, scope, *, _source_shot_id=None):
+    """Private replay after provenance proves current source-shot applicability.
+
+    All immutable policy/baseline/approval bytes still bind; source-only footage
+    does not depend on the current board bytes of unrelated retained shots.
+    """
     root = Path(root)
     derived = scope.get('derived_from_policy') if isinstance(scope, dict) else None
     if not isinstance(derived, dict):
@@ -206,7 +215,8 @@ def load_historical_policy(root, scope):
         raise AutonomyError('historical policy schema: ' + '; '.join(errors))
     baselines = retained_baselines(root, policy)
     sha = digest(evidence_content(policy, baselines))
-    for retained in baselines.values():
+    source_baselines = baselines.values() if _source_shot_id is None else [baselines[_source_shot_id]]
+    for retained in source_baselines:
         for asset in retained['projection']['assets']:
             if not asset.get('upstream_source') and hashlib.sha256(_inside(root, asset['path']).read_bytes()).hexdigest() != asset['sha256']:
                 raise AutonomyError('retained original static source bytes changed')
@@ -1060,14 +1070,18 @@ def validate_policy_mcp_attempt(root, scope, *, inputs, native, profile, authori
 
 
 def _validate_retained_packet_policy_mcp_attempt(root, scope, *, inputs, native, profile,
-                                                compiled, review, selected, authority):
+                                                compiled, review, selected, authority, _original_contract=None):
     """Replay an immutable MCP policy origin after canonical packet provenance.
     The caller proves original compiled/review/selection snapshots; current
     relevant planning, rooted policy, native/account and billing still bind.
     """
     from lib import production_execution as execution
-    policy, sha, decision_id = load_historical_policy(root, scope)
     shot_id = inputs['governance']['shot_id']
+    policy, sha, decision_id = _load_historical_policy(root, scope,
+        _source_shot_id=shot_id if _original_contract is not None else None)
+    if (_original_contract is not None
+            and execution.approval_plan_digest(_original_contract) != scope['approval_plan_sha256']):
+        raise AutonomyError('historical MCP original planning differs from retained scope')
     current_profile, current_native = _prepare_mcp_policy_native(root, policy, shot_id, inputs)
     if digest(current_native) != digest(native) or digest(current_profile) != digest(profile):
         raise AutonomyError('historical MCP native/account/form/source evidence changed')
@@ -1075,7 +1089,8 @@ def _validate_retained_packet_policy_mcp_attempt(root, scope, *, inputs, native,
         historical={'compiled': compiled, 'review': review, 'policy': policy, 'policy_sha256': sha})
     material = {'shot_id': shot_id, 'provider': 'openart_mcp',
         'request_digest': execution.planned_request_digest(inputs, project_dir=root),
-        'approval_plan_sha256': execution.approval_plan_digest(execution.load_shot_contract(root)),
+        'approval_plan_sha256': execution.approval_plan_digest(
+            execution.load_shot_contract(root) if _original_contract is None else _original_contract),
         'lock_digest': locks, 'compiled_request_sha256': digest(compiled),
         'preparation_review_id': inputs['preparation_review_id'], 'resolved_upstream': selected}
     material['unknown_cost_authorization_sha256'] = scope.get('unknown_cost_authorization_sha256')
