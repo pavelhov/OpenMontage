@@ -34,6 +34,20 @@ optional ordered reference paths and transparency. No `n`, batch, concurrency,
 forced resolution or provider switch is implied. Exact scope and approved image
 allowance remain binding across supported routes.
 
+If the real host raises an exception without returning a result, retain the
+observed exception separately with
+`lib.production_images.record_native_image_host_exception`. Its hash-bound JSON
+is `{call_id, tool_name, arguments, exception: {message, optional type}, optional
+tool_call_id}` using the exact envelope emitted by `begin_native_image`.
+Provenance is agent-recorded observation, never provider-attested; do not forge a
+`result` or add a terminal/never-submitted assertion. The engine preserves the
+exception separately from a later actual return and reports backend submission
+as unknown while unresolved. Short elapsed time and transport-error wording do
+not prove no submission or terminal failure. The original remains counted and
+blocks replacement; collect a delayed authentic return with `import_native_image`
+or escalate the missing authoritative reconciliation. A genuine retained
+`isError: true` tool result keeps the existing terminal-failure import behavior.
+
 Studio's bounded `prepare_boards.py` consumer retains inventory/text once,
 materializes exact source packets as dependency bytes arrive, and uses that
 canonical lifecycle. Its `production_entry.py` adapter exposes `prepare-boards`,

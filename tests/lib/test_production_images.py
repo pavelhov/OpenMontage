@@ -349,3 +349,128 @@ def test_reservation_resume_keeps_bounded_shape_and_mcp_error_content(board_pack
     assert 'Synthetic host call failed' in failed['error']
     assert images.image_usage(root)['total'] == 1
     assert images.image_usage(root)['unresolved_originals'] == []
+
+
+def exception_receipt(root, envelope, *, name='host-exception'):
+    path = root / 'receipts' / (name + '.json')
+    write(path, {'call_id':envelope['call_id'], 'tool_name':envelope['tool_name'],
+        'arguments':envelope['arguments'], 'exception':{
+            'message':'image generation failed: connection failed: error sending request',
+            'type':'SyntheticTransportError'}, 'tool_call_id':'synthetic-exception-call'})
+    return {'path':str(path), 'sha256':file_sha256(path)}
+
+
+def test_host_exception_retained_unknown_counted_and_delayed_original_collects(board_package):
+    root, *_ = board_package
+    call = reserve(board_package, call_id='transport-exception')
+    envelope = images.begin_native_image(root, call['call_id'])
+    receipt = exception_receipt(root, envelope)
+    observed = images.record_native_image_host_exception(root, call['call_id'], host_exception=receipt)
+    assert observed['state'] == 'uncertain'
+    assert 'host_receipt' not in observed and 'provenance' not in observed
+    assert 'output' not in observed and 'never_submitted_proof' not in observed
+    assert (root/observed['host_exception']['path']).read_bytes() == Path(receipt['path']).read_bytes()
+    assert observed['host_exception']['sha256'] == receipt['sha256']
+    assert observed['host_exception']['kind'] == 'agent_recorded_host_exception'
+    assert observed['host_exception']['arguments_sha256'] == envelope['arguments_sha256']
+    status = images.image_call_status(root, call['call_id'])
+    assert status['backend_submission_status'] == 'unknown'
+    assert status['next_action'] == 'collect_original_or_authoritative_reconciliation'
+    assert images.image_usage(root)['total'] == 1
+    assert images.image_usage(root)['unresolved_originals'] == [call['call_id']]
+    assert images.record_native_image_host_exception(root, call['call_id'], host_exception=receipt) == observed
+    with pytest.raises(ValueError, match='pending|uncertain'):
+        reserve(board_package, call_id='forbidden-replacement')
+    with pytest.raises(ValueError, match='envelope'):
+        images.release_unsubmitted_image(root, call['call_id'], reason='Only three seconds elapsed.')
+    with pytest.raises(ValueError, match='already emitted'):
+        images.begin_native_image(root, call['call_id'])
+    collected = images.import_native_image(root, call['call_id'], host_receipt=host_receipt(root, envelope))
+    assert collected['state'] == 'imported'
+    assert collected['host_exception'] == observed['host_exception']
+    assert images.record_native_image_host_exception(root, call['call_id'], host_exception=receipt) == collected
+    assert images.image_usage(root)['total'] == 1
+    assert images.image_usage(root)['unresolved_originals'] == []
+    assert 'backend_submission_status' not in images.image_call_status(root, call['call_id'])
+
+
+@pytest.mark.parametrize('field,value', [
+    ('call_id','another-call'), ('tool_name','another.tool'),
+    ('arguments',{'prompt':'Different request'}), ('result',{'isError':True}),
+    ('exception',{'message':' ', 'terminal':True}), ('exception',{'message':' '}),
+    ('tool_call_id','')])
+def test_host_exception_rejects_unbound_or_forged_evidence(board_package, field, value):
+    root, *_ = board_package
+    call = reserve(board_package)
+    envelope = images.begin_native_image(root, call['call_id'])
+    receipt = exception_receipt(root, envelope)
+    path = Path(receipt['path']); payload = json.loads(path.read_text()); payload[field] = value
+    write(path, payload); receipt['sha256'] = file_sha256(path)
+    with pytest.raises(ValueError):
+        images.record_native_image_host_exception(root, call['call_id'], host_exception=receipt)
+    assert images.image_call_status(root, call['call_id'])['state'] == 'submitted'
+    assert not (root/'production_images'/call['call_id']/'host-exception.json').exists()
+
+
+def test_host_exception_requires_emission_hash_and_immutable_original(board_package):
+    root, *_ = board_package
+    call = reserve(board_package)
+    fake_envelope = {'call_id':call['call_id'], 'tool_name':images.NATIVE_TOOL, 'arguments':{'prompt':'Synthetic'}}
+    receipt = exception_receipt(root, fake_envelope)
+    with pytest.raises(ValueError, match='envelope'):
+        images.record_native_image_host_exception(root, call['call_id'], host_exception=receipt)
+    envelope = images.begin_native_image(root, call['call_id'])
+    receipt = exception_receipt(root, envelope)
+    with pytest.raises(ValueError, match='bytes changed'):
+        images.record_native_image_host_exception(root, call['call_id'], host_exception={**receipt, 'sha256':'0'*64})
+    observed = images.record_native_image_host_exception(root, call['call_id'], host_exception=receipt)
+    different = exception_receipt(root, envelope, name='different-exception')
+    path = Path(different['path']); payload = json.loads(path.read_text())
+    payload['exception']['message'] = 'Different actual event'; write(path, payload)
+    different['sha256'] = file_sha256(path)
+    with pytest.raises(ValueError, match='different'):
+        images.record_native_image_host_exception(root, call['call_id'], host_exception=different)
+    retained = root/observed['host_exception']['path']; retained.chmod(0o644); retained.write_text('{}')
+    with pytest.raises(ValueError, match='bytes changed'):
+        images.record_native_image_host_exception(root, call['call_id'], host_exception=receipt)
+
+
+def test_host_exception_allows_authentic_terminal_error_collection(board_package):
+    root, *_ = board_package
+    call = reserve(board_package)
+    envelope = images.begin_native_image(root, call['call_id'])
+    images.record_native_image_host_exception(root, call['call_id'], host_exception=exception_receipt(root, envelope))
+    failed = images.import_native_image(root, call['call_id'], host_receipt=host_receipt(root, envelope,
+        result={'isError':True,'error':'Synthetic authentic terminal host return'}))
+    assert failed['state'] == 'failed' and 'host_exception' in failed
+    assert images.image_usage(root)['total'] == 1
+    assert images.image_usage(root)['unresolved_originals'] == []
+    assert reserve(board_package, call_id='permitted-after-terminal')['state'] == 'reserved'
+
+
+@pytest.mark.parametrize('terminal_result', [None, {'isError':True,'error':'Synthetic terminal result'}])
+def test_host_exception_cannot_change_terminal_original(board_package, terminal_result):
+    root, *_ = board_package
+    call = reserve(board_package)
+    envelope = images.begin_native_image(root, call['call_id'])
+    terminal = images.import_native_image(root, call['call_id'],
+        host_receipt=host_receipt(root, envelope, result=terminal_result))
+    with pytest.raises(ValueError, match='terminal|actual host return'):
+        images.record_native_image_host_exception(root, call['call_id'], host_exception=exception_receipt(root, envelope))
+    assert images.image_call_status(root, call['call_id'])['state'] == terminal['state']
+    assert images.image_usage(root)['total'] == 1
+    assert images.image_usage(root)['unresolved_originals'] == []
+
+
+def test_host_exception_cannot_replace_already_retained_actual_return(board_package):
+    root, *_ = board_package
+    call = reserve(board_package)
+    envelope = images.begin_native_image(root, call['call_id'])
+    receipt = host_receipt(root, envelope, result={'output_hint':'Synthetic unusable actual return'})
+    with pytest.raises(ValueError, match='unresolved'):
+        images.import_native_image(root, call['call_id'], host_receipt=receipt)
+    before = images.image_call_status(root, call['call_id'])
+    with pytest.raises(ValueError, match='actual host return'):
+        images.record_native_image_host_exception(root, call['call_id'], host_exception=exception_receipt(root, envelope))
+    assert images.image_call_status(root, call['call_id']) == before
+    assert not (root/'production_images'/call['call_id']/'host-exception.json').exists()
