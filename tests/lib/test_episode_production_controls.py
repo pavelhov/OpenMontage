@@ -13,7 +13,7 @@ from tests.integration.test_openart_mcp_governance import (
     fixture_observations, prepare_project, install_fake_download,
 )
 from tests.integration.test_local_grok_continuation import (
-    production, reserved, continue_attempt,
+    production, reserved, continue_attempt, missing_cwd_reserved,
 )
 
 
@@ -473,3 +473,28 @@ def test_status_validates_current_selected_bytes_before_reporting_ready(producti
     assert status['selections'][shot_id]['error']
     assert status['shot_readiness'][shot_id] == 'invalid'
     assert status['delivery'] == 'draft_only'
+
+
+def test_proven_missing_output_cwd_preserves_episode_cap_and_same_reservation(
+    missing_cwd_reserved,
+):
+    p, aid, directory, request, frozen = missing_cwd_reserved
+    activate(p.root, 1)
+    before = controls.generation_usage(p.root)
+    assert before["total"] == 0 and before["excluded_never_submitted"] == [aid]
+    assert before["occurrences"][0]["local_continuation_eligible"] is True
+    result = continue_attempt(missing_cwd_reserved, dry_run=False)
+    assert result.success, result.error
+    after = controls.generation_usage(p.root)
+    assert after["total"] == after["per_shot"]["entry"] == 1
+    assert after["excluded_never_submitted"] == []
+    assert after["occurrences"][0]["local_continuation_eligible"] is False
+    assert len(execution._attempts(p.root)) == len(p.transport.native_requests) == 1
+    for name, original in frozen.items():
+        assert (directory / name).read_bytes() == original
+    inputs = repair_request(p.root, p.inputs["entry"], p.scope, aid, 1)
+    with pytest.raises(
+        (execution.ProductionGovernanceError, controls.EpisodeControlsError)
+    ):
+        p.cli.execute(inputs)
+    assert len(p.transport.native_requests) == 1

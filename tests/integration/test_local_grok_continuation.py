@@ -73,7 +73,7 @@ def test_canonical_same_occurrence_dry_run_dispatch_and_selection_provenance(res
 
 
 @pytest.mark.parametrize('change', ['uncertain', 'dispatched', 'cli_version', 'conditioning', 'session',
-                                  'scope', 'input_bytes', 'original_bytes', 'plan', 'selection', 'output',
+                                  'scope', 'input_bytes', 'original_bytes', 'plan', 'output',
                                   'prior_claim', 'provider_begin', 'failed_evidence', 'request_digest'])
 def test_local_continuation_refuses_nonlocal_or_changed_authority_without_calls(reserved, change):
     p, aid, directory, request, _ = reserved
@@ -97,8 +97,6 @@ def test_local_continuation_refuses_nonlocal_or_changed_authority_without_calls(
         path.chmod(0o644); path.write_bytes(b'changed input')
     elif change == 'plan':
         p.contract['shots'][0]['dominant_action'] += ' unapproved'; p.persist_contract()
-    elif change == 'selection':
-        save(p.root / 'selected_attempts.json', {'entry': {'attempt_id': 'changed'}})
     elif change == 'output': Path(request['submitted_inputs']['output_path']).write_bytes(b'existing')
     elif change == 'prior_claim': save(directory / 'local_continuation_claim.json', {})
     elif change == 'provider_begin': save(directory / 'provider_request.json', {})
@@ -280,3 +278,352 @@ def test_original_continuation_recovery_after_result_write_failure(reserved, mon
         assert (directory / name).read_bytes() == raw
     assert (directory / 'local_continuation_claim.json').read_bytes() == claim
     assert len(p.transport.native_requests) == len(execution._attempts(p.root)) == 1
+
+
+@pytest.fixture(params=["legacy", "phase"])
+def missing_cwd_reserved(production, monkeypatch, request):
+    """Retain the 0.4.0 journal shape from the exact strict-cwd failure site."""
+    p = production
+    inputs = copy.deepcopy(p.inputs["entry"])
+    inputs.pop("preferred_provider", None)
+    inputs.pop("allowed_providers", None)
+    inputs.pop("cwd", None)
+    inputs["output_path"] = str(p.root / "assets" / "videos" / "entry.mp4")
+    p.scope["requests"]["entry"] = execution.planned_request_digest(
+        inputs, project_dir=p.root
+    )
+    p.persist_scope()
+    with monkeypatch.context() as old:
+        # The old cwd check ran before this existing output-parent preparer.
+        old.setattr(
+            "tools._grok_cli_media._prepare_output_path", lambda path: Path(path)
+        )
+        result = p.cli.execute(inputs)
+    assert not result.success and not p.transport.native_requests
+    aid = result.data["production_attempt_id"]
+    directory = p.root / "production_attempts" / aid
+    raw = read(directory / "raw_result.json")
+    if request.param == "legacy":
+        raw["data"].pop("local_setup_evidence", None)
+    retained = read(directory / "result.json")
+    retained["result"] = raw
+    for name, value in [("raw_result.json", raw), ("result.json", retained)]:
+        (directory / name).chmod(0o644)
+        save(directory / name, value)
+    request = read(directory / "request.json")
+    frozen = {
+        name: (directory / name).read_bytes()
+        for name in execution._LOCAL_CONTINUATION_FILES
+    }
+    return p, aid, directory, request, frozen
+
+
+def test_missing_output_parent_continues_original_once_without_rewriting_history(
+    missing_cwd_reserved,
+):
+    from lib import episode_production_controls as controls
+
+    p, aid, directory, request, frozen = missing_cwd_reserved
+    usage = controls.generation_usage(p.root)
+    assert usage["excluded_never_submitted"] == [aid]
+    assert usage["total"] == 0
+    assert continue_attempt(missing_cwd_reserved)["provider_calls"] == 0
+    result = continue_attempt(missing_cwd_reserved, dry_run=False)
+    assert result.success, result.error
+    assert result.data["production_attempt_id"] == aid
+    assert controls.generation_usage(p.root)["total"] == 1
+    assert len(execution._attempts(p.root)) == len(p.transport.native_requests) == 1
+    selected = p.select("entry", result)
+    validate_attempt_provenance(
+        p.root,
+        aid,
+        shot_id="entry",
+        story_revision=p.story["story_revision"],
+        expected_output=selected["output"],
+    )
+    for name, original in frozen.items():
+        assert (directory / name).read_bytes() == original
+    with pytest.raises(execution.ProductionGovernanceError, match="already claimed"):
+        continue_attempt(missing_cwd_reserved, dry_run=False)
+    assert len(p.transport.native_requests) == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "version",
+        "receipt",
+        "provider",
+        "error_cwd",
+        "session",
+        "provider_begin",
+        "output",
+        "after_launch",
+        "request_hash",
+        "phase",
+        "request_output",
+        "request_cwd",
+        "frozen_hash",
+    ],
+)
+def test_missing_cwd_legacy_proof_rejects_unbound_or_launched_attempts(
+    missing_cwd_reserved, change
+):
+    from lib import episode_production_controls as controls
+
+    p, aid, directory, request, _ = missing_cwd_reserved
+    raw = read(directory / "raw_result.json")
+    retained = read(directory / "result.json")
+    if change == "version":
+        raw["data"]["conditioning_receipt"]["adapter_version"] = "unknown"
+    elif change == "receipt":
+        raw["data"]["conditioning_receipt"]["submitted_arguments"]["duration"] += 1
+    elif change == "provider":
+        raw["data"]["provider"] = "other"
+    elif change == "error_cwd":
+        raw["error"] = raw["error"].replace("/videos", "/other")
+    elif change == "session":
+        (
+            Path(p.cli._sessions_root)
+            / quote(
+                str(Path(request["submitted_inputs"]["output_path"]).parent), safe=""
+            )
+            / aid
+        ).mkdir(parents=True)
+    elif change == "provider_begin":
+        save(directory / "provider_request.json", {})
+    elif change == "output":
+        output = Path(request["submitted_inputs"]["output_path"])
+        output.parent.mkdir(parents=True)
+        output.write_bytes(b"possible original")
+    elif change == "phase":
+        raw["data"]["local_setup_evidence"] = {
+            "version": "1.0",
+            "phase": "after_cli_launch",
+            "cli_launch_started": True,
+            "cwd": str(Path(request["submitted_inputs"]["output_path"]).parent),
+            "output_path": request["submitted_inputs"]["output_path"],
+        }
+    elif change in {"request_output", "request_cwd", "frozen_hash"}:
+        tampered = copy.deepcopy(request)
+        if change == "request_output":
+            tampered["submitted_inputs"]["output_path"] = str(p.root / "other" / "clip.mp4")
+        elif change == "request_cwd":
+            tampered["submitted_inputs"]["cwd"] = str(p.root / "other")
+        else:
+            tampered["request_sha256"] = "0" * 64
+        (directory / "request.json").chmod(0o644)
+        save(directory / "request.json", tampered)
+    elif change == "after_launch":
+        raw["data"]["dispatch_status"] = "indeterminate"
+        raw["data"]["cli_version"] = "1.0.34"
+    else:
+        with pytest.raises(execution.ProductionGovernanceError):
+            execution.continue_local_grok_attempt(
+                p.cli, p.root, aid, request_sha256="0" * 64, dry_run=False
+            )
+        assert not p.transport.native_requests
+        return
+    retained["result"] = raw
+    for name, value in [("raw_result.json", raw), ("result.json", retained)]:
+        (directory / name).chmod(0o644)
+        save(directory / name, value)
+    assert controls.generation_usage(p.root)["total"] == 1
+    with pytest.raises(execution.ProductionGovernanceError):
+        continue_attempt(missing_cwd_reserved, dry_run=False)
+    assert not p.transport.native_requests
+
+
+def test_same_original_continuation_survives_only_unrelated_plan_and_selection(missing_cwd_reserved):
+    from tests.integration.test_first_pass_workflow import sign_planning_reviews
+
+    p, aid, directory, request, frozen = missing_cwd_reserved
+    other = next(shot for shot in p.contract["shots"] if shot["id"] != "entry")
+    other["prop_body_invariants"] = [
+        *other["prop_body_invariants"],
+        "Synthetic clarified invariant of another shot only",
+    ]
+    sign_planning_reviews(p.contract)
+    p.persist_contract()
+    save(
+        p.root / "artifacts" / "selected_attempts.json",
+        {"unrelated": {"attempt_id": "offline-unrelated"}},
+    )
+    assert continue_attempt(missing_cwd_reserved)["provider_calls"] == 0
+    result = continue_attempt(missing_cwd_reserved, dry_run=False)
+    assert result.success, result.error
+    selected = p.select("entry", result)
+    validate_attempt_provenance(
+        p.root,
+        aid,
+        shot_id="entry",
+        story_revision=p.story["story_revision"],
+        expected_output=selected["output"],
+    )
+    assert len(p.transport.native_requests) == len(execution._attempts(p.root)) == 1
+    for name, original in frozen.items():
+        assert (directory / name).read_bytes() == original
+    # Materialize that other shot's own upstream so the ordinary dispatch reaches
+    # the stale whole-plan gate rather than failing earlier pending eligibility.
+    p.bind_upstream(other["id"])
+    # That applicability grants no new ordinary dispatch under the stale scope.
+    with pytest.raises(execution.ProductionGovernanceError, match="stale contract"):
+        p.cli.execute(p.inputs[other["id"]])
+    assert len(p.transport.native_requests) == 1
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "action",
+        "dialogue",
+        "cast",
+        "duration",
+        "global",
+        "order",
+        "story",
+        "board",
+        "identity",
+        "payoff",
+        "membership",
+        "review",
+        "source_bytes",
+    ],
+)
+def test_same_original_applicability_refuses_changed_own_authority(
+    missing_cwd_reserved, change
+):
+    from tests.integration.test_first_pass_workflow import sign_planning_reviews
+
+    p, aid, directory, request, _ = missing_cwd_reserved
+    shot = next(s for s in p.contract["shots"] if s["id"] == "entry")
+    if change == "action":
+        shot["dominant_action"] += " changed"
+    elif change == "dialogue":
+        shot["dialogue"][0]["text"] += " changed"
+    elif change == "cast":
+        shot["cast_ids"].append("sen")
+    elif change == "duration":
+        shot["duration_seconds"] += 1
+    elif change == "global":
+        p.contract["late_cast_ids"] = []
+    elif change == "order":
+        p.contract["shots"].reverse()
+    elif change == "story":
+        p.contract["story"]["creative_brief"] = "changed story"
+    elif change in {"board", "identity", "payoff"}:
+        asset_id = {
+            "board": "entry-start",
+            "identity": "mira",
+            "payoff": "payoff-board",
+        }[change]
+        asset = next(a for a in p.contract["assets"] if a["id"] == asset_id)
+        asset["cast_ids"] = ["sen"]
+    elif change == "membership":
+        shot["asset_ids"].remove("entry-end")
+    elif change == "source_bytes":
+        asset = next(a for a in p.contract["assets"] if a["id"] == "entry-start")
+        (p.root / asset["path"]).write_bytes(b"changed current bytes")
+    sign_planning_reviews(p.contract)
+    if change == "review":
+        shot["review"]["status"] = "fail"
+        shot["review"]["predicates"][0]["status"] = "fail"
+    p.persist_contract()
+    with pytest.raises(execution.ProductionGovernanceError):
+        continue_attempt(missing_cwd_reserved, dry_run=False)
+    assert not p.transport.native_requests
+    assert not (directory / "local_continuation_claim.json").exists()
+
+
+@pytest.fixture
+def upstream_missing_cwd_reserved(production, monkeypatch):
+    p = production
+    first = p.generate("entry")
+    assert first.success, first.error
+    p.select("entry", first)
+    p.bind_upstream("interior")
+    inputs = copy.deepcopy(p.inputs["interior"])
+    inputs.pop("preferred_provider", None)
+    inputs.pop("allowed_providers", None)
+    inputs.pop("cwd", None)
+    inputs["output_path"] = str(p.root / "assets" / "videos" / "interior.mp4")
+    p.scope["requests"]["interior"] = execution.planned_request_digest(
+        inputs, project_dir=p.root
+    )
+    p.persist_scope()
+    with monkeypatch.context() as old:
+        old.setattr(
+            "tools._grok_cli_media._prepare_output_path", lambda path: Path(path)
+        )
+        result = p.cli.execute(inputs)
+    assert not result.success
+    aid = result.data["production_attempt_id"]
+    directory = p.root / "production_attempts" / aid
+    request = read(directory / "request.json")
+    frozen = {
+        name: (directory / name).read_bytes()
+        for name in execution._LOCAL_CONTINUATION_FILES
+    }
+    return p, aid, directory, request, frozen
+
+
+@pytest.mark.parametrize("change", ["attempt", "review", "output", "frame"])
+def test_same_original_refuses_relevant_upstream_selection_changes(
+    upstream_missing_cwd_reserved, change
+):
+    p, aid, directory, request, _ = upstream_missing_cwd_reserved
+    selections = execution.load_selected_attempts(p.root)
+    selected = selections["entry"]
+    if change == "attempt":
+        selected["attempt_id"] = "changed-upstream"
+    elif change == "review":
+        selected["review"]["review_id"] += "-changed"
+    else:
+        selected["output" if change == "output" else "outgoing_frame"]["sha256"] = (
+            "0" * 64
+        )
+    save(p.root / "artifacts" / "selected_attempts.json", selections)
+    with pytest.raises(execution.ProductionGovernanceError, match="selected upstream"):
+        continue_attempt(upstream_missing_cwd_reserved, dry_run=False)
+    assert len(p.transport.native_requests) == 1
+    assert not (directory / "local_continuation_claim.json").exists()
+
+
+def test_same_original_preserves_bound_upstream_and_strict_postclaim_current_checks(
+    upstream_missing_cwd_reserved,
+):
+    from tests.integration.test_first_pass_workflow import sign_planning_reviews
+
+    p, aid, directory, request, frozen = upstream_missing_cwd_reserved
+    other = next(s for s in p.contract["shots"] if s["id"] == "payoff")
+    other["dominant_action"] += " synthetic unrelated clarification"
+    sign_planning_reviews(p.contract)
+    p.persist_contract()
+    result = continue_attempt(upstream_missing_cwd_reserved, dry_run=False)
+    assert result.success, result.error
+    selected = p.select("interior", result)
+    validate_attempt_provenance(
+        p.root,
+        aid,
+        shot_id="interior",
+        story_revision=p.story["story_revision"],
+        expected_output=selected["output"],
+    )
+    assert len(p.transport.native_requests) == 2
+    own = next(s for s in p.contract["shots"] if s["id"] == "interior")
+    own["dominant_action"] += " unapproved own change"
+    sign_planning_reviews(p.contract)
+    p.persist_contract()
+    with pytest.raises(
+        execution.ProductionGovernanceError, match="own sources or contract plan"
+    ):
+        validate_attempt_provenance(
+            p.root,
+            aid,
+            shot_id="interior",
+            story_revision=p.story["story_revision"],
+            expected_output=selected["output"],
+        )
+    for name, original in frozen.items():
+        assert (directory / name).read_bytes() == original
+    assert len(p.transport.native_requests) == 2

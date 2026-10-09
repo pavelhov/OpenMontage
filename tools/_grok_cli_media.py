@@ -851,12 +851,19 @@ def execute_grok_cli_media(
     media_process_returned = False
     dispatch_started = False
     working_directory: Path | None = None
+    setup_phase: str | None = None
 
     def failure(error: GrokCLIContractError) -> ToolResult:
         if dispatch_started and working_directory is not None:
             error.diagnostics.update(_session_diagnostics(Path(sessions_root), working_directory, dispatch_session_id))
         result = _failure(error, started=started, cli_version=cli_version)
         result.data.update(session_id=dispatch_session_id, dispatch_session_id=dispatch_session_id)
+        if setup_phase is not None:
+            result.data["local_setup_evidence"] = {
+                "version": "1.0", "phase": setup_phase, "cli_launch_started": False,
+                "cwd": str(Path(cwd).expanduser().absolute()),
+                "output_path": str(Path(output_path).expanduser().absolute()),
+            }
         if working_directory is not None and dispatch_session_id:
             result.data["session_directory"] = str(Path(sessions_root).expanduser() / quote(str(working_directory), safe="") / dispatch_session_id)
         return result
@@ -865,10 +872,15 @@ def execute_grok_cli_media(
         dispatch_session_id = validate_session_id(session_id)
         if tool_name not in _RAW_OUTPUT_TYPES:
             raise GrokCLIContractError("capability", f"unsupported Grok CLI media tool: {tool_name}")
+        # The adapter already owns output-parent preparation. Its default cwd
+        # is that parent, so prepare it before strict working-directory lookup.
+        setup_phase = "output_preparation"
+        target = _prepare_output_path(output_path)
+        setup_phase = "cwd_resolution"
         working_directory = Path(cwd).expanduser().resolve(strict=True)
         if not working_directory.is_dir():
             raise GrokCLIContractError("invalid_argument", f"cwd is not a directory: {cwd}")
-        target = _prepare_output_path(output_path)
+        setup_phase = None
 
         # Resolve once so discovery and dispatch use the same PATH selection.
         grok_path = str(Path(grok_path).expanduser())
