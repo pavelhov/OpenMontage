@@ -1012,6 +1012,24 @@ def _promote_motion_bindings(root, pack, *, publish=True):
                         shot['review'] = deepcopy(prior['review'])
         if contract_path.exists():
             retained = json.loads(contract_path.read_text())
+            if local:
+                from lib import production_execution as execution
+                selected = execution.load_selected_attempts(root)
+                for shot in template['shots']:
+                    prior = next((s for s in retained['shots'] if s['id'] == shot['id']), None)
+                    observed = [item for item in (prior or {}).get('upstream', []) if set(item) != {'shot_id'}]
+                    if not observed:
+                        continue
+                    if [item['shot_id'] for item in prior['upstream']] != [item['shot_id'] for item in shot['upstream']]:
+                        raise ValueError('materialized upstream declaration differs from authored planning')
+                    for item in observed:
+                        current = execution._validated_upstream_binding(root, retained, shot['id'],
+                            item['shot_id'], selected.get(item['shot_id']))
+                        if current != item:
+                            raise ValueError('materialized upstream selection is stale; explicit rebinding is required')
+                        index = next(i for i, declared in enumerate(shot['upstream']) if declared['shot_id'] == item['shot_id'])
+                        shot['upstream'][index] = deepcopy(item)
+                digest = contract_digest(template)
             retained_digest = contract_digest(retained)
             if not local and retained_digest != digest and retained_digest != pack.get("motion_projection", {}).get("contract_digest"):
                 raise ValueError("existing canonical contract differs from retained motion projection")
