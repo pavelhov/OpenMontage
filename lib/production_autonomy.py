@@ -19,7 +19,7 @@ import math
 from datetime import datetime, timezone
 from pathlib import Path
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, ValidationError
 
 from lib.production_request import digest
 from lib.shot_contract import CRITICAL_PREDICATES
@@ -1818,7 +1818,8 @@ def openart_allowance_id(sha):
 def _scope_record(policy, sha, decision_id, *, shot_id, provider, request_digest, approval_plan_sha256,
                  derivation_index, lock_digest, compiled_request_sha256=None, preparation_review_id=None,
                  resolved_upstream=None, phase='first_pass', replaces_attempt_ids=None, credit_authorization_sha256=None,
-                 unknown_cost_authorization_sha256=None, repair_basis='critical_review', creator_repair=None):
+                 unknown_cost_authorization_sha256=None, repair_basis='critical_review', creator_repair=None,
+                 delivery_approval=None):
     """Normal v1.0 production scope for one attempt; exact single-shot scope."""
     if shot_id not in policy['shots']:
         raise AutonomyError(f'{shot_id} has no approved baseline')
@@ -1840,6 +1841,11 @@ def _scope_record(policy, sha, decision_id, *, shot_id, provider, request_digest
             'resolved_upstream': copy.deepcopy(resolved_upstream or {}),
         },
     }
+    if delivery_approval is not None:
+        proof_sha = digest(delivery_approval)
+        scope['id'] += '-delivery-' + proof_sha[:12]
+        scope['derived_from_policy'].update(delivery_approval=copy.deepcopy(delivery_approval),
+            delivery_approval_sha256=proof_sha)
     if policy.get('planning_mode') == 'shot_local_v1':
         scope['planning_mode'] = 'shot_local_v1'
     if phase == 'repair':
@@ -1993,6 +1999,9 @@ def _validate_retained_packet_policy_mcp_attempt(root, scope, *, inputs, native,
             inputs['governance']['shot_id'] if scope.get('planning_mode') == 'shot_local_v1' else None),
         'lock_digest': locks, 'compiled_request_sha256': digest(compiled),
         'preparation_review_id': inputs['preparation_review_id'], 'resolved_upstream': selected}
+    delivery = _retained_scope_delivery(root, policy, sha, decision_id, scope, inputs)
+    if delivery is not None:
+        material['delivery_approval'] = delivery
     material['unknown_cost_authorization_sha256'] = scope.get('unknown_cost_authorization_sha256')
     expected = _scope_record(policy, sha, decision_id,
         derivation_index=scope['derived_from_policy']['derivation_index'], phase=scope['phase'],
@@ -2055,7 +2064,17 @@ def _scope_material(root, inputs, provider, observation=None, *, derived_unknown
     shot_id = inputs['governance']['shot_id']
     if provider not in {p['id'] for p in policy['providers']}:
         raise AutonomyError('route provider outside approved policy')
-    _validate_request_delta(root, policy, shot_id, inputs, provider)
+    origin = historical_scope
+    if origin is None and replay_scope_id is not None:
+        matches = [s for s in _json(Path(root) / 'production_scopes.json')['scopes'] if s['id'] == replay_scope_id]
+        if len(matches) != 1:
+            raise AutonomyError('delivery replay scope must be retained exactly once')
+        origin = matches[0]
+    if origin is not None:
+        _retained_scope_delivery(root, policy, sha, decision_id, origin, inputs)
+    delivery = _validate_request_delta(root, policy, shot_id, inputs, provider,
+        policy_context=(sha, decision_id), delivery_approval=(origin or {}).get('derived_from_policy', {}).get('delivery_approval'),
+        historical=historical_scope is not None)
     if historical_scope is None:
         _validate_standing_transfer(root, policy, inputs, provider, exclude_scope_id=replay_scope_id)
     if provider == 'openart_cli':
@@ -2100,6 +2119,8 @@ def _scope_material(root, inputs, provider, observation=None, *, derived_unknown
         'lock_digest': locks, 'compiled_request_sha256': proof['compiled_sha256'],
         'preparation_review_id': inputs['preparation_review_id'],
         'resolved_upstream': resolved}
+    if delivery is not None:
+        material['delivery_approval'] = delivery
     if provider == 'openart_mcp' and derived_unknown_id is not None:
         fake_scope = {'id': derived_unknown_id, 'requests': {shot_id: material['request_digest']}, 'derived_from_policy': {'compiled_request_sha256': material['compiled_request_sha256'], 'lock_digest': material['lock_digest']}}
         material['unknown_cost_authorization_sha256'] = digest(_mcp_policy_terms(root, policy, sha, decision_id, fake_scope, inputs, native))
@@ -2437,18 +2458,27 @@ def validate_preauth(root, stage, approval_basis, preauth):
     The review is re-read from current bytes; its own ``critical_findings`` must be
     ``[]``. A caller-supplied list is only cross-checked.
     """
-    from lib.checkpoint import CANONICAL_STAGE_ARTIFACTS
     policy, sha, decision_id = require_active_policy(root)
+    return _validate_preauth_bytes(root, stage, approval_basis, preauth, policy, sha, decision_id)
+
+
+def _validate_preauth_bytes(root, stage, approval_basis, preauth, policy, sha, decision_id,
+                            *, artifact_bytes=None, review_bytes=None):
+    """Shared byte proof under an already authenticated current/original policy."""
+    from lib.checkpoint import CANONICAL_STAGE_ARTIFACTS
     if approval_basis != {'kind': 'policy', 'policy_sha256': sha, 'decision_id': decision_id}:
         raise AutonomyError('approval_basis does not cite active policy')
     if stage in NON_PREAUTH_STAGES or stage not in policy['checkpoint_stages']:
         raise AutonomyError(f'stage {stage} not preauthorized')
     if preauth.get('artifact_path') != f'artifacts/{CANONICAL_STAGE_ARTIFACTS[stage]}.json':
         raise AutonomyError('preauth artifact is not the canonical stage artifact')
-    current = hashlib.sha256(_inside(root, preauth['artifact_path']).read_bytes()).hexdigest()
+    artifact_path = _inside(root, preauth['artifact_path'])
+    current = hashlib.sha256(artifact_path.read_bytes() if artifact_bytes is None else artifact_bytes).hexdigest()
     if current != preauth.get('artifact_sha256'):
         raise AutonomyError('artifact bytes changed since review')
-    review_bytes = _inside(root, preauth['review_path']).read_bytes()
+    review_path = _inside(root, preauth['review_path'])
+    if review_bytes is None:
+        review_bytes = review_path.read_bytes()
     if hashlib.sha256(review_bytes).hexdigest() != preauth.get('review_sha256'):
         raise AutonomyError('review bytes changed')
     review = json.loads(review_bytes)
@@ -2715,6 +2745,9 @@ def validate_policy_attempt(root, request, scope, frozen_contract, *, frozen_ope
         'approval_plan_sha256': scope['approval_plan_sha256'], 'lock_digest': locks,
         'compiled_request_sha256': digest(payload['compiled']), 'preparation_review_id': review['review_id'],
         'resolved_upstream': {producer: selected[producer] for producer in producers}}
+    delivery = _retained_scope_delivery(root, policy, sha, decision_id, scope, restored)
+    if delivery is not None:
+        material['delivery_approval'] = delivery
     if scope['provider'] == 'openart_cli':
         from lib import openart_credit as credit, openart_dispatch as dispatch
         manifest, binding, _ = dispatch._manifest(request['attempt_id'])
@@ -2953,12 +2986,112 @@ def _explicit_aspect_ratio(inputs, provider):
     return ratio
 
 
-def _retained_delivery_aspect_ratio(root, policy, retained):
+def _retained_scope_delivery(root, policy, sha, decision_id, scope, inputs):
+    """Reprove only an original scope's bound delivery snapshot, not current boards."""
+    derived = scope.get('derived_from_policy', {})
+    if 'delivery_approval' not in derived and 'delivery_approval_sha256' not in derived:
+        return None
+    proof = derived.get('delivery_approval')
+    if not isinstance(proof, dict) or derived.get('delivery_approval_sha256') != digest(proof):
+        raise AutonomyError('retained scope delivery proof hash differs')
+    shot_id = inputs['governance']['shot_id']
+    retained = retained_baselines(root, policy)[shot_id]
+    ratio, checked = _retained_delivery_aspect_ratio(root, policy, retained,
+        policy_context=(sha, decision_id), delivery_approval=proof, historical=True, return_proof=True)
+    if checked != proof or _explicit_aspect_ratio(inputs, scope['provider']) != ratio:
+        raise AutonomyError('retained scope delivery ratio differs from original approval')
+    return copy.deepcopy(proof)
+
+
+def _policy_delivery_approval(root, policy, retained, binding, *, policy_context=None,
+                              delivery_approval=None, historical=False):
+    """Retain the existing delegated proposal checkpoint, never a request/default."""
+    from lib import checkpoint
+    from schemas.artifacts import validate_artifact
+    basis = policy['activation_basis']
+    setup = _bound_document(root, basis['standing_setup'], 'standing setup')
+    command = _bound_document(root, basis['run_command'], 'run command')
+    _bound_authorization(root, setup, basis['identity_id'])
+    _bound_authorization(root, command, basis['identity_id'])
+    if binding != command['authorization']:
+        raise ValueError('delivery authority differs from exact standing command')
+    if policy_context is None:
+        active, sha, decision_id = require_active_policy(root)
+        if active != policy:
+            raise ValueError('delivery policy differs from active standing run')
+    else:
+        sha, decision_id = policy_context
+    if not historical:
+        def capture(path):
+            raw = _inside(root, path).read_bytes()
+            return {'path': path, 'sha256': hashlib.sha256(raw).hexdigest(), 'content': raw.decode('utf-8')}
+        current = {'version': '1.0', 'kind': 'policy_proposal',
+                   'checkpoint': capture('checkpoint_proposal.json')}
+        saved = json.loads(current['checkpoint']['content'])
+        preauth = saved.get('review', {}).get('preauth', {})
+        current['artifact'] = capture('artifacts/proposal_packet.json')
+        current['review'] = capture(preauth['review_path'])
+        if delivery_approval is not None and delivery_approval != current:
+            raise ValueError('current delivery approval differs from retained scope')
+        delivery_approval = current
+    if (not isinstance(delivery_approval, dict)
+            or set(delivery_approval) != {'version', 'kind', 'checkpoint', 'artifact', 'review'}
+            or delivery_approval['version'] != '1.0' or delivery_approval['kind'] != 'policy_proposal'):
+        raise ValueError('exact retained delivery checkpoint proof required')
+    records, raw = {}, {}
+    for key in ('checkpoint', 'artifact', 'review'):
+        item = delivery_approval[key]
+        if not isinstance(item, dict) or set(item) != {'path', 'sha256', 'content'} or not isinstance(item['content'], str):
+            raise ValueError('delivery proof needs exact retained UTF-8 bytes')
+        _inside(root, item['path'])
+        raw[key] = item['content'].encode('utf-8')
+        if hashlib.sha256(raw[key]).hexdigest() != item['sha256']:
+            raise ValueError('retained delivery proof bytes changed')
+        records[key] = json.loads(raw[key])
+    saved, proposal, review = (records[k] for k in ('checkpoint', 'artifact', 'review'))
+    checkpoint.validate_checkpoint(saved)
+    validate_artifact('proposal_packet', proposal)
+    validate_artifact('review', review)
+    marker = _json(Path(root) / 'project.json')
+    if (delivery_approval['checkpoint']['path'] != 'checkpoint_proposal.json'
+            or saved['stage'] != 'proposal' or saved['status'] != 'completed'
+            or saved['project_id'] != policy['project_id'] or saved['pipeline_type'] != marker['pipeline_type']
+            or proposal['production_plan']['pipeline'] != saved['pipeline_type']
+            or proposal['approval']['status'] == 'rejected'):
+        raise ValueError('delivery proposal checkpoint is not the exact completed run stage')
+    preauth = saved.get('review', {}).get('preauth')
+    definitions = checkpoint._load_checkpoint_schema()['$defs']
+    Draft202012Validator(definitions['preauth']).validate(preauth)
+    approval = saved.get('metadata', {}).get('approval_basis')
+    Draft202012Validator(definitions['approval_basis']).validate(approval)
+    _validate_preauth_bytes(root, 'proposal', approval, preauth, policy, sha, decision_id,
+        artifact_bytes=raw['artifact'], review_bytes=raw['review'])
+    if (delivery_approval['artifact']['path'] != preauth['artifact_path']
+            or delivery_approval['review']['path'] != preauth['review_path']
+            or saved['artifacts'].get('proposal_packet') != proposal
+            or review['artifact_path'] != preauth['artifact_path']):
+        raise ValueError('delivery checkpoint artifact/review bindings disagree')
+    metadata = proposal.get('metadata', {})
+    if (metadata.get('identity_id') != basis['identity_id']
+            or metadata.get('story_revision') != policy['story_revision']
+            or 'project_id' in metadata and metadata['project_id'] != policy['project_id']):
+        raise ValueError('delivery proposal identity/project/story differs from standing run')
+    packages = [retained['projection']['scene_snapshot'].get('metadata', {}).get('package'),
+                retained['script_snapshot'].get('metadata', {}).get('package')]
+    if packages[0] != packages[1] or metadata.get('package') != packages[0]:
+        raise ValueError('delivery proposal differs from retained package')
+    if packages[0] is not None:
+        _bound_document(root, packages[0], 'delivery production package')
+    return metadata.get('delivery', {}), delivery_approval
+
+
+def _retained_delivery_aspect_ratio(root, policy, retained, *, policy_context=None,
+                                   delivery_approval=None, historical=False, return_proof=False):
     """Resolve existing exact standing-run approval, never mutable defaults/prose.
 
-    The approved baseline already freezes scene/script approval bindings. That
-    document can bind an approved proposal containing the engine delivery profile;
-    projecting its exact ratio does not change the retained template or policy.
+    Frozen scene/script bindings identify either the manual approved proposal or
+    the standing command whose policy delegates the canonical proposal stage.
+    Its byte-bound delivery proof changes neither the template nor the policy.
     """
     from fractions import Fraction
     from lib.media_profiles import get_profile
@@ -2978,12 +3111,18 @@ def _retained_delivery_aspect_ratio(root, policy, retained):
         if bindings[0] != bindings[1]:
             raise ValueError('retained scene/script delivery approvals disagree')
         approval = _bound_document(root, bindings[0], 'delivery approval')
-        if approval.get('version') != '1.0' or approval.get('status') != 'approved':
-            raise ValueError('delivery proposal is not approved')
-        proposal = _bound_document(root, approval.get('approved_proposal'), 'approved delivery proposal')
-        if proposal.get('version') != '1.0' or proposal.get('identity_id') != basis.get('identity_id'):
-            raise ValueError('approved delivery identity differs from standing run')
-        delivery = proposal.get('delivery', {})
+        proof = None
+        if (approval.get('kind') == 'creator_authorization' and approval.get('origin') == 'user_message'
+                and not {'status', 'approved_proposal'}.intersection(approval)):
+            delivery, proof = _policy_delivery_approval(root, policy, retained, bindings[0],
+                policy_context=policy_context, delivery_approval=delivery_approval, historical=historical)
+        else:
+            if delivery_approval is not None or approval.get('version') != '1.0' or approval.get('status') != 'approved':
+                raise ValueError('delivery proposal is not approved')
+            proposal = _bound_document(root, approval.get('approved_proposal'), 'approved delivery proposal')
+            if proposal.get('version') != '1.0' or proposal.get('identity_id') != basis.get('identity_id'):
+                raise ValueError('approved delivery identity differs from standing run')
+            delivery = proposal.get('delivery', {})
         profile = get_profile(delivery.get('profile'))
         ratio = profile.aspect_ratio.value
         width, height = map(int, ratio.split(':'))
@@ -3001,12 +3140,13 @@ def _retained_delivery_aspect_ratio(root, policy, retained):
         if lock is not None and (('value' in lock and digest(lock['value']) != digest(ratio))
                 or 'value_sha256' in lock and lock['value_sha256'] != hashlib.sha256(ratio.encode()).hexdigest()):
             raise ValueError('approved delivery differs from retained aspect ratio lock')
-        return ratio
-    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        return (ratio, proof) if return_proof else ratio
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, ValidationError) as exc:
         raise AutonomyError('retained approved delivery format required: ' + str(exc)) from exc
 
 
-def _validate_request_delta(root, policy, shot_id, inputs, provider):
+def _validate_request_delta(root, policy, shot_id, inputs, provider, *, policy_context=None,
+                            delivery_approval=None, historical=False):
     """Compare rooted actual inputs with exact retained layout and approved flex."""
     from lib import production_execution as execution
     if not _intent_allows(policy, shot_id, provider, inputs.get('model') if provider in {'openart_cli', 'openart_mcp'} else None):
@@ -3119,10 +3259,14 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider):
         raise AutonomyError('request resolution changed outside declared flex')
     actual_ratio = _explicit_aspect_ratio(actual, provider)
     baseline_ratio = _explicit_aspect_ratio(baseline, provider)
+    delivery_proof = None
     if actual_ratio != baseline_ratio:
         if baseline_ratio is not None or actual_ratio is None:
             raise AutonomyError('request aspect ratio changed outside retained template')
-        if actual_ratio != _retained_delivery_aspect_ratio(root, policy, retained):
+        ratio, delivery_proof = _retained_delivery_aspect_ratio(root, policy, retained,
+            policy_context=policy_context, delivery_approval=delivery_approval,
+            historical=historical, return_proof=True)
+        if actual_ratio != ratio:
             raise AutonomyError('request aspect ratio differs from retained approved delivery format')
     # The MCP project is already an exact immutable policy/native-body lock.
     # Admit its required public transport field when the input layout omits it;
@@ -3217,6 +3361,7 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider):
                 expected[key] = new
     if digest(expected) != digest(bound_actual):
         raise AutonomyError('request changed outside retained template/approved flex: ' + ', '.join(_diff(expected, bound_actual)))
+    return delivery_proof
 
 
 def _apply_reference_planning_flex(policy, expected, current):

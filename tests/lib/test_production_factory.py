@@ -283,6 +283,258 @@ def test_delivery_projection_honors_hash_only_native_ratio_lock(tmp_path, locked
     assert file_bytes(tmp_path) == before
 
 
+def standing_proposal_delivery_fixture(root, *, profile='tiktok_720p', full_native=False, package_binding=None):
+    """Canonical delegated proposal checkpoint; every verdict is synthetic."""
+    from lib.checkpoint import write_checkpoint
+    from tests.contracts.test_phase0_contracts import sample_artifact
+    kwargs = standing_fixture(root)
+    command = json.loads((root / kwargs['run_command']['path']).read_text())
+    for name in ('script', 'scene_plan'):
+        value = json.loads((root / 'artifacts' / (name + '.json')).read_text())
+        value['metadata'] = {'approval': copy.deepcopy(command['authorization'])}
+        if package_binding is not None:
+            value['metadata']['package'] = copy.deepcopy(package_binding)
+        write(root, 'artifacts/' + name + '.json', value)
+    kwargs['baselines']['entry'].update(projection=pa.current_projection(root, 'entry'),
+        script_snapshot=json.loads((root / 'artifacts/script.json').read_text()))
+    from lib.shot_contract import required_asset_ids
+    contract = execution.load_shot_contract(root)
+    consumer = required_asset_ids(contract, contract['shots'][0])
+    references = [str(root / asset['path']) for asset in contract['assets']
+                  if asset['id'] in consumer and asset['id'] != 'start'] if full_native else []
+    if references:
+        kwargs['baselines']['entry']['planned_request_template'] = execution.planned_request_template(
+            {'duration': 8, 'image_path': str(root / 'assets/start.svg'), 'reference_image_paths': references}, project_dir=root)
+    active = pa.activate_standing_run(root, **kwargs)
+    proposal = sample_artifact('proposal_packet')
+    proposal['approval']['status'] = 'pending'
+    proposal['production_plan'].update(pipeline='cinematic', render_runtime='ffmpeg')
+    proposal['metadata'] = {'identity_id': 'fixture-identity',
+        'project_id': kwargs['policy']['project_id'], 'story_revision': kwargs['policy']['story_revision'],
+        'delivery': {'profile': profile}}
+    if package_binding is not None:
+        proposal['metadata']['package'] = copy.deepcopy(package_binding)
+    artifact = write(root, 'artifacts/proposal_packet.json', proposal)
+    review = write(root, 'notes/SYNTHETIC-proposal-review.json', {'version': '1.0', 'stage': 'proposal',
+        'artifact_path': artifact['path'], 'artifact_sha256': artifact['sha256'],
+        'critical_findings': [], 'findings': []})
+    preauth = {'artifact_path': artifact['path'], 'artifact_sha256': artifact['sha256'],
+        'review_path': review['path'], 'review_sha256': review['sha256'], 'critical_findings': []}
+    basis = {'kind': 'supplied_script_scenes', 'artifacts': [
+        {'path': 'artifacts/' + name + '.json',
+         'sha256': hashlib.sha256((root / 'artifacts' / (name + '.json')).read_bytes()).hexdigest()}
+        for name in ('script', 'scene_plan')]}
+    write_checkpoint(root.parent, root.name, 'research', 'completed', {},
+        pipeline_type='cinematic', metadata={'supplied_basis': basis})
+    approval = {'kind': 'policy', 'policy_sha256': active['policy_sha256'], 'decision_id': active['decision_id']}
+    write_checkpoint(root.parent, root.name, 'proposal', 'completed', {'proposal_packet': proposal},
+        pipeline_type='cinematic', approval_basis=approval, review={'preauth': preauth})
+    pa.validate_preauth(root, 'proposal', approval, preauth)
+    inputs = {'duration': 8, 'image_path': str(root / 'assets/start.svg'), 'aspect_ratio': '9:16',
+        'project_dir': str(root), 'prompt': 'Synthetic fixture', 'operation': 'reference_to_video',
+        'compiled_request_id': 'fixture', 'preparation_review_id': 'fixture', 'governance': {'shot_id': 'entry'}}
+    if references:
+        inputs['reference_image_paths'] = references
+    return kwargs, active, inputs
+
+
+def test_standing_policy_proposal_delivery_enters_real_scope_derivation(tmp_path, monkeypatch):
+    root = tmp_path / 'offline-first-pass'; root.mkdir()
+    kwargs, active, inputs = standing_proposal_delivery_fixture(root)
+    # Native/preparation/semantic readiness is a separate fixture boundary;
+    # standing activation and canonical proposal checkpoint admission are real.
+    monkeypatch.setattr(request, 'validate_preparation', lambda *a: {'compiled_sha256': request.digest('synthetic')})
+    monkeypatch.setattr(pa, 'lock_proof', lambda *a, **kw: request.digest('synthetic'))
+    before = file_bytes(root)
+    scope = pa.derive_scope(root, inputs, provider='grok_cli',
+        observation={'cli_version': '1.0.34', 'grok_path': '/synthetic/grok'})
+    assert scope['derived_from_policy']['policy_sha256'] == active['policy_sha256']
+    assert scope['requests']['entry'] == execution.planned_request_digest(inputs, project_dir=root)
+    proof = scope['derived_from_policy']['delivery_approval']
+    assert scope['derived_from_policy']['delivery_approval_sha256'] == request.digest(proof)
+    assert scope['id'].endswith(request.digest(proof)[:12])
+    assert json.loads(proof['artifact']['content'])['approval']['status'] == 'pending'
+    assert all((root / path).read_bytes() == raw for path, raw in before.items()
+               if path != Path('artifacts/decision_log.json'))
+    assert execution._attempts(root) == []
+    assert pa.root_attempt_counts(root, kwargs['policy'])['total'] == 1
+
+
+def refresh_fixture_proposal(root, mutate):
+    """Rebind isolated synthetic review bytes to exercise the named inner gate."""
+    proposal = json.loads((root / 'artifacts/proposal_packet.json').read_text())
+    mutate(proposal)
+    artifact = write(root, 'artifacts/proposal_packet.json', proposal)
+    review = json.loads((root / 'notes/SYNTHETIC-proposal-review.json').read_text())
+    review['artifact_sha256'] = artifact['sha256']
+    retained = write(root, 'notes/SYNTHETIC-proposal-review.json', review)
+    saved = json.loads((root / 'checkpoint_proposal.json').read_text())
+    saved['artifacts']['proposal_packet'] = proposal
+    saved['review']['preauth'].update(artifact_sha256=artifact['sha256'], review_sha256=retained['sha256'])
+    write(root, 'checkpoint_proposal.json', saved)
+
+
+@pytest.mark.parametrize('change', ['missing_checkpoint', 'missing_artifact', 'missing_review', 'supplied_only',
+    'wrong_policy', 'wrong_decision', 'identity', 'project', 'story', 'unknown_profile', 'no_profile',
+    'ratio_conflict', 'rejected', 'critical_review', 'malformed_review', 'embedded_artifact', 'ratio_alias',
+    'wrong_ratio', 'unrelated_control', 'revoked'])
+def test_standing_delivery_proposal_refuses_unbound_conflicting_or_revoked_evidence(tmp_path, change):
+    root = tmp_path / 'offline-first-pass'; root.mkdir()
+    _, _, inputs = standing_proposal_delivery_fixture(root)
+    if change.startswith('missing_'):
+        name = {'missing_checkpoint': 'checkpoint_proposal.json', 'missing_artifact': 'artifacts/proposal_packet.json',
+                'missing_review': 'notes/SYNTHETIC-proposal-review.json'}[change]
+        (root / name).unlink()
+    elif change in {'identity', 'project', 'story', 'unknown_profile', 'no_profile', 'ratio_conflict', 'rejected'}:
+        def mutate(proposal):
+            if change in {'identity', 'project', 'story'}:
+                proposal['metadata'][{'identity': 'identity_id', 'project': 'project_id', 'story': 'story_revision'}[change]] = 'foreign'
+            elif change == 'unknown_profile': proposal['metadata']['delivery']['profile'] = 'unknown-profile'
+            elif change == 'no_profile': proposal['metadata']['delivery'] = {}
+            elif change == 'ratio_conflict': proposal['metadata']['delivery']['aspect_ratio'] = '16:9'
+            else: proposal['approval']['status'] = 'rejected'
+        refresh_fixture_proposal(root, mutate)
+    elif change in {'critical_review', 'malformed_review'}:
+        review = json.loads((root / 'notes/SYNTHETIC-proposal-review.json').read_text())
+        if change == 'critical_review': review['critical_findings'] = ['SYNTHETIC actual critical defect']
+        else: review.pop('findings')
+        binding = write(root, 'notes/SYNTHETIC-proposal-review.json', review)
+        saved = json.loads((root / 'checkpoint_proposal.json').read_text())
+        saved['review']['preauth']['review_sha256'] = binding['sha256']
+        write(root, 'checkpoint_proposal.json', saved)
+    elif change in {'supplied_only', 'wrong_policy', 'wrong_decision', 'embedded_artifact'}:
+        saved = json.loads((root / 'checkpoint_proposal.json').read_text())
+        if change == 'supplied_only': saved['artifacts'] = {}; saved.pop('review')
+        elif change == 'wrong_policy': saved['metadata']['approval_basis']['policy_sha256'] = '1' * 64
+        elif change == 'wrong_decision': saved['metadata']['approval_basis']['decision_id'] = 'foreign'
+        else: saved['artifacts']['proposal_packet']['metadata']['delivery']['profile'] = 'generic_hd'
+        write(root, 'checkpoint_proposal.json', saved)
+    elif change == 'ratio_alias': inputs['native_params'] = {'aspect_ratio': '9:16'}
+    elif change == 'wrong_ratio': inputs['aspect_ratio'] = '16:9'
+    elif change == 'unrelated_control': inputs['unapproved_control'] = True
+    else:
+        log = json.loads((root / 'artifacts/decision_log.json').read_text())
+        log['decisions'].append(dict(log['decisions'][0], decision_id='SYNTHETIC-revocation', selected='strict'))
+        write(root, 'artifacts/decision_log.json', log)
+    before = file_bytes(root)
+    with pytest.raises(pa.AutonomyError):
+        policy, _, _ = pa.require_active_policy(root)
+        pa._validate_request_delta(root, policy, 'entry', inputs, 'grok_cli')
+    assert file_bytes(root) == before
+
+
+def test_standing_delivery_original_proof_survives_current_proposal_and_revocation(tmp_path, monkeypatch):
+    root = tmp_path / 'offline-first-pass'; root.mkdir()
+    _, _, inputs = standing_proposal_delivery_fixture(root)
+    observation = {'cli_version': '1.0.34', 'grok_path': '/synthetic/grok'}
+    monkeypatch.setattr(request, 'validate_preparation', lambda *a: {'compiled_sha256': request.digest('synthetic')})
+    monkeypatch.setattr(pa, 'lock_proof', lambda *a, **kw: request.digest('synthetic'))
+    monkeypatch.setattr(pa, '_historical_current_preparation', lambda *a: {'compiled_sha256': request.digest('synthetic')})
+    monkeypatch.setattr(pa, '_root_lock_proof', lambda *a, **kw: request.digest('synthetic'))
+    scope = pa.derive_scope(root, inputs, provider='grok_cli', observation=observation)
+    pa.validate_derived_scope(root, scope, inputs=inputs, observation=observation)
+    refresh_fixture_proposal(root, lambda p: p['metadata']['delivery'].update(profile='generic_hd'))
+    with pytest.raises(pa.AutonomyError, match='current delivery approval differs'):
+        pa.validate_derived_scope(root, scope, inputs=inputs, observation=observation)
+    log = json.loads((root / 'artifacts/decision_log.json').read_text())
+    log['decisions'].append(dict(log['decisions'][0], decision_id='SYNTHETIC-revocation', selected='strict'))
+    write(root, 'artifacts/decision_log.json', log)
+    before = file_bytes(root)
+    with pytest.raises(pa.AutonomyError, match='revoked'):
+        pa._scope_material(root, inputs, 'grok_cli', observation)
+    policy, sha, decision, material = pa._scope_material(root, inputs, 'grok_cli', observation, historical_scope=scope)
+    assert pa._scope_record(policy, sha, decision, derivation_index=0, **material) == scope
+    with pytest.raises(pa.AutonomyError, match='ratio differs'):
+        pa._scope_material(root, dict(inputs, aspect_ratio='16:9'), 'grok_cli', observation, historical_scope=scope)
+    tampered = copy.deepcopy(scope)
+    tampered['derived_from_policy']['delivery_approval']['artifact']['content'] += ' '
+    with pytest.raises(pa.AutonomyError, match='proof hash differs'):
+        pa._scope_material(root, inputs, 'grok_cli', observation, historical_scope=tampered)
+    tampered['derived_from_policy']['delivery_approval_sha256'] = request.digest(tampered['derived_from_policy']['delivery_approval'])
+    with pytest.raises(pa.AutonomyError, match='proof bytes changed'):
+        pa._scope_material(root, inputs, 'grok_cli', observation, historical_scope=tampered)
+    assert file_bytes(root) == before
+
+
+def test_manual_delivery_conflict_cannot_fallback_to_policy_checkpoint(tmp_path):
+    root = tmp_path / 'offline-first-pass'; root.mkdir()
+    standing_proposal_delivery_fixture(root)
+    policy, _, _ = pa.require_active_policy(root)
+    retained = copy.deepcopy(pa.retained_baselines(root, policy)['entry'])
+    proposal = write(root, 'notes/SYNTHETIC-manual-proposal.json', {'version': '1.0',
+        'identity_id': 'fixture-identity', 'delivery': {'profile': 'generic_hd'}})
+    approval = write(root, 'notes/SYNTHETIC-manual-approval.json', {'version': '1.0',
+        'status': 'proposed', 'approved_proposal': proposal})
+    retained['script_snapshot']['metadata']['approval'] = approval
+    retained['projection']['scene_snapshot']['metadata']['approval'] = approval
+    before = file_bytes(root)
+    with pytest.raises(pa.AutonomyError, match='delivery proposal is not approved'):
+        pa._retained_delivery_aspect_ratio(root, policy, retained)
+    assert file_bytes(root) == before
+
+
+@pytest.mark.parametrize('profile,ratio', [('generic_hd', '16:9'), ('instagram_feed', '1:1')])
+def test_standing_delivery_known_nonportrait_profiles(tmp_path, profile, ratio):
+    root = tmp_path / 'offline-first-pass'; root.mkdir()
+    _, _, inputs = standing_proposal_delivery_fixture(root, profile=profile)
+    inputs['aspect_ratio'] = ratio
+    policy, _, _ = pa.require_active_policy(root)
+    before = file_bytes(root)
+    assert pa._validate_request_delta(root, policy, 'entry', inputs, 'grok_cli')['kind'] == 'policy_proposal'
+    assert file_bytes(root) == before
+
+
+@pytest.mark.parametrize('change', [None, 'different', 'missing', 'changed_bytes'])
+def test_standing_delivery_binds_the_exact_retained_package(tmp_path, change):
+    root = tmp_path / 'offline-first-pass'; root.mkdir()
+    package = write(root, 'notes/SYNTHETIC-retained-package.json', {'SYNTHETIC': 'Exact frozen authoring binding fixture'})
+    _, _, inputs = standing_proposal_delivery_fixture(root, package_binding=package)
+    if change == 'different':
+        refresh_fixture_proposal(root, lambda p: p['metadata'].update(package={'path': package['path'], 'sha256': '1' * 64}))
+    elif change == 'missing': refresh_fixture_proposal(root, lambda p: p['metadata'].pop('package'))
+    elif change == 'changed_bytes': (root / package['path']).write_text('{}')
+    policy, _, _ = pa.require_active_policy(root)
+    before = file_bytes(root)
+    if change is None:
+        assert pa._validate_request_delta(root, policy, 'entry', inputs, 'grok_cli')['kind'] == 'policy_proposal'
+    else:
+        with pytest.raises(pa.AutonomyError, match='package'):
+            pa._validate_request_delta(root, policy, 'entry', inputs, 'grok_cli')
+    assert file_bytes(root) == before
+
+
+def test_standing_delivery_complete_grok_preparation_and_scope_replay(tmp_path):
+    root = tmp_path / 'offline-first-pass'; root.mkdir()
+    _, _, inputs = standing_proposal_delivery_fixture(root, full_native=True)
+    observation = {'cli_version': '1.0.34', 'grok_path': '/SYNTHETIC/offline/grok'}
+    authored = request.compile_provider_prompt(root, 'entry', provider='grok_cli')
+    inputs['prompt'] = authored['prompt']
+    native = request.prepare_grok_native(inputs, observation)
+    shot = execution.load_shot_contract(root)['shots'][0]
+    timing = {'method': 'segmented_estimate', 'duration_seconds': 8, 'language': 'en', 'margin_seconds': .5,
+        'rationale': 'SYNTHETIC software fixture', 'overlap_policy': 'serial', 'overlap_rationale': 'SYNTHETIC serial windows',
+        'segments': [{'dialogue_index': i, 'text_sha256': request.digest(line['text']), 'language': 'en',
+            'word_count': 2, 'words_per_minute': 180, 'pause_seconds': 0, 'rationale': 'SYNTHETIC fixture'}
+            for i, line in enumerate(shot['dialogue'])],
+        'action_windows': [{'source_pointer': '/shot_contract/shots/0/' + key, 'value_sha256': request.digest(shot[key]),
+            'start_seconds': start, 'end_seconds': end, 'rationale': 'SYNTHETIC fixture'}
+            for key, start, end in [('dominant_action', 4.1, 7), ('completed_end_state', 7, 7.4)]]}
+    compiled = request.prepare_compiled_request(inputs, native, {'source': 'real'}, coverage=authored['coverage'], timing=timing)
+    write(root, 'artifacts/compiled_request-fixture.json', compiled)
+    write(root, 'artifacts/preparation_review-fixture.json', {'version': '1.0', 'review_id': 'fixture',
+        'reviewer': 'SYNTHETIC offline reviewer', 'status': 'pass', 'subject_sha256': request.digest(compiled),
+        'evidence_kind': 'reviewed', 'predicates': [{'name': p, 'status': 'pass', 'severity': 'critical',
+            'evidence': 'SYNTHETIC software fixture only'} for p in sorted(request.PREDICATES)]})
+    request.validate_preparation(inputs, native, {'source': 'real'})
+    before = file_bytes(root)
+    scope = pa.derive_scope(root, inputs, provider='grok_cli', observation=observation)
+    pa.validate_derived_scope(root, scope, inputs=inputs, observation=observation)
+    assert scope['derived_from_policy']['compiled_request_sha256'] == request.digest(compiled)
+    assert all((root / path).read_bytes() == raw for path, raw in before.items()
+               if path != Path('artifacts/decision_log.json'))
+    assert execution._attempts(root) == []
+
+
 def legacy_ungated_standing_activation(root, monkeypatch):
     kwargs = standing_stage_fixture(root, ['proposal', 'script', 'scene_plan', 'assets', 'edit', 'compose'])
     # Reproduce only the old writer defect; all other canonical checks remain real.
