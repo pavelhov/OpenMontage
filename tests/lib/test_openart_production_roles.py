@@ -115,3 +115,43 @@ def test_declared_multimodal_reference_roles_never_drop_or_cross(tmp_path):
     native['input_assets'][-1]['role'] = 'reference_video'
     with pytest.raises(ValueError, match='role/source'):
         validate_openart_asset_roles(contract, native)
+
+
+@pytest.mark.parametrize('native_role,mode', [('reference_image', 'element2video'),
+                                            ('environment_reference', 'generate-shot-video')])
+def test_explicit_guided_payoff_preserves_declared_role_and_exact_source(native_role, mode):
+    contract = packet()
+    contract['binding']['reference_mode'] = 'reference_guided'
+    contract['binding']['references'].append({'id': 'payoff', 'role': 'payoff_board', 'sha256': 'd' * 64})
+    contract['shot']['asset_ids'].append('payoff')
+    native = {'provider': 'openart_mcp', 'mode': mode, 'input_assets': [
+        {'role': 'character_reference', 'source_sha256': 'c' * 64},
+        {'role': native_role, 'source_sha256': 'd' * 64}]}
+    before = copy.deepcopy(contract)
+    validate_openart_asset_roles(contract, native)
+    assert contract == before
+    native['input_assets'][-1]['source_sha256'] = 'e' * 64
+    with pytest.raises(ValueError, match='role/source'):
+        validate_openart_asset_roles(contract, native)
+
+
+@pytest.mark.parametrize('failure', ['missing_payoff', 'literal_pin', 'legacy', 'cli'])
+def test_payoff_guide_requires_declared_guided_native_treatment(failure):
+    contract = packet()
+    contract['binding']['reference_mode'] = 'reference_guided'
+    contract['binding']['references'].append({'id': 'payoff', 'role': 'payoff_board', 'sha256': 'd' * 64})
+    contract['shot']['asset_ids'].append('payoff')
+    native = {'provider': 'openart_mcp', 'mode': 'element2video', 'input_assets': [
+        {'role': 'first_frame', 'source_sha256': 'a' * 64},
+        {'role': 'reference_image', 'source_sha256': 'c' * 64},
+        {'role': 'reference_image', 'source_sha256': 'd' * 64}]}
+    if failure == 'missing_payoff':
+        native['input_assets'].pop()
+    elif failure == 'literal_pin':
+        native['input_assets'][-1]['role'] = 'last_frame'
+    elif failure == 'legacy':
+        contract['binding'].pop('reference_mode')
+    else:
+        native['provider'] = 'openart_cli'
+    with pytest.raises(ValueError, match='omits approved reference|role/source|reference-guided mode'):
+        validate_openart_asset_roles(contract, native)

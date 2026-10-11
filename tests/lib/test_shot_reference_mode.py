@@ -6,7 +6,7 @@ import pytest
 
 from lib import production_execution as execution, production_request as request
 from lib.shot_contract import contract_digest, validate_shot_contract
-from tests.lib.test_shot_contract import package, refresh
+from tests.lib.test_shot_contract import local_reviews, package, refresh
 from tests.lib.test_production_request import reference_free_package, write
 
 
@@ -122,6 +122,31 @@ def test_local_free_flag_cannot_erase_native_frame_pin(mixed, pin):
     write(root / 'artifacts/scene_plan.json', scene)
     with pytest.raises(ValueError, match='frame pin|ending-frame'):
         request.source_packet(root, 'cutaway')
+
+
+@pytest.mark.parametrize('pin', [None, 'pinned_initial_frame', 'pinned_final_frame'])
+def test_local_guided_payoff_source_retains_roles_and_required_native_pins(mixed, pin):
+    contract, root = mixed
+    contract.update(planning_mode='shot_local_v1', reference_mode='reference_guided')
+    contract['shots'][0].update(asset_ids=['start', 'payoff', 'patient'], endpoint_completion='unknown')
+    local_reviews(contract)
+    write(root / 'artifacts/shot_contract.json', contract)
+    native = {'provider': 'openart_mcp', 'mode': 'element2video', 'input_assets': [
+        {'role': 'reference_image', 'source_sha256': contract['assets'][0]['sha256']}]}
+    if pin:
+        scene = json.loads((root / 'artifacts/scene_plan.json').read_text())
+        scene['metadata'] = {'visual_development': {'shot_cards': {'entry': {
+            pin: {'required': True, 'requirement_id': 'exact-guided-pin', 'end_state': 'Pinned state'}}}}}
+        write(root / 'artifacts/scene_plan.json', scene)
+        with pytest.raises(ValueError, match='native initial-frame pin|native ending-frame pin'):
+            request.source_packet(root, 'entry', provider='openart_mcp', native=native)
+    else:
+        packet = request.source_packet(root, 'entry', provider='openart_mcp', native=native)
+        assert packet['binding']['reference_mode'] == 'reference_guided'
+        assert {r['id']: r['role'] for r in packet['binding']['references']} == {
+            'start': 'start_frame', 'payoff': 'payoff_board', 'patient': 'identity_reference'}
+        with pytest.raises(ValueError, match='explicit OpenArt MCP reference route'):
+            request.source_packet(root, 'entry', provider='openart_cli')
 
 
 @pytest.mark.parametrize('kind', ['reference_assets', 'motion_handoffs'])
