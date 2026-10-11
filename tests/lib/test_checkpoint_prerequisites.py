@@ -150,3 +150,53 @@ def test_marker_derived_unknown_playbook_blocks_later_writes(tmp_path) -> None:
 
     with pytest.raises(CheckpointValidationError, match="style_playbook"):
         write_checkpoint(tmp_path, "run", "research", "in_progress", {})
+
+
+def _supplied_basis(project_dir, script=None):
+    import hashlib
+    path = project_dir / "supplied" / "script.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(script or _script_artifact()), encoding="utf-8")
+    return {"kind": "supplied_script_scenes", "artifacts": [
+        {"path": "supplied/script.json", "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}]}
+
+
+def test_supplied_basis_completes_research_without_fabricated_brief(tmp_path) -> None:
+    project_dir = init_project("run", title="Run", pipeline_type="framework-smoke", pipeline_dir=tmp_path)
+    basis = _supplied_basis(project_dir)
+    path = write_checkpoint(tmp_path, "run", "research", "completed", {},
+        pipeline_type="framework-smoke", human_approved=True, metadata={"supplied_basis": basis})
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert "research_brief" not in saved["artifacts"]
+    assert saved["metadata"]["supplied_basis"] == basis
+    write_checkpoint(tmp_path, "run", "script", "completed", {"script": _script_artifact()},
+        pipeline_type="framework-smoke", human_approved=True)
+
+
+def test_supplied_basis_must_be_current_and_valid(tmp_path) -> None:
+    project_dir = init_project("run", title="Run", pipeline_type="framework-smoke", pipeline_dir=tmp_path)
+    with pytest.raises(CheckpointValidationError, match="research_brief"):
+        write_checkpoint(tmp_path, "run", "research", "completed", {},
+            pipeline_type="framework-smoke", human_approved=True)
+    bad = _supplied_basis(project_dir, {"version": "1.0"})
+    with pytest.raises(CheckpointValidationError, match="supplied basis"):
+        write_checkpoint(tmp_path, "run", "research", "completed", {},
+            pipeline_type="framework-smoke", human_approved=True, metadata={"supplied_basis": bad})
+    for mutate in (lambda b: b["artifacts"][0].update(sha256="0" * 64),
+                   lambda b: b["artifacts"][0].update(path="../outside.json"),
+                   lambda b: b.update(kind="invented_research"),
+                   lambda b: b.update(kind=["supplied_script_scenes"]),
+                   lambda b: b.update(kind={"name": "chosen_premise"}),
+                   lambda b: b.update(artifacts=[])):
+        basis = _supplied_basis(project_dir)
+        mutate(basis)
+        with pytest.raises(CheckpointValidationError, match="supplied basis"):
+            write_checkpoint(tmp_path, "run", "research", "completed", {},
+                pipeline_type="framework-smoke", human_approved=True, metadata={"supplied_basis": basis})
+    basis = _supplied_basis(project_dir)
+    write_checkpoint(tmp_path, "run", "research", "completed", {},
+        pipeline_type="framework-smoke", human_approved=True, metadata={"supplied_basis": basis})
+    (project_dir / "supplied" / "script.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(CheckpointValidationError, match="PREREQUISITE VIOLATION"):
+        write_checkpoint(tmp_path, "run", "script", "completed", {"script": _script_artifact()},
+            pipeline_type="framework-smoke", human_approved=True)

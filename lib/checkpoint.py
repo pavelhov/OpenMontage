@@ -159,6 +159,7 @@ def _validate_artifacts_for_stage(
     status: str,
     artifacts: dict[str, Any],
     pipeline_type: str | None = None,
+    metadata: Any = None,
 ) -> None:
     # Valid stages come from the pipeline manifest (get_pipeline_stages), which
     # can declare stages beyond the 9 canonical ones (e.g. character-animation's
@@ -175,6 +176,8 @@ def _validate_artifacts_for_stage(
         required_artifact is not None
         and status in {"completed", "awaiting_human"}
         and required_artifact not in artifacts
+        and not (stage == "research" and isinstance(metadata, dict)
+                 and _supplied_basis_shape_error(metadata.get("supplied_basis")) is None)
     ):
         raise CheckpointValidationError(
             f"Stage {stage!r} with status {status!r} must include "
@@ -222,7 +225,9 @@ def validate_checkpoint(checkpoint: dict[str, Any]) -> None:
     if not isinstance(artifacts, dict):
         raise CheckpointValidationError("Checkpoint artifacts must be a dictionary")
 
-    _validate_artifacts_for_stage(stage, status, artifacts, pipeline_type)
+    _validate_artifacts_for_stage(
+        stage, status, artifacts, pipeline_type, checkpoint.get("metadata"),
+    )
 
     try:
         jsonschema.validate(instance=checkpoint, schema=_load_checkpoint_schema())
@@ -232,6 +237,59 @@ def validate_checkpoint(checkpoint: dict[str, Any]) -> None:
 
 def _checkpoint_path(pipeline_dir: Path, project_id: str, stage: str) -> Path:
     return pipeline_dir / project_id / f"checkpoint_{stage}.json"
+
+
+SUPPLIED_BASIS_KINDS = frozenset({"supplied_script_scenes", "chosen_premise"})
+
+
+def _supplied_basis_shape_error(basis: Any) -> str | None:
+    """Structural check for a research stage grounded in user-supplied material."""
+    if not isinstance(basis, dict) or set(basis) != {"kind", "artifacts"}:
+        return "supplied basis must be {kind, artifacts}"
+    if not isinstance(basis["kind"], str) or basis["kind"] not in SUPPLIED_BASIS_KINDS:
+        return f"supplied basis kind must be one of {sorted(SUPPLIED_BASIS_KINDS)}"
+    items = basis["artifacts"]
+    if not isinstance(items, list) or not items or not all(
+        isinstance(item, dict) and set(item) == {"path", "sha256"}
+        and isinstance(item["path"], str) and item["path"]
+        and isinstance(item["sha256"], str) and len(item["sha256"]) == 64
+        for item in items
+    ):
+        return "supplied basis artifacts must be non-empty [{path, sha256}]"
+    return None
+
+
+def _validate_supplied_basis(project_root: Path, basis: Any) -> None:
+    """Bind a supplied script/scenes or chosen premise to current project bytes.
+
+    The research stage then records what the user supplied instead of a
+    fabricated research brief. Changed or missing bytes invalidate the basis.
+    """
+    error = _supplied_basis_shape_error(basis)
+    if error is not None:
+        raise CheckpointValidationError(error)
+    root = Path(project_root).resolve()
+    for item in basis["artifacts"]:
+        path = (root / item["path"]).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            raise CheckpointValidationError(
+                f"supplied basis file {item['path']!r} must exist inside the project"
+            )
+        data = path.read_bytes()
+        if hashlib.sha256(data).hexdigest() != item["sha256"]:
+            raise CheckpointValidationError(f"supplied basis file {item['path']!r} changed")
+        if basis["kind"] == "supplied_script_scenes":
+            name = path.stem
+            if path.suffix != ".json" or name not in {"script", "scene_plan"}:
+                raise CheckpointValidationError(
+                    "supplied basis script/scenes must be script.json or scene_plan.json"
+                )
+            try:
+                validate_artifact(name, json.loads(data))
+            except Exception as exc:
+                raise CheckpointValidationError(
+                    f"supplied basis {name!r} failed schema validation: {exc}"
+                ) from exc
 
 
 def init_project(
@@ -382,6 +440,9 @@ def _enforce_stage_prerequisites(
             with open(path, encoding="utf-8") as handle:
                 checkpoint = json.load(handle)
             validate_checkpoint(checkpoint)
+            basis = (checkpoint.get("metadata") or {}).get("supplied_basis")
+            if basis is not None:
+                _validate_supplied_basis(pipeline_dir / project_id, basis)
         except (OSError, json.JSONDecodeError, CheckpointValidationError):
             incomplete.append(predecessor)
             continue
@@ -706,6 +767,11 @@ def write_checkpoint(
                 f"re-write with status='completed', human_approved=True."
             )
 
+    if isinstance(metadata, dict) and "supplied_basis" in metadata:
+        if stage != "research":
+            raise CheckpointValidationError("supplied basis applies only to the research stage")
+        _validate_supplied_basis(pipeline_dir / project_id, metadata["supplied_basis"])
+
     _enforce_stage_prerequisites(
         pipeline_dir,
         project_id,
@@ -735,7 +801,7 @@ def write_checkpoint(
             or (project_root / "artifacts" / "shot_contract.json").exists()
             or (project_root / "shot_contract.json").exists()
             or (project_root / "production_attempts").exists()
-            or (isinstance(final_review, dict) and final_review.get("version") == "2.0")
+            or (isinstance(final_review, dict) and final_review.get("version") in ("2.0", "3.0"))
         )
         final_claim = (
             metadata.get("release_status") == "final"

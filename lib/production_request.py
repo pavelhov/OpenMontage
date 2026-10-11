@@ -847,3 +847,264 @@ def validate_frozen_preparation_history(request, frozen, project_dir):
     timing, coverage and preparation predicates remain required.
     """
     return _validate_frozen_preparation(request, frozen, project_dir, current_required=False)
+
+
+# --- Once-authored package preparation (moved from Studio production_session) ---
+PACKAGE_PREFLIGHT = ('preparation only; pending boards and current semantic reviews remain '
+    'required before the exact ready-video dry-run')
+
+
+def _encode_record(value):
+    return json.dumps(value, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
+
+
+def _artifact_pointer(root, relative):
+    path = (root / relative).resolve()
+    if not path.is_relative_to(root):
+        raise ValueError('canonical pointer escapes project')
+    return {'path': str(path.relative_to(root)),
+            'sha256': hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None}
+
+
+def _compile_package_targets(root, package_binding):
+    """Validate the bound package and return (spec, records, targets) without writing."""
+    from lib import production_boards as boards, production_images as images
+    from lib.episode_production_controls import episode_production_status
+    package_path = images._bound_file(root, package_binding, 'production package')
+    package = json.loads(package_path.read_text())
+    marker = json.loads((root / 'project.json').read_text())
+    if (set(package) - {'version', 'project_id', 'story_revision', 'title', 'shots', 'boards', 'approval_preview'}
+            or not {'version', 'project_id', 'story_revision', 'title', 'shots', 'boards'} <= set(package)
+            or package['version'] != '1.0'
+            or any(package[k] != marker[k] for k in ('project_id', 'story_revision'))
+            or not isinstance(package['title'], str) or not package['title'].strip()):
+        raise ValueError('package requires exact current project/story binding and title')
+    spec = package['boards']
+    if spec.get('version') != '1.1' or not spec.get('motion_binding'):
+        raise ValueError('new production package requires boards version 1.1 and an explicit motion_binding')
+    nodes = boards._validate_spec(root, spec)
+    source_paths = {boards._inside(root, b['path']) for b in
+        [package_binding, spec['story'], spec['approval'], *spec['references']]}
+    reserved_paths = {boards._inside(root, directory + name + '.json')
+        for directory in ('', 'artifacts/') for name in ('script', 'scene_plan', 'asset_manifest')}
+    existing_pack = boards.load_board_pack(root) if (root / boards.ARTIFACT).exists() else None
+    same_pack = existing_pack and existing_pack['specification_sha256'] == boards._digest(spec)
+    scopes_path = root / 'production_scopes.json'
+    scopes = json.loads(scopes_path.read_text()).get('scopes', []) if scopes_path.exists() else []
+    if not same_pack and any(scope.get('phase') != 'image' for scope in scopes):
+        raise ValueError('new package cannot rewrite motion planning frozen by retained scopes')
+    outputs = [boards._inside(root, n['output_path']) for n in nodes.values()]
+    for output in outputs:
+        if output.relative_to(root).parts[0] not in ('assets', 'renders'):
+            raise ValueError('board output collides with administrative or artifact paths')
+        if output.exists() and not same_pack:
+            raise ValueError('board output path already exists before package preparation')
+    if len(set(outputs)) != len(outputs) or set(outputs) & (source_paths | reserved_paths):
+        raise ValueError('board output paths duplicate or overwrite retained package inputs/artifacts')
+    shots = package['shots']
+    if not isinstance(shots, list) or not shots:
+        raise ValueError('package needs ordered authored shots')
+    ids = []
+    sections, scenes, cards = [], [], {}
+    clock = 0
+    for shot in shots:
+        if set(shot) - {'id', 'script', 'action', 'duration_seconds', 'end_state', 'preserve',
+                'pinned_initial_frame', 'pinned_final_frame', 'cast'}:
+            raise ValueError('unsupported authored shot field')
+        sid = shot['id']
+        if (not isinstance(sid, str) or not sid.strip() or Path(sid).name != sid
+                or sid in ('.', '..') or sid in ids):
+            raise ValueError('duplicate or unsafe authored shot ID')
+        if any(not isinstance(shot[k], str) for k in ('script', 'action')) or not shot['action'].strip():
+            raise ValueError('shot script/action must be exact authored text')
+        duration = shot['duration_seconds']
+        if (type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0):
+            raise ValueError('shot duration must be finite and positive')
+        card = {k: shot[k] for k in ('end_state', 'preserve') if k in shot}
+        if ('end_state' in card and (not isinstance(card['end_state'], str) or not card['end_state'].strip())
+                or 'preserve' in card and (not isinstance(card['preserve'], list)
+                    or any(not isinstance(v, str) or not v.strip() for v in card['preserve']))):
+            raise ValueError('end_state/preserve need explicit authored text')
+        for key in ('pinned_initial_frame', 'pinned_final_frame'):
+            if key not in shot:
+                continue
+            pin = shot[key]
+            if (not isinstance(pin, dict) or set(pin) != {'required', 'requirement_id', 'end_state'}
+                    or type(pin['required']) is not bool
+                    or any(not isinstance(pin[k], str) or not pin[k].strip() for k in ('requirement_id', 'end_state'))):
+                raise ValueError('malformed authored frame-pin requirement')
+            card[key] = pin
+        if 'cast' in shot:
+            if (not isinstance(shot['cast'], list) or any(not isinstance(v, str) or not v.strip() for v in shot['cast'])
+                    or len(set(shot['cast'])) != len(shot['cast'])):
+                raise ValueError('cast requires unique authored character IDs')
+            card['cast'] = shot['cast']
+        cards[sid] = card
+        ids.append(sid)
+        end = clock + duration
+        if not math.isfinite(end):
+            raise ValueError('cumulative duration must be finite')
+        sections.append({'id': sid, 'text': shot['script'], 'start_seconds': clock, 'end_seconds': end})
+        scenes.append({'id': sid, 'type': 'generated', 'description': shot['action'],
+            'script_section_id': sid, 'start_seconds': clock, 'end_seconds': end})
+        clock = end
+    if ids != [s['shot_id'] for s in spec['shots']]:
+        raise ValueError('authored shots and ordered board shot mappings differ')
+    # The engine validates retained story/approval/reference bytes even for pure reuse.
+    if nodes:
+        images.build_preboard_packet(root, story=spec['story'], approval=spec['approval'],
+            references=spec['references'], board_slots=[{'id': n['slot_id'],
+                'shot_id': n['shot_id'], 'role': n['role'], 'status': 'unresolved'} for n in nodes.values()])
+    else:
+        for label in ('story', 'approval'):
+            images._bound_file(root, spec[label], label)
+        if not spec['approval'].get('approved_by'):
+            raise ValueError('story needs explicit approval provenance')
+    assets, bindings, reference_aliases = [], {}, {}
+    for ref in spec['references']:
+        aid = ref['id']
+        roles = [ref['role']] + [r['role'] for r in spec.get('shared_roles', []) if r['asset_id'] == aid]
+        shared = any(r['asset_id'] == aid for r in spec.get('shared_roles', []))
+        users = [s['shot_id'] for s in spec['shots'] if shared or any(r['asset_id'] == aid for r in s['roles'])]
+        roles += [r['role'] for s in spec['shots'] for r in s['roles'] if r['asset_id'] == aid]
+        # Every provided reference needs its current declared role review, even
+        # when used only as an image-generation source rather than a shot role.
+        for role in dict.fromkeys(roles or [ref['role']]):
+            images.validate_image_reuse(root, ref, role=role)
+        path = boards._inside(root, ref['path'])
+        for index, scene_id in enumerate(users or [ids[0]]):
+            asset_id = aid if index == 0 else aid + '--' + scene_id
+            if asset_id in bindings or (index and asset_id in ({r['id'] for r in spec['references']} | set(nodes))):
+                raise ValueError('provided reference scene alias collides with asset ID')
+            assets.append({'id': asset_id, 'type': 'image', 'path': str(path.relative_to(root)),
+                'source_tool': 'provided', 'scene_id': scene_id})
+            bindings[asset_id] = {k: ref[k] for k in ('path', 'sha256', 'review', 'applicability')}
+            reference_aliases[asset_id] = aid
+    metadata = {'project_id': marker['project_id'], 'story_revision': marker['story_revision'],
+        'package': {'path': str(package_path.relative_to(root)), 'sha256': package_binding['sha256']},
+        'story': spec['story'], 'approval': spec['approval']}
+    records = {
+        'script': {'version': '1.0', 'title': package['title'], 'total_duration_seconds': clock,
+            'sections': sections, 'metadata': metadata},
+        'scene_plan': {'version': '1.0', 'scenes': scenes,
+            'metadata': {**metadata, 'visual_development': {'shot_cards': cards}}},
+        'asset_manifest': {'version': '1.0', 'assets': assets,
+            'metadata': {**metadata, 'source_bindings': bindings}}}
+    boards._motion_template_for_plan(spec, records['scene_plan'])
+    try:
+        for name, record in records.items():
+            Draft202012Validator(load_schema(name)).validate(record)
+    except ValidationError as exc:
+        raise ValueError('package artifact schema: ' + exc.message) from exc
+    targets = {boards._inside(root, 'artifacts/' + name + '.json'): _encode_record(record)
+               for name, record in records.items()}
+
+    def compatible(path, payload):
+        if path.read_bytes() == payload:
+            return True
+        if path.name != 'asset_manifest.json' or not same_pack:
+            return False
+        actual, initial = json.loads(path.read_text()), json.loads(payload)
+        try:
+            Draft202012Validator(load_schema('asset_manifest')).validate(actual)
+        except ValidationError:
+            return False
+        actual_assets = {a['id']: a for a in actual['assets']}
+        if len(actual_assets) != len(actual['assets']):
+            return False
+        if any(actual_assets.get(a['id']) != a for a in initial['assets']):
+            return False
+        current = actual.get('metadata', {})
+        source_bindings = current.get('source_bindings', {})
+        if not isinstance(source_bindings, dict):
+            return False
+
+        def preserves_binding(key, seed):
+            binding = source_bindings.get(key)
+            if not isinstance(binding, dict):
+                return False
+            for field, value in seed.items():
+                if binding.get(field) == value:
+                    continue
+                # A newer genuine role observation can supersede the seeded
+                # reuse review while preserving the same retained source bytes.
+                if (field != 'review' or not any(o['asset_id'] == reference_aliases[key]
+                        and o['review'] == binding.get('review')
+                        and o['review']['subject_sha256'] == seed['sha256']
+                        for o in existing_pack['observations'])):
+                    return False
+            return True
+        return (actual.get('version') == initial['version']
+            and all(current.get(k) == v for k, v in initial['metadata'].items() if k != 'source_bindings')
+            and all(preserves_binding(k, v) for k, v in initial['metadata']['source_bindings'].items()))
+
+    # Check every conflict before any directory, lock or artifact write.
+    for path, payload in targets.items():
+        legacy = boards._inside(root, path.name)
+        if legacy.exists() and not compatible(legacy, payload):
+            raise ValueError('legacy canonical package artifact conflict: ' + path.name)
+        if path.exists() and not compatible(path, payload):
+            raise ValueError('canonical package artifact conflict: ' + path.name)
+    if (root / boards.ARTIFACT).exists():
+        if boards.load_board_pack(root)['specification_sha256'] != boards._digest(spec):
+            raise ValueError('current board pack already binds another specification')
+    if any(not path.exists() for path in targets):
+        if images.image_usage(root)['total'] or episode_production_status(root)['usage']['total']:
+            raise ValueError('cannot materialize missing package artifacts after dispatch')
+    return spec, records, targets
+
+
+def compile_package(project_dir, package_binding):
+    """Validate a bound once-authored package and return its projections; writes nothing.
+
+    Input binding is {path, sha256}. The package JSON has version "1.0", the
+    current project_id/story_revision, a title, ordered shots [{id, script,
+    action, duration_seconds, optional end_state, preserve, pinned frames, cast}]
+    and boards (an exact board specification version 1.1 with motion_binding).
+    Script, scene plan and asset manifest are all derived from this one package.
+    Existing different canonical artifacts fail closed.
+    """
+    root = Path(project_dir).expanduser().resolve()
+    spec, records, _ = _compile_package_targets(root, package_binding)
+    return {'spec': spec, 'records': records}
+
+
+def prepare_package(project_dir, package_binding):
+    """Materialize the compiled records and board pack; zero provider calls or reservations.
+
+    Replay of the same package is byte-identical. An interrupted run may leave
+    only an identical subset, which the next invocation fills in.
+    """
+    import os
+    import tempfile
+    from lib import production_boards as boards, production_images as images
+    root = Path(project_dir).expanduser().resolve()
+    _compile_package_targets(root, package_binding)  # Invalid input leaves the project unchanged.
+
+    @boards._board_transaction
+    def materialize(root):
+        spec, _, targets = _compile_package_targets(root, package_binding)
+        for path, payload in targets.items():
+            if path.exists():
+                continue
+            with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+                temporary = Path(stream.name)
+                try:
+                    stream.write(payload)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                    os.link(temporary, path)
+                finally:
+                    temporary.unlink(missing_ok=True)
+        return spec
+
+    spec = materialize(root)
+    pack = boards.prepare_board_pack(root, spec, images=images)
+    projection = pack.get('motion_projection')
+    if projection is None:
+        raise ValueError('package motion projection incomplete; replay preparation to reconcile')
+    return {'status': 'prepared', 'provider_calls': 0, 'reservations': 0,
+        'artifacts': [_artifact_pointer(root, 'artifacts/' + name + '.json')
+            for name in ('script', 'scene_plan', 'asset_manifest')],
+        'motion_projection': projection,
+        'motion_preflight': PACKAGE_PREFLIGHT}

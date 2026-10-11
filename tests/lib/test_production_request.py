@@ -796,3 +796,116 @@ def test_preboard_packet_does_not_waive_reviewed_motion_boards(package):
     (root/start['path']).unlink()
     with pytest.raises(ValueError):
         request.build_static_source_packet(root,'entry',provider='grok_cli')
+
+
+# --- U1: neutral once-authored package preparation (offline, zero provider calls) ---
+UNOBSERVED = 'UNOBSERVED: requires real current semantic review.'
+
+
+def _tree(root):
+    return {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(root.rglob('*')) if p.is_file()}
+
+
+def _bytes(root, name, data):
+    path = root / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return {'path': name, 'sha256': hashlib.sha256(data).hexdigest()}
+
+
+def _unknown_review(review_id, names):
+    return {'review_id': review_id, 'reviewer': 'persistent reviewer', 'story_revision': 'r1',
+        'subject_sha256': '0' * 64, 'status': 'unknown',
+        'predicates': [{'name': n, 'severity': 'critical', 'status': 'unknown', 'evidence': UNOBSERVED} for n in names]}
+
+
+@pytest.fixture
+def neutral_package(tmp_path):
+    root = tmp_path / 'neutral'
+    root.mkdir()
+    write(root / 'project.json', {'project_id': 'neutral-offline-boards', 'story_revision': 'r1',
+        'governance': {'mode': 'strict', 'version': '1.0'}})
+    story = _bytes(root, 'artifacts/story.txt', b'SYNTHETIC supplied premise and script')
+    approval = dict(_bytes(root, 'notes/approval.txt', b'SYNTHETIC fixture approval'), approved_by='fixture creator')
+    cast = _bytes(root, 'assets/images/cast.png', b'synthetic unchanged reference')
+    cast.update(id='cast', role='identity', applicability={'story_revision': 'r1',
+        'roles': ['identity', 'start_frame', 'end_frame']}, review={'review_id': 'cast-review',
+        'reviewer': 'persistent reviewer', 'story_revision': 'r1', 'subject_sha256': cast['sha256'], 'status': 'pass',
+        'predicates': [{'name': n, 'severity': 'critical', 'status': 'pass', 'evidence': 'SYNTHETIC declared observation'}
+                       for n in ('asset_quality', 'cast_identity')]})
+    def node(slot, shot, role, deps=()):
+        return {'slot_id': slot, 'shot_id': shot, 'role': role, 'prompt': 'SYNTHETIC ' + slot,
+            'reference_ids': ['cast'], 'image_dependencies': list(deps), 'output_path': 'assets/images/' + slot + '.png',
+            'required_predicates': ['asset_quality', 'cast_identity']}
+    spec = {'version': '1.1', 'story': story, 'approval': approval, 'reviewer': 'persistent reviewer', 'references': [cast],
+        'image_nodes': [node('payoff', 's2', 'payoff_board'), node('start', 's1', 'start_frame'),
+                        node('end', 's1', 'end_frame', ['start']), node('other', 's3', 'start_frame')],
+        'shared_roles': [{'asset_id': 'cast', 'role': 'identity'}, {'asset_id': 'payoff', 'role': 'payoff_board'}],
+        'shots': [{'shot_id': 's1', 'roles': [{'asset_id': 'start', 'role': 'start_frame'}, {'asset_id': 'end', 'role': 'end_frame'}], 'video_dependencies': []},
+                  {'shot_id': 's2', 'roles': [{'asset_id': 'cast', 'role': 'start_frame'}, {'asset_id': 'cast', 'role': 'end_frame'}], 'video_dependencies': []},
+                  {'shot_id': 's3', 'roles': [{'asset_id': 'other', 'role': 'start_frame'}, {'asset_id': 'cast', 'role': 'end_frame'}], 'video_dependencies': ['s1']}]}
+    template = {'version': '1.0', 'story': {k: 'SYNTHETIC ' + k for k in ('desire', 'action', 'consequence', 'payoff')},
+        'late_cast_ids': [], 'payoff_speaker_ids': [], 'payoff_asset_id': 'payoff',
+        'project_review': _unknown_review('project-unobserved', ('payoff', 'late_cast', 'cast_identity', 'cast_count', 'speaker_source')),
+        'assets': [{'id': n['slot_id'], 'role': n['role'], 'cast_ids': []} for n in spec['image_nodes']], 'shots': []}
+    for shot in spec['shots']:
+        template['shots'].append({'id': shot['shot_id'], 'initial_state': 'SYNTHETIC initial', 'endpoint_completion': 'unknown',
+            'cast_ids': [], 'required_visible_speakers': [], 'dialogue': [], 'prop_body_invariants': ['SYNTHETIC invariant'],
+            'allowed_transformations': [], 'transition': {'type': 'continuous', 'rationale': 'SYNTHETIC'},
+            'asset_ids': [r['asset_id'] for r in shot['roles'] if r['asset_id'] != 'cast'] or ['payoff'],
+            'upstream': [{'shot_id': d} for d in shot['video_dependencies']],
+            'review': _unknown_review(shot['shot_id'] + '-unobserved', ('cast_identity', 'cast_count', 'completed_action',
+                'speaker_source', 'possession', 'transformation'))})
+    spec['motion_binding'] = {'contract_template': template, 'motion_handoffs': {}}
+    package = {'version': '1.0', 'project_id': 'neutral-offline-boards', 'story_revision': 'r1',
+        'title': 'Neutral supplied package', 'boards': spec,
+        'shots': [{'id': sid, 'script': '  Exact supplied line ' + sid + '\n', 'action': 'Exact action ' + sid,
+                   'duration_seconds': d, 'end_state': 'Exact ending ' + sid, 'preserve': ['Exact cast']}
+                  for sid, d in (('s1', 3), ('s2', 4), ('s3', 5))]}
+    def bind(value=None):
+        data = json.dumps(value or package).encode()
+        return _bytes(root, 'notes/package.json', data)
+    return root, package, bind
+
+
+def test_neutral_package_compile_is_pure_and_prepare_is_byte_stable(neutral_package):
+    from jsonschema import Draft202012Validator
+    from schemas.artifacts import load_schema
+    from lib import production_boards as boards, production_images as images
+    root, package, bind = neutral_package
+    binding = bind()
+    before = _tree(root)
+    compiled = request.compile_package(root, binding)
+    assert set(compiled) == {'spec', 'records'}
+    assert before == _tree(root)
+    result = request.prepare_package(root, binding)
+    assert (result['status'], result['provider_calls'], result['reservations']) == ('prepared', 0, 0)
+    assert result['motion_preflight'].startswith('preparation only;')
+    records = {n: json.loads((root / 'artifacts' / (n + '.json')).read_text()) for n in ('script', 'scene_plan', 'asset_manifest')}
+    assert records == compiled['records']
+    for name, record in records.items():
+        Draft202012Validator(load_schema(name)).validate(record)
+    assert [s['text'] for s in records['script']['sections']] == [s['script'] for s in package['shots']]
+    assert [s['end_seconds'] for s in records['scene_plan']['scenes']] == [3, 7, 12]
+    assert ['cast', 'cast--s2', 'cast--s3'] == [a['id'] for a in records['asset_manifest']['assets']]
+    assert boards.load_board_pack(root)['specification'] == package['boards']
+    assert images.image_usage(root)['total'] == 0
+    after = _tree(root)
+    assert result == request.prepare_package(root, binding)
+    assert after == _tree(root)
+
+
+def test_neutral_package_conflicts_and_frozen_scopes_reject_before_writes(neutral_package):
+    root, package, bind = neutral_package
+    binding = bind()
+    write(root / 'production_scopes.json', {'version': '1.0', 'scopes': [{'id': 'frozen', 'phase': 'sample'}]})
+    before = _tree(root)
+    with pytest.raises(ValueError, match='frozen'):
+        request.prepare_package(root, binding)
+    assert before == _tree(root)
+    (root / 'production_scopes.json').unlink()
+    write(root / 'artifacts/asset_manifest.json', {'different': 'existing source'})
+    before = _tree(root)
+    with pytest.raises(ValueError, match='conflict'):
+        request.prepare_package(root, binding)
+    assert before == _tree(root)

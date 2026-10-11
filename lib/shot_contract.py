@@ -67,6 +67,48 @@ def selection_digest(selection: dict) -> str:
     return _digest(subject)
 
 
+def audio_review_disabled(project_dir: str | Path) -> bool:
+    """Future identity projects only; missing or damaged authority fails closed.
+
+    This changes required review scope, never native media or old observations.
+    Version 1.0 keeps its historical identity binding. Version 1.1 is the
+    neutral explicit project setting: same strict, evidence-bound shape, no
+    identity prefix.
+    """
+    try:
+        root = Path(project_dir).resolve()
+        marker = json.loads((root / "project.json").read_text())
+        governance = marker.get("governance", {})
+        policy = governance.get("audio_review", {})
+        version = policy.get("version")
+        legacy = version == "1.0"
+        if (governance.get("mode") != "strict"
+                or version not in {"1.0", "1.1"}
+                or (legacy and not str(marker.get("project_id", "")).startswith("thisaccountisawarcrime-"))
+                or set(policy) != {"version", "mode", "project_id", "story_revision", "evidence"}
+                or policy["mode"] != "disabled"
+                or policy["project_id"] != marker["project_id"]
+                or not isinstance(policy["story_revision"], str) or not policy["story_revision"].strip()
+                or (not legacy and policy["story_revision"] != marker.get("story_revision"))):
+            return False
+        evidence = policy["evidence"]
+        if set(evidence) != {"path", "sha256"}:
+            return False
+        path = (root / evidence["path"]).resolve()
+        if not path.is_relative_to(root) or file_sha256(path) != evidence["sha256"]:
+            return False
+        approval = json.loads(path.read_text())
+        return ((not legacy or approval.get("identity") == "thisaccountisawarcrime")
+                and approval.get("audio_review") == "disabled"
+                and approval.get("scope") == "future_projects_only")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return False
+
+
+def required_review_predicates(project_dir, required):
+    return required - {"speaker_source"} if audio_review_disabled(project_dir) else required
+
+
 def draft_audio_policy_digest(project_dir: str | Path) -> str:
     """Validate explicit draft-only authorization bound to local evidence bytes.
 
@@ -186,12 +228,15 @@ def _validate_shot_contract(
         provisional = audio_provisional or accepted is not None
         if review["status"] != "pass" and not provisional:
             errors.append(f"{label}: review is {review['status']}")
+        required = required_review_predicates(root, required)
         seen = set()
         for predicate in review["predicates"]:
             name = predicate["name"]
             if name in seen:
                 errors.append(f"{label}.{name}: duplicate/conflicting predicate")
             seen.add(name)
+            if name == "speaker_source" and audio_review_disabled(root):
+                continue
             critical = name in CRITICAL_PREDICATES or predicate.get("severity", "critical") == "critical"
             if name in CRITICAL_PREDICATES and predicate.get("severity") == "cosmetic":
                 errors.append(f"{label}.{name}: required critical predicate cannot be cosmetic")
