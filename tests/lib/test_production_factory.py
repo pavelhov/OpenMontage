@@ -96,6 +96,193 @@ def standing_stage_fixture(root, stages):
     return kwargs
 
 
+def delivery_admission_fixture(root, *, profile='tiktok_720p', retained_ratio=...,
+                               approved=True, scene_approval=None, metadata_delivery=None,
+                               ratio_lock=None):
+    """Synthetic exact approved delivery chain; no real consent or qualification."""
+    kwargs = standing_fixture(root)
+    proposal = write(root, 'notes/delivery-proposal.json', {
+        'version': '1.0', 'identity_id': 'fixture-identity',
+        'delivery': {'profile': profile} if profile is not None else {}})
+    approval = write(root, 'notes/delivery-approval.json', {
+        'version': '1.0', 'status': 'approved' if approved else 'proposed',
+        'approved_proposal': proposal})
+    for name in ('script', 'scene_plan'):
+        value = json.loads((root / 'artifacts' / (name + '.json')).read_text())
+        value['metadata'] = {'approval': scene_approval if name == 'scene_plan' and scene_approval else approval}
+        if metadata_delivery is not None:
+            value['metadata']['delivery'] = copy.deepcopy(metadata_delivery)
+        write(root, 'artifacts/' + name + '.json', value)
+    projection = pa.current_projection(root, 'entry')
+    template_inputs = {'duration': 8, 'image_path': str(root / 'assets/start.svg')}
+    if retained_ratio is not ...:
+        template_inputs['aspect_ratio'] = retained_ratio
+    kwargs['baselines']['entry'].update(projection=projection,
+        script_snapshot=json.loads((root / 'artifacts/script.json').read_text()),
+        planned_request_template=execution.planned_request_template(template_inputs, project_dir=root))
+    mcp = {'id': 'openart_mcp', 'billing': 'unknown_cost_no_ceiling',
+        'exposure_acknowledgement': 'no_enforceable_credit_ceiling',
+        'uid_sha256': request.digest('fixture-mcp-account'), 'project_id': 'fixture-mcp',
+        'routes': [{'model': 'byte-plus-seedance-2-mini', 'mode': 'image2video'},
+                   {'model': 'smart-shot', 'mode': 'generate-shot-video'}]}
+    kwargs['policy']['providers'].append(mcp)
+    if ratio_lock is not None:
+        kwargs['policy']['locked']['controls']['aspect_ratio'] = ratio_lock
+    setup = json.loads((root / kwargs['standing_setup']['path']).read_text())
+    setup.pop('authorization')
+    setup['providers'] = kwargs['policy']['providers']
+    setup['provider_accounts']['openart_mcp'] = 'fixture-mcp-account'
+    setup['source_transfer'].append({**setup['source_transfer'][0],
+        'provider': 'openart_mcp', 'account': 'fixture-mcp-account'})
+    kwargs['standing_setup'] = creator_fixture(root, 'standing-delivery', setup)
+    command = json.loads((root / kwargs['run_command']['path']).read_text())
+    command.pop('authorization')
+    command['standing_setup_sha256'] = kwargs['standing_setup']['sha256']
+    kwargs['run_command'] = creator_fixture(root, 'command-delivery', command)
+    activation = pa.activate_standing_run(root, **kwargs)
+    inputs = {**template_inputs, 'project_dir': str(root), 'prompt': 'Synthetic fixture',
+        'operation': 'reference_to_video', 'compiled_request_id': 'fixture',
+        'preparation_review_id': 'fixture', 'governance': {'shot_id': 'entry'}}
+    return kwargs, activation, inputs
+
+
+@pytest.mark.parametrize('provider', ['grok_cli', 'openart_mcp'])
+def test_approved_delivery_portrait_enters_real_scope_derivation(tmp_path, monkeypatch, provider):
+    kwargs, activation, inputs = delivery_admission_fixture(tmp_path)
+    inputs['aspect_ratio'] = '9:16'
+    if provider == 'openart_mcp':
+        inputs.update(model='byte-plus-seedance-2-mini', mode='image2video', operation='image_to_video')
+        # Exact admission/retention is real; downstream native/preparation/billing
+        # fixtures do not establish provider readiness or a semantic review.
+        monkeypatch.setattr(pa, '_prepare_mcp_policy_native', lambda *a: ({}, {}))
+        monkeypatch.setattr(pa, '_mcp_policy_terms', lambda *a: {'synthetic_fixture': True})
+    monkeypatch.setattr(request, 'validate_preparation', lambda *a: {'compiled_sha256': request.digest('synthetic')})
+    monkeypatch.setattr(pa, 'lock_proof', lambda *a, **kw: request.digest('synthetic'))
+    frozen = file_bytes(tmp_path)
+    scope = pa.derive_scope(tmp_path, inputs, provider=provider,
+        observation={'cli_version': '1.0.34', 'grok_path': '/synthetic/grok'})
+    assert scope['derived_from_policy']['policy_sha256'] == activation['policy_sha256']
+    assert scope['requests']['entry'] == execution.planned_request_digest(inputs, project_dir=tmp_path)
+    assert all((tmp_path / path).read_bytes() == raw for path, raw in frozen.items()
+               if path != Path('artifacts/decision_log.json'))
+    # A prospective scope occupies its existing allowance without a submission.
+    assert execution._attempts(tmp_path) == []
+    assert pa.root_attempt_counts(tmp_path, kwargs['policy'])['total'] == 1
+    assert images.image_usage(tmp_path)['total'] == 0
+
+
+@pytest.mark.parametrize('provider,model,ratio_location', [
+    ('grok_cli', None, 'public'), ('openart_cli', 'kling-3', 'public'),
+    ('openart_cli', 'kling-3', 'aspectRatio'),
+    ('openart_mcp', 'byte-plus-seedance-2-mini', 'public'),
+    ('openart_mcp', 'byte-plus-seedance-2-mini', 'aspectRatio'),
+    ('openart_mcp', 'smart-shot', 'videoAspectRatio')])
+@pytest.mark.parametrize('profile,ratio', [('tiktok_720p', '9:16'), ('generic_hd', '16:9'), ('instagram_feed', '1:1')])
+def test_exact_delivery_format_admission_across_transport_aliases(tmp_path, provider, model, ratio_location, profile, ratio):
+    _, _, inputs = delivery_admission_fixture(tmp_path, profile=profile)
+    if model:
+        inputs['model'] = model
+    if ratio_location == 'public':
+        inputs['aspect_ratio'] = ratio
+    else:
+        inputs['native_params'] = {ratio_location: ratio}
+    policy = pa.require_active_policy(tmp_path, shot_id='entry')[0]
+    before = file_bytes(tmp_path)
+    pa._validate_request_delta(tmp_path, policy, 'entry', inputs, provider)
+    assert file_bytes(tmp_path) == before
+
+
+@pytest.mark.parametrize('change', [
+    {'aspect_ratio': '16:9'}, {'aspect_ratio': '1:1'},
+    {'aspect_ratio': '9:16', 'native_params': {'aspectRatio': '9:16'}},
+    {'aspect_ratio': '9:16', 'native_params': {'aspectRatio': '16:9'}},
+    {'native_params': {'aspectRatio': '9:16', 'videoAspectRatio': '9:16'}},
+    {'aspect_ratio': '9:16', 'native_params': {'seed': 42}},
+    {'native_params': {'aspect_ratio': '9:16'}},
+    {'aspect_ratio': '9:16', 'aspectRatio': '9:16'}])
+def test_delivery_admission_keeps_wrong_duplicate_and_unrelated_controls_rejected(tmp_path, monkeypatch, change):
+    _, _, inputs = delivery_admission_fixture(tmp_path)
+    inputs.update(model='byte-plus-seedance-2-mini', mode='image2video', operation='image_to_video', **change)
+    monkeypatch.setattr(pa, '_prepare_mcp_policy_native', lambda *a: pytest.fail('native preparation reached after invalid admission'))
+    before = file_bytes(tmp_path)
+    with pytest.raises(pa.AutonomyError):
+        pa.derive_scope(tmp_path, inputs, provider='openart_mcp')
+    assert file_bytes(tmp_path) == before
+
+
+@pytest.mark.parametrize('profile,approved,scene_approval', [
+    (None, True, None), ('unknown-profile', True, None), ('cinematic', True, None),
+    ('generic_hd', True, None), ('tiktok_720p', False, None),
+    ('tiktok_720p', True, {'path': 'notes/foreign.json', 'sha256': 'f' * 64})])
+def test_new_ratio_requires_agreeing_exact_approved_delivery(tmp_path, profile, approved, scene_approval):
+    _, _, inputs = delivery_admission_fixture(tmp_path, profile=profile, approved=approved, scene_approval=scene_approval)
+    inputs['aspect_ratio'] = '9:16'
+    policy = pa.require_active_policy(tmp_path, shot_id='entry')[0]
+    before = file_bytes(tmp_path)
+    with pytest.raises(pa.AutonomyError):
+        pa._validate_request_delta(tmp_path, policy, 'entry', inputs, 'grok_cli')
+    assert file_bytes(tmp_path) == before
+
+
+@pytest.mark.parametrize('path', ['notes/delivery-proposal.json', 'notes/delivery-approval.json'])
+def test_delivery_authority_bytes_cannot_be_tampered(tmp_path, path):
+    _, _, inputs = delivery_admission_fixture(tmp_path)
+    inputs['aspect_ratio'] = '9:16'
+    (tmp_path / path).write_text('{}')
+    policy = pa.require_active_policy(tmp_path, shot_id='entry')[0]
+    before = file_bytes(tmp_path)
+    with pytest.raises(pa.AutonomyError):
+        pa._validate_request_delta(tmp_path, policy, 'entry', inputs, 'grok_cli')
+    assert file_bytes(tmp_path) == before
+
+
+def test_delivery_profile_cannot_change_explicit_retained_native_ratio(tmp_path):
+    _, _, inputs = delivery_admission_fixture(tmp_path, retained_ratio='16:9')
+    policy = pa.require_active_policy(tmp_path, shot_id='entry')[0]
+    before = file_bytes(tmp_path)
+    inputs['aspect_ratio'] = '9:16'
+    with pytest.raises(pa.AutonomyError):
+        pa._validate_request_delta(tmp_path, policy, 'entry', inputs, 'grok_cli')
+    inputs['aspect_ratio'] = '16:9'
+    pa._validate_request_delta(tmp_path, policy, 'entry', inputs, 'grok_cli')
+    assert file_bytes(tmp_path) == before
+
+
+@pytest.mark.parametrize('retained_ratio', ['', None])
+def test_empty_or_null_retained_ratio_is_not_an_absent_control(tmp_path, retained_ratio):
+    _, _, inputs = delivery_admission_fixture(tmp_path, retained_ratio=retained_ratio)
+    policy = pa.require_active_policy(tmp_path, shot_id='entry')[0]
+    inputs['aspect_ratio'] = '9:16'
+    before = file_bytes(tmp_path)
+    with pytest.raises(pa.AutonomyError, match='aspect ratio must be an explicit native string'):
+        pa._validate_request_delta(tmp_path, policy, 'entry', inputs, 'grok_cli')
+    assert file_bytes(tmp_path) == before
+
+
+@pytest.mark.parametrize('declaration', [{'profile': 'generic_hd'}, {'aspect_ratio': '16:9'}, {'width': 1080}])
+def test_retained_delivery_declarations_cannot_contradict_approved_profile(tmp_path, declaration):
+    _, _, inputs = delivery_admission_fixture(tmp_path, metadata_delivery=declaration)
+    policy = pa.require_active_policy(tmp_path, shot_id='entry')[0]
+    inputs['aspect_ratio'] = '9:16'
+    with pytest.raises(pa.AutonomyError, match='format declarations disagree'):
+        pa._validate_request_delta(tmp_path, policy, 'entry', inputs, 'grok_cli')
+
+
+@pytest.mark.parametrize('locked_ratio,admitted', [('9:16', True), ('16:9', False)])
+def test_delivery_projection_honors_hash_only_native_ratio_lock(tmp_path, locked_ratio, admitted):
+    _, _, inputs = delivery_admission_fixture(tmp_path,
+        ratio_lock={'value_sha256': hashlib.sha256(locked_ratio.encode()).hexdigest()})
+    policy = pa.require_active_policy(tmp_path, shot_id='entry')[0]
+    inputs['aspect_ratio'] = '9:16'
+    before = file_bytes(tmp_path)
+    if admitted:
+        pa._validate_request_delta(tmp_path, policy, 'entry', inputs, 'grok_cli')
+    else:
+        with pytest.raises(pa.AutonomyError, match='aspect ratio lock'):
+            pa._validate_request_delta(tmp_path, policy, 'entry', inputs, 'grok_cli')
+    assert file_bytes(tmp_path) == before
+
+
 def legacy_ungated_standing_activation(root, monkeypatch):
     kwargs = standing_stage_fixture(root, ['proposal', 'script', 'scene_plan', 'assets', 'edit', 'compose'])
     # Reproduce only the old writer defect; all other canonical checks remain real.

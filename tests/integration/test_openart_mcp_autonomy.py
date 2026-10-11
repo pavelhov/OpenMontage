@@ -94,6 +94,32 @@ def test_actual_compile_policy_prepare_begin_at_single_attempt_cap(lifecycle):
         pa.derive_scope(root, inputs, provider='openart_mcp')
 
 
+def test_actual_native_aspect_ratio_satisfies_exact_public_control_lock(lifecycle):
+    from lib import openart_mcp as mcp
+    root, policy, _, inputs, _, profile, _ = lifecycle
+    inputs['native_params']['aspectRatio'] = '9:16'
+    native = mcp.prepare_native_request(execution._openart_mcp_controls(inputs), profile)
+    compiled_path = root / 'artifacts/compiled_request-original.json'
+    previous = json.loads(compiled_path.read_text())
+    authored = preparation.compile_provider_prompt(root, 'entry', provider='openart_mcp', model=inputs['model'])
+    compiled = preparation.prepare_compiled_request(inputs, native, profile,
+        coverage=authored['coverage'], timing=previous['timing'])
+    compiled_path.write_text(json.dumps(compiled))
+    review_path = root / 'artifacts/preparation_review-original.json'
+    review = json.loads(review_path.read_text())
+    review['subject_sha256'] = preparation.digest(compiled)
+    review_path.write_text(json.dumps(review))
+    policy['locked']['controls'] = {'aspect_ratio': {'value': '9:16'}}
+    policy, _ = install_existing(root, policy,
+        templates={'entry': execution.planned_request_template(inputs, project_dir=root)})
+    assert pa.lock_proof(root, 'entry', inputs=inputs, native=native, profile=profile)
+    policy['locked']['controls']['aspect_ratio']['value'] = '16:9'
+    install_existing(root, policy,
+        templates={'entry': execution.planned_request_template(inputs, project_dir=root)})
+    with pytest.raises(pa.AutonomyError, match='native locked control differs: aspect_ratio'):
+        pa.lock_proof(root, 'entry', inputs=inputs, native=native, profile=profile)
+
+
 @pytest.mark.parametrize('change', ['revoke', 'native_type', 'body_hash'])
 def test_actual_policy_begin_rechecks_revoke_and_native_types(lifecycle, change):
     root, _, _, inputs, _, _, jobs = lifecycle
