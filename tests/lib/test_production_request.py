@@ -12,6 +12,110 @@ from tools import _openart_cli as cli
 FIXTURES = Path(__file__).parents[1] / 'fixtures' / 'first_pass'
 
 
+@pytest.fixture
+def generated_carrier_preparation(neutral_package, monkeypatch):
+    # Existing canonical image fixtures retain actual original host-call/receipt
+    # shapes. All provider outcomes and semantic judgments are SYNTHETIC.
+    from tests.lib.test_production_factory import prepared_frame_shapes
+    root, prepared = prepared_frame_shapes(neutral_package, monkeypatch, 'grok_cli')
+    return root, *prepared['s1']
+
+
+def bind_generated_review(prepared, review):
+    _, inputs, native, profile, compiled, _ = prepared
+    return request.prepare_compiled_request(inputs, native, profile,
+        coverage=compiled['coverage'], timing=compiled['timing'], review=review)
+
+
+def test_public_preparation_derives_only_authenticated_review_bindings(generated_carrier_preparation):
+    from tests.lib.test_production_factory import file_bytes
+    root, inputs, native, profile, compiled, review = generated_carrier_preparation
+    judgment = {k: copy.deepcopy(v) for k, v in review.items()
+                if k not in {'review_id', 'subject_sha256', 'composite_boards'}}
+    original = copy.deepcopy(judgment); before = file_bytes(root)
+    built, bound = bind_generated_review(generated_carrier_preparation, judgment)
+    assert built == compiled and bound == review
+    assert judgment == original and file_bytes(root) == before
+    assert bound['composite_boards'][0]['sha256'] == compiled['source_binding']['frame_input']['sha256']
+    assert all(bound[k] == judgment[k] for k in judgment)
+    assert request.validate_preparation_evidence(built, bound, inputs, native, profile,
+        request.source_packet(root, 's1', provider='grok_cli', native=native))
+    incomplete = copy.deepcopy(judgment); del incomplete['predicates']
+    with pytest.raises(ValueError, match='preparation_review: invalid'):
+        bind_generated_review(generated_carrier_preparation, incomplete)
+
+
+@pytest.mark.parametrize('field', ['review_id', 'subject_sha256', 'composite_boards'])
+def test_public_preparation_rejects_conflicting_supplied_review_bindings(generated_carrier_preparation, field):
+    from tests.lib.test_production_factory import file_bytes
+    root, _, _, _, _, review = generated_carrier_preparation
+    altered = copy.deepcopy(review)
+    if field == 'composite_boards':
+        altered[field][0]['members'][0]['cast_ids'] = ['SYNTHETIC-other-cast']
+    else:
+        altered[field] = 'wrong-review' if field == 'review_id' else '0'*64
+    original = copy.deepcopy(altered); before = file_bytes(root)
+    with pytest.raises(ValueError, match='conflicts with canonical binding'):
+        bind_generated_review(generated_carrier_preparation, altered)
+    assert altered == original and file_bytes(root) == before
+
+
+@pytest.mark.parametrize('defect', ['carrier_bytes', 'source_bytes', 'original_snapshot', 'host_receipt', 'forged_source'])
+def test_public_preparation_rejects_changed_generated_carrier_provenance(generated_carrier_preparation, defect):
+    from lib import production_boards as boards, production_images as images
+    from tests.lib.test_production_factory import file_bytes
+    root, _, _, _, _, review = generated_carrier_preparation
+    pack = boards.load_board_pack(root); binding = pack['board_bindings']['start']
+    call = images._call(images._load(root), binding['call_id'])
+    if defect == 'forged_source':
+        contract = execution.load_shot_contract(root)
+        end = next(a for a in contract['assets'] if a['id'] == 'end')
+        binding['source_bindings']['end'] = {k: end[k] for k in ('path', 'sha256')}
+        write(root / boards.ARTIFACT, pack)
+    else:
+        if defect == 'carrier_bytes':
+            path = root / binding['path']
+        elif defect == 'source_bytes':
+            path = root / next(iter(binding['source_bindings'].values()))['path']
+        elif defect == 'original_snapshot':
+            path = Path(call['submitted_arguments']['referenced_image_paths'][0])
+        else:
+            path = root / call['host_receipt']['path']
+        path.chmod(0o600); path.write_bytes(b'SYNTHETIC deliberately changed provenance')
+    before = file_bytes(root)
+    with pytest.raises((ValueError, KeyError, OSError)):
+        bind_generated_review(generated_carrier_preparation, review)
+    assert file_bytes(root) == before
+
+
+@pytest.mark.parametrize('status,predicate_status', [('fail', 'fail'), ('unknown', 'unknown'), ('pass', 'fail')])
+def test_public_preparation_preserves_semantic_failure(generated_carrier_preparation, status, predicate_status):
+    root, inputs, native, profile, _, review = generated_carrier_preparation
+    judgment = copy.deepcopy(review); judgment['status'] = status
+    judgment['predicates'][0]['status'] = predicate_status
+    built, bound = bind_generated_review(generated_carrier_preparation, judgment)
+    assert bound == judgment
+    write(root / 'artifacts/compiled_request-frame-s1.json', built)
+    write(root / 'artifacts/preparation_review-frame-s1.json', bound)
+    with pytest.raises(ValueError, match='nonpassing preparation review|critical preparation predicates'):
+        request.validate_preparation(inputs, native, profile)
+
+
+def test_public_preparation_does_not_infer_provided_board_membership(generated_carrier_preparation):
+    from lib import production_boards as boards
+    root, _, _, _, _, review = generated_carrier_preparation
+    pack = boards.load_board_pack(root); pack['board_bindings']['start']['origin'] = 'reuse'
+    write(root / boards.ARTIFACT, pack)
+    judgment = {k: copy.deepcopy(v) for k, v in review.items() if k != 'composite_boards'}
+    _, bound = bind_generated_review(generated_carrier_preparation, judgment)
+    assert 'composite_boards' not in bound
+    _, bound = bind_generated_review(generated_carrier_preparation, review)
+    assert bound == review  # Explicit exact reviewed membership remains supported.
+    altered = copy.deepcopy(review); altered['composite_boards'][0]['members'][0]['sha256'] = '0'*64
+    with pytest.raises(ValueError, match='one exact approved source'):
+        bind_generated_review(generated_carrier_preparation, altered)
+
+
 def write(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value))
