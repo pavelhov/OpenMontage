@@ -3219,7 +3219,7 @@ def test_conflicting_incomplete_role_observations_receive_separate_carried_succe
     assert images.image_usage(root)['total'] == 3
 
 
-def frame_amendment_fixture(neutral_package, monkeypatch, *, cast_bearing=False, episode_controls=None):
+def frame_amendment_fixture(neutral_package, monkeypatch, *, cast_bearing=False, episode_controls=None, repair_public_layout=False):
     """Legacy incompatible synthetic activation, complete current board evidence."""
     from lib import production_boards as boards
     root, package, bind = neutral_package
@@ -3275,6 +3275,12 @@ def frame_amendment_fixture(neutral_package, monkeypatch, *, cast_bearing=False,
     kwargs = standing_treatment_fixture(root)
     setup = json.loads((root / kwargs['standing_setup']['path']).read_text()); setup.pop('authorization')
     setup['native_images']['image_allowance'] = 8
+    if repair_public_layout:
+        # Exact synthetic account/project and public controls are retained at activation.
+        from lib import openart_mcp as mcp
+        provider = next(p for p in kwargs['policy']['providers'] if p['id'] == 'openart_mcp')
+        provider.update(uid_sha256=mcp.account_summary()['uid_sha256'], project_id='fixture-project')
+        setup['providers'] = copy.deepcopy(kwargs['policy']['providers'])
     kwargs['policy']['caps'].update(max_total_attempts=8, max_repair_attempts=4)
     setup['caps'] = copy.deepcopy(kwargs['policy']['caps'])
     for term in setup['source_transfer']:
@@ -3289,7 +3295,8 @@ def frame_amendment_fixture(neutral_package, monkeypatch, *, cast_bearing=False,
         mapping = next(s for s in spec['shots'] if s['shot_id'] == sid)
         aid = next(r['asset_id'] for r in mapping['roles'] if r['role'] == 'start_frame')
         value['planned_request_template'] = execution.planned_request_template(
-            {'duration': value['projection']['shot']['duration_seconds'], 'image_path': {'$board': {'asset_id': aid}}}, project_dir=root)
+            {'duration': value['projection']['shot']['duration_seconds'], 'image_path': {'$board': {'asset_id': aid}},
+             **({'resolution': '720p', 'aspect_ratio': '9:16'} if repair_public_layout else {})}, project_dir=root)
     with monkeypatch.context() as patch:
         patch.setattr(pa, '_validate_standing_route_treatments', lambda *args: None)
         pa.activate_standing_run(root, **kwargs)
@@ -3496,10 +3503,10 @@ def test_frame_conditioned_prospective_activation_allows_pending_board_observati
     assert all(a.get('preparation_pending') for a in contract['assets'])
 
 
-def refreshed_frame_amendment(neutral_package, monkeypatch, *, cast_bearing=False):
+def refreshed_frame_amendment(neutral_package, monkeypatch, *, cast_bearing=False, repair_public_layout=False):
     from lib import production_frame_amendment as amendment
     from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES
-    root, proposal, authority = frame_amendment_fixture(neutral_package, monkeypatch, cast_bearing=cast_bearing)
+    root, proposal, authority = frame_amendment_fixture(neutral_package, monkeypatch, cast_bearing=cast_bearing, repair_public_layout=repair_public_layout)
     expected = amendment.expected_original(root)
     plan = amendment.plan_frame_input_amendment(root, expected=expected, proposal=proposal, authority=authority)
     amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'], expected=expected, proposal=proposal, authority=authority)
@@ -3511,9 +3518,9 @@ def refreshed_frame_amendment(neutral_package, monkeypatch, *, cast_bearing=Fals
     return root, proposal, authority, expected, plan
 
 
-def prepared_frame_shapes(neutral_package, monkeypatch, provider):
+def prepared_frame_shapes(neutral_package, monkeypatch, provider, *, repair_public_layout=False):
     from lib import openart_mcp as mcp, openart_mcp_jobs as mcp_jobs
-    root, _, _, _, _ = refreshed_frame_amendment(neutral_package, monkeypatch, cast_bearing=True)
+    root, _, _, _, _ = refreshed_frame_amendment(neutral_package, monkeypatch, cast_bearing=True, repair_public_layout=repair_public_layout)
     contract = execution.load_shot_contract(root)
     assert [s['duration_seconds'] for s in contract['shots']] == [5]*4
     frame_sources = {}
@@ -3545,7 +3552,8 @@ def prepared_frame_shapes(neutral_package, monkeypatch, provider):
         sid = shot['id']; aid = shot['frame_input']['asset_id']
         authored = request.compile_provider_prompt(root, sid, provider=provider)
         inputs = {'project_dir':str(root), 'governance':{'shot_id':sid}, 'prompt':authored['prompt'],
-            'duration':5, 'output_path':str(root/'assets/video'/('SYNTHETIC-'+sid+'.mp4')),
+            'duration':5, **({'resolution': '720p', 'aspect_ratio': '9:16'} if repair_public_layout else {}),
+            'output_path':str(root/'assets/video'/('SYNTHETIC-'+sid+'.mp4')),
             'compiled_request_id':'frame-'+sid, 'preparation_review_id':'frame-'+sid}
         if provider == 'grok_cli':
             asset = next(a for a in contract['assets'] if a['id'] == aid)
@@ -3554,6 +3562,8 @@ def prepared_frame_shapes(neutral_package, monkeypatch, provider):
         else:
             inputs.update(model=profile['model'], mode=profile['mode'], openart_project_id='fixture-project',
                 input_assets=[{'role':'first_frame', **frame_sources[aid]}])
+            if repair_public_layout:
+                inputs['image_path'] = inputs.pop('input_assets')[0]['source_path']
             native = request.prep_builder(provider)(inputs, profile)
         timing = {'method':'segmented_estimate','duration_seconds':5,'language':'en','margin_seconds':.5,
             'rationale':'SYNTHETIC software fixture', 'overlap_policy':'serial','overlap_rationale':'SYNTHETIC serial windows',
@@ -3972,3 +3982,138 @@ def test_submitted_delivery_original_replays_after_revocation_without_new_admiss
         with pytest.raises((pa.AutonomyError, ValueError)):
             pa.validate_policy_attempt(root, mutated, mutated['scope'], frozen)
     assert file_bytes(root) == before and len(calls) == 1
+
+
+def test_frame_conditioned_grok_to_mini_repair_retains_public_layout_and_original(
+        neutral_package, monkeypatch, guided_observations):
+    """Offline semantic failure and authorized alternate; no live provider evidence."""
+    import shutil
+    import socket
+    def forbidden(*args, **kwargs):
+        pytest.fail('frame model-switch regression attempted a network connection')
+    monkeypatch.setattr(socket.socket, 'connect', forbidden)
+    monkeypatch.setattr(socket.socket, 'connect_ex', forbidden)
+    monkeypatch.setattr(socket, 'create_connection', forbidden)
+    from lib import openart_mcp as mcp, openart_mcp_jobs as jobs
+    from lib import production_provenance as provenance
+    from tools import _grok_cli_media as media
+    from tools.video import grok_cli_video
+    from tools.base_tool import ToolResult
+    from tests.lib.test_first_cut import lavfi
+
+    root, prepared = prepared_frame_shapes(neutral_package, monkeypatch, 'openart_mcp', repair_public_layout=True)
+    candidate, native, profile, compiled, review = prepared['s1']
+    policy, _, _ = pa.require_active_policy(root)
+    baseline = pa.retained_baselines(root, policy)['s1']['planned_request_template']['inputs']
+    assert baseline['image_path'] == {'$board': {'asset_id': 'start'}}
+    assert candidate['image_path'] and 'input_assets' not in candidate and 'native_params' not in candidate
+    upload_files = file_bytes(root / 'openart_mcp')
+    board_bytes = Path(candidate['image_path']).read_bytes()
+    timing = compiled['timing']
+    observation = {'cli_version': '1.0.34', 'grok_path': '/SYNTHETIC/offline/grok'}
+    original = copy.deepcopy(candidate)
+    for key in ('model', 'mode', 'openart_project_id'):
+        original.pop(key)
+    original.update(operation='reference_to_video', allow_unknown_cost=True, timeout_seconds=600,
+        preferred_provider='grok_cli', allowed_providers=['grok_cli'],
+        preferred_tool='grok_cli_video', hosting_provider='grok_cli',
+        compiled_request_id='grok-frame-original', preparation_review_id='grok-frame-original',
+        output_path=str(root / 'assets/video/SYNTHETIC-grok-original.mp4'))
+    authored = request.compile_provider_prompt(root, 's1', provider='grok_cli')
+    original['prompt'] = authored['prompt']
+    grok_native = request.prep_builder('grok_cli')(original, observation)
+    judgment = {k: copy.deepcopy(v) for k, v in review.items()
+                if k not in ('review_id', 'subject_sha256', 'composite_boards')}
+    judgment['evidence_kind'] = 'reviewed'  # SYNTHETIC reviewer; no live qualification claim.
+    grok_compiled, grok_review = request.prepare_compiled_request(original, grok_native, {'source': 'real'},
+        coverage=authored['coverage'], timing=timing, review=judgment)
+    write(root, 'artifacts/compiled_request-grok-frame-original.json', grok_compiled)
+    write(root, 'artifacts/preparation_review-grok-frame-original.json', grok_review)
+    scope = pa.derive_scope(root, original, provider='grok_cli', observation=observation)
+    original['governance']['scope_id'] = scope['id']
+    clip = lavfi(root / 'SYNTHETIC-transport.mp4', 'red', 440, seconds=5)
+    calls = []
+    def transport(**kw):
+        calls.append(copy.deepcopy(kw))
+        Path(kw['output_path']).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(clip, kw['output_path'])
+        return ToolResult(success=True, artifacts=[kw['output_path']], data={
+            'provider': 'grok_cli', 'cli_version': observation['cli_version'],
+            'session_id': kw['session_id'], 'dispatch_status': 'completed'})
+    monkeypatch.setattr(media, 'observe_grok_cli_compatibility', lambda *a, **kw: dict(observation))
+    monkeypatch.setattr(grok_cli_video, 'execute_grok_cli_media', transport)
+    monkeypatch.setenv('GROK_CLI_PATH', observation['grok_path'])
+    tool = grok_cli_video.GrokCLIVideo(grok_path=observation['grok_path'], sessions_root=str(root/'sessions'))
+    generated = tool.execute(original)
+    assert generated.success, generated.error
+    aid = generated.data['production_attempt_id']
+    output = execution.load_attempt_result(root, aid)['output']
+    provenance.validate_attempt_provenance(root, aid, shot_id='s1', story_revision=policy['story_revision'], expected_output=output)
+    rejection = {'review_id': 'SYNTHETIC-semantic-failure', 'reviewer': 'SYNTHETIC offline reviewer',
+        'story_revision': policy['story_revision'], 'subject_sha256': output['sha256'], 'status': 'fail',
+        'predicates': [{'name': 'completed_end_state', 'status': 'fail', 'severity': 'critical',
+            'evidence': 'SYNTHETIC observed endpoint failure, not a live judgment'}]}
+    execution.record_rejection(root, aid, rejection)
+    retained_original = file_bytes(root / 'production_attempts' / aid)
+    output_bytes = Path(output['path']).read_bytes()
+    scopes_before = (root / 'production_scopes.json').read_bytes()
+    counts_before = pa.root_attempt_counts(root, policy)
+
+    invalid = copy.deepcopy(candidate)
+    invalid['input_assets'] = [{'role': 'first_frame', 'source_path': invalid.pop('image_path'),
+        'source_sha256': hashlib.sha256(board_bytes).hexdigest(),
+        'upload_id': native['input_assets'][0]['upload_id']}]
+    invalid['native_params'] = {'duration': 5, 'resolution': '720p', 'aspectRatio': '9:16',
+        'videoCount': 1, 'generateAudio': True}
+    with pytest.raises(ValueError, match='exact upstream pointer/layout/order changed'):
+        pa.derive_scope(root, invalid, provider='openart_mcp', phase='repair', replaces_attempt_ids=[aid])
+    duplicate = copy.deepcopy(candidate)
+    duplicate['native_params'] = {'duration': 5, 'resolution': '720p', 'aspectRatio': '9:16'}
+    with pytest.raises(ValueError, match='duplicate|ambiguous'):
+        pa.derive_scope(root, duplicate, provider='openart_mcp', phase='repair', replaces_attempt_ids=[aid])
+    assert pa.root_attempt_counts(root, policy) == counts_before
+    assert (root / 'production_scopes.json').read_bytes() == scopes_before
+    assert len(calls) == 1
+
+    # Fresh public dict for this retained first-frame-only template, not a native packet.
+    # Actual Grok routing/timeout metadata never becomes Mini public controls.
+    candidate = {key: original[key] for key in
+        ('project_dir', 'image_path', 'duration', 'resolution', 'aspect_ratio')}
+    candidate.update(governance={'shot_id': 's1'}, model=profile['model'], mode=profile['mode'],
+        openart_project_id='fixture-project', preferred_provider='openart_mcp',
+        allowed_providers=['openart_mcp'], preferred_tool='openart_mcp_video', hosting_provider='openart_mcp',
+        compiled_request_id='mini-frame-repair', preparation_review_id='mini-frame-repair',
+        output_path=str(root / 'assets/video/SYNTHETIC-mini-repair.mp4'))
+    # A route change has its own prompt, current compiled packet and actual judgment.
+    mini_authored = request.compile_provider_prompt(root, 's1', provider='openart_mcp', model=candidate['model'])
+    candidate['prompt'] = mini_authored['prompt']
+    native = request.prep_builder('openart_mcp')(candidate, profile)
+    mini_compiled, mini_review = request.prepare_compiled_request(candidate, native, profile,
+        coverage=mini_authored['coverage'], timing=timing, review=judgment)
+    write(root, 'artifacts/compiled_request-mini-frame-repair.json', mini_compiled)
+    write(root, 'artifacts/preparation_review-mini-frame-repair.json', mini_review)
+    assert mini_compiled['source_binding'] == grok_compiled['source_binding']
+    assert mini_compiled['request_sha256'] != grok_compiled['request_sha256']
+    # Ordinary production refuses fixture readiness. Only the existing isolated
+    # test seam admits synthetic transport; it does not fabricate live evidence.
+    with pytest.raises(ValueError, match='profile_not_ready'):
+        mcp.load_profile(candidate['model'], candidate['mode'], require='supported')
+    monkeypatch.setattr(mcp, '_ALLOW_FIXTURE_PRODUCTION', True)
+    pa._validate_request_delta(root, policy, 's1', candidate, 'openart_mcp')
+    repair = pa.derive_scope(root, candidate, provider='openart_mcp', phase='repair', replaces_attempt_ids=[aid])
+    assert repair['replaces_attempt_ids'] == [aid] and repair['phase'] == 'repair'
+    candidate['governance']['scope_id'] = repair['id']
+    jobs.prepare(root, attempt_id='SYNTHETIC-mini-repair', generation_inputs=candidate,
+        authority_fn=execution.prepare_openart_mcp_handoff)
+    envelope = jobs.begin(root, 'SYNTHETIC-mini-repair', authority_fn=execution.prepare_openart_mcp_handoff)
+    assert envelope['arguments'] == native['body']
+    assert set(native['body']['params']) == {'prompt', 'duration', 'resolution', 'aspectRatio', 'startFrame'}
+    assert native['input_assets'][0]['source_sha256'] == hashlib.sha256(board_bytes).hexdigest()
+    assert file_bytes(root / 'production_attempts' / aid) == retained_original
+    assert Path(output['path']).read_bytes() == output_bytes
+    assert Path(candidate['image_path']).read_bytes() == board_bytes
+    # The new job does not upload again or alter the original source-transfer receipts.
+    assert all(file_bytes(root / 'openart_mcp').get(path) == raw for path, raw in upload_files.items())
+    assert pa.root_attempt_counts(root, policy)['total'] == 2
+    assert pa.root_attempt_counts(root, policy)['repair'] == 1
+    assert len(calls) == 1 and jobs.attempt_state(root, 'SYNTHETIC-mini-repair')['status'] == 'uncertain'
