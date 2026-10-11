@@ -871,7 +871,7 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
     frozen_shots = [item for item in frozen_contract['shots'] if item['id'] == shot_id]
     require(len(frozen_shots) == 1 and frozen_shots[0] == packet['shot'], 'frozen source shot differs')
     from lib.shot_contract import shot_local, shot_review_subject
-    frozen_subject = shot_review_subject(frozen_contract, shot_id) if shot_local(frozen_contract) else contract_digest(frozen_contract)
+    frozen_subject = shot_review_subject(frozen_contract, shot_id)
     require(frozen_subject == packet['binding']['contract_sha256']
             and preparation.digest([frozen_contract['project_review'], frozen_shots[0].get('review')])
                 == packet['binding']['reviews_sha256'], 'frozen contract/reviews differ')

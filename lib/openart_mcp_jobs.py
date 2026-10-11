@@ -369,7 +369,7 @@ def terminal_failure_record(project_dir, attempt_id):
 def _capture_evidence(root,inputs,native,authority):
     from lib.production_request import source_packet
     from lib.production_execution import _artifact_path
-    from lib.shot_contract import contract_digest, file_sha256, review_digest, shot_local, shot_review_subject
+    from lib.shot_contract import file_sha256, review_digest, shot_review_subject
     compiled_path=_artifact_path(root,'compiled_request-'+_id(inputs['compiled_request_id'])+'.json')
     review_path=_artifact_path(root,'preparation_review-'+_id(inputs['preparation_review_id'])+'.json')
     compiled=json.loads(compiled_path.read_text());review=json.loads(review_path.read_text())
@@ -384,7 +384,7 @@ def _capture_evidence(root,inputs,native,authority):
     # Source bindings identify reviewed assets; paths belong to the authoritative
     # contract, not the compiled reference projection.
     contract=json.loads(_artifact_path(root,'shot_contract.json').read_text())
-    subject = shot_review_subject(contract, authority['shot_id']) if shot_local(contract) else contract_digest(contract)
+    subject = shot_review_subject(contract, authority['shot_id'])
     if subject != packet['binding']['contract_sha256']:
         _fail('evidence_changed','contract changed while capturing reference evidence')
     reference_hashes={}

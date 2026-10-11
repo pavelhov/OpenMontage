@@ -306,7 +306,8 @@ def _validate_standing_transfer(root, policy, inputs, provider, *, exclude_scope
     term = next(t for t in setup['source_transfer'] if t['provider'] == provider and t['account'] == account)
     contract = execution.load_shot_contract(root)
     shot = next(s for s in contract['shots'] if s['id'] == inputs['governance']['shot_id'])
-    assets = [a for a in contract['assets'] if a['id'] in required_asset_ids(contract, shot)]
+    needed = required_asset_ids(contract, shot)
+    assets = [a for a in contract['assets'] if a['id'] in needed]
     actual = []
     def bind(role, path):
         matches = [a for a in assets if a.get('path') and _inside(root, a['path']) == path
