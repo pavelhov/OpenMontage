@@ -292,9 +292,32 @@ def test_failed_payoff_verdict_remains_failed(neutral_package):
     _, failed = retain_factory_board(root, 'payoff', predicates={'cast_identity': 'fail'})
     before = file_bytes(root)
     action = execution.next_production_action(root)
-    assert action['kind'] == 'review_planning'  # No existing safe payoff progress action.
+    assert (action['kind'], action['subject']) == ('prepare_board_correction', 'payoff')
+    assert action['inputs']['failed_predicates'] == ['cast_identity']
+    assert action['binding']['correction_observation']['review'] == failed
     assert boards._observation(boards.load_board_pack(root), 'payoff', 'payoff_board')['review'] == failed
     assert file_bytes(root) == before
+
+
+def test_current_unknown_payoff_progress_preserves_unrelated_project_failure(neutral_package):
+    root = payoff_fixture(neutral_package)
+    _, unknown = retain_factory_board(root, 'payoff', predicates={'cast_identity': 'unknown'})
+    contract = execution.load_shot_contract(root)
+    project = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='r1')
+    project['status'] = 'fail'
+    next(p for p in project['predicates'] if p['name'] == 'late_cast').update(status='fail', severity='critical',
+        evidence='SYNTHETIC separate actual project failure; payoff observation remains unknown')
+    contract['project_review'] = project
+    contract['shots'][0]['review'] = attestation(shot_review_subject(contract, 's1'), SHOT_PREDICATES, revision='r1')
+    write(root, 'artifacts/shot_contract.json', contract)
+    before = file_bytes(root)
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('review_board', 'payoff')
+    assert action['inputs']['required_predicates'] == ['cast_identity']
+    assert action['binding']['observations'][0]['review'] == unknown
+    assert execution.load_shot_contract(root)['project_review'] == project
+    assert not execution.validate_shot_contract(contract, project_dir=root, shot_id='s1')['eligible']
+    assert file_bytes(root) == before and images.image_usage(root)['total'] == 2
 
 
 def test_inline_output_collision_preserves_original_receipt_and_media(board_package):
