@@ -145,7 +145,11 @@ def _materialized_manifest_requirements(root, shot_id, baseline, materialized):
         return copy.deepcopy(baseline), {row['id']: row for row in baseline['assets']}
     # Authority comes from the hash-bound retained package bytes; the live pack
     # specification is only co-located and may not widen handoff scope.
-    spec = json.loads(images._bound_file(root, pack['package_binding'], 'production package').read_text())['boards']
+    package = json.loads(images._bound_file(root, pack['package_binding'], 'production package').read_text())
+    if 'authoring_form' in package or 'compact' in package:
+        from lib.production_request import _expand_compact_package
+        package = _expand_compact_package(package)
+    spec = package['boards']
     contract = load_shot_contract(root)
     roles = {a['id']: a['role'] for a in contract['assets']}
     references = {r['id']: r for r in spec['references']}

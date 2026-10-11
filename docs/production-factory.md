@@ -135,3 +135,157 @@ progress. Changed, revoked or superseded successor authority cannot be revived b
 replay. Original image imports and authenticated historical collection remain
 available after later revocation; historical authority never admits a new host
 invocation. Image and motion usage remain cumulative in the same run.
+
+## Compact package authoring (explicit opt-in)
+
+The existing `compile_package` / `prepare_package` boundary accepts
+`authoring_form: "shot_local_v1_compact_v1"` with `planning_mode: "shot_local_v1"`.
+Full packages retain their existing behavior and bytes. Compact input must replace
+`boards` with `compact`; mixing forms or adding unknown fields fails closed.
+The original compact file and its SHA remain the canonical source binding.
+Compilation writes nothing; preparation uses the same validators, board lifecycle,
+source hashes, materialization and standing-activation gates as full packages.
+
+This complete producer example needs real current project IDs and retained hashes:
+
+```json
+{
+  "version": "1.0",
+  "authoring_form": "shot_local_v1_compact_v1",
+  "planning_mode": "shot_local_v1",
+  "project_id": "CURRENT_PROJECT",
+  "story_revision": "CURRENT_REVISION",
+  "title": "The stuck drawer",
+  "compact": {
+    "reviewer": "NAMED_REVIEWER",
+    "story": {"path": "artifacts/story.txt", "sha256": "CURRENT_SHA256"},
+    "approval": {"path": "notes/approval.json", "sha256": "CURRENT_SHA256", "approved_by": "CREATOR"},
+    "references": [],
+    "story_meaning": {
+      "desire": "Open the drawer.",
+      "action": "Pull the drawer handle.",
+      "consequence": "The drawer opens.",
+      "payoff": "The missing key is revealed."
+    },
+    "late_cast_ids": [],
+    "payoff_speaker_ids": [],
+    "payoff_asset_id": "s1-start"
+  },
+  "shots": [{
+    "id": "s1",
+    "script": "",
+    "action": "The motorized drawer opens, revealing a key.",
+    "duration_seconds": 5,
+    "end_state": "The drawer is open and the key is visible inside.",
+    "cast": [],
+    "preserve": ["The handle stays attached to the drawer."],
+    "motion": {
+      "reference_mode": "frame_conditioned",
+      "frame_input": {"asset_id": "s1-start", "role": "start_frame"},
+      "initial_state": "The motorized wooden drawer is closed.",
+      "endpoint_completion": "unknown",
+      "required_visible_speakers": [],
+      "dialogue": [],
+      "allowed_transformations": [],
+      "transition": {"type": "continuous", "rationale": "One continuous drawer-opening action."}
+    },
+    "boards": [{
+      "slot_id": "s1-start",
+      "role": "payoff_board",
+      "prompt": "A closed motorized wooden drawer; the drawer has not yet opened.",
+      "reference_ids": [],
+      "image_dependencies": [],
+      "required_predicates": ["asset_quality", "cast_identity"],
+      "transparent_background": false,
+      "cast_ids": []
+    }],
+    "video_dependencies": []
+  }]
+}
+```
+
+All example fields are required, including empty arrays, explicit story meaning,
+end state, cast, invariants and motion semantics. Only top-level `approval_preview`
+and the full form's shot `pinned_initial_frame` / `pinned_final_frame` declarations
+are optional. References retain the existing full source/reuse-evidence shape;
+generation sources remain image-generation sources. A reference explicitly declaring
+`role: "identity_reference"` also requires authored nonempty unique `cast_ids`;
+expansion derives its exact contract asset and shared identity role. Those retained
+source bytes/reviews remain subject to existing reuse and cast gates. Other reference
+roles cannot declare `cast_ids` in this compact version.
+Each generated board declares its own cast IDs and sources. Role names and semantic
+values remain governed by the current shot-contract schema. Every shot must name
+exactly one existing start board as its frame input. This form supports only
+explicit frame-conditioned treatment; other treatments and shared roles/handoffs
+continue to use full authoring.
+
+Expansion derives the board's owning shot and stable
+`assets/images/candidates/<slot_id>.png` path, ordered shot-role mappings,
+contract asset entries, shot asset/upstream entries, and project/shot review
+scaffolding. Those reviews and every predicate are `unknown`, with zero subject
+hashes and an `UNOBSERVED` evidence marker; they are never passing observations.
+Prompts, dialogue, cast, continuity, dependencies, ending targets and story meaning
+are never inferred. `payoff_asset_id` is required by the existing contract and may
+name an explicitly authored `payoff_board`. A single board may serve both roles:
+its canonical board role is `payoff_board`, while explicit `motion.frame_input`
+declares its consumer `start_frame` mapping. Expansion derives that mapping only
+from the exact frame declaration. This does not infer another image or certify
+that a payoff is visible. Compile output exposes the full expanded spec
+and projections before activation. Existing providers, scopes and creator-command
+requirements still apply.
+
+## Reuse the existing motion-preparation builders
+
+For the current `prepare_motion` action, use these existing functions instead of
+recreating coverage, source hashes, native bindings or compiled records:
+
+```python
+from lib import production_request as request, production_execution as execution
+
+# inputs already names the approved route/native controls, actual frame sources,
+# project_dir, governance={"shot_id": action["inputs"]["shot_id"]}, unique output_path,
+# and the retained safe compiled_request_id / preparation_review_id.
+authored = request.compile_provider_prompt(
+    project_dir, action["inputs"]["shot_id"], provider=provider,
+    **({"model": inputs["model"]} if provider == "openart_mcp" else {}),
+)
+inputs["prompt"] = authored["prompt"]
+native = request.prep_builder(provider)(inputs, profile_or_observation)
+compiled = request.prepare_compiled_request(
+    inputs, native, profile, coverage=authored["coverage"], timing=authored_timing,
+)
+# Persist compiled, preserving any previously retained different bytes, at:
+# artifacts/compiled_request-<inputs["compiled_request_id"]>.json
+# Obtain and persist the actual named review at:
+# artifacts/preparation_review-<inputs["preparation_review_id"]>.json
+outcome = {"inputs": inputs, "provider": provider}
+if provider_observation is not None:
+    outcome["observation"] = provider_observation
+result = execution.complete_action(project_dir, action, outcome=outcome)
+```
+
+`compile_provider_prompt(project_dir, shot_id, *, provider, model=None)` returns
+`prompt`, `coverage` and `source_binding`. `prep_builder(provider)` returns the
+existing provider builder: OpenArt receives its current supported profile; Grok
+receives its fresh `{cli_version, grok_path}` observation. The `profile` supplied to
+`prepare_compiled_request(inputs, native, profile, *, coverage, timing)` is the
+actual applicable preparation profile. This pure helper resolves current source
+bytes again, derives the planned-request digest and native binding, and validates
+the compiled sidecar. Keep its returned object intact.
+
+`authored_timing` remains the producer's explicit measured-audio or segmented
+estimate, including real dialogue/action windows, language, margin and overlap
+rationale; the builder does not invent timing. The actual preparation review must
+follow `schemas/artifacts/preparation_review.schema.json`, name the exact
+`inputs["preparation_review_id"]`, and bind `request.digest(compiled)`. Live reviews
+use `evidence_kind: "reviewed"` and actual evidence for each named preparation
+predicate. Do not turn unknown observations into passes. Reuse assigned IDs and
+retained files; these helpers do not create a second ledger.
+
+The exact current action must be passed unchanged to
+`complete_action(project_dir, action, *, outcome)`. Its `prepare_motion` outcome
+allows only `inputs`, `provider`, and optional `observation`; the engine derives
+scope, runs the governed dry-run and invokes the registered tool. This completion
+is a dispatch boundary, so perform it only within the current run's retained
+route/input/allowance authority. OpenArt uploads and other native prerequisites
+still follow their existing provider contracts.

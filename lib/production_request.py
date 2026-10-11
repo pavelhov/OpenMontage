@@ -1004,12 +1004,132 @@ def _artifact_pointer(root, relative):
             'sha256': hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None}
 
 
+COMPACT_AUTHORING_FORM = 'shot_local_v1_compact_v1'
+
+
+def _expand_compact_package(package):
+    """Expand administrative repetition only; retain the bound source unchanged."""
+    from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES
+    top = {'version', 'authoring_form', 'planning_mode', 'project_id', 'story_revision',
+           'title', 'shots', 'compact', 'approval_preview'}
+    if (not top - {'approval_preview'} <= set(package) or set(package) - top or 'boards' in package
+            or package.get('authoring_form') != COMPACT_AUTHORING_FORM
+            or package.get('planning_mode') != 'shot_local_v1'):
+        raise ValueError('compact package requires exact opt-in form without full boards')
+    header = package.get('compact')
+    fields = {'reviewer', 'story', 'approval', 'references', 'story_meaning',
+              'late_cast_ids', 'payoff_speaker_ids', 'payoff_asset_id'}
+    if not isinstance(header, dict) or set(header) != fields:
+        raise ValueError('compact package requires explicit bindings and story meaning')
+    if not isinstance(header['reviewer'], str) or not header['reviewer'].strip():
+        raise ValueError('compact package requires a named reviewer')
+    def unknown(subject, predicates):
+        return {'review_id': subject + '-unobserved', 'reviewer': header['reviewer'],
+            'story_revision': package['story_revision'], 'subject_sha256': '0' * 64,
+            'status': 'unknown', 'predicates': [{'name': name, 'severity': 'critical',
+                'status': 'unknown', 'evidence': 'UNOBSERVED: review current bytes.'}
+                for name in sorted(predicates)]}
+    authored = package.get('shots')
+    if not isinstance(authored, list) or not authored:
+        raise ValueError('compact package needs ordered authored shots')
+    nodes, mappings, assets, contracts, shots = [], [], [], [], []
+    required_shot = {'id', 'script', 'action', 'duration_seconds', 'end_state', 'cast',
+                     'preserve', 'motion', 'boards', 'video_dependencies'}
+    required_motion = {'reference_mode', 'frame_input', 'initial_state', 'endpoint_completion',
+        'required_visible_speakers', 'dialogue', 'allowed_transformations', 'transition'}
+    board_fields = {'slot_id', 'role', 'prompt', 'reference_ids', 'image_dependencies',
+                    'required_predicates', 'transparent_background', 'cast_ids'}
+    for shot in authored:
+        if (not isinstance(shot, dict) or not required_shot <= set(shot)
+                or set(shot) - required_shot - {'pinned_initial_frame', 'pinned_final_frame'}):
+            raise ValueError('compact shot needs explicit content, motion, boards and dependencies')
+        sid = shot['id']
+        if (not isinstance(sid, str) or not sid.strip() or Path(sid).name != sid
+                or sid in ('.', '..') or '/' in sid or '\\' in sid):
+            raise ValueError('unsafe compact shot ID')
+        motion = shot['motion']
+        if (not isinstance(motion, dict) or set(motion) != required_motion
+                or motion['reference_mode'] != 'frame_conditioned'):
+            raise ValueError('compact motion needs explicit frame_conditioned treatment and all semantics')
+        if not isinstance(shot['boards'], list) or not shot['boards']:
+            raise ValueError('compact shot needs authored boards')
+        deps = shot['video_dependencies']
+        if (not isinstance(deps, list) or any(not isinstance(dep, str) or not dep.strip() for dep in deps)
+                or len(set(deps)) != len(deps)):
+            raise ValueError('compact video dependencies need unique explicit shot IDs')
+        roles = []
+        for board in shot['boards']:
+            if not isinstance(board, dict) or set(board) != board_fields:
+                raise ValueError('compact board requires exact authored prompt, role and source declarations')
+            for key in ('reference_ids', 'image_dependencies', 'required_predicates', 'cast_ids'):
+                values = board[key]
+                if (not isinstance(values, list) or any(not isinstance(v, str) or not v.strip() for v in values)
+                        or len(set(values)) != len(values)):
+                    raise ValueError('compact board ' + key + ' needs unique explicit IDs/names')
+            slot = board['slot_id']
+            if (not isinstance(slot, str) or not slot.strip() or Path(slot).name != slot
+                    or slot in ('.', '..') or '/' in slot or '\\' in slot):
+                raise ValueError('unsafe compact board slot ID')
+            nodes.append({k: copy.deepcopy(v) for k, v in board.items() if k != 'cast_ids'})
+            nodes[-1].update(shot_id=sid, output_path='assets/images/candidates/' + slot + '.png')
+            roles.append({'asset_id': slot, 'role': ('start_frame'
+                if motion['frame_input'] == {'asset_id': slot, 'role': 'start_frame'} else board['role'])})
+            assets.append({'id': slot, 'role': board['role'], 'cast_ids': copy.deepcopy(board['cast_ids'])})
+        mappings.append({'shot_id': sid, 'roles': roles,
+                         'video_dependencies': copy.deepcopy(shot['video_dependencies'])})
+        contracts.append({'id': sid, **copy.deepcopy(motion),
+            'asset_ids': [r['asset_id'] for r in roles],
+            'upstream': [{'shot_id': dep} for dep in shot['video_dependencies']],
+            'review': unknown(sid, SHOT_PREDICATES)})
+        clean = {k: copy.deepcopy(v) for k, v in shot.items() if k not in {'boards', 'video_dependencies'}}
+        clean['motion'] = {k: v for k, v in clean['motion'].items() if k not in {'reference_mode', 'frame_input'}}
+        shots.append(clean)
+    shared_roles = []
+    if not isinstance(header['references'], list):
+        raise ValueError('compact references must be an explicit list')
+    for reference in header['references']:
+        if not isinstance(reference, dict):
+            raise ValueError('compact reference must be an exact source object')
+        if reference.get('role') != 'identity_reference':
+            if 'cast_ids' in reference:
+                raise ValueError('compact reference cast_ids require explicit identity_reference role')
+            continue
+        cast = reference.get('cast_ids')
+        if (not isinstance(cast, list) or not cast
+                or any(not isinstance(c, str) or not c.strip() for c in cast) or len(set(cast)) != len(cast)):
+            raise ValueError('compact identity reference requires unique explicit cast_ids')
+        assets.append({'id': reference['id'], 'role': 'identity_reference', 'cast_ids': copy.deepcopy(cast)})
+        shared_roles.append({'asset_id': reference['id'], 'role': 'identity_reference'})
+    identity_cast = {c for a in assets if a['role'] == 'identity_reference' for c in a['cast_ids']}
+    for shot in authored:
+        if isinstance(shot['cast'], list) and any(c not in identity_cast for c in shot['cast']):
+            raise ValueError('compact cast requires explicit identity_reference source metadata')
+    payoff = next((a for a in assets if a['id'] == header['payoff_asset_id']), None)
+    if payoff is None or payoff['role'] != 'payoff_board':
+        raise ValueError('compact payoff asset must name an explicitly authored payoff_board')
+    template = {'version': '1.0', 'planning_mode': 'shot_local_v1',
+        'reference_mode': 'frame_conditioned', 'story': copy.deepcopy(header['story_meaning']),
+        **{k: copy.deepcopy(header[k]) for k in ('late_cast_ids', 'payoff_speaker_ids', 'payoff_asset_id')},
+        'assets': assets, 'shots': contracts, 'project_review': unknown('project', PROJECT_PREDICATES)}
+    result = {k: copy.deepcopy(v) for k, v in package.items() if k not in {'authoring_form', 'compact'}}
+    result['shots'] = shots
+    result['boards'] = {'version': '1.1', **{k: copy.deepcopy(header[k])
+        for k in ('reviewer', 'story', 'approval')},
+        'references': [{k: copy.deepcopy(v) for k, v in reference.items() if k != 'cast_ids'}
+            for reference in header['references']],
+        'image_nodes': nodes, 'shared_roles': shared_roles, 'shots': mappings,
+        'motion_binding': {'contract_template': template, 'motion_handoffs': {}}}
+    return result
+
+
 def _compile_package_targets(root, package_binding):
     """Validate the bound package and return (spec, records, targets) without writing."""
     from lib import production_boards as boards, production_images as images
     from lib.episode_production_controls import episode_production_status
     package_path = images._bound_file(root, package_binding, 'production package')
     package = json.loads(package_path.read_text())
+    if 'authoring_form' in package or 'compact' in package:
+        package = _expand_compact_package(package)
     marker = json.loads((root / 'project.json').read_text())
     if (set(package) - {'version', 'project_id', 'story_revision', 'title', 'shots', 'boards', 'approval_preview', 'planning_mode'}
             or not {'version', 'project_id', 'story_revision', 'title', 'shots', 'boards'} <= set(package)
@@ -1234,6 +1354,8 @@ def compile_package(project_dir, package_binding):
     current project_id/story_revision, a title, ordered shots [{id, script,
     action, duration_seconds, optional end_state, preserve, pinned frames, cast}]
     and boards (an exact board specification version 1.1 with motion_binding).
+    Explicit authoring_form shot_local_v1_compact_v1 instead expands compact
+    declarations into that same specification; its original binding is retained.
     Script, scene plan and asset manifest are all derived from this one package.
     Existing different canonical artifacts fail closed.
     """
