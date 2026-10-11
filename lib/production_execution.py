@@ -2999,13 +2999,14 @@ def next_production_action(project_dir):
                 board_actions.setdefault(aid, review_action)
                 board_action = board_action or review_action
             elif work['failed_predicates'] and aid in pack['prompt_pack']:
-                correction_action = correction_action or action('prepare_board_correction', aid,
+                slot_correction_action = action('prepare_board_correction', aid,
                     {'source': binding, 'roles': roles, 'observations': work['observations'],
                      'correction_observation': work['correction_observation'],
                      'specification_sha256': pack['specification_sha256']}, host=True,
                     inputs={'slot_id': aid, 'source': binding, 'failed_predicates': work['failed_predicates']},
                     reason='Producer supplies exact targeted changes and optional complete replacement prompt/references; retained image authority and caps still apply.')
-                board_actions.setdefault(aid, correction_action)
+                board_actions.setdefault(aid, slot_correction_action)
+                correction_action = correction_action or slot_correction_action
             elif work['blocked']:
                 completed_blocker = completed_blocker or action('blocked', aid,
                     {'source': binding, 'roles': roles, 'observations': work['observations']},

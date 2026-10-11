@@ -304,6 +304,34 @@ def test_failed_payoff_verdict_remains_failed(neutral_package):
     assert file_bytes(root) == before
 
 
+def test_payoff_correction_uses_its_own_action_after_unrelated_failure(neutral_package):
+    root = payoff_fixture(neutral_package)
+    unrelated_source, unrelated_failed = retain_factory_board(
+        root, 'unrelated', predicates={'cast_identity': 'fail'})
+    payoff_source, payoff_failed = retain_factory_board(
+        root, 'payoff', predicates={'cast_identity': 'fail'})
+    pack = boards.load_board_pack(root)
+    assert list(pack['board_bindings']).index('unrelated') < list(pack['board_bindings']).index('payoff')
+    before = file_bytes(root); usage = images.image_usage(root)
+
+    action = execution.next_production_action(root)
+
+    assert (action['kind'], action['subject']) == ('prepare_board_correction', 'payoff')
+    assert action['inputs']['slot_id'] == 'payoff'
+    assert action['inputs']['source'] == payoff_source
+    assert action['binding']['source'] == payoff_source
+    assert action['binding']['correction_observation']['review'] == payoff_failed
+    assert action['binding']['correction_observation']['review'] != unrelated_failed
+    assert action['inputs']['failed_predicates'] == ['cast_identity']
+    retained = boards.load_board_pack(root)
+    assert boards._observation(retained, 'unrelated')['review'] == unrelated_failed
+    assert boards._observation(retained, 'payoff', 'payoff_board')['review'] == payoff_failed
+    assert boards._review_blockers(retained, 'unrelated', boards._roles(retained, 'unrelated')[0])
+    assert boards._review_blockers(retained, 'payoff', 'payoff_board')
+    assert images.image_usage(root) == usage
+    assert file_bytes(root) == before
+
+
 def test_inline_output_collision_preserves_original_receipt_and_media(board_package):
     root, _, _, target = board_package
     call = reserve(board_package, call_id='collision')
