@@ -1652,9 +1652,13 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
     else:
         actual_controls = dict(body['params'], model=native['model'])
     if provider == 'openart_mcp':
+        if 'aspectRatio' in actual_controls and 'videoAspectRatio' in actual_controls:
+            raise AutonomyError('ambiguous duplicate native aspect ratio aliases')
         for public, field in [('duration', 'videoDuration'), ('resolution', 'videoResolution'), ('aspect_ratio', 'videoAspectRatio')]:
             if field in actual_controls:
                 actual_controls[public] = actual_controls[field]
+        if 'aspectRatio' in actual_controls:
+            actual_controls['aspect_ratio'] = actual_controls['aspectRatio']
         for role, aliases in [('first_frame', ('first_frame', 'start_frame')), ('last_frame', ('last_frame', 'end_frame'))]:
             assets = [a for a in native['input_assets'] if a['role'] == role]
             if len(assets) > 1:
@@ -2827,6 +2831,79 @@ def _append_route_decisions_locked(root, policy, sha, decision_id, shot_id, prov
     tmp.replace(path)
 
 
+def _explicit_aspect_ratio(inputs, provider):
+    """One explicit transport control; aliases never create additional authority."""
+    params = inputs.get('native_params', {})
+    if not isinstance(params, dict):
+        raise AutonomyError('native_params must be an exact controls object')
+    keys = [key for key in ('aspect_ratio', 'aspectRatio', 'videoAspectRatio') if key in params]
+    if len(keys) > 1 or 'aspect_ratio' in inputs and keys:
+        raise AutonomyError('ambiguous duplicate native aspect ratio aliases')
+    if keys and (provider not in {'openart_cli', 'openart_mcp'}
+                 or keys[0] == 'aspect_ratio'
+                 or keys[0] == 'videoAspectRatio' and provider != 'openart_mcp'):
+        raise AutonomyError('aspect ratio alias is outside the exact transport')
+    if 'aspect_ratio' not in inputs and not keys:
+        return None
+    ratio = inputs['aspect_ratio'] if 'aspect_ratio' in inputs else params[keys[0]]
+    if not isinstance(ratio, str) or not ratio:
+        raise AutonomyError('aspect ratio must be an explicit native string')
+    return ratio
+
+
+def _retained_delivery_aspect_ratio(root, policy, retained):
+    """Resolve existing exact standing-run approval, never mutable defaults/prose.
+
+    The approved baseline already freezes scene/script approval bindings. That
+    document can bind an approved proposal containing the engine delivery profile;
+    projecting its exact ratio does not change the retained template or policy.
+    """
+    from fractions import Fraction
+    from lib.media_profiles import get_profile
+    try:
+        basis = policy.get('activation_basis', {})
+        if policy.get('planning_mode') != 'shot_local_v1' or basis.get('kind') != 'standing_run':
+            raise ValueError('exact standing-run delivery approval required')
+        metadata = [retained['projection']['scene_snapshot'].get('metadata', {}),
+                    retained['script_snapshot'].get('metadata', {})]
+        bindings = []
+        for source in metadata:
+            approval = source.get('approval')
+            if (not isinstance(approval, dict) or set(approval) - {'path', 'sha256', 'approved_by'}
+                    or not {'path', 'sha256'} <= set(approval)):
+                raise ValueError('retained scene/script delivery approval missing')
+            bindings.append({key: approval[key] for key in ('path', 'sha256')})
+        if bindings[0] != bindings[1]:
+            raise ValueError('retained scene/script delivery approvals disagree')
+        approval = _bound_document(root, bindings[0], 'delivery approval')
+        if approval.get('version') != '1.0' or approval.get('status') != 'approved':
+            raise ValueError('delivery proposal is not approved')
+        proposal = _bound_document(root, approval.get('approved_proposal'), 'approved delivery proposal')
+        if proposal.get('version') != '1.0' or proposal.get('identity_id') != basis.get('identity_id'):
+            raise ValueError('approved delivery identity differs from standing run')
+        delivery = proposal.get('delivery', {})
+        profile = get_profile(delivery.get('profile'))
+        ratio = profile.aspect_ratio.value
+        width, height = map(int, ratio.split(':'))
+        if (type(profile.width) is not int or type(profile.height) is not int
+                or min(profile.width, profile.height, width, height) <= 0
+                or Fraction(profile.width, profile.height) != Fraction(width, height)):
+            raise ValueError('approved profile dimensions and aspect ratio disagree')
+        expected = {'profile': profile.name, 'width': profile.width,
+                    'height': profile.height, 'aspect_ratio': ratio}
+        for declaration in [delivery, *(source.get('delivery', {}) for source in metadata)]:
+            if not isinstance(declaration, dict) or any(
+                    key in declaration and declaration[key] != value for key, value in expected.items()):
+                raise ValueError('retained delivery format declarations disagree')
+        lock = policy['locked']['controls'].get('aspect_ratio')
+        if lock is not None and (('value' in lock and digest(lock['value']) != digest(ratio))
+                or 'value_sha256' in lock and lock['value_sha256'] != hashlib.sha256(ratio.encode()).hexdigest()):
+            raise ValueError('approved delivery differs from retained aspect ratio lock')
+        return ratio
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise AutonomyError('retained approved delivery format required: ' + str(exc)) from exc
+
+
 def _validate_request_delta(root, policy, shot_id, inputs, provider):
     """Compare rooted actual inputs with exact retained layout and approved flex."""
     from lib import production_execution as execution
@@ -2938,13 +3015,23 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider):
     actual_resolution, baseline_resolution = explicit_resolution(actual), explicit_resolution(baseline)
     if actual_resolution != baseline_resolution and actual_resolution not in policy['flex']['resolution']:
         raise AutonomyError('request resolution changed outside declared flex')
-    # Only the established duration/resolution flex aliases are normalized here.
-    # Exact form preparation still checks all provider-native values; other
-    # controls remain present for the retained-template equality below.
+    actual_ratio = _explicit_aspect_ratio(actual, provider)
+    baseline_ratio = _explicit_aspect_ratio(baseline, provider)
+    if actual_ratio != baseline_ratio:
+        if baseline_ratio is not None or actual_ratio is None:
+            raise AutonomyError('request aspect ratio changed outside retained template')
+        if actual_ratio != _retained_delivery_aspect_ratio(root, policy, retained):
+            raise AutonomyError('request aspect ratio differs from retained approved delivery format')
+    # Normalize only established flex and the exact retained/projected ratio.
+    # Native preparation independently checks the selected model's actual form;
+    # unrelated controls remain in the retained-template equality below.
     for value in (expected, bound_actual):
+        value.pop('aspect_ratio', None)
         if isinstance(value.get('native_params'), dict):
             value['native_params'].pop('duration', None)
             value['native_params'].pop('resolution', None)
+            value['native_params'].pop('aspectRatio', None)
+            value['native_params'].pop('videoAspectRatio', None)
             if provider == 'openart_mcp':
                 value['native_params'].pop('videoDuration', None)
                 value['native_params'].pop('videoResolution', None)
