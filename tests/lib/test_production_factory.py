@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -80,6 +81,266 @@ def test_standing_activation_exact_replay_and_current_creator_bytes(tmp_path):
     (tmp_path / kwargs['run_command']['path']).write_text('{}')
     assert pa.load_active_policy(tmp_path)[0] is None
     assert not list(tmp_path.glob('**/*checkpoint*'))
+
+
+def standing_stage_fixture(root, stages):
+    kwargs = standing_fixture(root)
+    kwargs['policy']['checkpoint_stages'] = stages
+    setup = json.loads((root / kwargs['standing_setup']['path']).read_text())
+    setup.pop('authorization'); setup['checkpoint_stages'] = stages
+    kwargs['standing_setup'] = creator_fixture(root, 'standing', setup)
+    command = json.loads((root / kwargs['run_command']['path']).read_text())
+    command.pop('authorization'); command['standing_setup_sha256'] = kwargs['standing_setup']['sha256']
+    kwargs['run_command'] = creator_fixture(root, 'command', command)
+    return kwargs
+
+
+def legacy_ungated_standing_activation(root, monkeypatch):
+    kwargs = standing_stage_fixture(root, ['proposal', 'script', 'scene_plan', 'assets', 'edit', 'compose'])
+    # Reproduce only the old writer defect; all other canonical checks remain real.
+    with monkeypatch.context() as patch:
+        patch.setattr(pa, '_validate_checkpoint_stages', lambda *args: None, raising=False)
+        activation = pa.activate_standing_run(root, **kwargs)
+    assert pa.load_active_policy(root)[3] == ['checkpoint stages are not actual gated pipeline stages']
+    return kwargs, activation
+
+
+def file_bytes(root):
+    return {p.relative_to(root): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+
+
+@pytest.mark.parametrize('stages', [['edit'], ['compose'], ['proposal', 'edit', 'compose'], ['research'], ['idea']])
+def test_standing_activation_rejects_ungated_stages_before_authority_writes(tmp_path, stages):
+    kwargs = standing_stage_fixture(tmp_path, stages)
+    with pytest.raises(pa.StandingSetupRequired, match='not actual gated pipeline stages'):
+        pa.activate_standing_run(tmp_path, **kwargs)
+    assert not (tmp_path / pa.POLICY_ARTIFACT).exists()
+    assert not list((tmp_path / 'approvals').glob('*'))
+    assert not (tmp_path / 'artifacts/decision_log.json').exists()
+
+
+def test_reconcile_standing_checkpoint_stages_freezes_original_and_replays_after_progress(tmp_path, monkeypatch):
+    kwargs, original = legacy_ungated_standing_activation(tmp_path, monkeypatch)
+    policy_path = tmp_path / pa.POLICY_ARTIFACT
+    original_bytes = policy_path.read_bytes()
+    old_policy = json.loads(original_bytes)
+    evidence_bytes = (tmp_path / old_policy['evidence']['path']).read_bytes()
+    old_log = json.loads((tmp_path / 'artifacts/decision_log.json').read_bytes())
+    result = pa.reconcile_standing_checkpoint_stages(tmp_path, expected_policy_sha256=original['policy_sha256'])
+    assert result['provider_calls'] == result['reservations'] == 0 and not result['replayed']
+    active, sha, decision_id, reasons = pa.load_active_policy(tmp_path, shot_id='entry')
+    assert not reasons and (sha, decision_id) == (result['policy_sha256'], result['decision_id'])
+    assert active['checkpoint_stages'] == ['proposal', 'script', 'scene_plan', 'assets']
+    assert {k: v for k, v in active.items() if k not in {'checkpoint_stages', 'evidence'}} == {
+        k: v for k, v in old_policy.items() if k not in {'checkpoint_stages', 'evidence'}}
+    assert (tmp_path / old_policy['evidence']['path']).read_bytes() == evidence_bytes
+    provenance = json.loads((tmp_path / result['reconciliation']['path']).read_bytes())
+    assert (tmp_path / provenance['original_policy']['path']).read_bytes() == original_bytes
+    assert provenance['original_policy_sha256'] == original['policy_sha256']
+    assert provenance['successor_policy_sha256'] == sha
+    assert provenance['removed_checkpoint_stages'] == ['edit', 'compose']
+    new_log = json.loads((tmp_path / 'artifacts/decision_log.json').read_bytes())
+    assert new_log['decisions'][:-1] == old_log['decisions']
+    assert new_log['decisions'][-1]['options_considered'][0]['option_id'] == old_log['decisions'][-1]['selected']
+    assert new_log['decisions'][-1]['options_considered'][0]['rejected_because']
+    assert pa.root_attempt_counts(tmp_path, active) == pa.root_attempt_counts(tmp_path, old_policy)
+    amendment = copy.deepcopy(kwargs)
+    amendment['policy']['checkpoint_stages'] = active['checkpoint_stages']
+    amendment['policy']['caps']['max_repair_attempts'] = 0
+    with pytest.raises(pa.StandingSetupRequired, match='explicit amendment required'):
+        pa.activate_standing_run(tmp_path, **amendment)
+    # A repeat is a pure no-op even after legitimate production has begun.
+    write(tmp_path, 'production_attempts/retained-progress/request.json', {'retained_original': True})
+    before = file_bytes(tmp_path)
+    assert pa.reconcile_standing_checkpoint_stages(tmp_path, expected_policy_sha256=original['policy_sha256']) == dict(result, replayed=True)
+    assert file_bytes(tmp_path) == before
+
+
+@pytest.mark.parametrize('change', ['expected_sha', 'revoked', 'superseded', 'creator', 'source', 'story', 'planning', 'benchmark', 'policy'])
+def test_reconcile_standing_checkpoint_stages_rejects_other_invalid_authority_without_writes(tmp_path, monkeypatch, change):
+    kwargs, original = legacy_ungated_standing_activation(tmp_path, monkeypatch)
+    expected = original['policy_sha256']
+    if change == 'expected_sha': expected = '0' * 64
+    elif change in {'revoked', 'superseded'}:
+        path = tmp_path / 'artifacts/decision_log.json'; log = json.loads(path.read_text())
+        decision = copy.deepcopy(log['decisions'][-1]); decision['decision_id'] = 'later-choice'
+        decision['selected'] = 'strict' if change == 'revoked' else 'auto_continue:' + '1' * 64
+        log['decisions'].append(decision); path.write_text(json.dumps(log))
+    elif change == 'creator': (tmp_path / kwargs['run_command']['path']).write_text('{}')
+    elif change == 'source': (tmp_path / 'assets/start.svg').write_bytes(b'changed source')
+    elif change == 'story':
+        path = tmp_path / 'project.json'; value = json.loads(path.read_text()); value['story_revision'] = 'changed'
+        path.write_text(json.dumps(value))
+    elif change == 'planning':
+        path = tmp_path / 'artifacts/scene_plan.json'; value = json.loads(path.read_text()); value['scenes'][0]['description'] = 'Different authored action'
+        path.write_text(json.dumps(value))
+    elif change == 'benchmark': (tmp_path / 'provider_benchmark').mkdir()
+    elif change == 'policy':
+        path = tmp_path / pa.POLICY_ARTIFACT; value = json.loads(path.read_text()); value['caps']['max_total_attempts'] += 1
+        path.chmod(0o644)
+        path.write_text(json.dumps(value))
+    before = file_bytes(tmp_path)
+    with pytest.raises(pa.StandingSetupRequired):
+        pa.reconcile_standing_checkpoint_stages(tmp_path, expected_policy_sha256=expected)
+    assert file_bytes(tmp_path) == before
+
+
+@pytest.mark.parametrize('kind', ['motion_journal', 'native_reserved', 'native_uncertain', 'scope', 'image_envelope', 'mcp_attempt', 'mcp_upload', 'cli_upload_authority', 'mcp_upload_authority', 'credit_reservation', 'unpriced_reservation'])
+def test_reconcile_standing_checkpoint_stages_refuses_media_or_reservations(tmp_path, monkeypatch, kind):
+    _, original = legacy_ungated_standing_activation(tmp_path, monkeypatch)
+    if kind == 'motion_journal': write(tmp_path, 'production_attempts/original/request.json', {'attempt_id': 'original'})
+    elif kind.startswith('native_'):
+        monkeypatch.setattr(images, '_load', lambda _: {'calls': [{'state': kind.removeprefix('native_')}]})
+    elif kind == 'scope': write(tmp_path, 'production_scopes.json', {'version': '1.0', 'scopes': [{'id': 'prepared'}]})
+    elif kind == 'image_envelope': write(tmp_path, 'production_scopes.json', {'version': '1.0', 'scopes': [], 'image_envelope': {}})
+    elif kind == 'mcp_attempt': write(tmp_path, 'openart_mcp/attempts/original/state.json', {'status': 'prepared'})
+    elif kind == 'mcp_upload': write(tmp_path, 'openart_mcp/uploads/original.json', {'status': 'consumed_awaiting_original_receipt'})
+    elif kind == 'cli_upload_authority': write(tmp_path, 'artifacts/upload_approval-original.json', {})
+    elif kind == 'mcp_upload_authority': write(tmp_path, 'artifacts/openart_mcp_upload_authorization-original.json', {})
+    else:
+        from lib import provider_credit_ledger as ledger
+        snapshot = ledger.read_existing_snapshot()
+        snapshot['reservations' if kind == 'credit_reservation' else 'unpriced_reservations'] = [
+            {'attempt_id': 'private-only', 'binding_json': json.dumps({'project_root': str(tmp_path)})}]
+        monkeypatch.setattr(ledger, 'read_existing_snapshot', lambda: snapshot)
+    before = file_bytes(tmp_path)
+    with pytest.raises(pa.StandingSetupRequired, match='media|reservation|upload|scope'):
+        pa.reconcile_standing_checkpoint_stages(tmp_path, expected_policy_sha256=original['policy_sha256'])
+    assert file_bytes(tmp_path) == before
+
+
+@pytest.mark.parametrize('change', ['revoked', 'successor', 'provenance', 'original_snapshot', 'original_decision'])
+def test_reconcile_standing_checkpoint_stages_replay_cannot_revive_or_amend(tmp_path, monkeypatch, change):
+    _, original = legacy_ungated_standing_activation(tmp_path, monkeypatch)
+    result = pa.reconcile_standing_checkpoint_stages(tmp_path, expected_policy_sha256=original['policy_sha256'])
+    if change == 'successor':
+        path = tmp_path / pa.POLICY_ARTIFACT; value = json.loads(path.read_text()); value['caps']['max_total_attempts'] += 1
+        path.chmod(0o644)
+        path.write_text(json.dumps(value))
+    elif change == 'provenance':
+        path = tmp_path / result['reconciliation']['path']; path.chmod(0o644); path.write_text('{}')
+    elif change == 'original_snapshot':
+        record = json.loads((tmp_path / result['reconciliation']['path']).read_text())
+        path = tmp_path / record['original_policy']['path']; path.chmod(0o644); path.write_text('{}')
+    else:
+        path = tmp_path / 'artifacts/decision_log.json'; log = json.loads(path.read_text())
+        if change == 'original_decision': log['decisions'][0]['user_approved'] = False
+        else:
+            decision = copy.deepcopy(log['decisions'][-1]); decision.update(decision_id='revoked', selected='strict')
+            log['decisions'].append(decision)
+        path.chmod(0o644)
+        path.write_text(json.dumps(log))
+    before = file_bytes(tmp_path)
+    with pytest.raises(pa.StandingSetupRequired):
+        pa.reconcile_standing_checkpoint_stages(tmp_path, expected_policy_sha256=original['policy_sha256'])
+    assert file_bytes(tmp_path) == before
+
+
+def test_reconcile_standing_checkpoint_stages_refuses_stage_absent_from_manifest(tmp_path, monkeypatch):
+    kwargs = standing_stage_fixture(tmp_path, ['proposal', 'edit', 'idea'])
+    with monkeypatch.context() as patch:
+        patch.setattr(pa, '_validate_checkpoint_stages', lambda *args: None)
+        activation = pa.activate_standing_run(tmp_path, **kwargs)
+    before = file_bytes(tmp_path)
+    with pytest.raises(pa.StandingSetupRequired, match='absent from current pipeline'):
+        pa.reconcile_standing_checkpoint_stages(tmp_path, expected_policy_sha256=activation['policy_sha256'])
+    assert file_bytes(tmp_path) == before
+
+
+@pytest.mark.parametrize('interrupt', ['evidence', 'temporary_policy', 'temporary_log', 'log_pointer', 'policy_pointer'])
+def test_reconcile_standing_checkpoint_stages_resumes_exact_interrupted_publication(tmp_path, monkeypatch, interrupt):
+    _, original = legacy_ungated_standing_activation(tmp_path, monkeypatch)
+    original_policy = (tmp_path / pa.POLICY_ARTIFACT).read_bytes()
+    before_log = json.loads((tmp_path / 'artifacts/decision_log.json').read_text())
+    with monkeypatch.context() as patch:
+        if interrupt in {'evidence', 'temporary_policy', 'temporary_log'}:
+            write_new = execution._write_new
+            def stop_after_evidence(path, value):
+                write_new(path, value)
+                if (interrupt == 'evidence' and path.name.startswith('autonomy-checkpoint-reconciliation-')
+                        or interrupt == 'temporary_policy' and path.name == 'autonomy_policy.json.checkpoints-tmp'
+                        or interrupt == 'temporary_log' and path.name == 'decision_log.json.checkpoints-tmp'):
+                    raise OSError('synthetic interruption after immutable provenance')
+            patch.setattr(execution, '_write_new', stop_after_evidence)
+        else:
+            replace = Path.replace
+            def stop_pointer(path, target):
+                if str(target).endswith('decision_log.json' if interrupt == 'log_pointer' else 'autonomy_policy.json'):
+                    raise OSError('synthetic pointer publication interruption')
+                return replace(path, target)
+            patch.setattr(Path, 'replace', stop_pointer)
+        with pytest.raises(pa.StandingSetupRequired, match='synthetic'):
+            pa.reconcile_standing_checkpoint_stages(tmp_path, expected_policy_sha256=original['policy_sha256'])
+    assert (tmp_path / pa.POLICY_ARTIFACT).read_bytes() == original_policy
+    assert pa.load_active_policy(tmp_path)[0] is None
+    result = pa.reconcile_standing_checkpoint_stages(tmp_path, expected_policy_sha256=original['policy_sha256'])
+    assert result['replayed'] and result['provider_calls'] == result['reservations'] == 0
+    assert pa.load_active_policy(tmp_path)[1:3] == (result['policy_sha256'], result['decision_id'])
+    log = json.loads((tmp_path / 'artifacts/decision_log.json').read_text())
+    assert log['decisions'][:-1] == before_log['decisions']
+    before = file_bytes(tmp_path)
+    assert pa.reconcile_standing_checkpoint_stages(tmp_path, expected_policy_sha256=original['policy_sha256']) == result
+    assert file_bytes(tmp_path) == before
+
+
+def test_reconcile_standing_checkpoint_stages_partial_publication_cannot_revive_revocation(tmp_path, monkeypatch):
+    _, original = legacy_ungated_standing_activation(tmp_path, monkeypatch)
+    replace = Path.replace
+    with monkeypatch.context() as patch:
+        def stop_policy(path, target):
+            if str(target).endswith('autonomy_policy.json'): raise OSError('synthetic interruption')
+            return replace(path, target)
+        patch.setattr(Path, 'replace', stop_policy)
+        with pytest.raises(pa.StandingSetupRequired):
+            pa.reconcile_standing_checkpoint_stages(tmp_path, expected_policy_sha256=original['policy_sha256'])
+    path = tmp_path / 'artifacts/decision_log.json'; log = json.loads(path.read_text())
+    decision = copy.deepcopy(log['decisions'][-1]); decision.update(decision_id='later-revocation', selected='strict')
+    log['decisions'].append(decision); path.chmod(0o644); path.write_text(json.dumps(log))
+    before = file_bytes(tmp_path)
+    with pytest.raises(pa.StandingSetupRequired, match='revoked or superseded'):
+        pa.reconcile_standing_checkpoint_stages(tmp_path, expected_policy_sha256=original['policy_sha256'])
+    assert file_bytes(tmp_path) == before
+
+
+def test_reconcile_standing_checkpoint_stages_preserves_unrelated_shared_source_uploads(tmp_path, monkeypatch):
+    root = tmp_path / 'project'; root.mkdir()
+    kwargs, original = legacy_ungated_standing_activation(root, monkeypatch)
+    from tools import _openart_cli as cli
+    private = tmp_path / 'private-openart'
+    write(private, 'uploads/earlier-episode.json', {'source_sha256': kwargs['baselines']['entry']['projection']['assets'][0]['sha256']})
+    private.chmod(0o700)
+    monkeypatch.setattr(cli, 'state_dir', lambda create=False: private)
+    before = file_bytes(private)
+    pa.reconcile_standing_checkpoint_stages(root, expected_policy_sha256=original['policy_sha256'])
+    assert file_bytes(private) == before
+
+
+@pytest.mark.parametrize('change', ['policy', 'revocation', 'planning'])
+def test_reconcile_standing_checkpoint_stages_racing_change_cannot_be_overwritten(tmp_path, monkeypatch, change):
+    _, original = legacy_ungated_standing_activation(tmp_path, monkeypatch)
+    write_new = execution._write_new
+    changed_path = tmp_path / (pa.POLICY_ARTIFACT if change == 'policy' else
+        'artifacts/decision_log.json' if change == 'revocation' else 'artifacts/scene_plan.json')
+    def change_after_provenance(path, value):
+        write_new(path, value)
+        if path.name.startswith('autonomy-checkpoint-reconciliation-'):
+            changed = json.loads(changed_path.read_text())
+            if change == 'policy': changed['caps']['max_total_attempts'] += 1
+            elif change == 'planning': changed['scenes'][0]['description'] = 'Unapproved racing plan'
+            else:
+                entry = copy.deepcopy(changed['decisions'][-1]); entry.update(decision_id='racing-revocation', selected='strict')
+                changed['decisions'].append(entry)
+            # Simulate a non-cooperating writer. Atomic replacement preserves the
+            # immutable original inode and must never be overwritten by recovery.
+            temporary = changed_path.with_suffix('.race.json')
+            temporary.write_text(json.dumps(changed)); temporary.replace(changed_path)
+    monkeypatch.setattr(execution, '_write_new', change_after_provenance)
+    with pytest.raises(pa.StandingSetupRequired, match='changed during reconciliation'):
+        pa.reconcile_standing_checkpoint_stages(tmp_path, expected_policy_sha256=original['policy_sha256'])
+    assert pa.load_active_policy(tmp_path)[0] is None
+    if change == 'policy': assert json.loads(changed_path.read_text())['caps']['max_total_attempts'] == 4
+    elif change == 'planning': assert json.loads(changed_path.read_text())['scenes'][0]['description'] == 'Unapproved racing plan'
+    else: assert pa.activation_decision(tmp_path)['selected'] == 'strict'
 
 
 def test_supplied_cinematic_work_passes_proposal_with_actual_standing_scope(tmp_path):

@@ -9,3 +9,12 @@ The account's one-time standing setup and the explicit `make_video` command bind
 The producer handles each actual returned host envelope and continues the same run. OpenMontage owns execution, original-job recovery, cumulative counts, composition and cut status; it does not invent semantic findings. A saved cut may be an honest draft with disclosed defects or unknown evidence. Certification remains a separate evidence gate. One initial take is the default; repairs use only exact retained authority and caps. Provider submission counts can be unknown for the whole run when host-mediated work or provider-managed batching obscures them. Never report unknown as zero, automatically resubmit an uncertain original, add a timer/service/ledger, or schedule or publish from this factory.
 
 Standalone delivery returns the engine cut and export report. Account clients may add identity-specific paths, attributable stills and an existing backup request. A queued backup is not verified. Account closeout must not be required by the standalone engine.
+
+Standing activation validates `checkpoint_stages` against the selected pipeline's
+actual human gates before writing authority. A setup may cover more stages than a
+particular pipeline gates; the run policy names only that pipeline's gated stages.
+For an unstarted run written by the older invalid-stage activation path,
+`lib.production_autonomy.reconcile_standing_checkpoint_stages(project_dir,
+expected_policy_sha256=...)` removes only declared ungated stages. It retains the
+original policy, evidence and decision, appends a linked successor, and preserves
+all other authority and allowances. It cannot amend a changed or revoked run.
