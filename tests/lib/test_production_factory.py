@@ -3370,3 +3370,121 @@ def test_frame_amendment_snapshot_is_readonly_at_hardlink_interruption(neutral_p
     result = amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
         expected=expected, proposal=proposal, authority=authority)
     assert result['successor_policy_sha256'] == plan['successor_policy_sha256']
+
+
+@pytest.mark.parametrize('defect', [None, 'source_bytes', 'script', 'native_prompt', 'compiled_coverage',
+    'review', 'delivery_proof', 'scope_cap', 'request_digest', 'checkpoint'])
+def test_submitted_delivery_original_replays_after_revocation_without_new_admission(tmp_path, monkeypatch, defect):
+    """Only compatibility observation/transport are synthetic; all owners run."""
+    root = tmp_path / 'offline-first-pass'; root.mkdir()
+    _, _, inputs = standing_proposal_delivery_fixture(root, full_native=True)
+    inputs['output_path'] = str(root/'SYNTHETIC-original.mp4')
+    inputs['allow_unknown_cost'] = True  # existing SYNTHETIC standing Grok authority
+    observation = {'cli_version': '1.0.34', 'grok_path': '/SYNTHETIC/offline/grok'}
+    authored = request.compile_provider_prompt(root, 'entry', provider='grok_cli')
+    inputs['prompt'] = authored['prompt']
+    native = request.prepare_grok_native(inputs, observation)
+    shot = execution.load_shot_contract(root)['shots'][0]
+    timing = {'method': 'segmented_estimate', 'duration_seconds': 8, 'language': 'en', 'margin_seconds': .5,
+        'rationale': 'SYNTHETIC software fixture', 'overlap_policy': 'serial', 'overlap_rationale': 'SYNTHETIC serial windows',
+        'segments': [{'dialogue_index': i, 'text_sha256': request.digest(line['text']), 'language': 'en',
+            'word_count': 2, 'words_per_minute': 180, 'pause_seconds': 0, 'rationale': 'SYNTHETIC fixture'}
+            for i, line in enumerate(shot['dialogue'])],
+        'action_windows': [{'source_pointer': '/shot_contract/shots/0/' + key, 'value_sha256': request.digest(shot[key]),
+            'start_seconds': start, 'end_seconds': end, 'rationale': 'SYNTHETIC fixture'}
+            for key, start, end in [('dominant_action', 4.1, 7), ('completed_end_state', 7, 7.4)]]}
+    compiled = request.prepare_compiled_request(inputs, native, {'source': 'real'}, coverage=authored['coverage'], timing=timing)
+    write(root, 'artifacts/compiled_request-fixture.json', compiled)
+    write(root, 'artifacts/preparation_review-fixture.json', {'version': '1.0', 'review_id': 'fixture',
+        'reviewer': 'SYNTHETIC offline reviewer', 'status': 'pass', 'subject_sha256': request.digest(compiled),
+        'evidence_kind': 'reviewed', 'predicates': [{'name': p, 'status': 'pass', 'severity': 'critical',
+            'evidence': 'SYNTHETIC software fixture only'} for p in sorted(request.PREDICATES)]})
+    request.validate_preparation(inputs, native, {'source': 'real'})
+    before = file_bytes(root)
+    scope = pa.derive_scope(root, inputs, provider='grok_cli', observation=observation)
+    pa.validate_derived_scope(root, scope, inputs=inputs, observation=observation)
+    assert scope['derived_from_policy']['compiled_request_sha256'] == request.digest(compiled)
+    assert all((root / path).read_bytes() == raw for path, raw in before.items()
+               if path != Path('artifacts/decision_log.json'))
+    assert execution._attempts(root) == []
+
+    from tools import _grok_cli_media as media
+    from tools.video import grok_cli_video
+    from tools.base_tool import ToolResult
+    calls=[]
+    monkeypatch.setattr(media, 'observe_grok_cli_compatibility', lambda *a, **kw: dict(observation))
+    def transport(**kw):
+        calls.append(copy.deepcopy(kw))
+        return ToolResult(success=True, data={'cli_version': observation['cli_version'],
+            'session_id': kw['session_id'], 'dispatch_status': 'SYNTHETIC submitted original'})
+    monkeypatch.setattr(grok_cli_video, 'execute_grok_cli_media', transport)
+    monkeypatch.setenv('GROK_CLI_PATH', observation['grok_path'])
+    inputs['governance']['scope_id']=scope['id']
+    tool=grok_cli_video.GrokCLIVideo(grok_path=observation['grok_path'], sessions_root=str(root/'sessions'))
+    log_path = root / 'artifacts/decision_log.json'
+    approved_log = log_path.read_bytes()
+    revoked_log = json.loads(approved_log)
+    revoked_log['decisions'].append(dict(revoked_log['decisions'][0],
+        decision_id='SYNTHETIC-before-submission-revocation', selected='strict'))
+    write(root, 'artifacts/decision_log.json', revoked_log)
+    with pytest.raises(execution.ProductionGovernanceError, match='revoked'):
+        tool.execute(inputs)
+    assert not calls and execution._attempts(root) == []
+    log_path.write_bytes(approved_log)
+    result=tool.execute(inputs)
+    assert result.success, result.error
+    assert len(calls)==1
+    attempts=execution._attempts(root)
+    assert len(attempts)==1
+    original=attempts[0]
+    assert original['scope']['derived_from_policy']['delivery_approval']==scope['derived_from_policy']['delivery_approval']
+    frozen=json.loads((root/'production_attempts'/original['attempt_id']/'shot_contract.json').read_text())
+    pa.validate_policy_attempt(root, original, original['scope'], frozen)
+    refresh_fixture_proposal(root, lambda proposal: proposal['metadata']['delivery'].update(profile='generic_hd'))
+    pa.validate_policy_attempt(root, original, original['scope'], frozen)  # changed proposal alone still accepts original proof
+    log=json.loads((root/'artifacts/decision_log.json').read_text())
+    log['decisions'].append(dict(log['decisions'][0],decision_id='SYNTHETIC-independent-revocation',selected='strict'))
+    write(root,'artifacts/decision_log.json',log)
+    before=file_bytes(root)
+    with pytest.raises(pa.AutonomyError,match='revoked'):
+        pa.derive_scope(root, inputs, provider='grok_cli', observation=observation)
+    pa.validate_policy_attempt(root, original, original['scope'], frozen)
+    assert file_bytes(root)==before and len(calls)==1
+    with pytest.raises(pa.AutonomyError, match='revoked'):
+        request.compile_provider_prompt(root, 'entry', provider='grok_cli')
+    mutated = copy.deepcopy(original)
+    directory = root / 'production_attempts' / original['attempt_id']
+    if defect == 'source_bytes':
+        Path(original['input_assets'][0]['original_path']).write_bytes(b'SYNTHETIC changed source')
+    elif defect == 'script':
+        script = json.loads((root / 'artifacts/script.json').read_text())
+        script['sections'][0]['text'] += ' SYNTHETIC altered dialogue'
+        write(root, 'artifacts/script.json', script)
+    elif defect in {'native_prompt', 'compiled_coverage', 'review'}:
+        path = directory / 'autonomy_preparation.json'
+        payload = json.loads(path.read_text())
+        if defect == 'native_prompt':
+            payload['native']['request']['arguments']['prompt'] += ' SYNTHETIC altered prompt'
+        elif defect == 'compiled_coverage':
+            payload['compiled']['coverage'][0]['fragment_sha256'] = '0' * 64
+        else:
+            payload['review']['predicates'][0]['status'] = 'unknown'
+        path.chmod(0o600)  # Deliberate adversarial tampering of immutable fixture bytes.
+        write(root, str(path.relative_to(root)), payload)
+        # Even rebinding the public file pointer cannot forge the retained proof.
+        mutated['autonomy_preparation']['sha256'] = hashlib.sha256(path.read_bytes()).hexdigest()
+    elif defect == 'delivery_proof':
+        mutated['scope']['derived_from_policy']['delivery_approval']['artifact']['content'] += ' '
+    elif defect == 'scope_cap':
+        mutated['scope']['attempts_per_shot']['entry'] = 2
+    elif defect == 'request_digest':
+        mutated['request_sha256'] = '0' * 64
+    elif defect == 'checkpoint':
+        mutated['scope']['derived_from_policy']['delivery_approval']['checkpoint']['content'] += ' '
+    before = file_bytes(root)
+    if defect is None:
+        pa.validate_policy_attempt(root, mutated, mutated['scope'], frozen)
+    else:
+        with pytest.raises((pa.AutonomyError, ValueError)):
+            pa.validate_policy_attempt(root, mutated, mutated['scope'], frozen)
+    assert file_bytes(root) == before and len(calls) == 1

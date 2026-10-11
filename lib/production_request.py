@@ -342,6 +342,21 @@ def build_static_source_packet(project_dir, shot_id, *, provider):
 
 def compile_provider_prompt(project_dir, shot_id, *, provider, model=None):
     packet = build_static_source_packet(project_dir, shot_id, provider=provider)
+    return _compile_provider_packet(packet, provider=provider, model=model)
+
+
+def _compile_historical_provider_prompt(project_dir, shot_id, *, provider, native):
+    """Re-prove original source compilation, without prospective admission.
+
+    Only retained-authority callers use this path after proving their policy and
+    frozen preparation. Original source validation still reads current bytes;
+    the caller separately checks retained contract deltas and exact native proof.
+    """
+    packet = _historical_source_packet(project_dir, shot_id, provider=provider, native=native)
+    return _compile_provider_packet(packet, provider=provider, model=native.get('model'))
+
+
+def _compile_provider_packet(packet, *, provider, model=None):
     compiled = _compile_packet(packet, native_pointer='/arguments/prompt' if provider == 'grok_cli' else ('/params/sceneDescription' if provider == 'openart_mcp' and model == 'smart-shot' else '/params/prompt'))
     if provider == 'grok_cli':
         from tools._grok_cli_media import validate_prompt

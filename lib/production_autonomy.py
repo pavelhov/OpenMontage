@@ -1737,7 +1737,10 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
     # Full root canonical compilation preserves ordered duplicate speech/speaker/source,
     # including all implicit lines absent from explicit locked.dialogue maps.
     provider = native.get('provider', 'openart_cli')
-    canonical = preparation.compile_provider_prompt(root, shot_id, provider=provider, **({'model': native['model']} if provider == 'openart_mcp' else {}))
+    if historical is not None or policy_context is not None:
+        canonical = preparation._compile_historical_provider_prompt(root, shot_id, provider=provider, native=native)
+    else:
+        canonical = preparation.compile_provider_prompt(root, shot_id, provider=provider, **({'model': native['model']} if provider == 'openart_mcp' else {}))
     body = preparation._body(native)
     prompt = body['params'].get('sceneDescription' if provider == 'openart_mcp' and native.get('prompt_param_path') == '/params/sceneDescription' else 'prompt')
     if prompt != canonical['prompt'] or compiled['coverage'] != canonical['coverage']:
