@@ -305,6 +305,24 @@ def _candidate(root, shot_id, attempt_id, output, revision, selected, *, histori
             'review': status, 'findings': findings}
 
 
+def _replaces_candidate(attempts, attempt_id, original_id):
+    """Use retained repair ancestry, not filesystem dates, to supersede a baseline."""
+    by_id = {row['attempt_id']: row for row in attempts}
+    pending, seen = [attempt_id], set()
+    while pending:
+        aid = pending.pop()
+        if aid in seen:
+            continue
+        seen.add(aid)
+        row = by_id.get(aid, {})
+        scope = row.get('scope', row.get('scope_snapshot', {}))
+        replaced = scope.get('replaces_attempt_ids', [])
+        if original_id in replaced:
+            return True
+        pending.extend(replaced)
+    return False
+
+
 def first_cut_candidates(project_dir):
     """One row per planned shot, contract order: a playable candidate or a precise gap.
 
@@ -330,8 +348,13 @@ def first_cut_candidates(project_dir):
     for shot in contract['shots']:
         sid = shot['id']
         selection = selected.get(sid)
+        selection_review = _selection_review(root, sid, selection, revision)
         row = None
         creator_attempt = creator_candidates.get(sid)
+        if (creator_attempt is not None and selection_review is not None
+                and selection['attempt_id'] not in suppressed
+                and _replaces_candidate(attempts, selection['attempt_id'], creator_attempt)):
+            creator_attempt = selection['attempt_id']
         if creator_attempt is not None:
             try:
                 state = execution.load_attempt_result(root, creator_attempt)
@@ -340,6 +363,16 @@ def first_cut_candidates(project_dir):
                     TypeError, subprocess.SubprocessError):
                 row = None
         accepted = accepted_candidates.get(sid)
+        if (row is None and accepted is not None and selection_review is not None
+                and selection['attempt_id'] not in suppressed
+                and _replaces_candidate(attempts, selection['attempt_id'], accepted['attempt_id'])):
+            try:
+                # A current selected repair supersedes its accepted source. An
+                # older strict selection must not roll back an accepted preview.
+                row = _candidate(root, sid, selection['attempt_id'], selection['output'], revision, selected)
+            except (execution.ProductionGovernanceError, OSError, ValueError, KeyError,
+                    TypeError, subprocess.SubprocessError):
+                row = None
         if row is None and accepted is not None:
             try:
                 row = _candidate(root, sid, accepted['attempt_id'], accepted['output'], revision, selected,
@@ -347,7 +380,7 @@ def first_cut_candidates(project_dir):
             except (execution.ProductionGovernanceError, OSError, ValueError, KeyError,
                     TypeError, subprocess.SubprocessError):
                 row = None
-        if row is None and _selection_review(root, sid, selection, revision) is not None:
+        if row is None and selection_review is not None:
             try:
                 row = _candidate(root, sid, selection['attempt_id'], selection['output'], revision, selected)
             except (execution.ProductionGovernanceError, OSError, ValueError, KeyError,
@@ -442,19 +475,47 @@ def _profile_issues(path, profile):
     return issues
 
 
-def _verify_render(output, profile, expected_duration, count):
-    """(technical, error) for an existing local render; error None when usable."""
+class RenderProbeUncertain(RuntimeError):
+    """Retryable local verification failure; not evidence to replace media."""
+
+
+def _confirmed_incomplete_render(exc):
+    """A completed ffprobe explicitly identifies missing MP4 metadata.
+
+    A timeout, absent tool or unspecified nonzero exit proves no media defect.
+    Keep this allowance narrow rather than guessing from any probe failure.
+    """
+    return (isinstance(exc, subprocess.CalledProcessError) and exc.returncode == 1
+            and isinstance(exc.stderr, str) and 'moov atom not found' in exc.stderr
+            and 'Invalid data found when processing input' in exc.stderr)
+
+
+def _verify_render(output, profile, expected_duration, count, *, verify_duration=True):
+    """Return confirmed technical issues; preserve media on probe uncertainty.
+
+    Fresh previews retain playable duration gaps for incomplete disclosure;
+    resumed intents require their expected duration before reusing the output.
+    """
     try:
         technical = _probe(output)
     except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
-        return None, f'render unreadable: {exc}'
-    if abs(technical['duration_seconds'] - expected_duration) > 0.05 + 0.04 * count:
+        if _confirmed_incomplete_render(exc):
+            return None, 'render incomplete: ' + exc.stderr.strip()
+        raise RenderProbeUncertain(f'render probe failed ({type(exc).__name__}): {exc}; '
+                                   'existing output preserved; retry this compose operation') from exc
+    if verify_duration and abs(technical['duration_seconds'] - expected_duration) > 0.05 + 0.04 * count:
         return technical, f"render duration {technical['duration_seconds']} differs from {expected_duration}"
     if profile is not None:
         try:
             issues = _profile_issues(output, profile)
         except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
-            return technical, f'render profile check unreadable: {exc}'
+            if _confirmed_incomplete_render(exc):
+                return technical, 'render incomplete: ' + exc.stderr.strip()
+            raise RenderProbeUncertain(f'render profile probe failed ({type(exc).__name__}): {exc}; '
+                                       'existing output preserved; retry this compose operation') from exc
+        if any(issue.startswith('First-packet timing check failed:') for issue in issues):
+            raise RenderProbeUncertain('render profile probe failed: ' + '; '.join(issues)
+                                       + '; existing output preserved; retry this compose operation')
         if issues:
             return technical, '; '.join(issues)
     return technical, None
@@ -487,6 +548,18 @@ def _compose_bindings(root, clips, export_profile, audio_path):
     return bindings
 
 
+def _clip_media_bindings(clips, *, placed=False):
+    """Ordered placement identity and timing, excluding mutable review notes."""
+    cursor, bindings = 0.0, []
+    for clip in clips:
+        start = clip['master_start'] if placed else cursor
+        end = clip['master_end'] if placed else round(cursor + clip['duration_seconds'], 3)
+        bindings.append({key: clip[key] for key in ('shot_id', 'attempt_id', 'output')} |
+                        {'master_start': round(start, 3), 'master_end': end})
+        cursor = end
+    return bindings
+
+
 def _find_intent(root, operation_id):
     """Latest (highest-sequence) compose intent for ``operation_id``."""
     found = (None, None)
@@ -509,7 +582,8 @@ def compose_first_cut(project_dir, *, audio_path=None, compose=None, export_prof
     geometry is retained. ``operation_id`` writes a compose intent inside the
     render directory before rendering, so a crashed operation resumes: an
     existing record is returned, a complete local render is recorded without
-    re-rendering, and invalid/partial local output is re-rendered in place.
+    re-rendering. A confirmed technical mismatch or incomplete MP4 preserves
+    the original beside its replacement; probe uncertainty preserves it for retry.
     Changed clip/profile/audio bindings reject the stale intent."""
     from lib import production_execution as execution
     from lib.shot_contract import contract_digest
@@ -543,7 +617,8 @@ def compose_first_cut(project_dir, *, audio_path=None, compose=None, export_prof
             if record.get('compose_bindings_sha256') != bindings_sha256:
                 raise ValueError('compose operation was recorded with different clips, profile or audio')
             recorded.add(record['sequence'])
-            if record['status'] != 'render_failed' and _export_intact(root, record):
+            if (record['status'] != 'render_failed' and _export_intact(root, record)
+                    and _clip_media_bindings(record['clips'], placed=True) == _clip_media_bindings(clips)):
                 return {'path': str(path), 'sha256': file_sha256(path), **record}
     intent_path, intent = _find_intent(root, operation_id) if operation_id is not None else (None, None)
     if intent is not None:
@@ -586,7 +661,15 @@ def compose_first_cut(project_dir, *, audio_path=None, compose=None, export_prof
                 resumed = technical
                 emit_event(root, {'event': 'first-cut-compose-resumed', **observation, 'operation_id': operation_id})
             else:
-                output.unlink()
+                # A completed probe established a media defect. Preserve even those
+                # rejected bytes before the same operation renders a replacement.
+                retained = directory / ('first_cut.invalid-' + file_sha256(output) + '.mp4')
+                if retained.exists():
+                    if file_sha256(retained) != file_sha256(output):
+                        raise ValueError('retained invalid render bytes changed')
+                    output.unlink()
+                else:
+                    output.replace(retained)
                 technical = None
         if resumed is None:
             first = _probe(root / placed[0]['output']['path'])
@@ -616,13 +699,15 @@ def compose_first_cut(project_dir, *, audio_path=None, compose=None, export_prof
             if resumed is None:
                 if not result.success:
                     raise RuntimeError(result.error or 'compose failed')
-                technical = _probe(output)
-                if profile is not None:
-                    issues = _profile_issues(output, profile)
-                    if issues:
-                        raise ValueError('export profile check failed: ' + '; '.join(issues))
+                technical, problem = _verify_render(output, profile, cursor, len(placed), verify_duration=False)
+                if problem:
+                    raise ValueError('export technical check failed: ' + problem)
             export = {'path': _rel(root, output), 'sha256': file_sha256(output)}
             emit_event(root, {'event': 'first-cut-export-verified', **observation, 'export': export})
+        except RenderProbeUncertain:
+            # Keep the unrecorded output and its intent available for the same
+            # operation's verification-only retry, including the first encode.
+            raise
         except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
             error = str(exc)
             log_path = directory / 'render_error.log'
@@ -679,8 +764,10 @@ def deliver_standalone(project_dir, *, export_profile=None, operation_id=None, a
         operation_id = 'deliver-' + execution._digest(_compose_bindings(root, clips, export_profile, audio_path))[:24]
     cut = compose_first_cut(root, audio_path=audio_path, compose=compose,
                             export_profile=export_profile, operation_id=operation_id)
-    status = first_cut_status(root, {'path': _rel(root, cut['path']), 'sha256': cut['sha256']})
+    binding = {'path': _rel(root, cut['path']), 'sha256': cut['sha256']}
+    status = first_cut_media_status(root, binding)
     return {'status': cut['status'], 'currency': status,
+            'annotation_currency': first_cut_status(root, binding),
             'first_cut': {'path': _rel(root, cut['path']), 'sha256': cut['sha256']},
             'operation_id': operation_id, 'export': cut['export'],
             'export_path': str(root / cut['export']['path']) if cut['export'] else None,
@@ -737,7 +824,7 @@ def _findings_digest(root, clips, *, current):
     return execution._digest(_clip_findings(root, clips, current=current))
 
 
-def _cut_reasons(root, cut):
+def _cut_reasons(root, cut, *, include_findings=True):
     """Stale reasons for a first-cut binding {path, sha256}; empty when current."""
     from lib import production_execution as execution
     from lib.shot_contract import contract_digest
@@ -758,7 +845,12 @@ def _cut_reasons(root, cut):
         reasons.append('story_revision_changed')
     if contract_digest(execution.load_shot_contract(root)) != record['contract_sha256']:
         reasons.append('contract_changed')
-    if _findings_digest(root, record['clips'], current=True) != _findings_digest(root, record['clips'], current=False):
+    if not reasons:
+        current_clips = [row for row in first_cut_candidates(root) if row['status'] == 'candidate']
+        if _clip_media_bindings(current_clips) != _clip_media_bindings(record['clips'], placed=True):
+            reasons.append('candidate_bindings_changed')
+    if (include_findings and _findings_digest(root, record['clips'], current=True)
+            != _findings_digest(root, record['clips'], current=False)):
         reasons.append('findings_changed')
     if max(r['sequence'] for _, r in _cut_records(root)) > record['sequence']:
         reasons.append('superseded')
@@ -766,7 +858,18 @@ def _cut_reasons(root, cut):
 
 
 def first_cut_status(project_dir, cut):
+    """Currency of the rendered record and its retained creator annotations."""
     reasons = _cut_reasons(Path(project_dir).resolve(), cut)
+    return {'status': 'stale' if reasons else 'current', 'reasons': reasons}
+
+
+def first_cut_media_status(project_dir, cut):
+    """Media currency for producer completion; new notes do not change bytes.
+
+    Annotation and acceptance currency remain separately governed by
+    ``first_cut_status`` and ``first_cut_acceptance_status``.
+    """
+    reasons = _cut_reasons(Path(project_dir).resolve(), cut, include_findings=False)
     return {'status': 'stale' if reasons else 'current', 'reasons': reasons}
 
 

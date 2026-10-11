@@ -274,7 +274,7 @@ def _validate_spec(root, spec):
             users = [s["shot_id"] for s in spec["shots"]
                 if shared or any(r["asset_id"] == aid for r in s["roles"])] or [shot_ids[0]]
             for index, sid in enumerate(users):
-                alias = aid if index == 0 else aid + "--" + sid
+                alias = motion_reference_alias(spec, aid, sid)
                 if alias in aliases or (index and alias in nodes.keys() | references.keys()):
                     raise ValueError("motion scene alias collides with a declared board asset")
                 aliases[alias] = (aid, sid)
@@ -633,6 +633,78 @@ def reserve_board_image(project_dir, slot_id, *, scope_id, call_id=None, correct
         replace_exception_call_id=replace_exception_call_id)
 
 
+def motion_reference_alias(spec, aid, shot_id):
+    """One stable alias per (reference, consumer shot) from the specification.
+
+    Declared/shared users in authored shot order own the aliases; the first owns
+    the unsuffixed ID. Local consumer filtering selects which aliases are needed
+    but never rebases the unsuffixed ID onto a later filtered consumer.
+    """
+    shared = any(r["asset_id"] == aid for r in spec.get("shared_roles", []))
+    users = [s["shot_id"] for s in spec["shots"]
+             if shared or any(r["asset_id"] == aid for r in s["roles"])] or [spec["shots"][0]["shot_id"]]
+    return aid if shot_id == users[0] else aid + "--" + shot_id
+
+
+def _imported_board_gate(root, pack, slot_id, call_id, *, images):
+    """The single request gate shared by the selector and bind_imported_board.
+
+    Returns (kind, payload): ('current', None); ('successor', successor) when a
+    linked successor is bound current or already submitted; ('restore', record)
+    with the last exact retained current-source original packet; or (None, None).
+    """
+    result = images.image_call_status(root, call_id)
+    prepared = pack["image_packets"].get(slot_id)
+    if prepared and result["request_sha256"] == prepared["request_sha256"]:
+        return "current", None
+    linked_lane = False
+    if prepared:
+        for occurrence in images.image_usage(root)["occurrences"]:
+            if occurrence["route"] != "native_imagegen":
+                continue
+            successor = images.image_call_status(root, occurrence["call_id"])
+            link = successor.get("replaces_host_exception") or {}
+            if (link.get("call_id") == call_id and successor.get("slot_id") == slot_id
+                    and successor.get("request_sha256") == prepared["request_sha256"]
+                    and link.get("request_sha256") == result["request_sha256"]
+                    and link.get("receipt_sha256") == (result.get("host_exception") or {}).get("sha256")):
+                linked_lane = True
+                current = pack["board_bindings"].get(slot_id)
+                # Keep a submitted successor's lane intact. An un-emitted reservation
+                # cannot outrank the authentic original result.
+                if ((current and current.get("call_id") == successor["call_id"] and _binding_current(root, pack, slot_id))
+                        or any(e.get("kind") == "submitted" for e in successor.get("events", []))):
+                    return "successor", successor
+                break
+        if not linked_lane and result.get("host_exception"):
+            # Before any child reservation, the retained recovery packet itself is
+            # the intent identity: prepare_image_request derives its output from
+            # exactly this original call ID. Ordinary corrections never do.
+            marker = "-recovery-" + hashlib.sha256(call_id.encode()).hexdigest()[:12]
+            linked_lane = marker in Path(prepared["output_path"]).stem
+    # Restore only reverses a lane moved by this original's own host-exception
+    # recovery; a normal correction/rejection keeps the original superseded.
+    if not result.get("host_exception") or (prepared and not linked_lane):
+        return None, "superseded"
+    candidates = []
+    for record in pack["image_packet_history"] + list(pack["image_packets"].values()):
+        if record.get("slot_id") != slot_id:
+            continue
+        digest = images.image_request_digest(record["packet"], slot_id, record["arguments"],
+            output_path=record["output_path"])
+        if (digest == result["request_sha256"] == record.get("request_sha256")
+                and _inside(root, record["output_path"]) == _inside(root, result["output"]["path"])
+                and _packet_sources_current(root, pack, record)):
+            candidates.append(record)
+    return ("restore", candidates[-1]) if candidates else (None, None)
+
+
+def imported_board_eligibility(root, pack, slot_id, call_id, *, images):
+    """Pure projection of bind_imported_board's gate: 'current', 'restore',
+    'successor' or None (superseded); zero writes."""
+    return _imported_board_gate(root, pack, slot_id, call_id, images=images)[0]
+
+
 @_board_transaction
 def bind_imported_board(project_dir, slot_id, call_id, *, images):
     """Promote attributable image bytes in preparation only; no contract mutation."""
@@ -644,59 +716,27 @@ def bind_imported_board(project_dir, slot_id, call_id, *, images):
     if result["slot_id"] != slot_id or result["state"] != "imported" or not result.get("output_current"):
         raise ValueError("board promotion needs the exact imported current slot bytes")
     prepared = pack["image_packets"].get(slot_id)
-    if not prepared or result["request_sha256"] != prepared["request_sha256"]:
-        recovery_successor = None
-        if prepared:
-            for occurrence in images.image_usage(root)["occurrences"]:
-                if occurrence["route"] != "native_imagegen":
-                    continue
-                successor = images.image_call_status(root, occurrence["call_id"])
-                link = successor.get("replaces_host_exception") or {}
-                if (link.get("call_id") == call_id and successor.get("slot_id") == slot_id
-                        and successor.get("request_sha256") == prepared["request_sha256"]
-                        and link.get("request_sha256") == result["request_sha256"]
-                        and link.get("receipt_sha256") == (result.get("host_exception") or {}).get("sha256")):
-                    recovery_successor = successor
-                    break
-        if recovery_successor is not None:
-            current = pack["board_bindings"].get(slot_id)
-            child_is_current = (current and current.get("call_id") == recovery_successor["call_id"]
-                and _binding_current(root, pack, slot_id))
-            child_emitted = any(event.get("kind") == "submitted"
-                for event in recovery_successor.get("events", []))
-            # Keep a submitted successor's lane intact. An un-emitted reservation
-            # cannot outrank the authentic original result; restore the exact
-            # retained original packet below so it can be promoted.
-            if child_is_current:
-                return deepcopy(current)
-            if child_emitted:
-                return None
-
-        if result.get("host_exception"):
-            candidates = []
-            for record in pack["image_packet_history"] + list(pack["image_packets"].values()):
-                if record.get("slot_id") != slot_id:
-                    continue
-                digest = images.image_request_digest(record["packet"], slot_id, record["arguments"],
-                    output_path=record["output_path"])
-                if (digest == result["request_sha256"] == record.get("request_sha256")
-                        and _inside(root, record["output_path"]) == _inside(root, result["output"]["path"])
-                        and _packet_sources_current(root, pack, record)):
-                    candidates.append(record)
-            if candidates:
-                original = deepcopy(candidates[-1])
-                current_packet = pack["image_packets"].get(slot_id)
-                if current_packet and current_packet["request_sha256"] != original["request_sha256"]:
-                    pack["image_packet_history"].append(current_packet)
-                pack["image_packets"][slot_id] = original
-                _event(pack, "image_packet_restored", slot_id=slot_id,
-                    request_sha256=original["request_sha256"], reason="imported_original_host_exception_result")
-                _save(root, pack)
-                prepared = original
-            else:
-                raise ValueError("host-exception original return has no exact retained current-source packet")
-        else:
-            raise ValueError("image return differs from the current prepared board request")
+    kind, payload = _imported_board_gate(root, pack, slot_id, call_id, images=images)
+    if kind == "successor":
+        current = pack["board_bindings"].get(slot_id)
+        if (current and current.get("call_id") == payload["call_id"]
+                and _binding_current(root, pack, slot_id)):
+            return deepcopy(current)
+        return None
+    if kind == "restore":
+        original = deepcopy(payload)
+        current_packet = pack["image_packets"].get(slot_id)
+        if current_packet and current_packet["request_sha256"] != original["request_sha256"]:
+            pack["image_packet_history"].append(current_packet)
+        pack["image_packets"][slot_id] = original
+        _event(pack, "image_packet_restored", slot_id=slot_id,
+            request_sha256=original["request_sha256"], reason="imported_original_host_exception_result")
+        _save(root, pack)
+        prepared = original
+    elif kind is None:
+        if result.get("host_exception") and payload != "superseded":
+            raise ValueError("host-exception original return has no exact retained current-source packet")
+        raise ValueError("image return differs from the current prepared board request")
     binding = {"path": result["output"]["path"], "sha256": result["output"]["sha256"], "origin": "canonical_image_import", "call_id": call_id, "route": result.get("route", "native_imagegen"), "source_bindings": deepcopy(prepared["source_bindings"])}
     if pack["board_bindings"].get(slot_id) != binding:
         pack["board_bindings"][slot_id] = binding
@@ -846,8 +886,8 @@ def _promote_motion_bindings(root, pack, *, publish=True):
             users = [s['id'] for s in template['shots'] if aid in required_asset_ids(template, s)]
         if not users:
             users = [pack["specification"]["shots"][0]["shot_id"]]
-        for index, sid in enumerate(users):
-            alias = aid if index == 0 else aid + "--" + sid
+        for sid in users:
+            alias = motion_reference_alias(pack["specification"], aid, sid)
             row = {"id": alias, "type": "image", "path": path, "scene_id": sid,
                    "source_tool": binding.get("route", "native_imagegen") if binding["origin"] == "canonical_image_import" else "provided"}
             existing = next((r for r in manifest["assets"] if r["id"] == alias), None)

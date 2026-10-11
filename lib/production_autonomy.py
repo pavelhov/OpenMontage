@@ -138,7 +138,7 @@ def _materialized_manifest_requirements(root, shot_id, baseline, materialized):
         base = alias[:-len('--' + shot_id)] if alias.endswith('--' + shot_id) else alias
         users = [s['id'] for s in contract['shots'] if base in required_asset_ids(contract, s)]
         users = users or [spec['shots'][0]['shot_id']]
-        if shot_id not in users or alias != (base if users[0] == shot_id else base + '--' + shot_id):
+        if shot_id not in users or alias != boards.motion_reference_alias(spec, base, shot_id):
             return None
         binding = pack['board_bindings'].get(base)
         if base in materialized:

@@ -1043,7 +1043,7 @@ def _compile_package_targets(root, package_binding):
             images.validate_image_reuse(root, ref, role=role)
         path = boards._inside(root, ref['path'])
         for index, scene_id in enumerate(users or [ids[0]]):
-            asset_id = aid if index == 0 else aid + '--' + scene_id
+            asset_id = boards.motion_reference_alias(spec, aid, scene_id)
             if asset_id in bindings or (index and asset_id in ({r['id'] for r in spec['references']} | set(nodes))):
                 raise ValueError('provided reference scene alias collides with asset ID')
             assets.append({'id': asset_id, 'type': 'image', 'path': str(path.relative_to(root)),

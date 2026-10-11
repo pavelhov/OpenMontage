@@ -2729,6 +2729,26 @@ def _production_action(root, kind, *, subject, binding, inputs=None, reason=None
     return value
 
 
+def _rejected_and_superseded(root, request, observed, selected, current_candidates):
+    """A generated attempt with a retained output-bound failed review whose shot
+    is now selected on another attempt needs no further selection review. Its
+    evidence and count stay retained; unselected rejected drafts are unchanged.
+    The selected replacement must still be the shot's current playable candidate
+    (current bytes/selection), so a stale verdict never hides required work."""
+    from lib.production_draft import _current_findings
+    sid = request['shot_id']
+    current = selected.get(sid)
+    output = observed.get('output') or {}
+    if not isinstance(current, dict) or current.get('attempt_id') in {None, request['attempt_id']} or not output.get('sha256'):
+        return False
+    row = current_candidates.get(sid) or {}
+    if row.get('status') != 'candidate' or row.get('attempt_id') != current.get('attempt_id'):
+        return False
+    _, findings = _current_findings(root, sid, request['attempt_id'], output['sha256'],
+                                    request.get('story_revision'), selected)
+    return bool(findings)
+
+
 def next_production_action(project_dir):
     """One typed projection of existing canonical state; zero writes or host calls."""
     from lib import production_images as images, production_boards as boards
@@ -2752,7 +2772,11 @@ def next_production_action(project_dir):
         calls = images._load(root)['calls']
         for call in calls:
             if (pack and call['state'] == 'imported' and call['slot_id'] in pack['prompt_pack']
-                    and pack['board_bindings'].get(call['slot_id'], {}).get('call_id') != call['call_id']):
+                    and pack['board_bindings'].get(call['slot_id'], {}).get('call_id') != call['call_id']
+                    # Superseded originals and late originals whose successor owns
+                    # the lane stay retained/counted; only bindable imports promote.
+                    and boards.imported_board_eligibility(root, pack, call['slot_id'], call['call_id'],
+                                                          images=images) in {'current', 'restore'}):
                 board_action = action('promote_imported_board', call['call_id'],
                     {'call_id': call['call_id'], 'slot_id': call['slot_id'], 'request_sha256': call['request_sha256'],
                      'output': call['output'], 'host_receipt': call.get('host_receipt')})
@@ -2763,6 +2787,13 @@ def next_production_action(project_dir):
                 'state': call['state'], 'scope_sha256': call['scope_sha256'],
                 'host_receipt': call.get('host_receipt'), 'host_exception': call.get('host_exception')}
             if call['state'] == 'reserved':
+                link = call.get('replaces_host_exception') or {}
+                if link.get('call_id'):
+                    linked = images.image_call_status(root, link['call_id'])
+                    # A reserved recovery successor whose original later returned
+                    # actual bytes can never be emitted; keep it retained/counted.
+                    if linked.get('state') != 'uncertain' or linked.get('output'):
+                        continue
                 board_action = action('begin_native_image', call['call_id'], binding)
                 break
             board_action = action('receive_native_image', call['call_id'], binding, host=True,
@@ -2791,6 +2822,7 @@ def next_production_action(project_dir):
         candidates = first_cut_candidates(root)
     reviewed_candidates = {row['shot_id']: row for row in candidates
         if row.get('status') == 'candidate' and (row.get('review') == 'pass' or row.get('findings'))}
+    current_candidates = {row['shot_id']: row for row in candidates if row.get('status') == 'candidate'}
     for request in _attempts(root):
         if request.get('media_kind') != 'motion':
             continue
@@ -2827,7 +2859,8 @@ def next_production_action(project_dir):
                 'provider': provider}, reason=('Unsupported strict original collection; preserve original ID/count and never replace.' if kind == 'blocked' else None))
             continue
         if (observed.get('status') == 'generated' and selected.get(sid, {}).get('attempt_id') != aid
-                and reviewed_candidates.get(sid, {}).get('attempt_id') != aid):
+                and reviewed_candidates.get(sid, {}).get('attempt_id') != aid
+                and not _rejected_and_superseded(root, request, observed, selected, current_candidates)):
             return action('review_selection', aid, binding, host=True,
                 inputs={'shot_id': sid, 'attempt_id': aid, 'output': observed.get('output'),
                         'preserved_output': observed.get('preserved_output')})
@@ -2840,10 +2873,10 @@ def next_production_action(project_dir):
     contract = load_shot_contract(root)
     shots = contract['shots']
     if all(s['id'] in reviewed_candidates for s in shots) and motion_action is None:
-        from lib.production_draft import first_cut_status, latest_first_cut
+        from lib.production_draft import first_cut_media_status, latest_first_cut
         cut = latest_first_cut(root)
         if cut:
-            current = first_cut_status(root, cut)
+            current = first_cut_media_status(root, cut)
             if current.get('status') == 'current' and cut.get('status') == 'complete' and cut.get('technical') and not cut.get('missing'):
                 return action('complete', 'cut', {'first_cut': {'path': cut['path'], 'sha256': cut['sha256']}}, inputs=current)
         return action('compose_cut', 'cut', {'selections_sha256': _digest(selected),

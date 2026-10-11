@@ -969,3 +969,184 @@ def test_prepare_motion_actual_grok_dry_run_observes_fresh_outside_lock_and_resu
     attempt = execution._attempts(tmp_path)[0]
     assert {k: attempt['submitted_inputs'][k] for k in planning} == planning
     assert attempt['request_sha256'] == scopes[0]['requests']['entry']
+
+
+def test_shared_identity_reference_first_consumed_by_later_shot_keeps_stable_aliases(neutral_package):
+    # Shared identity_reference actually consumed only by s2: compile, validation
+    # and local motion promotion must agree on one alias per consumer shot.
+    from lib import production_boards as boards
+    root, package, bind = neutral_package
+    package = prospective_package(package)
+    spec = package['boards']
+    reference = spec['references'][0]
+    reference['role'] = 'identity_reference'
+    reference['applicability']['roles'] = ['identity_reference', 'start_frame', 'end_frame']
+    spec['shared_roles'][0]['role'] = 'identity_reference'
+    template = spec['motion_binding']['contract_template']
+    template['assets'].append({'id': 'cast', 'role': 'identity_reference', 'cast_ids': ['actor']})
+    for shot in template['shots']:
+        shot['cast_ids'] = ['actor'] if shot['id'] == 's2' else []
+    binding = bind(package)
+    assert request.prepare_package(root, binding)['status'] == 'prepared'
+    manifest = json.loads((root / 'artifacts/asset_manifest.json').read_text())
+    pairs = [(a['id'], a['scene_id']) for a in manifest['assets'] if a['id'].startswith('cast')]
+    assert pairs == [('cast', 's1'), ('cast--s2', 's2'), ('cast--s3', 's3')]
+    assert all(boards.motion_reference_alias(spec, 'cast', sid) == aid for aid, sid in pairs)
+    first = (root / 'artifacts/asset_manifest.json').read_bytes()
+    request.prepare_package(root, binding)
+    assert (root / 'artifacts/asset_manifest.json').read_bytes() == first
+    assert images.image_usage(root)['total'] == 0
+
+
+def test_corrected_board_never_reschedules_superseded_imported_original(neutral_package, original_host_exception=False):
+    # Original critically rejected, exact corrected board passes: the retained
+    # original stays counted/imported but is never promoted again.
+    from lib import production_boards as boards
+    from lib.shot_contract import ASSET_PREDICATES
+    root, package, bind = neutral_package
+    package = prospective_package(package); request.prepare_package(root, bind(package))
+    def run(call_id, correction=None, fail=False):
+        prepared = boards.prepare_image_request(root, 'start', correction=correction, images=images)
+        scope = {'id': 'scope-' + call_id, 'status': 'approved', 'approved_by': 'SYNTHETIC creator fixture',
+            'project_id': package['project_id'], 'story_revision': 'r1', 'phase': 'image', 'provider': 'native_imagegen',
+            'evidence': {k: package['boards']['approval'][k] for k in ('path', 'sha256')},
+            'image_allowance': 2, 'allowed_image_routes': ['native_imagegen'],
+            'requests': {'start': prepared['request_sha256']}, 'attempts_per_shot': {'start': 1}}
+        path = root / 'production_scopes.json'
+        scopes = json.loads(path.read_text()) if path.exists() else {'version': '1.0', 'scopes': []}
+        scopes['scopes'].append(scope); write(root, 'production_scopes.json', scopes)
+        boards.reserve_board_image(root, 'start', scope_id=scope['id'], call_id=call_id, correction=correction, images=images)
+        envelope = images.begin_native_image(root, call_id)
+        if original_host_exception and call_id == 'original-start':
+            from tests.lib.test_production_images import file_sha256
+            write(root, 'receipts/raised.json', {'call_id': call_id, 'tool_name': envelope['tool_name'],
+                'arguments': envelope['arguments'], 'exception': {'message': 'SYNTHETIC raised host exception'}})
+            raised = root / 'receipts/raised.json'
+            images.record_native_image_host_exception(root, call_id,
+                host_exception={'path': str(raised), 'sha256': file_sha256(raised)})
+        images.import_native_image(root, call_id, host_receipt=host_receipt(root, envelope, name=call_id))
+        source = boards.bind_imported_board(root, 'start', call_id, images=images)
+        review = attestation(source['sha256'], ASSET_PREDICATES, revision='r1')
+        review.update(reviewer='persistent reviewer', review_id='review-' + call_id)
+        if fail:
+            review['status'] = 'fail'; review['predicates'][0].update(status='fail', severity='critical')
+        boards.record_board_review(root, 'start', review, roles=['start_frame'], images=images)
+    run('original-start', fail=True)
+    run('corrected-start', correction=boards.board_correction_intent(root, 'start', changes='SYNTHETIC exact fix'))
+    pack = boards.load_board_pack(root)
+    assert pack['board_bindings']['start']['call_id'] == 'corrected-start'
+    assert boards.imported_board_eligibility(root, pack, 'start', 'original-start', images=images) is None
+    with pytest.raises(ValueError, match='differs from the current prepared board request'):
+        boards.bind_imported_board(root, 'start', 'original-start', images=images)
+    action = execution.next_production_action(root)
+    assert action['kind'] != 'promote_imported_board', action
+    stepped = execution.advance(root)
+    assert stepped.get('action', {}).get('kind') != 'promote_imported_board', stepped
+    assert boards.load_board_pack(root)['board_bindings']['start']['call_id'] == 'corrected-start'
+    assert images.image_usage(root)['total'] == 2
+    assert images.image_call_status(root, 'original-start')['state'] == 'imported'
+
+
+def test_corrected_board_never_repromotes_rejected_host_exception_original(neutral_package):
+    # The original retained an actual raised host exception, later imported real
+    # bytes, failed review, and a normal exact correction passed. No successor
+    # recovery moved the lane, so the original is superseded, never restored.
+    test_corrected_board_never_reschedules_superseded_imported_original(neutral_package, True)
+
+
+def test_selected_exact_repair_supersedes_rejected_original_review_until_replacement_stale(p):
+    # Original critically rejected; exact repair generated and selected. The old
+    # original keeps its count/evidence but no longer demands review_selection.
+    # Invalidating the replacement bytes makes the stale verdict hide nothing.
+    from tests.integration.test_first_pass_workflow import save
+    from lib.production_execution import record_rejection, planned_request_digest
+    first = p.generate('entry'); assert first.success, first.error
+    original = first.data['production_attempt_id']
+    rejection = attestation(file_sha256_of(first.artifacts[0]), ['possession'])
+    rejection.update(status='fail', predicates=[{'name': 'possession', 'status': 'fail',
+        'severity': 'critical', 'evidence': 'SYNTHETIC critical defect'}])
+    record_rejection(p.root, original, rejection)
+    repair = copy.deepcopy(p.scope)
+    repair.update(id='entry-repair', phase='repair', replaces_attempt_ids=[original], attempts_per_shot={'entry': 1})
+    repair_inputs = copy.deepcopy(p.inputs['entry'])
+    repair_inputs['governance']['scope_id'] = 'entry-repair'
+    repair_inputs['output_path'] = str(p.root / 'assets/video/entry-repair.mp4')
+    repair['requests'] = {'entry': planned_request_digest(repair_inputs, project_dir=p.root)}
+    save(p.root / 'production_scopes.json', {'version': '1.0', 'scopes': [p.scope, repair]})
+    second = p.selector.execute(repair_inputs); assert second.success, second.error
+    p.select('entry', second)
+    action = execution.next_production_action(p.root)
+    assert not (action['kind'] == 'review_selection' and action['subject'] == original), action
+    assert len(p.transport.native_requests) == 2
+    assert any(a['attempt_id'] == original for a in execution._attempts(p.root))
+    replacement = p.root / 'assets/video/entry-repair.mp4'
+    replacement.write_bytes(replacement.read_bytes() + b'SYNTHETIC drift')
+    # The stale selection no longer supersedes: the rejected original is again the
+    # disclosed current candidate (never strict), and the cut is not complete.
+    from lib import production_draft as draft
+    entry = next(r for r in draft.first_cut_candidates(p.root) if r['shot_id'] == 'entry')
+    assert (entry['attempt_id'], entry['review'], entry['strict_selected']) == (original, 'fail', False)
+    assert [f['name'] for f in entry['findings']] == ['possession']
+    stale = execution.next_production_action(p.root)
+    assert stale['kind'] not in {'complete', 'deliver'}, stale
+    assert len(p.transport.native_requests) == 2
+
+
+def file_sha256_of(path):
+    return hashlib.sha256(open(path, 'rb').read()).hexdigest()
+
+
+@pytest.mark.parametrize('successor_emitted', [True, False])
+def test_late_host_exception_original_respects_successor_lane(neutral_package, successor_emitted):
+    # A late authentic original stays counted/collectable. A submitted linked
+    # successor owns the lane; an un-emitted reservation lets the original restore.
+    from lib import production_boards as boards
+    from tests.lib.test_production_images import file_sha256
+    root, package, bind = neutral_package
+    package = prospective_package(package); request.prepare_package(root, bind(package))
+    prepared = boards.prepare_image_request(root, 'start', images=images)
+    scope = {'id': 'scope-start', 'status': 'approved', 'approved_by': 'SYNTHETIC creator fixture',
+        'project_id': package['project_id'], 'story_revision': 'r1', 'phase': 'image', 'provider': 'native_imagegen',
+        'evidence': {k: package['boards']['approval'][k] for k in ('path', 'sha256')},
+        'image_allowance': 2, 'allowed_image_routes': ['native_imagegen'],
+        'requests': {'start': prepared['request_sha256']}, 'attempts_per_shot': {'start': 1}}
+    write(root, 'production_scopes.json', {'version': '1.0', 'scopes': [scope]})
+    boards.reserve_board_image(root, 'start', scope_id='scope-start', call_id='original-start', images=images)
+    envelope = images.begin_native_image(root, 'original-start')
+    path = root / 'receipts/exception.json'
+    write(root, 'receipts/exception.json', {'call_id': 'original-start', 'tool_name': envelope['tool_name'],
+        'arguments': envelope['arguments'], 'exception': {'message': 'SYNTHETIC raised host exception'}})
+    images.record_native_image_host_exception(root, 'original-start',
+        host_exception={'path': str(path), 'sha256': file_sha256(path)})
+    child = boards.prepare_image_request(root, 'start', replace_exception_call_id='original-start', images=images)
+    child_scope = 'scope-successor'
+    successor = dict(scope, id=child_scope, requests={'start': child['request_sha256']})
+    write(root, 'production_scopes.json', {'version': '1.0', 'scopes': [scope, successor]})
+    boards.reserve_board_image(root, 'start', scope_id=child_scope, call_id='successor-start',
+        replace_exception_call_id='original-start', images=images)
+    if successor_emitted:
+        images.begin_native_image(root, 'successor-start')
+    images.import_native_image(root, 'original-start', host_receipt=host_receipt(root, envelope, name='late-original'))
+    pack = boards.load_board_pack(root)
+    kind = boards.imported_board_eligibility(root, pack, 'start', 'original-start', images=images)
+    action = execution.next_production_action(root)
+    if successor_emitted:
+        assert kind == 'successor'
+        assert not (action['kind'] == 'promote_imported_board' and action['subject'] == 'original-start'), action
+        assert boards.bind_imported_board(root, 'start', 'original-start', images=images) is None
+        assert 'start' not in boards.load_board_pack(root)['board_bindings']
+    else:
+        assert kind == 'restore'
+        assert action['kind'] == 'promote_imported_board' and action['subject'] == 'original-start', action
+        bound = boards.bind_imported_board(root, 'start', 'original-start', images=images)
+        assert bound['call_id'] == 'original-start'
+        assert boards.load_board_pack(root)['image_packets']['start']['request_sha256'] == prepared['request_sha256']
+        # The never-emitted successor stays reserved/counted but is not scheduled:
+        # it can no longer qualify for recovery once the original returned bytes.
+        after = execution.next_production_action(root)
+        assert not (after['kind'] == 'begin_native_image' and after['subject'] == 'successor-start'), after
+        stepped = execution.advance(root)
+        assert stepped['action']['subject'] != 'successor-start', stepped
+        assert images.image_call_status(root, 'successor-start')['state'] == 'reserved'
+    assert images.image_usage(root)['total'] == 2
+    assert images.image_call_status(root, 'original-start')['state'] == 'imported'
