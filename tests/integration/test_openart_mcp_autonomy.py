@@ -13,6 +13,8 @@ import pytest
 from lib import production_autonomy as pa, production_execution as execution
 from lib import production_request as preparation
 from tests.lib.test_production_autonomy import make_policy, install_existing
+from tests.lib.test_production_request import neutral_package  # noqa: F401
+from tests.lib.test_openart_mcp_native import observations as guided_observations  # noqa: F401
 
 
 @pytest.fixture
@@ -92,6 +94,207 @@ def test_actual_compile_policy_prepare_begin_at_single_attempt_cap(lifecycle):
     assert jobs.poll_args(root, 'policy-original')['arguments'] == {'historyId': 'fixture-original'}
     with pytest.raises(ValueError):
         pa.derive_scope(root, inputs, provider='openart_mcp')
+
+
+def project_admission_fixture(lifecycle, *, retained_project=...):
+    """Synthetic fresh authority with exact native project omitted from layout.
+
+    This reference-free fixture needs no upload. Canonical native/preparation
+    gates remain real; the separate Mini frame case exercises retained uploads.
+    """
+    root, policy, _, inputs, native, profile, jobs = lifecycle
+    retained_inputs = copy.deepcopy(inputs)
+    retained_inputs.pop('openart_project_id')
+    if retained_project is not ...:
+        retained_inputs['openart_project_id'] = retained_project
+    policy, sha = install_existing(root, policy,
+        templates={'entry': execution.planned_request_template(retained_inputs, project_dir=root)})
+    # Only fresh unsubmitted synthetic fixture scopes are cleared here, before
+    # the tested immutable original exists; this is not a production workflow.
+    (root / 'production_scopes.json').write_text(json.dumps({'version': '1.0', 'scopes': []}))
+    inputs['governance'].pop('scope_id', None)
+    return root, policy, sha, inputs, native, profile, jobs
+
+
+def project_file_bytes(root):
+    return {str(p.relative_to(root)): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+
+
+def test_exact_policy_project_missing_from_template_enters_native_scope_and_original(lifecycle):
+    root, policy, sha, inputs, native, _, jobs = project_admission_fixture(lifecycle)
+    immutable = {name: (root / name).read_bytes() for name in (
+        'artifacts/autonomy_policy.json', policy['evidence']['path'],
+        'artifacts/compiled_request-original.json', 'artifacts/preparation_review-original.json')}
+    before = project_file_bytes(root)
+    _, material_sha, _, material = pa._scope_material(root, inputs, 'openart_mcp')
+    assert material_sha == sha and material['request_digest'] == execution.planned_request_digest(inputs, project_dir=root)
+    assert project_file_bytes(root) == before
+    scope = pa.derive_scope(root, inputs, provider='openart_mcp')
+    inputs['governance']['scope_id'] = scope['id']
+    pa.validate_derived_scope(root, scope, inputs=inputs)
+    jobs.prepare(root, attempt_id='project-bound-original', generation_inputs=inputs,
+        authority_fn=execution.prepare_openart_mcp_handoff)
+    envelope = jobs.begin(root, 'project-bound-original', authority_fn=execution.prepare_openart_mcp_handoff)
+    assert envelope['arguments'] == native['body']
+    assert envelope['arguments']['projectId'] == 'fixture-openart-project'
+    assert jobs.frozen_request(root, 'project-bound-original')['authority']['billing']['policy_sha256'] == sha
+    assert pa.root_attempt_counts(root, policy)['total'] == 1
+    assert {name: (root / name).read_bytes() for name in immutable} == immutable
+
+
+@pytest.mark.parametrize('retained_project', ['fixture-openart-project', 'another-project', None, ''])
+def test_mcp_project_admission_preserves_explicit_retained_project(lifecycle, retained_project):
+    root, _, _, inputs, _, _, _ = project_admission_fixture(lifecycle, retained_project=retained_project)
+    before = project_file_bytes(root)
+    if retained_project == inputs['openart_project_id']:
+        pa._scope_material(root, inputs, 'openart_mcp')
+    else:
+        with pytest.raises(pa.AutonomyError, match='retained MCP project differs'):
+            pa._scope_material(root, inputs, 'openart_mcp')
+    assert project_file_bytes(root) == before
+
+
+@pytest.mark.parametrize('change,match', [
+    ('different', 'MCP project differs'), ('missing', 'immutable account/project'),
+    ('missing_retained', 'MCP project differs'), ('native_param', 'outside retained template'),
+    ('template_field', 'outside retained template'), ('source', 'outside retained template'),
+    ('account_control', 'outside retained template'),
+    ('route', 'model selection intent'), ('revoke', 'revoked')])
+def test_mcp_project_admission_keeps_other_request_and_authority_gates(lifecycle, change, match):
+    root, _, _, inputs, _, _, _ = project_admission_fixture(lifecycle,
+        retained_project='fixture-openart-project' if change == 'missing_retained' else ...)
+    if change == 'different':
+        inputs['openart_project_id'] = 'another-project'
+    elif change in {'missing', 'missing_retained'}:
+        inputs.pop('openart_project_id')
+    elif change == 'native_param':
+        inputs['native_params']['seed'] = 42
+    elif change == 'template_field':
+        inputs['sample_count'] = 2
+    elif change == 'account_control':
+        inputs['account_uid_sha256'] = 'f'*64
+    elif change == 'source':
+        source = root / 'foreign.png'; source.write_bytes(b'SYNTHETIC unrelated source')
+        inputs['input_assets'] = [{'role': 'first_frame', 'source_path': str(source),
+            'source_sha256': hashlib.sha256(source.read_bytes()).hexdigest()}]
+    elif change == 'route':
+        inputs['model'] = 'unapproved-model'
+    else:
+        path = root / 'artifacts/decision_log.json'
+        value = json.loads(path.read_text()); value['decisions'][0]['user_approved'] = False
+        path.write_text(json.dumps(value))
+    before = project_file_bytes(root)
+    with pytest.raises(ValueError, match=match):
+        pa._scope_material(root, inputs, 'openart_mcp')
+    assert project_file_bytes(root) == before
+
+
+@pytest.mark.parametrize('change', ['account', 'native_project', 'native_route'])
+def test_mcp_project_admission_retains_independent_native_policy_binding(lifecycle, change):
+    root, policy, _, inputs, native, profile, _ = project_admission_fixture(lifecycle)
+    pa._validate_request_delta(root, policy, 'entry', inputs, 'openart_mcp')
+    native = copy.deepcopy(native)
+    if change == 'account':
+        native['account_binding']['uid_sha256'] = 'f'*64
+    elif change == 'native_project':
+        native['body']['projectId'] = 'another-project'
+    else:
+        native['body']['model'] = 'unapproved-model'
+    with pytest.raises(pa.AutonomyError, match='immutable account/project|native exact model/mode'):
+        pa._validate_mcp_policy_binding(pa._provider_spec(policy, 'openart_mcp'), native, profile)
+
+
+def test_project_admission_does_not_turn_project_into_generic_route_plumbing(lifecycle):
+    root, policy, _, inputs, _, _, _ = project_admission_fixture(lifecycle)
+    with pytest.raises(pa.AutonomyError, match='outside retained template.*openart_project_id'):
+        pa._validate_request_delta(root, policy, 'entry', inputs, 'grok_cli')
+
+
+def test_mcp_project_admission_keeps_fixed_request_and_historical_replay_exact(lifecycle):
+    root, policy, _, inputs, _, _, jobs = project_admission_fixture(lifecycle)
+    scope = pa.derive_scope(root, inputs, provider='openart_mcp')
+    inputs['governance']['scope_id'] = scope['id']
+    jobs.prepare(root, attempt_id='project-history', generation_inputs=inputs,
+        authority_fn=execution.prepare_openart_mcp_handoff)
+    frozen = jobs.frozen_request(root, 'project-history')
+    counts = pa.root_attempt_counts(root, policy)
+    request_sha = execution.planned_request_digest(inputs, project_dir=root)
+    changed = copy.deepcopy(inputs); changed['openart_project_id'] = 'another-project'
+    assert execution.planned_request_digest(changed, project_dir=root) != request_sha
+    assert pa.validate_derived_scope(root, {'id': 'unchanged-human-fixed-scope'}, inputs=changed) is None
+    with pytest.raises(ValueError):
+        jobs.prepare(root, attempt_id='project-history', generation_inputs=changed,
+            authority_fn=execution.prepare_openart_mcp_handoff)
+    path = root / 'artifacts/decision_log.json'
+    value = json.loads(path.read_text())
+    value['decisions'].append(dict(value['decisions'][0], decision_id='synthetic-prospective-revocation', user_approved=False))
+    path.write_text(json.dumps(value))
+    before = project_file_bytes(root)
+    with pytest.raises(pa.AutonomyError, match='revoked'):
+        pa._scope_material(root, inputs, 'openart_mcp')
+    _, _, _, historical = pa._scope_material(root, inputs, 'openart_mcp',
+        historical_scope=scope, derived_unknown_id=scope['id'])
+    assert historical['request_digest'] == request_sha
+    assert jobs.frozen_request(root, 'project-history') == frozen
+    assert project_file_bytes(root) == before and pa.root_attempt_counts(root, policy) == counts
+
+
+def test_mini_exact_project_enters_full_frame_scope_reusing_retained_upload(neutral_package, monkeypatch, guided_observations):
+    from lib import openart_mcp as mcp, openart_mcp_jobs as jobs
+    from tests.lib import test_production_factory as factory
+    # Configure the exact synthetic approved project before standing activation
+    # and amendment. No retained baseline, approval or original is edited later.
+    original = factory.standing_treatment_fixture
+    def exact_project(root, **kwargs):
+        configured = original(root, **kwargs)
+        pa._provider_spec(configured['policy'], 'openart_mcp')['project_id'] = 'fixture-project'
+        setup = json.loads((root / configured['standing_setup']['path']).read_text()); setup.pop('authorization')
+        setup['providers'] = configured['policy']['providers']
+        configured['standing_setup'] = factory.creator_fixture(root, 'standing', setup)
+        command = json.loads((root / configured['run_command']['path']).read_text()); command.pop('authorization')
+        command['standing_setup_sha256'] = configured['standing_setup']['sha256']
+        configured['run_command'] = factory.creator_fixture(root, 'command', command)
+        return configured
+    monkeypatch.setattr(factory, 'standing_treatment_fixture', exact_project)
+    monkeypatch.setattr(mcp, '_ALLOW_FIXTURE_PRODUCTION', True)
+    root, shapes = factory.prepared_frame_shapes(neutral_package, monkeypatch, 'openart_mcp')
+    inputs, previous_native, profile, previous_compiled, review = shapes['s1']
+    inputs.pop('input_assets')
+    contract = execution.load_shot_contract(root)
+    frame = next(a for a in contract['assets'] if a['id'] == 'start')
+    inputs['image_path'] = str(root / frame['path'])
+    native = mcp.prepare_native_request(execution._openart_mcp_controls(inputs), profile)
+    assert native['body'] == previous_native['body']
+    authored = preparation.compile_provider_prompt(root, 's1', provider='openart_mcp', model=inputs['model'])
+    compiled = preparation.prepare_compiled_request(inputs, native, profile,
+        coverage=authored['coverage'], timing=previous_compiled['timing'])
+    (root / 'artifacts/compiled_request-frame-s1.json').write_text(json.dumps(compiled))
+    review['subject_sha256'] = preparation.digest(compiled)
+    (root / 'artifacts/preparation_review-frame-s1.json').write_text(json.dumps(review))
+    policy, sha, _ = pa.require_active_policy(root, shot_id='s1')
+    pa._validate_mcp_policy_binding(pa._provider_spec(policy, 'openart_mcp'), native, profile)
+    template = pa.retained_baselines(root, policy)['s1']['planned_request_template']['inputs']
+    assert set(template) == {'duration', 'image_path'} and 'openart_project_id' not in template
+    assert inputs['model'] == 'byte-plus-seedance-2-mini' and inputs['duration'] == 5
+    uploads = {name: raw for name, raw in project_file_bytes(root).items() if name.startswith('openart_mcp/uploads/')}
+    assert len(list((root / 'openart_mcp/uploads').glob('*.json'))) == 1
+    frozen = project_file_bytes(root)
+    pa._scope_material(root, inputs, 'openart_mcp')
+    assert project_file_bytes(root) == frozen
+    scope = pa.derive_scope(root, inputs, provider='openart_mcp')
+    inputs['governance']['scope_id'] = scope['id']
+    pa.validate_derived_scope(root, scope, inputs=inputs)
+    jobs.prepare(root, attempt_id='mini-project-original', generation_inputs=inputs,
+        authority_fn=execution.prepare_openart_mcp_handoff)
+    envelope = jobs.begin(root, 'mini-project-original', authority_fn=execution.prepare_openart_mcp_handoff)
+    assert envelope['arguments'] == native['body'] and envelope['arguments']['projectId'] == 'fixture-project'
+    assert scope['requests']['s1'] == execution.planned_request_digest(inputs, project_dir=root)
+    assert scope['derived_from_policy']['policy_sha256'] == sha
+    assert {name: raw for name, raw in project_file_bytes(root).items() if name.startswith('openart_mcp/uploads/')} == uploads
+    unchanged = [name for name in frozen if name.startswith('production_images/') or name.startswith('artifacts/history/')]
+    unchanged += ['artifacts/autonomy_policy.json', policy['evidence']['path'],
+        'artifacts/compiled_request-frame-s1.json', 'artifacts/preparation_review-frame-s1.json']
+    assert all((root / name).read_bytes() == frozen[name] for name in unchanged)
 
 
 def test_actual_native_aspect_ratio_satisfies_exact_public_control_lock(lifecycle):
