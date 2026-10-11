@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "openmontage/artifacts/autonomy_policy",
+  "$id": "https://openmontage.local/artifacts/autonomy_policy",
   "title": "Auto-continue Policy",
   "description": "Optional exact approved envelope for Auto-continue. Absence, revocation or any defect means Strict.",
   "type": "object",
