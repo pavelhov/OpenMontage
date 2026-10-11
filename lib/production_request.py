@@ -550,8 +550,16 @@ def prep_builder(provider):
     raise ValueError('provider outside Auto-continue')
 
 
-def prepare_compiled_request(inputs, native, profile, *, coverage, timing):
-    """Build sidecar after a retained preview. Persist and obtain named review separately."""
+def prepare_compiled_request(inputs, native, profile, *, coverage, timing, review=None):
+    """Build the compiled sidecar after a retained preview; never judge semantics.
+
+    With no ``review``, return the compiled request as before. With a supplied
+    reviewer-authored review, return ``(compiled, bound_review)``. Only the exact
+    review ID, subject hash and authenticated generated-carrier membership are
+    filled when omitted; conflicting supplied bindings reject. Reviewer, status,
+    evidence kind and predicates remain supplied judgment, including failures or
+    unknowns. Persist separately and retain the normal preparation/admission gate.
+    """
     from lib.production_execution import planned_request_digest
     root = Path(inputs['project_dir']).resolve()
     packet = source_packet(root, inputs['governance']['shot_id'], provider=native.get('provider', 'openart_cli'), native=native)
@@ -559,7 +567,49 @@ def prepare_compiled_request(inputs, native, profile, *, coverage, timing):
              'source_binding': packet['binding'], 'native_binding': _native_binding(native),
              'coverage': copy.deepcopy(coverage), 'timing': copy.deepcopy(timing)}
     _validate_compiled(value, inputs, native, profile, packet)
-    return value
+    if review is None:
+        return value
+    return value, _bind_preparation_review(inputs, packet, value, review)
+
+
+def _bind_preparation_review(inputs, packet, compiled, review):
+    from lib import production_autonomy as autonomy, production_boards as boards
+    if not isinstance(review, dict):
+        raise ValueError('reviewer-authored preparation review must be an object')
+    bound = copy.deepcopy(review)
+    expected = {'review_id': _id(inputs.get('preparation_review_id')),
+                'subject_sha256': digest(compiled)}
+    root = Path(inputs['project_dir']).resolve()
+    frame = packet['binding'].get('frame_input')
+    if frame is not None:
+        pack = boards.load_board_pack(root)
+        binding = pack['board_bindings'][frame['asset_id']]
+        projection = autonomy.current_projection(root, inputs['governance']['shot_id'])
+        if binding.get('origin') == 'canonical_image_import':
+            members = []
+            for asset in projection['assets']:
+                source = binding.get('source_bindings', {}).get(asset['id'])
+                if source is None:
+                    continue
+                if source != {key: asset[key] for key in ('path', 'sha256')}:
+                    raise ValueError('generated carrier source binding differs from approved source')
+                if asset['cast_ids'] and asset['role'] in {'identity_reference', 'start_frame', 'end_frame', 'payoff_board'}:
+                    members.append({key: copy.deepcopy(asset[key]) for key in ('sha256', 'role', 'cast_ids')})
+            composite = {'sha256': frame['sha256'], 'role': 'start_frame', 'members': members}
+            # Even an empty candidate set must authenticate the actual original
+            # carrier. Empty composites are not published into the review schema.
+            autonomy._frame_carrier_members(root, frame, projection, [composite])
+            expected['composite_boards'] = [composite] if members else []
+        elif 'composite_boards' in bound:
+            # Provided/reused boards retain explicit reviewer membership; original
+            # generated-input facts must never be invented for them.
+            autonomy._frame_carrier_members(root, frame, projection, bound['composite_boards'])
+    for key, value in expected.items():
+        if key in bound and bound[key] != value:
+            raise ValueError('supplied preparation review ' + key + ' conflicts with canonical binding')
+        bound[key] = value
+    _schema('preparation_review', bound)
+    return bound
 
 
 def _schema(name, value):

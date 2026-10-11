@@ -263,12 +263,13 @@ authored = request.compile_provider_prompt(
 )
 inputs["prompt"] = authored["prompt"]
 native = request.prep_builder(provider)(inputs, profile_or_observation)
-compiled = request.prepare_compiled_request(
+compiled, bound_review = request.prepare_compiled_request(
     inputs, native, profile, coverage=authored["coverage"], timing=authored_timing,
+    review=reviewer_authored_review,
 )
 # Persist compiled, preserving any previously retained different bytes, at:
 # artifacts/compiled_request-<inputs["compiled_request_id"]>.json
-# Obtain and persist the actual named review at:
+# Persist bound_review, carrying the actual reviewer judgments, at:
 # artifacts/preparation_review-<inputs["preparation_review_id"]>.json
 outcome = {"inputs": inputs, "provider": provider}
 if provider_observation is not None:
@@ -284,6 +285,16 @@ receives its fresh `{cli_version, grok_path}` observation. The `profile` supplie
 actual applicable preparation profile. This pure helper resolves current source
 bytes again, derives the planned-request digest and native binding, and validates
 the compiled sidecar. Keep its returned object intact.
+
+Supplying the optional `review=` argument returns `(compiled, bound_review)`.
+Author the reviewer, status, evidence kind and predicate judgments from actual
+evidence. The helper fills the omitted review ID, compiled subject hash and
+generated starting-board membership from authenticated original image inputs;
+do not recopy those hashes and cast memberships by hand. Conflicting supplied
+bindings reject. Provided or reused boards still require their explicit evidence.
+No semantic verdict is inferred, and the existing admission gate still rejects
+failed or unknown preparation. Calls without `review=` keep their original
+compiled-only result.
 
 `authored_timing` remains the producer's explicit measured-audio or segmented
 estimate, including real dialogue/action windows, language, margin and overlap

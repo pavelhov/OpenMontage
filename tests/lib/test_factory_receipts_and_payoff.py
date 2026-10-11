@@ -163,6 +163,7 @@ def test_payoff_prepares_only_existing_ancestor_then_payoff(neutral_package):
 
 def test_payoff_deferral_collects_pending_original_without_reemission(neutral_package):
     root = payoff_fixture(neutral_package)
+    retain_factory_board(root, 'payoff', predicates={'cast_identity': 'fail'})
     prepared = boards.prepare_image_request(root, 'unrelated', images=images)
     scope = images.derive_native_image_scope(root, prepared['packet'], 'unrelated', prepared['arguments'], output_path=prepared['output_path'])
     call = boards.reserve_board_image(root, 'unrelated', scope_id=scope, call_id='existing-original', images=images)
@@ -290,12 +291,44 @@ def test_payoff_missing_current_observation_requests_existing_board_review(neutr
 def test_failed_payoff_verdict_remains_failed(neutral_package):
     root = payoff_fixture(neutral_package)
     _, failed = retain_factory_board(root, 'payoff', predicates={'cast_identity': 'fail'})
-    before = file_bytes(root)
+    before = file_bytes(root); usage = images.image_usage(root)
     action = execution.next_production_action(root)
     assert (action['kind'], action['subject']) == ('prepare_board_correction', 'payoff')
     assert action['inputs']['failed_predicates'] == ['cast_identity']
     assert action['binding']['correction_observation']['review'] == failed
     assert boards._observation(boards.load_board_pack(root), 'payoff', 'payoff_board')['review'] == failed
+    assert boards._review_blockers(boards.load_board_pack(root), 'payoff', 'payoff_board')
+    with pytest.raises(execution.ProductionGovernanceError, match='board correction requires exact producer changes'):
+        execution.complete_action(root, action, outcome={})
+    assert images.image_usage(root) == usage
+    assert file_bytes(root) == before
+
+
+def test_payoff_correction_uses_its_own_action_after_unrelated_failure(neutral_package):
+    root = payoff_fixture(neutral_package)
+    unrelated_source, unrelated_failed = retain_factory_board(
+        root, 'unrelated', predicates={'cast_identity': 'fail'})
+    payoff_source, payoff_failed = retain_factory_board(
+        root, 'payoff', predicates={'cast_identity': 'fail'})
+    pack = boards.load_board_pack(root)
+    assert list(pack['board_bindings']).index('unrelated') < list(pack['board_bindings']).index('payoff')
+    before = file_bytes(root); usage = images.image_usage(root)
+
+    action = execution.next_production_action(root)
+
+    assert (action['kind'], action['subject']) == ('prepare_board_correction', 'payoff')
+    assert action['inputs']['slot_id'] == 'payoff'
+    assert action['inputs']['source'] == payoff_source
+    assert action['binding']['source'] == payoff_source
+    assert action['binding']['correction_observation']['review'] == payoff_failed
+    assert action['binding']['correction_observation']['review'] != unrelated_failed
+    assert action['inputs']['failed_predicates'] == ['cast_identity']
+    retained = boards.load_board_pack(root)
+    assert boards._observation(retained, 'unrelated')['review'] == unrelated_failed
+    assert boards._observation(retained, 'payoff', 'payoff_board')['review'] == payoff_failed
+    assert boards._review_blockers(retained, 'unrelated', boards._roles(retained, 'unrelated')[0])
+    assert boards._review_blockers(retained, 'payoff', 'payoff_board')
+    assert images.image_usage(root) == usage
     assert file_bytes(root) == before
 
 
@@ -394,6 +427,7 @@ def test_stale_project_review_defers_only_for_declared_payoff(neutral_package):
 
 def test_independent_motion_stays_ahead_of_unrelated_pending_image(neutral_package):
     root = payoff_fixture(neutral_package)
+    retain_factory_board(root, 'payoff', predicates={'cast_identity': 'fail'})
     pending_board(root, 'unrelated', 'unrelated-original')
     contract = execution.load_shot_contract(root)
     contract['project_review'] = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='r1')
