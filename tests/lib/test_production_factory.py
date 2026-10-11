@@ -2775,6 +2775,179 @@ def test_motion_reference_floor_uses_declared_template_before_contract_exists(ne
     assert file_bytes(root) == before
 
 
+def failed_payoff_factory_fixture(neutral_package, *, failed_other=False, image_allowance=8):
+    """Canonical offline lifecycle with an observed failed payoff, never a fake pass."""
+    root, package, bind = neutral_package
+    package = copy.deepcopy(package)
+    next(n for n in package['boards']['image_nodes'] if n['slot_id'] == 'payoff')['required_predicates'].append('prop_body_invariants')
+    if failed_other:
+        next(n for n in package['boards']['image_nodes'] if n['slot_id'] == 'other')['required_predicates'].append('prop_body_invariants')
+    root = correction_factory_fixture((root, package, bind), image_allowance=image_allowance)
+    for slot in ('start', 'end', 'other', 'payoff'):
+        retain_factory_board(root, slot, predicates={'prop_body_invariants': 'fail'}
+            if slot == 'payoff' or (failed_other and slot == 'other') else None)
+    return root
+
+
+def failed_payoff_planning_outcome(root, sid='s1'):
+    from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES
+    contract = execution.load_shot_contract(root)
+    project_review = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='r1')
+    project_review['status'] = 'fail'
+    next(p for p in project_review['predicates'] if p['name'] == 'payoff').update(
+        status='fail', severity='critical', evidence='SYNTHETIC actual payoff prop/body invariant failure; correction still needs review')
+    return {'project_review': project_review,
+        'shot_review': attestation(shot_review_subject(contract, sid), SHOT_PREDICATES, revision='r1')}
+
+
+def retain_failed_payoff_planning(root, sid='s1'):
+    # A retained completed review is fixture setup, not a synthesized producer pass.
+    outcome = failed_payoff_planning_outcome(root, sid)
+    contract = execution.load_shot_contract(root)
+    contract['project_review'] = outcome['project_review']
+    next(s for s in contract['shots'] if s['id'] == sid)['review'] = outcome['shot_review']
+    write(root, 'artifacts/shot_contract.json', contract)
+    return outcome
+
+
+def test_truthful_failed_payoff_planning_advances_exact_correction_without_review_loop(neutral_package):
+    from lib import production_boards as boards
+    root = failed_payoff_factory_fixture(neutral_package)
+    outcome = retain_failed_payoff_planning(root)
+    contract = execution.load_shot_contract(root)
+    checked = execution.validate_shot_contract(contract, project_dir=root, shot_id='s1', story_revision='r1')
+    assert checked['errors'] and all(e.startswith('project_review') for e in checked['errors'])
+    assert contract['project_review'] == outcome['project_review']
+    assert contract['shots'][0]['review'] == outcome['shot_review']
+    before = file_bytes(root)
+    action = execution.next_production_action(root)
+    assert action == execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('prepare_board_correction', 'payoff')
+    assert action['inputs']['failed_predicates'] == ['prop_body_invariants']
+    assert action['binding']['source'] == boards.load_board_pack(root)['board_bindings']['payoff']
+    assert action['binding']['correction_observation']['review']['status'] == 'fail'
+    assert file_bytes(root) == before and images.image_usage(root)['total'] == 4
+    assert not execution._attempts(root)
+
+
+def test_failed_payoff_correction_stays_in_original_recovery_and_requires_fresh_reviews(neutral_package):
+    import base64
+    from lib import production_boards as boards
+    from lib.shot_contract import PROJECT_PREDICATES
+    from tests.lib.test_production_images import PNG
+    root = failed_payoff_factory_fixture(neutral_package)
+    outcome = retain_failed_payoff_planning(root)
+    old_pack = boards.load_board_pack(root)
+    old_calls = copy.deepcopy(images._load(root)['calls'])
+    correction = execution.next_production_action(root)
+    completed = execution.complete_action(root, correction,
+        outcome={'changes': 'SYNTHETIC targeted payoff prop/body correction, preserve authored story'})
+    envelope = completed['host_envelope']
+    assert (completed['action']['kind'], completed['action']['subject']) == ('receive_native_image', envelope['call_id'])
+    before = file_bytes(root)
+    assert execution.advance(root)['action'] == completed['action'] == execution.next_production_action(root)
+    assert file_bytes(root) == before and images.image_usage(root)['total'] == 5
+    assert execution.load_shot_contract(root)['project_review'] == outcome['project_review']
+    result = {'image_url': 'data:image/png;base64,' + base64.b64encode(PNG + b'SYNTHETIC payoff correction').decode()}
+    receipt = host_receipt(root, envelope, name='payoff-correction', result=result)
+    received = execution.complete_action(root, completed['action'], outcome={'host_receipt': receipt})
+    board_review = received['action']
+    assert (board_review['kind'], board_review['subject']) == ('review_board', 'payoff')
+    assert execution.load_shot_contract(root)['project_review'] == outcome['project_review']
+    source = boards.load_board_pack(root)['board_bindings']['payoff']
+    actual = attestation(source['sha256'], board_review['inputs']['required_predicates'], revision='r1')
+    actual.update(review_id='SYNTHETIC-corrected-payoff', reviewer='persistent reviewer')
+    for p in actual['predicates']:
+        p.update(severity='critical', evidence='SYNTHETIC current corrected image observation; not production evidence')
+    reviewed = execution.complete_action(root, board_review, outcome={'review': actual})
+    assert (reviewed['action']['kind'], reviewed['action']['subject']) == ('review_planning', 's1')
+    current = execution.load_shot_contract(root)
+    assert current['project_review'] == outcome['project_review']
+    assert not execution.validate_shot_contract(current, project_dir=root, shot_id='s1')['eligible']
+    assert boards.load_board_pack(root)['observations'][:len(old_pack['observations'])] == old_pack['observations']
+    assert images._load(root)['calls'][:len(old_calls)] == old_calls
+    project_pass = attestation(project_review_subject(current), PROJECT_PREDICATES, revision='r1')
+    planning_outcome = {'project_review': project_pass, 'shot_review': current['shots'][0]['review']}
+    ready = execution.complete_action(root, reviewed['action'], outcome=planning_outcome)
+    assert (ready['action']['kind'], ready['action']['subject']) == ('prepare_motion', 's1')
+    assert images.image_usage(root)['total'] == 5 and not execution._attempts(root)
+
+
+def test_failed_payoff_selects_its_own_correction_among_multiple_failed_slots(neutral_package):
+    root = failed_payoff_factory_fixture(neutral_package, failed_other=True)
+    retain_failed_payoff_planning(root)
+    before = file_bytes(root)
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('prepare_board_correction', 'payoff')
+    assert action['binding']['correction_observation']['asset_id'] == 'payoff'
+    assert file_bytes(root) == before and images.image_usage(root)['total'] == 4
+
+
+@pytest.mark.parametrize('state,kind', [('reserved', 'begin_native_image'),
+    ('submitted', 'receive_native_image'), ('imported', 'promote_imported_board')])
+def test_failed_payoff_existing_correction_original_precedes_new_correction(neutral_package, state, kind):
+    from lib import production_boards as boards
+    root = failed_payoff_factory_fixture(neutral_package)
+    retain_failed_payoff_planning(root)
+    intent = boards.board_correction_intent(root, 'payoff', changes='SYNTHETIC retained original correction')
+    prepared = boards.prepare_image_request(root, 'payoff', correction=intent, images=images)
+    scope = images.derive_native_image_scope(root, prepared['packet'], 'payoff', prepared['arguments'],
+        output_path=prepared['output_path'], correction_intent=intent)
+    call = boards.reserve_board_image(root, 'payoff', scope_id=scope, call_id='pending-payoff-correction',
+        correction=intent, images=images)
+    if state != 'reserved':
+        envelope = images.begin_native_image(root, call['call_id'])
+        if state == 'imported':
+            images.import_native_image(root, call['call_id'],
+                host_receipt=host_receipt(root, envelope, name='original-payoff-correction'))
+    before = file_bytes(root)
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == (kind, call['call_id'])
+    assert action == execution.next_production_action(root)
+    assert file_bytes(root) == before and images.image_usage(root)['total'] == 5
+
+
+def test_failed_payoff_collects_existing_independent_correction_original_first(neutral_package):
+    from lib import production_boards as boards
+    root = failed_payoff_factory_fixture(neutral_package, failed_other=True)
+    retain_failed_payoff_planning(root)
+    intent = boards.board_correction_intent(root, 'other', changes='SYNTHETIC targeted other correction')
+    prepared = boards.prepare_image_request(root, 'other', correction=intent, images=images)
+    scope = images.derive_native_image_scope(root, prepared['packet'], 'other', prepared['arguments'],
+        output_path=prepared['output_path'], correction_intent=intent)
+    call = boards.reserve_board_image(root, 'other', scope_id=scope, call_id='pending-other-correction',
+        correction=intent, images=images)
+    envelope = images.begin_native_image(root, call['call_id'])
+    before = file_bytes(root)
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('receive_native_image', call['call_id'])
+    assert execution.advance(root)['action'] == action
+    assert file_bytes(root) == before and images.image_usage(root)['total'] == 5
+    assert images._call(images._load(root), call['call_id'])['submitted_arguments'] == envelope['arguments']
+
+
+@pytest.mark.parametrize('denied', ['allowance', 'revoked'])
+def test_failed_payoff_correction_never_submits_when_canonical_authority_denies(neutral_package, denied):
+    root = failed_payoff_factory_fixture(neutral_package, image_allowance=4 if denied == 'allowance' else 8)
+    retain_failed_payoff_planning(root)
+    action = execution.next_production_action(root)
+    if denied == 'revoked':
+        log = json.loads((root / 'artifacts/decision_log.json').read_text())
+        revoked = copy.deepcopy(log['decisions'][-1])
+        revoked.update(decision_id='SYNTHETIC-prospective-revocation', selected='strict')
+        log['decisions'].append(revoked)
+        write(root, 'artifacts/decision_log.json', log)
+        action = execution.next_production_action(root)
+    calls = copy.deepcopy(images._load(root))
+    scopes = (root / 'production_scopes.json').read_bytes()
+    for _ in range(2):
+        with pytest.raises(ValueError, match='allowance|exhausted|revoked|activation|inactive'):
+            execution.complete_action(root, action, outcome={'changes': 'SYNTHETIC exact targeted correction'})
+        assert images._load(root) == calls and images.image_usage(root)['total'] == 4
+        assert (root / 'production_scopes.json').read_bytes() == scopes
+    assert not execution._attempts(root)
+
+
 def test_completed_failed_board_prepares_independent_images_then_exact_correction(neutral_package):
     from lib import production_boards as boards
     root = correction_factory_fixture(neutral_package, required_start=['prop_body_invariants'])
