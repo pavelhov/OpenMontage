@@ -237,6 +237,133 @@ def local_reviews(contract):
         shot['review']['subject_sha256'] = shot_review_subject(contract, shot['id'])
 
 
+@pytest.mark.parametrize('asset_ids', [['start', 'patient'], ['end', 'patient'],
+                                      ['payoff', 'patient'], ['patient']])
+@pytest.mark.parametrize('mode_location', ['project', 'shot'])
+def test_local_guided_treatment_uses_only_authored_reviewed_boards(package, asset_ids, mode_location):
+    contract, _ = package
+    contract['planning_mode'] = 'shot_local_v1'
+    target = contract if mode_location == 'project' else contract['shots'][0]
+    target['reference_mode'] = 'reference_guided'
+    contract['shots'][0]['asset_ids'] = asset_ids
+    local_reviews(contract)
+    result = check(package)
+    assert result['eligible'], result
+
+
+@pytest.mark.parametrize('local,guided', [(False, True), (True, False)])
+def test_guided_or_local_flag_alone_preserves_literal_board_pair(package, local, guided):
+    contract, _ = package
+    if local:
+        contract['planning_mode'] = 'shot_local_v1'
+    if guided:
+        contract['reference_mode'] = 'reference_guided'
+    contract['shots'][0]['asset_ids'] = ['start', 'patient']
+    local_reviews(contract)
+    result = check(package)
+    assert not result['eligible']
+    assert any('require exactly one end_frame' in error for error in result['errors'])
+
+
+def test_local_unknown_endpoint_is_frozen_planning_with_current_action_review(package):
+    contract, _ = package
+    contract['planning_mode'] = 'shot_local_v1'
+    contract['shots'][0]['endpoint_completion'] = 'unknown'
+    local_reviews(contract)
+    before = copy.deepcopy(contract)
+    result = check(package)
+    assert result['eligible'], result
+    assert contract == before
+
+
+@pytest.mark.parametrize('failure', ['missing', 'unknown', 'fail', 'stale'])
+def test_local_unknown_endpoint_still_requires_current_completed_action(package, failure):
+    contract, _ = package
+    contract['planning_mode'] = 'shot_local_v1'
+    shot = contract['shots'][0]
+    shot['endpoint_completion'] = 'unknown'
+    local_reviews(contract)
+    review = shot['review']
+    if failure == 'missing':
+        review['predicates'] = [p for p in review['predicates'] if p['name'] != 'completed_action']
+    elif failure == 'stale':
+        review['subject_sha256'] = 'f' * 64
+    else:
+        next(p for p in review['predicates'] if p['name'] == 'completed_action')['status'] = failure
+    result = check(package)
+    assert not result['eligible']
+    assert any('completed_action' in error or 'stale review binding' in error for error in result['errors'])
+
+
+@pytest.mark.parametrize('local,endpoint', [(True, 'partial'), (False, 'unknown'), (False, 'partial')])
+def test_partial_or_legacy_unknown_endpoint_remains_blocked(package, local, endpoint):
+    contract, _ = package
+    if local:
+        contract['planning_mode'] = 'shot_local_v1'
+    contract['shots'][0]['endpoint_completion'] = endpoint
+    local_reviews(contract)
+    result = check(package)
+    assert not result['eligible']
+    assert any('endpoint_completion: completed endpoint required' in error for error in result['errors'])
+
+
+def local_unknown_upstream(package):
+    selected = dependency(package)
+    contract = package[0]
+    contract['planning_mode'] = 'shot_local_v1'
+    contract['shots'][0]['endpoint_completion'] = 'unknown'
+    local_reviews(contract)
+    return selected
+
+
+def test_local_unknown_upstream_requires_current_selected_completed_media(package):
+    selected = local_unknown_upstream(package)
+    before = copy.deepcopy(package[0])
+    result = check(package, 'interior', selected_upstream=selected)
+    assert result['eligible'], result
+    assert package[0] == before
+
+
+@pytest.mark.parametrize('failure', ['missing_selection', 'pending_binding', 'changed_attempt',
+    'changed_output', 'missing_frame', 'changed_review', 'stale_review', 'missing_action',
+    'unknown_action', 'failed_action', 'failed_frame', 'partial_endpoint'])
+def test_local_unknown_upstream_does_not_waive_actual_evidence(package, failure):
+    selected = local_unknown_upstream(package)
+    contract, root = package
+    item = selected['entry']
+    if failure == 'missing_selection':
+        selected = {}
+    elif failure == 'pending_binding':
+        contract['shots'][1]['upstream'] = [{'shot_id': 'entry'}]
+    elif failure == 'changed_attempt':
+        item['attempt_id'] = 'entry-repair-1'
+    elif failure == 'changed_output':
+        (root / item['output']['path']).write_bytes(b'changed selected footage')
+    elif failure == 'missing_frame':
+        (root / item['outgoing_frame']['path']).unlink()
+    elif failure == 'changed_review':
+        item['review']['reviewer'] = 'another reviewer'
+    elif failure == 'partial_endpoint':
+        contract['shots'][0]['endpoint_completion'] = 'partial'
+    else:
+        review = item['review']
+        if failure == 'stale_review':
+            review['subject_sha256'] = 'f' * 64
+        elif failure == 'missing_action':
+            review['predicates'] = [p for p in review['predicates'] if p['name'] != 'completed_action']
+        else:
+            name = 'outgoing_frame' if failure == 'failed_frame' else 'completed_action'
+            next(p for p in review['predicates'] if p['name'] == name)['status'] = (
+                'unknown' if failure == 'unknown_action' else 'fail')
+        # Bind the authored expectation to this review to exercise its verdict,
+        # rather than merely failing because the retained hash differs.
+        contract['shots'][1]['upstream'][0]['review_sha256'] = review_digest(review)
+    local_reviews(contract)
+    result = check(package, 'interior', selected_upstream=selected)
+    assert not result['eligible']
+    assert any('upstream.entry' in error for error in result['errors'])
+
+
 def test_prospective_independent_shot_ignores_unready_later_boards(package):
     contract, _ = package
     later = copy.deepcopy(contract['shots'][0]); later['id'] = 'S06'

@@ -1477,6 +1477,115 @@ def retain_factory_board(root, slot, *, predicates=None, omitted=(), roles=None)
     return source, review
 
 
+def reference_review_factory_fixture(neutral_package, *, motion_identity=True, direct_pack=False):
+    """Synthetic prospective run with retained identity evidence lacking quality."""
+    root, package, bind = neutral_package
+    package = copy.deepcopy(package)
+    package['shots'] = package['shots'][:1]
+    spec = package['boards']
+    spec['shots'] = spec['shots'][:1]
+    spec['image_nodes'] = [n for n in spec['image_nodes'] if n['slot_id'] != 'other']
+    for node in spec['image_nodes']:
+        node['shot_id'] = 's1'
+    spec['shared_roles'] = [{'asset_id': 'cast', 'role': 'identity_reference'},
+                            {'asset_id': 'payoff', 'role': 'payoff_board'}]
+    reference = spec['references'][0]
+    reference['role'] = 'identity_reference'
+    reference['applicability']['roles'] = ['identity_reference', 'start_frame']
+    reference['review']['predicates'] = [
+        {'name': name, 'status': 'pass', 'severity': 'critical',
+         'evidence': 'SYNTHETIC retained identity observation: ' + name}
+        for name in ('cast_identity', 'cast_count', 'prop_body_invariants')]
+    # This second applicable role is deliberately outside the motion contract.
+    spec['shots'][0]['roles'].append({'asset_id': 'cast', 'role': 'start_frame'})
+    template = spec['motion_binding']['contract_template']
+    template['shots'] = template['shots'][:1]
+    template['assets'] = [a for a in template['assets'] if a['id'] != 'other']
+    if motion_identity:
+        template['assets'].append({'id': 'cast', 'role': 'identity_reference', 'cast_ids': ['actor']})
+        template['shots'][0]['cast_ids'] = ['actor']
+    if direct_pack:
+        from lib import production_boards as boards
+        boards.prepare_board_pack(root, spec, images=images)
+        return root
+    root = correction_factory_fixture((root, package, bind))
+    for slot in ('start', 'end', 'payoff'):
+        retain_factory_board(root, slot)
+    return root
+
+
+@pytest.mark.parametrize('restore_contract', [False, True])
+def test_motion_reference_gap_retains_evidence_then_reviews_current_planning(neutral_package, restore_contract):
+    from lib import production_boards as boards
+    from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES
+    root = reference_review_factory_fixture(neutral_package)
+    original = boards._observation(boards.load_board_pack(root), 'cast', 'identity_reference')['review']
+    frozen = {name: (root / name).read_bytes()
+              for name in ('notes/package.json', 'production_scopes.json')}
+    contract = execution.load_shot_contract(root)
+    assert contract['shots'][0]['endpoint_completion'] == 'unknown'
+    authored_digest = execution.contract_digest(contract)
+    if restore_contract:
+        (root / 'artifacts/shot_contract.json').unlink()
+        before_restore = file_bytes(root)
+        assert execution.next_production_action(root)['kind'] == 'restore_derived_views'
+        assert file_bytes(root) == before_restore
+        restored = execution.advance(root)
+        assert restored['action']['kind'] == 'review_board'
+        assert execution.load_shot_contract(root)['shots'][0]['endpoint_completion'] == 'unknown'
+    before = file_bytes(root)
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('review_board', 'cast')
+    assert action['inputs']['required_predicates'] == ['asset_quality']
+    assert action['binding']['roles'] == ['identity_reference']
+    assert action['inputs']['retained_predicates'] == original['predicates']
+    assert file_bytes(root) == before
+    successor = copy.deepcopy(original)
+    successor['review_id'] = 'synthetic-actual-quality-successor'
+    successor['predicates'].append({'name': 'asset_quality', 'status': 'pass', 'severity': 'critical',
+        'evidence': 'SYNTHETIC actual observation of the named quality gap; not production evidence'})
+    completed = execution.complete_action(root, action, outcome={'review': successor})
+    assert 'host_envelope' not in completed
+    pack = boards.load_board_pack(root)
+    assert boards._observation(pack, 'cast', 'identity_reference')['review'] == successor
+    assert boards._observation(pack, 'cast', 'start_frame')['review'] == original
+    planning = completed['action']
+    assert (planning['kind'], planning['subject']) == ('review_planning', 's1')
+    contract = execution.load_shot_contract(root)
+    assert contract['shots'][0]['endpoint_completion'] == 'unknown'
+    assert execution.contract_digest(contract) == authored_digest
+    project_review = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='r1')
+    shot_review = attestation(shot_review_subject(contract, 's1'), SHOT_PREDICATES, revision='r1')
+    ready = execution.complete_action(root, planning,
+        outcome={'project_review': project_review, 'shot_review': shot_review})
+    assert (ready['action']['kind'], ready['action']['subject']) == ('prepare_motion', 's1')
+    assert 'host_envelope' not in ready
+    assert execution.load_shot_contract(root)['shots'][0]['endpoint_completion'] == 'unknown'
+    assert execution.contract_digest(execution.load_shot_contract(root)) == authored_digest
+    assert {name: (root / name).read_bytes() for name in frozen} == frozen
+    assert images.image_usage(root)['total'] == 3
+    assert not list((root / 'production_attempts').glob('*/request.json'))
+
+
+def test_unrelated_reused_reference_keeps_declared_evidence_contract(neutral_package):
+    root = reference_review_factory_fixture(neutral_package, motion_identity=False)
+    before = file_bytes(root)
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('review_planning', 's1')
+    assert file_bytes(root) == before
+
+
+def test_motion_reference_floor_uses_declared_template_before_contract_exists(neutral_package):
+    root = reference_review_factory_fixture(neutral_package, direct_pack=True)
+    assert not (root / 'artifacts/shot_contract.json').exists()
+    before = file_bytes(root)
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('review_board', 'cast')
+    assert action['inputs']['required_predicates'] == ['asset_quality']
+    assert action['binding']['roles'] == ['identity_reference']
+    assert file_bytes(root) == before
+
+
 def test_completed_failed_board_prepares_independent_images_then_exact_correction(neutral_package):
     from lib import production_boards as boards
     root = correction_factory_fixture(neutral_package, required_start=['prop_body_invariants'])
@@ -1592,6 +1701,28 @@ def test_failed_board_preserves_pending_independent_native_original(neutral_pack
     assert (recovered['action']['kind'], recovered['action']['subject']) == ('receive_native_image', 'pending-payoff')
     assert 'host_envelope' not in recovered and images.image_usage(root)['total'] == 2
     assert recovered['action'] == execution.advance(root)['action'] and file_bytes(root) == before
+
+
+def test_incomplete_draft_contract_never_preempts_pending_native_original(neutral_package):
+    from lib import production_boards as boards
+    root = correction_factory_fixture(neutral_package)
+    prepared = boards.prepare_image_request(root, 'start', images=images)
+    scope = images.derive_native_image_scope(root, prepared['packet'], 'start', prepared['arguments'],
+        output_path=prepared['output_path'])
+    call = boards.reserve_board_image(root, 'start', scope_id=scope,
+        call_id='synthetic-pending-original', images=images)
+    images.begin_native_image(root, call['call_id'])
+    draft = {'shots': [{'id': 's1', 'cast_ids': [], 'asset_ids': []}]}
+    write(root, 'artifacts/shot_contract.json', draft)
+    assert not execution.validate_shot_contract(draft, project_dir=root, shot_id='s1')['eligible']
+    before = file_bytes(root)
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('receive_native_image', call['call_id'])
+    assert action['inputs']['original_request_sha256'] == call['request_sha256']
+    resumed = execution.advance(root)
+    assert resumed['action'] == action and 'host_envelope' not in resumed
+    assert images.image_usage(root)['total'] == 1
+    assert file_bytes(root) == before
 
 
 def test_completed_minor_board_finding_continues_without_correction(neutral_package):

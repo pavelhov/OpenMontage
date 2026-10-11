@@ -327,6 +327,10 @@ def _validate_shot_contract(
 
     project_reference_free = contract.get("reference_mode") == "reference_free"
     reference_free = project_reference_free or shot.get("reference_mode") == "reference_free"
+    reference_guided = shot.get("reference_mode", contract.get("reference_mode")) == "reference_guided"
+    # Prospective unknown is frozen authored planning, not a footage verdict.
+    # Current bound completed_action reviews below still supply completion proof.
+    allowed_endpoints = {"completed", "unknown"} if shot_local(contract) else {"completed"}
     # Legacy board-backed contracts retain the global payoff gate.
     payoff_id = contract.get("payoff_asset_id")
     payoff = assets.get(payoff_id)
@@ -367,12 +371,12 @@ def _validate_shot_contract(
                     errors.append(f"assets.{asset_id}.upstream_source: path/hash differ from current selected outgoing frame")
     local_assets = [assets[i] for i in shot["asset_ids"] if i in assets]
     for role in ("start_frame", "end_frame"):
-        if not reference_free and sum(a["role"] == role for a in local_assets) != 1:
+        if not reference_free and not (shot_local(contract) and reference_guided) and sum(a["role"] == role for a in local_assets) != 1:
             errors.append(f"shots.{shot_id}.asset_ids: require exactly one {role}")
     for asset in local_assets:
         if asset["role"] == "timed_keyframe" and not (0 < asset.get("time_seconds", -1) < shot["duration_seconds"]):
             errors.append(f"assets.{asset['id']}.time_seconds: keyframe must be inside shot duration")
-    if shot["endpoint_completion"] != "completed":
+    if shot["endpoint_completion"] not in allowed_endpoints:
         errors.append(f"shots.{shot_id}.endpoint_completion: completed endpoint required")
     if not set(shot["required_visible_speakers"]).issubset(shot["cast_ids"]):
         errors.append(f"shots.{shot_id}.required_visible_speakers: speaker missing from cast_ids")
@@ -406,7 +410,7 @@ def _validate_shot_contract(
         ordered_ids = list(shots)
         if upstream_id not in shots or ordered_ids.index(upstream_id) >= ordered_ids.index(shot_id):
             errors.append(f"{label}: upstream must precede dependent shot (no self/cyclic dependencies)")
-        elif shots[upstream_id]["endpoint_completion"] != "completed":
+        elif shots[upstream_id]["endpoint_completion"] not in allowed_endpoints:
             errors.append(f"{label}: upstream endpoint_completion is not completed")
         selection = (selected_upstream or {}).get(upstream_id)
         if not isinstance(selection, dict):

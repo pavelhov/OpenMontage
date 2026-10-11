@@ -2749,7 +2749,7 @@ def _rejected_and_superseded(root, request, observed, selected, current_candidat
     return bool(findings)
 
 
-def _board_review_work(pack, asset_id, roles, *, boards):
+def _board_review_work(pack, asset_id, roles, *, boards, motion_roles=()):
     """Separate missing evidence from a completed failure without judging pixels.
 
     A named actual failure is retained evidence, not another request for the same
@@ -2758,23 +2758,24 @@ def _board_review_work(pack, asset_id, roles, *, boards):
     """
     from lib.shot_contract import ASSET_PREDICATES
     node = pack['prompt_pack'].get(asset_id)
-    # Reused references retain their declared observation contract. A new board
-    # slot carries its owning node's requirements (legacy nodes use the floor).
+    # A new board carries its node's requirements (legacy nodes use the floor).
+    # Reused references add the motion floor only for currently required roles.
     required = set(node.get('required_predicates', ASSET_PREDICATES)) if node else set()
     missing, observations, review_roles = set(), [], []
     status_required = False
     blocked = False
     for role in roles:
+        role_required = required | (ASSET_PREDICATES if role in motion_roles else set())
         observation = boards._observation(pack, asset_id, role)
         if observation is None:
-            missing.update(required or ASSET_PREDICATES)
+            missing.update(role_required or ASSET_PREDICATES)
             review_roles.append(role)
             continue
         if observation not in observations:
             observations.append(observation)
         review = observation['review']
         predicates = {p['name']: p for p in review['predicates']}
-        role_missing = {name for name in required if name not in predicates or predicates[name]['status'] == 'unknown'}
+        role_missing = {name for name in role_required if name not in predicates or predicates[name]['status'] == 'unknown'}
         role_missing.update(p['name'] for p in predicates.values()
                             if p.get('severity') == 'critical' and p['status'] == 'unknown')
         missing.update(role_missing)
@@ -2786,6 +2787,7 @@ def _board_review_work(pack, asset_id, roles, *, boards):
     failed = ([p['name'] for p in correction_observation['review']['predicates']
                if p.get('severity') == 'critical' and p['status'] == 'fail']
               if correction_observation else [])
+    required |= ASSET_PREDICATES if set(roles).intersection(motion_roles) else set()
     return {'required_predicates': sorted(required), 'missing_predicates': sorted(missing),
             'failed_predicates': sorted(failed), 'review_status_required': status_required,
             'observations': observations, 'review_roles': review_roles,
@@ -2795,7 +2797,7 @@ def _board_review_work(pack, asset_id, roles, *, boards):
 def next_production_action(project_dir):
     """One typed projection of existing canonical state; zero writes or host calls."""
     from lib import production_images as images, production_boards as boards
-    from lib.shot_contract import project_review_subject, shot_review_subject
+    from lib.shot_contract import project_review_subject, shot_review_subject, required_asset_ids
     root = Path(project_dir).resolve()
     def action(kind, subject, binding, **kwargs):
         return _production_action(root, kind, subject=subject, binding=binding, **kwargs)
@@ -2811,6 +2813,22 @@ def next_production_action(project_dir):
             for name in derived_names):
         return action('restore_derived_views', 'package', {'package': pack['package_binding'],
             'specification_sha256': pack['specification_sha256']})
+    contract_path = _artifact_path(root, 'shot_contract.json')
+    contract = load_shot_contract(root) if contract_path.exists() else None
+    motion_contract = pack['specification'].get('motion_binding', {}).get('contract_template') if pack else None
+    if pack and contract is not None:
+        from jsonschema import Draft202012Validator
+        from schemas.artifacts import load_schema
+        # Draft/legacy planning must not preempt collection of an exact original.
+        # Project optional board floors only from a complete contract or the
+        # validated authored template; motion still validates the actual contract.
+        if Draft202012Validator(load_schema('shot_contract')).is_valid(contract):
+            motion_contract = contract
+    motion_roles = {}
+    if motion_contract:
+        required_assets = set().union(*(required_asset_ids(motion_contract, shot) for shot in motion_contract['shots']))
+        motion_roles = {asset['id']: [asset['role']] for asset in motion_contract['assets']
+                        if asset['id'] in required_assets}
     if (root / images.ARTIFACT).exists():
         calls = images._load(root)['calls']
         for call in calls:
@@ -2853,7 +2871,7 @@ def next_production_action(project_dir):
             roles = boards._roles(pack, aid)
             if not boards._binding_current(root, pack, aid) or not roles:
                 continue
-            work = _board_review_work(pack, aid, roles, boards=boards)
+            work = _board_review_work(pack, aid, roles, boards=boards, motion_roles=motion_roles.get(aid, ()))
             if work['blocked']:
                 failed_assets.add(aid)
             if work['missing_predicates'] or work['review_status_required']:
@@ -2862,7 +2880,8 @@ def next_production_action(project_dir):
                 preceding = boards._observation(pack, aid, work['review_roles'][0])
                 review_roles = [role for role in work['review_roles']
                                 if boards._observation(pack, aid, role) == preceding]
-                review_work = _board_review_work(pack, aid, review_roles, boards=boards)
+                review_work = _board_review_work(pack, aid, review_roles, boards=boards,
+                    motion_roles=motion_roles.get(aid, ()))
                 retained_predicates = ([p for p in preceding['review']['predicates'] if p['status'] != 'unknown']
                                        if preceding else [])
                 board_action = board_action or action('review_board', aid,
@@ -2900,7 +2919,6 @@ def next_production_action(project_dir):
                 'source_bindings': copy.deepcopy(pack['board_bindings'])}, inputs={'slot_id': slot})
         board_action = board_action or correction_action or completed_blocker
     selected = load_selected_attempts(root)
-    contract_path = _artifact_path(root, 'shot_contract.json')
     candidates = []
     if contract_path.exists():
         from lib.production_draft import first_cut_candidates
@@ -2955,7 +2973,6 @@ def next_production_action(project_dir):
         if board_action is not None:
             return board_action
         return action('blocked', 'planning', {}, reason='Canonical authored planning is missing; no trusted derived source is available.')
-    contract = load_shot_contract(root)
     shots = contract['shots']
     if all(s['id'] in reviewed_candidates for s in shots) and motion_action is None:
         from lib.production_draft import first_cut_media_status, latest_first_cut

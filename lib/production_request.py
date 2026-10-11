@@ -646,6 +646,7 @@ def validate_openart_asset_roles(packet, native):
             raise ValueError('reference-guided contract requires an explicit native reference-guided mode')
         role_options = {'start_frame': {'reference_image', 'environment_reference', 'first_frame'},
             'end_frame': {'reference_image', 'environment_reference', 'last_frame'},
+            'payoff_board': {'reference_image', 'environment_reference'},
             'identity_reference': {'reference_image', 'character_reference'},
             'reference_image': {'reference_image'}, 'reference_video': {'reference_video'},
             'reference_audio': {'reference_audio'}}
