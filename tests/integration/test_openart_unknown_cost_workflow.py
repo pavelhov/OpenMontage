@@ -241,7 +241,10 @@ def test_cross_route_guard_reads_original_unpriced_hold(workflow):
     marker=read(root/'project.json');marker['pipeline_type']='cinematic';write(root/'project.json',marker)
     from tools.video.grok_cli_video import GrokCLIVideo
     alternate={'project_dir':str(root),'governance':{'scope_id':'grok-alternative','shot_id':'entry'},
-               'prompt':'synthetic alternate route','operation':'text_to_video','output_path':str(root/'alternate.mp4')}
+               'prompt':'synthetic alternate route','operation':'image_to_video',
+               'image_path':str(root/'alternate.svg'),'duration':6,'allow_unknown_cost':True,
+               'output_path':str(root/'alternate.mp4')}
+    (root/'alternate.svg').write_text('<svg xmlns="http://www.w3.org/2000/svg" width="16" height="9"></svg>')
     with pytest.raises(execution.ProductionGovernanceError,match='original video attempt'):
         execution.preflight(GrokCLIVideo(),alternate)
     assert submissions(tmp)==['fixture-original']

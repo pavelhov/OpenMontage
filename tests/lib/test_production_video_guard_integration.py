@@ -16,6 +16,12 @@ from tools.video.openart_cli_video import OpenArtCLIVideo
 def approve(root, inputs, scope, tool, *, phase=None, replaces=None):
     scope = copy.deepcopy(scope)
     scope['provider'] = tool.provider
+    # Synthetic Grok fixtures explicitly acknowledge unknown pricing so the
+    # guard assertions reach the duplicate-check boundary.
+    if tool.provider == 'grok_cli':
+        inputs['allow_unknown_cost'] = True
+        if 'last_image_path' in inputs or 'reference_image_paths' in inputs:
+            inputs['operation'] = 'reference_to_video'
     if phase:
         scope['phase'] = phase
     if replaces:
@@ -144,12 +150,22 @@ def private_grok(root, inputs, *, repair=None):
     for key in ('compiled_request_id', 'preparation_review_id', 'credit_authorization_id',
                 'credit_quote_id', 'credit_qualification_sha256'):
         inputs.pop(key, None)
+    inputs = {key: value for key, value in inputs.items()
+              if key in GrokMotion.input_schema['properties']}
     inputs['output_path'] = str(root / 'assets/grok.mp4')
+    inputs['prompt'] = 'Approved exact prompt'
     inputs['preferred_provider'] = 'grok_cli'
     inputs['allowed_providers'] = ['grok_cli']
+    inputs['operation'] = 'first_last_frame'
+    inputs['image_path'] = str(root / 'assets/start.svg')
+    inputs['last_image_path'] = str(root / 'assets/end.svg')
+    inputs['reference_image_paths'] = [str(root / 'assets/patient.svg')]
+    inputs.pop('native_params', None)
+    inputs['duration'] = 8
+    inputs['allow_unknown_cost'] = True
     scope = json.loads((root / 'production_scopes.json').read_text())['scopes'][0]
     scope['id'] = 'grok-repair' if repair else 'grok-first-pass'
-    inputs['governance']['scope_id'] = scope['id']
+    inputs['governance'] = {'scope_id': scope['id'], 'shot_id': 'entry'}
     tool = GrokMotion()
     approve(root, inputs, scope, tool, phase='repair' if repair else 'first_pass', replaces=[repair] if repair else None)
     return inputs, tool

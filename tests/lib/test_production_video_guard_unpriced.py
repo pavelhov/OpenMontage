@@ -236,6 +236,8 @@ def test_unknown_other_shot_does_not_read_corrupt_public_ready(unknown_original)
 def test_unknown_private_original_blocks_governed_grok_before_new_attempt(unknown_original, direct, state):
     root, ledger, binding, _, _ = unknown_original
     inputs, scope, _ = project(root, motion=True)
+    inputs['allow_unknown_cost'] = True
+    inputs['operation'] = 'reference_to_video'
     tool = GrokMotion()
     approve(root, inputs, scope, tool)
     if state != 'prepared':
@@ -252,6 +254,8 @@ def test_unknown_private_original_blocks_governed_grok_before_new_attempt(unknow
 def test_unknown_terminal_allows_later_retained_approved_different_attempt(unknown_original, monkeypatch):
     root, ledger, binding, _, _ = unknown_original
     inputs, scope, _ = project(root, motion=True)
+    inputs['allow_unknown_cost'] = True
+    inputs['operation'] = 'reference_to_video'
     path = publish_ready(unknown_original)
     ledger.mark_unpriced(binding, 'submitting', hashlib.sha256(path.read_bytes()).hexdigest())
     ledger.mark_unpriced_submitted(OriginalJobReceipt(binding, D, 'original-job'))
