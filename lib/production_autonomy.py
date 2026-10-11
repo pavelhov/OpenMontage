@@ -1559,7 +1559,74 @@ def _historical_current_preparation(root, inputs, native, profile):
         raise AutonomyError(f'historical named preparation is incomplete: {exc}') from exc
 
 
-def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None, policy_context=None):
+def _frame_carrier_members(root, frame, projection, composites):
+    """A frame-mode composite names exact approved sources with truthful membership.
+
+    Named semantic proof remains available for provided boards. For a generated
+    board, also corroborate membership against its actual original image inputs.
+    """
+    from lib import production_boards as boards, production_images as images
+    root = Path(root).resolve()
+    pack = boards.load_board_pack(root)
+    binding = pack['board_bindings'][frame['asset_id']]
+    generated = binding.get('origin') == 'canonical_image_import'
+    call = None
+    if composites and generated:
+        call = images._call(images._load(root), binding.get('call_id'))
+        scope = images._scope(root, call['scope_id'])
+        approved = scope.get('requests', {}).get(call['slot_id'])
+        if isinstance(approved, list):
+            index = call['scope_attempt_index']
+            approved = approved[index] if type(index) is int and 0 <= index < len(approved) else None
+        receipt = images._read(images._bound_file(root, call['host_receipt'], 'carrier original host return'))
+        if (call['state'] != 'imported' or call['route'] != images.NATIVE_ROUTE
+                or call['tool_name'] != images.NATIVE_TOOL or call['slot_id'] != frame['asset_id']
+                or call['project_id'] != pack['project_id'] or call['story_revision'] != pack['story_revision']
+                or digest(scope) != call['scope_sha256']
+                or approved != call['request_sha256']
+                or call['packet']['packet_sha256'] != digest({k: v for k, v in call['packet'].items() if k != 'packet_sha256'})
+                or images.image_request_digest(call['packet'], call['slot_id'], call['host_arguments'],
+                    output_path=call['output_path']) != call['request_sha256']
+                or call['output']['sha256'] != frame['sha256']
+                or _inside(root, call['output']['path']) != Path(frame['path'])
+                or _inside(root, call['output_path']) != Path(frame['path'])
+                or receipt.get('tool_name') != images.NATIVE_TOOL
+                or receipt.get('arguments') != call['submitted_arguments']
+                or call['provenance'].get('kind') != 'agent_recorded_host_return'
+                or call['provenance'].get('tool_name') != images.NATIVE_TOOL
+                or call['provenance'].get('receipt_sha256') != call['host_receipt']['sha256']
+                or call['provenance'].get('arguments_sha256') != digest(call['submitted_arguments'])):
+            raise AutonomyError('generated starting carrier lacks exact original image provenance')
+        images._bound_file(root, {'path': call['output']['preserved_path'], 'sha256': frame['sha256']},
+                           'preserved starting carrier')
+    seen = set()
+    for composite in composites:
+        if composite['sha256'] != frame['sha256'] or composite['role'] != 'start_frame':
+            raise AutonomyError('frame composite does not name the actual declared starting carrier')
+        for member in composite['members']:
+            matches = [a for a in projection['assets']
+                if all(a[key] == member[key] for key in ('sha256', 'role', 'cast_ids'))]
+            key = (member['sha256'], member['role'], tuple(member['cast_ids']))
+            if len(matches) != 1 or key in seen:
+                raise AutonomyError('frame composite member is not one exact approved source')
+            seen.add(key)
+            if not generated:
+                continue
+            asset = matches[0]
+            expected = {key: asset[key] for key in ('path', 'sha256')}
+            refs = [r for r in call['packet']['references'] if r['id'] == asset['id']
+                    and all(r[key] == expected[key] for key in expected)]
+            originals = call['host_arguments'].get('referenced_image_paths', [])
+            submitted = call['submitted_arguments'].get('referenced_image_paths', [])
+            indices = [i for i, path in enumerate(originals) if _inside(root, path) == _inside(root, asset['path'])]
+            if (binding.get('source_bindings', {}).get(asset['id']) != expected or len(refs) != 1
+                    or len(indices) != 1 or len(originals) != len(submitted)
+                    or hashlib.sha256(_inside(root, submitted[indices[0]]).read_bytes()).hexdigest() != asset['sha256']):
+                raise AutonomyError('frame composite member was not an actual generated carrier input')
+
+
+def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None, policy_context=None,
+                     retained_lock_digest=None, _legacy_frame=False):
     """Derive locks from rooted actual submitted bytes and named preparation evidence."""
     from lib import production_request as preparation
     from lib.production_execution import _paths, _clean, _artifact_path
@@ -1584,6 +1651,16 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
         review = _json(_artifact_path(Path(root), 'preparation_review-' + preparation._id(inputs['preparation_review_id']) + '.json'))
     else:
         compiled, review = historical['compiled'], historical['review']
+    if retained_lock_digest is not None and not _legacy_frame:
+        if historical is None and policy_context is None:
+            raise AutonomyError('legacy lock replay requires retained historical authority')
+        try:
+            legacy = _root_lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile,
+                historical=historical, policy_context=policy_context, _legacy_frame=True)
+        except (ValueError, KeyError):
+            legacy = None
+        if legacy == retained_lock_digest:
+            return legacy
     actual = []
     def record(role, path):
         matched = [a for a in projection['assets'] if a.get('path') and _inside(root, a['path']) == path]
@@ -1593,6 +1670,21 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
     _paths(_clean(inputs), Path(root).resolve(), record)
     frozen = {(a['sha256'], a['role']) for a in actual}
     boards = review.get('composite_boards', [])
+    frame = None
+    carrier_frozen = frozen
+    if not _legacy_frame and projection['shot'].get('reference_mode', projection['contract_snapshot'].get('reference_mode')) == 'frame_conditioned':
+        from lib.production_execution import load_shot_contract
+        from lib.shot_contract import frame_conditioned_start
+        contract = load_shot_contract(root)
+        shot = next(s for s in contract['shots'] if s['id'] == shot_id)
+        frame = frame_conditioned_start(contract, shot, root)
+        if (compiled['source_binding'].get('frame_input') != frame or not any(
+                a['path'] == frame['path'] and a['sha256'] == frame['sha256'] for a in actual)):
+            raise AutonomyError('actual inputs do not carry the exact declared starting frame')
+        _frame_carrier_members(root, frame, projection, boards)
+        # A payoff board may have an independently authored/observed start role.
+        # Preserve its canonical primary role in actual inputs and direct locks.
+        carrier_frozen = frozen | {(frame['sha256'], 'start_frame')}
     proof = {'policy_sha256': sha, 'baseline_sha256': digest(retained),
              'compiled_sha256': digest(compiled), 'review_sha256': digest(review),
              'inputs': actual, 'cast': [], 'controls': {}}
@@ -1603,10 +1695,14 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
                        bool(set(asset.get('cast_ids', [])) & set(projection['implicit_cast_ids'])))
         if not locked_cast and asset['sha256'] not in policy['locked']['sources']:
             continue
+        if frame is not None and asset['role'] == 'end_frame' and (asset['sha256'], asset['role']) not in frozen:
+            # Reviewed endpoint targets remain protected planning/preparation
+            # bytes; explicit source/cast and required native pins run separately.
+            continue
         if (asset['sha256'], asset['role']) in frozen:
             proof['cast'].append([asset['id'], asset['sha256'], 'direct'])
             continue
-        carriers = [b for b in boards if (b['sha256'], 'start_frame') in frozen and b['role'] == 'start_frame'
+        carriers = [b for b in boards if (b['sha256'], 'start_frame') in carrier_frozen and b['role'] == 'start_frame'
                     and any(m['sha256'] == asset['sha256'] and m['role'] == asset['role']
                             and m['cast_ids'] == asset['cast_ids'] for m in b['members'])]
         if not carriers:
@@ -1617,7 +1713,7 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
             continue
         for member in members:
             direct = (member['sha256'], member['role']) in frozen
-            carrier = any((b['sha256'], 'start_frame') in frozen and any(
+            carrier = any((b['sha256'], 'start_frame') in carrier_frozen and any(
                 m['sha256'] == member['sha256'] and m['role'] == member['role'] and cast_id in m['cast_ids']
                 for m in b['members']) for b in boards)
             if not direct and not carrier:
@@ -1884,7 +1980,8 @@ def _validate_retained_packet_policy_mcp_attempt(root, scope, *, inputs, native,
     if digest(current_native) != digest(native) or digest(current_profile) != digest(profile):
         raise AutonomyError('historical MCP native/account/form/source evidence changed')
     locks = _root_lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile,
-        historical={'compiled': compiled, 'review': review, 'policy': policy, 'policy_sha256': sha})
+        historical={'compiled': compiled, 'review': review, 'policy': policy, 'policy_sha256': sha},
+        retained_lock_digest=scope['derived_from_policy']['lock_digest'])
     material = {'shot_id': shot_id, 'provider': 'openart_mcp',
         'request_digest': execution.planned_request_digest(inputs, project_dir=root),
         'approval_plan_sha256': execution.approval_plan_digest(
@@ -1985,8 +2082,8 @@ def _scope_material(root, inputs, provider, observation=None, *, derived_unknown
         locks = lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile)
     else:
         proof = _historical_current_preparation(root, inputs, native, profile)
-        locks = lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile,
-                           policy_context=(policy, sha))
+        locks = _root_lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile,
+            policy_context=(policy, sha), retained_lock_digest=historical_scope['derived_from_policy']['lock_digest'])
     contract = execution.load_shot_contract(root)
     own_shot = next(s for s in contract['shots'] if s['id'] == shot_id)
     selected = execution.load_selected_attempts(root)
@@ -2604,7 +2701,8 @@ def validate_policy_attempt(root, request, scope, frozen_contract, *, frozen_ope
     own_shot['upstream'] = [{k: v for k, v in u.items() if k not in {'attempt_id', 'output_sha256', 'outgoing_frame_sha256', 'review_sha256'}} for u in own_shot.get('upstream', [])]
     if own_shot != current['shot']:
         raise AutonomyError('historical own-shot semantics changed')
-    locks = _root_lock_proof(root, shot_id, inputs=restored, native=native, profile=profile, historical={**payload, 'policy': policy, 'policy_sha256': sha})
+    locks = _root_lock_proof(root, shot_id, inputs=restored, native=native, profile=profile,
+        historical={**payload, 'policy': policy, 'policy_sha256': sha}, retained_lock_digest=derived['lock_digest'])
     if locks != derived['lock_digest'] or digest(payload['compiled']) != derived['compiled_request_sha256']:
         raise AutonomyError('historical actual lock/compilation proof differs')
     selected = _json(directory / 'selected_attempts.json')
