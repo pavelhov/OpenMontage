@@ -35,6 +35,7 @@ BUDGET_COPY = ('Grok CLI uses your existing subscription; its remaining quota is
 GROK_MODEL_POLICY = 'cli_managed_media_unreported'
 CAST_ROLES = frozenset({'identity_reference', 'start_frame', 'payoff_board'})
 NON_PREAUTH_STAGES = frozenset({'publish'})
+CHECKPOINT_STAGES_ERROR = 'checkpoint stages are not actual gated pipeline stages'
 
 
 class AutonomyError(ValueError):
@@ -43,6 +44,23 @@ class AutonomyError(ValueError):
 
 class StandingSetupRequired(AutonomyError):
     """Actual one-time account/source authority is missing or insufficient."""
+
+
+def _pipeline_checkpoint_stages(root):
+    from lib.pipeline_loader import load_pipeline_readonly
+    marker = _json(Path(root) / 'project.json')
+    manifest = load_pipeline_readonly(marker['pipeline_type'])
+    gated = {stage['name'] for stage in manifest['stages']
+             if stage.get('human_approval_default') is True and stage['name'] not in NON_PREAUTH_STAGES}
+    return {stage['name'] for stage in manifest['stages']}, gated
+
+
+def _validate_checkpoint_stages(root, stages):
+    """Return the manifest's preauthorizable gates; reject every other stage."""
+    _, gated = _pipeline_checkpoint_stages(root)
+    if not set(stages).issubset(gated):
+        raise StandingSetupRequired(CHECKPOINT_STAGES_ERROR)
+    return gated
 
 
 def _bound_authorization(root, record, identity_id):
@@ -296,6 +314,7 @@ def activate_standing_run(project_dir, *, policy, baselines, standing_setup, run
         candidate['evidence'] = {'path': 'approvals/autonomy-policy-' + '0' * 64 + '.json', 'sha256': '0' * 64}
         if schema_errors(candidate):
             raise StandingSetupRequired('standing policy schema is incomplete: ' + ', '.join(schema_errors(candidate)))
+        _validate_checkpoint_stages(root, candidate['checkpoint_stages'])
         _validate_standing_basis(root, candidate, baselines)
         _validate_local_protected_planning(root, candidate, baselines)
         if is_benchmark(root, _json(root / 'project.json')) or policy_conflicts(candidate, baselines):
@@ -354,6 +373,192 @@ def activate_standing_run(project_dir, *, policy, baselines, standing_setup, run
         temporary = log_path.with_suffix('.json.activation-tmp')
         temporary.write_text(json.dumps(log, indent=2)); temporary.replace(log_path)
         return {'policy_sha256': sha, 'decision_id': decision_id, 'replayed': replayed, 'provider_calls': 0}
+
+
+def _require_unstarted_standing_run(root):
+    """No counter exclusions or absent public journal can hide a reservation."""
+    from lib import production_images as images, provider_credit_ledger as ledger
+    from tools import _openart_cli as cli
+    if images._load(root)['calls']:
+        raise StandingSetupRequired('checkpoint reconciliation requires zero native media calls/reservations')
+    for directory in ('production_attempts', 'openart_mcp/attempts', 'openart_mcp/uploads'):
+        if any(path.is_file() for path in (root / directory).rglob('*')):
+            raise StandingSetupRequired('checkpoint reconciliation requires zero media attempts/uploads')
+    path = root / 'production_scopes.json'
+    if path.exists() and _json(path) != {'version': '1.0', 'scopes': []}:
+        raise StandingSetupRequired('checkpoint reconciliation cannot replace existing media scopes/envelopes')
+    if any(list((root / 'artifacts').glob(pattern)) for pattern in
+           ('upload_approval-*.json', 'openart_mcp_upload_authorization-*.json')):
+        raise StandingSetupRequired('checkpoint reconciliation cannot replace retained upload authority')
+    snapshot = ledger.read_existing_snapshot()
+    reservations = list(snapshot['reservations']) + list(snapshot['unpriced_reservations'])
+    ids = set()
+    for row in reservations:
+        binding = json.loads(row['binding_json'])
+        if not isinstance(binding.get('project_root'), str) or not Path(binding['project_root']).is_absolute():
+            raise StandingSetupRequired('private reservation origin cannot be validated')
+        ids.add(row['attempt_id'])
+        if Path(binding['project_root']).resolve() == root:
+            raise StandingSetupRequired('checkpoint reconciliation requires zero private media reservations')
+    if any(row['attempt_id'] not in ids for key in ('outbox', 'unpriced_outbox', 'claims', 'unpriced_claims')
+           for row in snapshot[key]):
+        raise StandingSetupRequired('private media reservation/outbox origin is missing')
+    private = cli.state_dir(create=False)
+    # CLI uploads bind the project through retained local upload authority above.
+    # The same cast/source may have unrelated uploads in another episode.
+    for path in (private / 'mcp-uploads').glob('*.json'):
+        if Path(_json(path)['project_root']).resolve() == root:
+            raise StandingSetupRequired('checkpoint reconciliation requires zero retained MCP uploads')
+
+
+def reconcile_standing_checkpoint_stages(project_dir, *, expected_policy_sha256):
+    """Remove only ungated stages from one invalid, unstarted standing activation.
+
+    This is not a general amendment. Original policy/evidence/decision bytes stay
+    frozen, all other authority and planning checks remain binding, and no media
+    allowance, route, account or source changes. Successful replay is read-only,
+    including after production progress; stale/revoked successors fail closed.
+    """
+    from lib import production_execution as execution
+    import os
+    root = Path(project_dir).resolve()
+    try:
+        with execution._lock(root):
+            if (not isinstance(expected_policy_sha256, str) or len(expected_policy_sha256) != 64
+                    or any(c not in '0123456789abcdef' for c in expected_policy_sha256)):
+                raise StandingSetupRequired('exact expected original policy SHA required')
+            path = root / POLICY_ARTIFACT
+            raw = path.read_bytes()
+            current = json.loads(raw)
+            log_path = execution._artifact_path(root, 'decision_log.json')
+            if (root / 'decision_log.json').exists() and (root / 'artifacts/decision_log.json').exists():
+                raise StandingSetupRequired('canonical decision log alias conflict')
+            log_raw = log_path.read_bytes()
+            log = json.loads(log_raw)
+            _decision_entries(root)
+            prefix = f'approvals/autonomy-checkpoint-reconciliation-{expected_policy_sha256}'
+            record_path = root / (prefix + '.json')
+            policy_snapshot = root / (prefix + '-policy.json')
+            log_snapshot = root / (prefix + '-decision-log.json')
+            replayed = record_path.exists()
+            original_raw = policy_snapshot.read_bytes() if replayed else raw
+            original_log_raw = log_snapshot.read_bytes() if replayed else log_raw
+            original = json.loads(original_raw)
+            original_log = json.loads(original_log_raw)
+            if schema_errors(original) or not original.get('activation_basis'):
+                raise StandingSetupRequired('exact original standing activation required')
+            baselines = retained_baselines(root, original)
+            old_sha = policy_sha256(original, baselines)
+            if old_sha != expected_policy_sha256:
+                raise StandingSetupRequired('current original policy differs from expected SHA')
+            known, gated = _pipeline_checkpoint_stages(root)
+            if not set(original['checkpoint_stages']).issubset(known):
+                raise StandingSetupRequired('original checkpoint stage is absent from current pipeline')
+            removed = [stage for stage in original['checkpoint_stages'] if stage not in gated]
+            if not removed:
+                raise StandingSetupRequired('original policy has no ungated checkpoint defect')
+            decision = next((entry for entry in reversed(original_log['decisions'])
+                if entry.get('category') == ACTIVATION_CATEGORY and entry.get('subject') == ACTIVATION_SUBJECT), None)
+            if (not decision or decision.get('selected') != 'auto_continue:' + old_sha
+                    or decision.get('user_approved') is not True
+                    or decision.get('decision_id') != 'standing-' + old_sha[:24]):
+                raise StandingSetupRequired('original standing activation is missing, revoked or superseded')
+            candidate = copy.deepcopy(original)
+            candidate['checkpoint_stages'] = [stage for stage in original['checkpoint_stages'] if stage in gated]
+            content = evidence_content(candidate, baselines)
+            sha = policy_sha256(candidate, baselines)
+            payload = json.dumps(content, indent=2, allow_nan=False).encode()
+            candidate['evidence'] = {'path': f'approvals/autonomy-policy-{sha}.json',
+                'sha256': hashlib.sha256(payload).hexdigest()}
+            decision_id = 'standing-checkpoints-' + sha[:24]
+            record = {'version': '1.0', 'kind': 'standing_checkpoint_stage_reconciliation',
+                'original_policy_sha256': old_sha, 'successor_policy_sha256': sha,
+                'original_policy': {'path': str(policy_snapshot.relative_to(root)), 'sha256': hashlib.sha256(original_raw).hexdigest()},
+                'original_decision_log': {'path': str(log_snapshot.relative_to(root)), 'sha256': hashlib.sha256(original_log_raw).hexdigest()},
+                'original_evidence': copy.deepcopy(original['evidence']), 'original_decision': copy.deepcopy(decision),
+                'successor_evidence': copy.deepcopy(candidate['evidence']), 'successor_decision_id': decision_id,
+                'removed_checkpoint_stages': removed, 'provider_calls': 0, 'reservations': 0}
+            record_payload = json.dumps(record, indent=2, allow_nan=False).encode()
+            provenance = {'path': str(record_path.relative_to(root)), 'sha256': hashlib.sha256(record_payload).hexdigest()}
+            choice = 'auto_continue:' + sha
+            successor = {'decision_id': decision_id, 'stage': 'proposal', 'category': ACTIVATION_CATEGORY,
+                'subject': ACTIVATION_SUBJECT, 'selected': choice, 'user_approved': True,
+                'reason': f'Remove only ungated checkpoint stages from retained standing activation {decision["decision_id"]}; '
+                    f'unchanged creator authority, plan and cumulative allowances. Provenance: {provenance["path"]} sha256:{provenance["sha256"]}.',
+                'options_considered': [{'option_id': decision['selected'], 'label': 'Original standing activation',
+                    'score': 0, 'reason': 'Retained original creator authority.',
+                    'rejected_because': 'Checkpoint stages are not actual gated pipeline stages: ' + ', '.join(removed)},
+                    {'option_id': choice, 'label': 'Standing activation with actual checkpoint gates', 'score': 1,
+                     'reason': 'Only ungated checkpoint stages removed; every other term remains identical.'}]}
+            result = {'policy_sha256': sha, 'decision_id': decision_id, 'replayed': replayed,
+                'provider_calls': 0, 'reservations': 0, 'reconciliation': provenance}
+            successor_log = copy.deepcopy(original_log)
+            successor_log['decisions'].append(successor)
+            partial = replayed and current == original and log == successor_log
+            if replayed:
+                if (record_path.read_bytes() != record_payload
+                        or log['decisions'][:len(original_log['decisions'])] != original_log['decisions']
+                        or current not in (original, candidate)):
+                    raise StandingSetupRequired('retained reconciliation successor/provenance differs or is revoked')
+                if current == candidate:
+                    if activation_decision(root) != successor:
+                        raise StandingSetupRequired('reconciled successor is revoked or superseded')
+                    for sid in baselines:
+                        active, got_sha, got_id, reasons = load_active_policy(root, shot_id=sid)
+                        if active is None or (got_sha, got_id) != (sha, decision_id):
+                            raise StandingSetupRequired('reconciled successor is inactive: ' + '; '.join(reasons))
+                    return result
+                if log not in (original_log, successor_log):
+                    raise StandingSetupRequired('interrupted reconciliation decision was revoked or superseded')
+            allowed_reasons = (['no current user approval (missing, stale or revoked)', CHECKPOINT_STAGES_ERROR]
+                               if partial else [CHECKPOINT_STAGES_ERROR])
+            _require_unstarted_standing_run(root)
+            for sid in [None, *baselines]:
+                if load_active_policy(root, shot_id=sid)[3] != allowed_reasons:
+                    raise StandingSetupRequired('original activation has another authority or current planning defect')
+            _validate_checkpoint_stages(root, candidate['checkpoint_stages'])
+            if not partial and any(entry['decision_id'] == decision_id for entry in log['decisions']):
+                raise StandingSetupRequired('reconciliation activation already exists or is superseded')
+            Draft202012Validator(load_schema('decision_log')).validate(successor_log)
+            for snapshot_path, source, expected in ((policy_snapshot, path, original_raw), (log_snapshot, log_path, original_log_raw)):
+                if not snapshot_path.exists():
+                    os.link(source, snapshot_path)
+                    snapshot_path.chmod(0o444)
+                if snapshot_path.read_bytes() != expected:
+                    raise StandingSetupRequired('frozen reconciliation original bytes differ')
+            for target, value, expected in ((root / candidate['evidence']['path'], content, payload),
+                                            (record_path, record, record_payload)):
+                if not target.exists():
+                    execution._write_new(target, value)
+                if target.read_bytes() != expected:
+                    raise StandingSetupRequired('retained reconciliation evidence differs')
+            # Cooperating admission shares the lock. Recheck bytes and authority
+            # before publishing either mutable pointer; an interrupted publication
+            # is Strict rather than permission to revive a later/revoked activation.
+            if path.read_bytes() != raw or log_path.read_bytes() != log_raw:
+                raise StandingSetupRequired('current policy/decision changed during reconciliation')
+            _require_unstarted_standing_run(root)
+            for sid in [None, *baselines]:
+                if load_active_policy(root, shot_id=sid)[3] != allowed_reasons:
+                    raise StandingSetupRequired('current authority changed during reconciliation')
+            temporary_policy = path.with_suffix('.json.checkpoints-tmp')
+            temporary_log = log_path.with_suffix('.json.checkpoints-tmp')
+            for target, value in ((temporary_policy, candidate), (temporary_log, successor_log)):
+                if not target.exists():
+                    execution._write_new(target, value)
+                if target.read_bytes() != json.dumps(value, indent=2, allow_nan=False).encode():
+                    raise StandingSetupRequired('interrupted reconciliation pointer bytes differ')
+            try:
+                temporary_log.replace(log_path)
+                temporary_policy.replace(path)
+            finally:
+                temporary_policy.unlink(missing_ok=True)
+                temporary_log.unlink(missing_ok=True)
+            return result
+    except StandingSetupRequired:
+        raise
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise StandingSetupRequired('checkpoint reconciliation cannot be validated: ' + str(exc)) from exc
 
 
 def _validate_standing_transfer(root, policy, inputs, provider, *, exclude_scope_id=None):
@@ -621,12 +826,10 @@ def load_active_policy(root, *, shot_id=None):
         if len(provider_ids) != len(set(provider_ids)):
             reasons.append('duplicate provider IDs')
         if policy['checkpoint_stages']:
-            from lib.pipeline_loader import load_pipeline_readonly
-            manifest = load_pipeline_readonly(marker['pipeline_type'])
-            gated = {s['name'] for s in manifest['stages']
-                     if s.get('human_approval_default') is True and s['name'] != 'publish'}
-            if not set(policy['checkpoint_stages']).issubset(gated):
-                reasons.append('checkpoint stages are not actual gated pipeline stages')
+            try:
+                _validate_checkpoint_stages(root, policy['checkpoint_stages'])
+            except StandingSetupRequired as exc:
+                reasons.append(str(exc))
         if not local:
             _validate_global_planning(root, policy, baselines)
         subjects = ([shot_id] if shot_id is not None else []) if local else baselines
