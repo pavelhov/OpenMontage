@@ -3120,6 +3120,17 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider):
             raise AutonomyError('request aspect ratio changed outside retained template')
         if actual_ratio != _retained_delivery_aspect_ratio(root, policy, retained):
             raise AutonomyError('request aspect ratio differs from retained approved delivery format')
+    # The MCP project is already an exact immutable policy/native-body lock.
+    # Admit its required public transport field when the input layout omits it;
+    # an explicit retained declaration must independently agree with that lock.
+    if provider == 'openart_mcp' and ('openart_project_id' in actual or 'openart_project_id' in baseline):
+        project = _provider_spec(policy, provider)['project_id']
+        if actual.get('openart_project_id') != project:
+            raise AutonomyError('request MCP project differs from retained policy')
+        if 'openart_project_id' in baseline and baseline['openart_project_id'] != project:
+            raise AutonomyError('retained MCP project differs from policy')
+        expected.pop('openart_project_id', None)
+        bound_actual.pop('openart_project_id', None)
     # Normalize only established flex and the exact retained/projected ratio.
     # Native preparation independently checks the selected model's actual form;
     # unrelated controls remain in the retained-template equality below.
