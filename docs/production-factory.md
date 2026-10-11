@@ -55,6 +55,66 @@ cumulative image cap. Cosmetic, missing or unknown evidence does not authorize
 this correction. Independent eligible boards continue while the producer authors
 the correction; a pending or uncertain original still requires collection.
 
+### Correct a later board in the same run
+
+Use that existing correction path when earlier shots already have motion originals
+and the failed board belongs to an ungenerated shot. With retained
+`shot_local_v1` scopes, the board owner projects the corrected current bytes into
+the affected shot without changing the package, treatment, authored frame asset,
+standing policy or submitted requests. Unrelated original attempts and selected
+takes remain retained. Changed shot planning and preparation bindings need fresh
+actual evidence; image dependents whose source bytes changed become stale. A
+guided-to-conditioned frame amendment is a different operation and is unnecessary
+for this ordinary correction.
+
+Continue the current action loop; independently eligible motion may precede the
+failed board. When it returns the exact correction action:
+
+```python
+from lib import production_execution as execution
+
+step = execution.advance(project_root)
+action = step['action']
+assert action['kind'] == 'prepare_board_correction'
+assert action['subject'] == failed_slot_id
+step = execution.complete_action(project_root, action, outcome={
+    'changes': exact_producer_authored_changes,
+    # Optional: 'replacement_prompt': complete_producer_authored_prompt,
+    # Optional: 'reference_ids': ordered_existing_authorized_reference_ids,
+})
+```
+
+Handle `step['host_envelope']` exactly once using the native receipt instructions
+below. On interruption, `advance` returns `receive_native_image` for the same
+original rather than emitting the envelope again. Complete it with the actual
+receipt, then supply the actual current `review_board` verdict and any requested
+`review_planning` verdict. Rebuild the affected motion preparation with new retained
+IDs, current source bytes and a fresh exact dry-run. Never rewrite old compiled
+requests or bypass failed reviews. Missing image/source-transfer allowance remains
+a separate authority blocker, even when unrelated motion already completed.
+
+For a creator-authorized increase of an existing standing source-transfer batch
+limit, retain the complete successor setup with its actual creator-message
+authorization, then use the existing autonomy owner:
+
+```python
+from lib import production_autonomy as autonomy
+
+receipt = autonomy.amend_standing_source_max_batches(
+    project_root,
+    expected_policy_sha256=current_policy_sha256,
+    expected_setup_sha256=current_effective_setup_sha256,
+    standing_setup={'path': retained_successor_setup_path,
+                    'sha256': retained_successor_setup_sha256},
+)
+```
+
+This operation changes only declared `source_transfer.max_batches` limits. It
+preserves the original activation, policy, image envelope, request scopes and
+cumulative usage. It cannot change sources, routes, accounts, billing, file/byte
+limits or media allowances. Resume the same action loop after the validated
+successor; do not overwrite the original setup or reactivate the episode.
+
 For `review_board` with named missing or unknown predicates, inspect those gaps
 and return a complete scoped successor verdict carrying `retained_predicates`
 unchanged. Other current roles and completed findings remain retained.
@@ -382,59 +442,63 @@ it in the existing original-call directory. Provenance remains agent-recorded,
 not provider-attested. Pointer receipts `{path, sha256}` keep their original bytes
 and hashes; equivalent inline replay preserves them without reformatting.
 
-For a large image return, capture it programmatically in `functions.exec` rather
-than retyping its data URI. On the one authorized invocation, retain the actual
-arguments and full return before displaying the image:
+For a large image return, retain the actual observation in `functions.exec` and
+save it with `scripts/native_host_receipt.js`. Load that small helper once in the
+producer context, before generation (use the actual configured engine path):
+
+```javascript
+const helper = await tools.exec_command({
+  cmd: "cat /ABS/OPENMONTAGE/scripts/native_host_receipt.js",
+  max_output_tokens: 6000
+});
+if (helper.exit_code !== 0) throw new Error("Native receipt helper unavailable");
+store("native-receipt-helper", helper.output);
+```
+
+On the one authorized invocation, preserve the actual arguments and complete
+return before saving. `projectNotesReceiptPath` is the exact absolute project
+receipt filename; its parent must exist. Do not populate observed fields from a
+later expected envelope or use the engine call ID as a host `tool_call_id`:
 
 ```javascript
 // @exec: {"yield_time_ms":120000}
 const actualArguments = JSON.parse(JSON.stringify(envelope.arguments));
 const result = await tools.image_gen__imagegen(actualArguments);
-store("native-host:" + envelope.call_id, {
-  tool_name: "image_gen.imagegen", arguments: actualArguments, result
-});
+const observed = {tool_name: "image_gen.imagegen", arguments: actualArguments, result};
+store("native-host:" + envelope.call_id, observed);
+const saveReceipt = new Function(load("native-receipt-helper") +
+  "; return saveNativeHostReceipt;")();
+text(await saveReceipt(tools, observed, projectNotesReceiptPath));
 ```
 
-Then serialize that stored observation through the existing Node REPL. Set
-`projectNotesReceiptPath` to the exact project receipt filename. Its parent must
-already exist. This cell can be retried after interrupted transport; it never
-invokes image generation. Add `tool_call_id` only when actually supplied by the
-host. The engine's `envelope.call_id` above is only the storage key.
+The helper sends only small metadata and a SHA-256 fingerprint of the actual
+returned data URL to the existing Node REPL. It reads the local generated file
+named in the actual host `output_hint`, reconstructs its data URL and requires
+exact length and SHA-256 equality before saving. The hint alone is not evidence;
+missing or changed cached bytes fail closed. Every result field and the observed
+invocation survive losslessly in the receipt. The result is only `{path, bytes,
+sha256}` metadata; no base64 travels through the tool RPC or model transcript.
+The original cached image stays in place. Receipt creation is atomic and an
+existing different receipt is never overwritten.
+
+After interrupted saving, retry only the retained observation, without another
+image invocation:
 
 ```javascript
-const observedReceipt = load("native-host:" + envelope.call_id);
-if (!observedReceipt) throw new Error("Actual native return is not retained");
-const receiptPath = projectNotesReceiptPath;
-const code = [
-  "await (async () => {",
-  "const fs = await import('node:fs/promises');",
-  "const crypto = await import('node:crypto');",
-  "const receiptPath = " + JSON.stringify(receiptPath) + ";",
-  "const rawReceipt = " + JSON.stringify(JSON.stringify(observedReceipt)) + ";",
-  "try { await fs.writeFile(receiptPath, rawReceipt, {flag:'wx'}); }",
-  "catch (error) { if (error.code !== 'EEXIST') throw error;",
-  "  if (await fs.readFile(receiptPath, 'utf8') !== rawReceipt)",
-  "    throw new Error('Original host receipt collision'); }",
-  "nodeRepl.write({path:receiptPath, bytes:Buffer.byteLength(rawReceipt),",
-  "  sha256:crypto.createHash('sha256').update(rawReceipt).digest('hex')});",
-  "})();"
-].join("\n");
-const saved = await tools.mcp__node_repl__js({
-  code, title: "Retain actual native image return", timeout_ms: 30000
-});
-// The Node result contains binding metadata only; never print observedReceipt.
-text(saved);
-generatedImage(observedReceipt.result);
+const observed = load("native-host:" + envelope.call_id);
+if (!observed) throw new Error("Actual native return is not retained");
+const saveReceipt = new Function(load("native-receipt-helper") +
+  "; return saveNativeHostReceipt;")();
+text(await saveReceipt(tools, observed, projectNotesReceiptPath));
 ```
 
-Use the emitted path and SHA with the unchanged action, for example
-`outcome={"host_receipt": {"path": receipt_path, "sha256": receipt_sha256}}`
-in the existing `complete_action`. Retain the exact result object; never add an
-invented image path from `output_hint` prose. The JSON encoding above crosses an
-RPC boundary, not a shell command, so a multi-megabyte URI needs no shell argument
-or model transcription. Keep later log/status reads metadata-only; large RPC
-arguments may still appear in internal logs. A different existing receipt fails
-closed instead of overwriting the original.
+Use the returned path and SHA in the unchanged action:
+`outcome={"host_receipt": {"path": receipt_path, "sha256": receipt_sha256}}`.
+Do not retype data URIs, embed the full receipt in a Node tool argument, or split
+it by hand. A return without the verified local image remains an unresolved
+original to collect; it does not authorize regeneration. Preserve the observation
+and report that concrete saving blocker. Later status and log reads stay
+metadata-only.
 
 Unknown returns stay counted and collectable. A genuinely additive completed
 return can use `supplemental_to` with the exact original receipt SHA, retaining the

@@ -645,13 +645,121 @@ def reconcile_standing_checkpoint_stages(project_dir, *, expected_policy_sha256)
         raise StandingSetupRequired('checkpoint reconciliation cannot be validated: ' + str(exc)) from exc
 
 
+def _source_batch_changes(previous, candidate):
+    """Only positive max_batches increases; every other setup term stays exact."""
+    if not isinstance(previous, dict) or not isinstance(candidate, dict):
+        raise StandingSetupRequired('source batch amendment requires complete standing setups')
+    before = copy.deepcopy(previous); after = copy.deepcopy(candidate)
+    before.pop('authorization', None); after.pop('authorization', None)
+    changes = []
+    old_terms, new_terms = before.get('source_transfer'), after.get('source_transfer')
+    if not isinstance(old_terms, list) or not isinstance(new_terms, list) or len(old_terms) != len(new_terms):
+        raise StandingSetupRequired('source batch amendment cannot change transport terms')
+    for old, new in zip(old_terms, new_terms):
+        if not isinstance(old, dict) or not isinstance(new, dict):
+            raise StandingSetupRequired('source batch amendment requires exact transport terms')
+        old_limit, new_limit = old.get('max_batches'), new.get('max_batches')
+        if type(old_limit) is not int or type(new_limit) is not int or new_limit < old_limit or new_limit < 1:
+            raise StandingSetupRequired('source batch amendment requires positive nondecreasing max_batches')
+        if new_limit != old_limit:
+            changes.append({'provider': old['provider'], 'account': old['account'],
+                'before': old_limit, 'after': new_limit})
+        new['max_batches'] = old_limit
+    if before != after or not changes:
+        raise StandingSetupRequired('source batch amendment changes only max_batches; no caps, sources, rights or protections')
+    return changes
+
+
+def effective_standing_setup(root, policy):
+    """Read authenticated max_batches successors without replacing activation bytes.
+
+    The original run command, plan, image envelope, generation caps and all
+    existing scopes keep their original authority. All source admission uses
+    this same cumulative allowance; original collection never needs a new scope.
+    """
+    root = Path(root)
+    basis = policy['activation_basis']
+    binding = basis['standing_setup']
+    setup = _bound_document(root, binding, 'standing setup')
+    path = root / 'production_scopes.json'
+    records = _json(path).get('source_batch_amendments', []) if path.exists() else []
+    if not isinstance(records, list):
+        raise StandingSetupRequired('invalid source batch amendments')
+    if not records:
+        return setup
+    sha = policy_sha256(policy, retained_baselines(root, policy))
+    for retained in records:
+        record = _bound_document(root, retained, 'source batch amendment')
+        if (set(record) != {'version', 'kind', 'policy_sha256', 'predecessor_setup', 'standing_setup', 'changes'}
+                or record['version'] != '1.0' or record['kind'] != 'standing_source_max_batches_amendment'
+                or record['policy_sha256'] != sha or record['predecessor_setup'] != binding):
+            raise StandingSetupRequired('source batch amendment predecessor differs from current activation/setup')
+        candidate = _bound_document(root, record['standing_setup'], 'source batch successor setup')
+        _bound_authorization(root, candidate, basis['identity_id'])
+        if _source_batch_changes(setup, candidate) != record['changes']:
+            raise StandingSetupRequired('source batch amendment differs from exact creator setup')
+        setup, binding = candidate, record['standing_setup']
+    return setup
+
+
+def amend_standing_source_max_batches(project_dir, *, expected_policy_sha256,
+                                     expected_setup_sha256, standing_setup):
+    """Append one creator-authenticated max_batches-only standing setup successor.
+
+    Can run after generation/selection. Does not rewrite submitted shots,
+    activation, old setup, image envelope, scopes, originals or cumulative usage.
+    Exact replay after further progress is read-only; stale predecessors fail.
+    """
+    from lib import production_execution as execution, production_images as images
+    root = Path(project_dir).resolve()
+    with execution._lock(root):
+        policy, sha, _ = require_active_policy(root)
+        if sha != expected_policy_sha256 or not policy.get('activation_basis'):
+            raise StandingSetupRequired('source batch amendment requires exact active predecessor policy SHA')
+        setup = effective_standing_setup(root, policy)
+        path = root / 'production_scopes.json'
+        data = _json(path) if path.exists() else {'version': '1.0', 'scopes': []}
+        if data.get('version') != '1.0' or not isinstance(data.get('scopes'), list):
+            raise StandingSetupRequired('invalid production scopes record')
+        records = data.get('source_batch_amendments', [])
+        predecessor = policy['activation_basis']['standing_setup']
+        if records:
+            latest = _bound_document(root, records[-1], 'source batch amendment')
+            if (latest['standing_setup'] == standing_setup
+                    and latest['predecessor_setup']['sha256'] == expected_setup_sha256):
+                return {'amendment': copy.deepcopy(records[-1]), 'policy_sha256': sha,
+                    'standing_setup': copy.deepcopy(standing_setup), 'changes': latest['changes'],
+                    'replayed': True, 'provider_calls': 0}
+            predecessor = latest['standing_setup']
+        if predecessor['sha256'] != expected_setup_sha256:
+            raise StandingSetupRequired('source batch amendment predecessor setup SHA is stale')
+        candidate = _bound_document(root, standing_setup, 'source batch successor setup')
+        _bound_authorization(root, candidate, policy['activation_basis']['identity_id'])
+        changes = _source_batch_changes(setup, candidate)
+        record = {'version': '1.0', 'kind': 'standing_source_max_batches_amendment',
+            'policy_sha256': sha, 'predecessor_setup': copy.deepcopy(predecessor),
+            'standing_setup': copy.deepcopy(standing_setup), 'changes': changes}
+        record_path = root / ('approvals/source-max-batches-' + digest(record) + '.json')
+        payload = json.dumps(record, indent=2, allow_nan=False).encode()
+        if record_path.exists():
+            if record_path.read_bytes() != payload:
+                raise StandingSetupRequired('retained source batch amendment changed')
+        else:
+            execution._write_new(record_path, record)
+        binding = {'path': str(record_path.relative_to(root)), 'sha256': hashlib.sha256(payload).hexdigest()}
+        data.setdefault('source_batch_amendments', []).append(binding)
+        images._write_image_scopes(root, data)
+        return {'amendment': binding, 'policy_sha256': sha, 'standing_setup': copy.deepcopy(standing_setup),
+            'changes': changes, 'replayed': False, 'provider_calls': 0}
+
+
 def _validate_standing_transfer(root, policy, inputs, provider, *, exclude_scope_id=None):
     """Actual source bytes fit retained per-transport/account file and batch limits."""
     if not policy.get('activation_basis'):
         return
     from lib import production_execution as execution
     from lib.shot_contract import required_asset_ids
-    setup = _bound_document(root, policy['activation_basis']['standing_setup'], 'standing setup')
+    setup = effective_standing_setup(root, policy)
     account = setup['provider_accounts'][provider]
     term = next(t for t in setup['source_transfer'] if t['provider'] == provider and t['account'] == account)
     contract = execution.load_shot_contract(root)
@@ -762,7 +870,7 @@ def derive_standing_upload_authority(project_dir, *, shot_id, provider, files, a
                 raise StandingSetupRequired('retained upload authority differs from exact current source/account')
             return {'upload_id': name.removeprefix('upload_approval-').removeprefix('openart_mcp_upload_authorization-').removesuffix('.json'),
                 'authority': record, 'replayed': True, 'provider_calls': 0}
-        setup = _bound_document(root, policy['activation_basis']['standing_setup'], 'standing setup')
+        setup = effective_standing_setup(root, policy)
         term = next(t for t in setup['source_transfer'] if t['provider'] == provider
             and t['account'] == setup['provider_accounts'][provider])
         prefix = 'upload_approval-' if provider == 'openart_cli' else 'openart_mcp_upload_authorization-'
@@ -885,6 +993,7 @@ def load_active_policy(root, *, shot_id=None):
             _validate_local_protected_planning(root, policy, baselines)
         if policy.get('activation_basis'):
             _validate_standing_basis(root, policy, baselines, check_first_pass_capacity=False)
+            effective_standing_setup(root, policy)
         # Retained original sources remain immutable authority even if a legal
         # request drops a reference or chooses separate approved substitute bytes.
         source_baselines = ([baselines[shot_id]] if shot_id is not None else []) if local else baselines.values()

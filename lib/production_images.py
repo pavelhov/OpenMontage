@@ -427,10 +427,10 @@ def activate_standing_image_envelope(project_dir):
 def _standing_native_transfer(root, retained, packet, *, exclude_call_id=None):
     if 'activation_basis' not in retained:
         return
-    from lib.production_autonomy import require_active_policy, _bound_document, StandingSetupRequired
+    from lib.production_autonomy import require_active_policy, effective_standing_setup, StandingSetupRequired
     from lib import production_boards as boards
     policy, _, _ = require_active_policy(root)
-    setup = _bound_document(root, policy['activation_basis']['standing_setup'], 'standing setup')
+    setup = effective_standing_setup(root, policy)
     account = setup['native_images']['account']
     term = next(t for t in setup['source_transfer'] if t['provider'] == NATIVE_ROUTE and t['account'] == account)
     total = 0
