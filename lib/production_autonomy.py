@@ -105,6 +105,67 @@ def _materialized_projection(root, projection):
     return value
 
 
+def _materialized_manifest_requirements(root, shot_id, baseline, materialized):
+    """Expected manifest obligations after exact reviewed board promotion.
+
+    Only the retained package's authored handoff for this scene is admitted.
+    Each endpoint is either a same-run board original validated above or the
+    retained package's own reviewed, byte-current reuse reference; aliases and
+    scene ownership follow the canonical board row builder.
+    """
+    from lib import production_boards as boards, production_images as images
+    from lib.production_execution import load_shot_contract
+    from lib.shot_contract import required_asset_ids
+    pack = boards.load_board_pack(root)
+    scopes = root / 'production_scopes.json'
+    plan = (json.loads(scopes.read_text()).get('image_envelope') or {}).get('definition', {}).get('board_plan') \
+        if scopes.exists() else None
+    binding = pack.get('package_binding')
+    # The pack pointer is mutable; only the package frozen in the retained image
+    # envelope that produced these boards carries authored handoff authority.
+    if not binding or not plan or any(binding.get(k) != plan.get(k) for k in ('path', 'sha256')):
+        return copy.deepcopy(baseline), {row['id']: row for row in baseline['assets']}
+    # Authority comes from the hash-bound retained package bytes; the live pack
+    # specification is only co-located and may not widen handoff scope.
+    spec = json.loads(images._bound_file(root, pack['package_binding'], 'production package').read_text())['boards']
+    contract = load_shot_contract(root)
+    roles = {a['id']: a['role'] for a in contract['assets']}
+    references = {r['id']: r for r in spec['references']}
+    expected = copy.deepcopy(baseline)
+    rows = {row['id']: row for row in expected['assets']}
+
+    def row(alias):
+        base = alias[:-len('--' + shot_id)] if alias.endswith('--' + shot_id) else alias
+        users = [s['id'] for s in contract['shots'] if base in required_asset_ids(contract, s)]
+        users = users or [spec['shots'][0]['shot_id']]
+        if shot_id not in users or alias != (base if users[0] == shot_id else base + '--' + shot_id):
+            return None
+        binding = pack['board_bindings'].get(base)
+        if base in materialized:
+            return base, {'id': alias, 'type': 'image', 'path': materialized[base]['path'], 'scene_id': shot_id,
+                          'source_tool': binding.get('route', 'native_imagegen')}
+        reference = references.get(base)
+        if (not binding or binding.get('origin') != 'reuse' or not reference
+                or any(binding[k] != reference[k] for k in ('path', 'sha256'))
+                or not boards._binding_current(root, pack, base)
+                or base not in roles or boards._review_blockers(pack, base, roles[base])):
+            return None
+        return base, {'id': alias, 'type': 'image', 'path': str(boards._inside(root, binding['path']).relative_to(root)),
+                      'scene_id': shot_id, 'source_tool': 'provided'}
+
+    for aid, handoff in spec.get('motion_binding', {}).get('motion_handoffs', {}).items():
+        if handoff.get('scene_id') != shot_id or aid in expected['motion_handoffs']:
+            continue
+        endpoints = [row(alias) for alias in (aid, handoff.get('pinned_final_frame', {}).get('asset_id'))]
+        # At least one endpoint must be a same-run promotion; pure reuse was baseline.
+        if not all(endpoints) or not any(base in materialized for base, _ in endpoints):
+            continue
+        expected['motion_handoffs'][aid] = copy.deepcopy(handoff)
+        for _, endpoint in endpoints:
+            rows.setdefault(endpoint['id'], endpoint)
+    return expected, rows
+
+
 def _validate_standing_basis(root, policy, baselines):
     try:
         return _validate_standing_basis_impl(root, policy, baselines)
@@ -1040,6 +1101,7 @@ def _validate_delta(policy, shot_id, candidate, baseline_projection, *, allow_gl
         value.pop('scene_snapshot', None)
     if policy.get('planning_mode') == 'shot_local_v1':
         observed = {asset['id']: asset for asset in candidate['assets']}
+        materialized = {}
         for index, asset in enumerate(baseline_projection['assets']):
             if not asset.get('preparation_pending'):
                 continue
@@ -1049,6 +1111,15 @@ def _validate_delta(policy, shot_id, candidate, baseline_projection, *, allow_gl
                     raise AutonomyError('pending source materialization needs canonical attribution')
                 _validate_generated_board_source(root, current, expected=asset)
                 baseline_projection['assets'][index] = copy.deepcopy(current)
+                materialized[asset['id']] = current
+        if materialized:
+            expected, rows = _materialized_manifest_requirements(
+                root, shot_id, baseline_projection['manifest_requirements'], materialized)
+            observed_rows = candidate['manifest_requirements']['assets']
+            if sorted(row['id'] for row in observed_rows) == sorted(rows):
+                # Row order follows promotion order; ids and contents stay exact.
+                expected['assets'] = [copy.deepcopy(rows[row['id']]) for row in observed_rows]
+                baseline_projection['manifest_requirements'] = expected
     if allow_global_shift and policy.get('planning_mode') != 'shot_local_v1':
         baseline_projection['assets'] = copy.deepcopy(candidate['assets'])
         baseline_projection['shot']['asset_ids'] = copy.deepcopy(candidate['shot']['asset_ids'])

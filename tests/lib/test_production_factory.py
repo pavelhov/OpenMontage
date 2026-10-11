@@ -806,3 +806,110 @@ def test_standing_two_native_boards_zero_source_calls_preserve_transfer_batch(ne
     if second_referenced:
         with pytest.raises(pa.StandingSetupRequired, match='batch allowance exhausted'):
             images._standing_native_transfer(root, retained, calls[-1]['packet'])
+
+
+@pytest.mark.parametrize('tamper', [None, 'handoff', 'reference', 'mixed', 'spec', 'pointer', 'opaque'])
+def test_standing_board_materialization_derives_exact_authored_handoff_only(neutral_package, tamper):
+    """Promoted reviewed boards may add only the retained package's exact handoff rows."""
+    from lib import production_boards as boards
+    from lib.shot_contract import ASSET_PREDICATES
+    root, package, bind = neutral_package
+    package = prospective_package(package)
+    package['shots'][0]['pinned_final_frame'] = {'required': True, 'requirement_id': 's1-ending',
+                                                 'end_state': package['shots'][0]['end_state']}
+    first = 'cast' if tamper in ('mixed', 'opaque') else 'start'
+    end = 'end--final' if tamper == 'opaque' else 'end'
+    if tamper == 'opaque':
+        # Opaque base IDs may contain '--'; only the exact shot alias suffix is special.
+        package['boards'] = json.loads(json.dumps(package['boards']).replace('"end"', '"end--final"'))
+    if tamper in ('mixed', 'opaque'):
+        # Retained reviewed reuse starts the handoff; the same-run board ends it.
+        package['boards']['motion_binding']['contract_template']['assets'].append(
+            {'id': 'cast', 'role': 'start_frame', 'cast_ids': []})
+    package['boards']['motion_binding']['motion_handoffs'] = {first: {'asset_id': first, 'scene_id': 's1',
+        'approved': True, 'pinned_final_frame': {'asset_id': end, 'approved': True, 'requirement_id': 's1-ending'}}}
+    request.prepare_package(root, bind(package))
+    marker = json.loads((root / 'project.json').read_text()); marker.update(identity_id='fixture-identity', pipeline_type='cinematic')
+    write(root, 'project.json', marker)
+    contract = execution.load_shot_contract(root); script = json.loads((root / 'artifacts/script.json').read_text())
+    baselines = {}
+    for shot in contract['shots']:
+        projection = pa.current_projection(root, shot['id'])
+        baselines[shot['id']] = {'projection': projection,
+            'planned_request_template': execution.planned_request_template({'duration': shot['duration_seconds']}, project_dir=root),
+            'script_snapshot': script, 'dialogue_coverage': pa.dialogue_occurrences(projection),
+            'approval_plan_sha256': execution.approval_plan_digest(contract, shot['id'])}
+    assert baselines['s1']['projection']['manifest_requirements']['motion_handoffs'] == {}
+    policy = make_policy(project_id=contract['project_id'], story_revision=contract['story_revision'],
+        locked={'cast': {}, 'dialogue': {}, 'sources': [], 'story_predicates': [], 'controls': {}})
+    accounts = {'grok_cli': 'fixture-grok', 'openart_cli': 'fixture-cli', 'native_imagegen': 'fixture-native'}
+    setup = {'version': '1.0', 'identity_id': 'fixture-identity', 'enabled': True,
+        'providers': policy['providers'], 'provider_accounts': {k: v for k, v in accounts.items() if k != 'native_imagegen'},
+        'caps': policy['caps'], 'checkpoint_stages': policy['checkpoint_stages'], 'flex': policy['flex'],
+        'approved_source_sha256': [r['sha256'] for r in package['boards']['references']], 'required_permissions': [],
+        'native_images': {'account': accounts['native_imagegen'], 'image_allowance': 4, 'allowed_image_routes': ['native_imagegen']},
+        'source_transfer': [{'provider': provider, 'account': account,
+            'roles': ['identity', 'start_frame', 'end_frame', 'payoff_board'], 'generated_board_sources': True,
+            'max_files': 8, 'max_file_bytes': 10000, 'max_batch_bytes': 80000, 'max_batches': 4}
+            for provider, account in accounts.items()]}
+    standing = creator_fixture(root, 'standing', setup)
+    command = creator_fixture(root, 'command', {'version': '1.0', 'identity_id': 'fixture-identity',
+        'project_id': contract['project_id'], 'story_revision': contract['story_revision'], 'command': 'make_video',
+        'standing_setup_sha256': standing['sha256']})
+    pa.activate_standing_run(root, policy=policy, baselines=baselines, standing_setup=standing,
+        run_command=command, identity_id='fixture-identity')
+    step = execution.advance(root)
+    reviewed = set()
+    while {'start', end} - reviewed:
+        assert step['status'] == 'host_action' and step['action']['kind'] == 'receive_native_image', step
+        slot = images.image_call_status(root, step['host_envelope']['call_id'])['slot_id']
+        received = execution.complete_action(root, step['action'],
+            outcome={'host_receipt': host_receipt(root, step['host_envelope'], name='receipt-' + slot)})
+        source = boards.load_board_pack(root)['board_bindings'][slot]
+        review = attestation(source['sha256'], ASSET_PREDICATES, revision='r1'); review['reviewer'] = 'persistent reviewer'
+        step = execution.complete_action(root, received['action'], outcome={'review': review})
+        reviewed.add(slot)
+    manifest_path = root / 'artifacts/asset_manifest.json'
+    current = pa.current_projection(root, 's1')['manifest_requirements']
+    assert current['motion_handoffs'] == package['boards']['motion_binding']['motion_handoffs']
+    assert {a['id'] for a in current['assets']} >= {first, end}
+    if tamper in ('mixed', 'opaque'):
+        row = next(a for a in current['assets'] if a['id'] == 'cast')
+        assert row['source_tool'] == 'provided'
+    if tamper in ('handoff', 'reference', 'spec', 'pointer'):
+        manifest = json.loads(manifest_path.read_text())
+        if tamper in ('handoff', 'spec', 'pointer'):
+            manifest['metadata']['motion_handoffs']['start']['pinned_final_frame']['requirement_id'] = 'other-ending'
+        if tamper == 'spec':
+            # Live pack spec rewritten consistently (digest recomputed) while the
+            # hash-bound retained package and activation stay unchanged.
+            pack_path = root / boards.ARTIFACT
+            pack = json.loads(pack_path.read_text())
+            pack['specification']['motion_binding']['motion_handoffs']['start']['pinned_final_frame']['requirement_id'] = 'other-ending'
+            pack['specification_sha256'] = boards._digest(pack['specification'])
+            pack_path.write_text(json.dumps(pack))
+            assert boards.load_board_pack(root)['specification']['motion_binding']['motion_handoffs'] == \
+                manifest['metadata']['motion_handoffs']
+        if tamper == 'pointer':
+            # New hash-bound package with the altered handoff, pack pointer and live
+            # spec repointed consistently; the retained image envelope is unchanged.
+            altered = copy.deepcopy(package)
+            altered['boards']['motion_binding']['motion_handoffs']['start']['pinned_final_frame']['requirement_id'] = 'other-ending'
+            data = json.dumps(altered).encode()
+            (root / 'notes/package-altered.json').write_bytes(data)
+            pack_path = root / boards.ARTIFACT
+            pack = json.loads(pack_path.read_text())
+            pack['package_binding'] = {'path': 'notes/package-altered.json', 'sha256': hashlib.sha256(data).hexdigest()}
+            pack['specification'] = altered['boards']
+            pack['specification_sha256'] = boards._digest(pack['specification'])
+            pack_path.write_text(json.dumps(pack))
+            boards.load_board_pack(root)
+        else:
+            manifest['metadata'].setdefault('reference_assets', {})['cast'] = {'scene_id': 's1', 'role': 'identity'}
+        manifest_path.write_text(json.dumps(manifest))
+        with pytest.raises(pa.AutonomyError, match='changed outside approved flex: /manifest_requirements'):
+            pa.require_active_policy(root, shot_id='s1')
+        return
+    pa.require_active_policy(root, shot_id='s1')
+    projection = pa.current_projection(root, 's1')
+    assert pa.contract_delta(root, 's1', projection) == (None, [])
