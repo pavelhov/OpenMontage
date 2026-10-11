@@ -161,35 +161,40 @@ def first_cut_enabled(project_dir):
 
 
 def _append(root, kind, key, payload, evidence):
+    with _ex()._lock(root):
+        return _append_locked(root, kind, key, payload, evidence)
+
+
+def _append_locked(root, kind, key, payload, evidence):
+    """Canonical append; caller already holds the execution admission lock."""
     execution = _ex()
-    with execution._lock(root):
-        marker = _marker(root)
-        governance = marker.get('governance') or {}
-        if governance.get('mode') != 'strict' or governance.get('version') != '1.0':
-            # Controls are enforced only by strict governed preflight; recording
-            # them on a legacy project would report enforcement that never runs.
-            _fail('episode controls require a strict governed project')
-        data = _load(root) or {'version': VERSION, 'project_id': marker['project_id'], 'records': []}
-        if data['project_id'] != marker['project_id']:
-            _fail('controls artifact belongs to another project')
-        record = {'kind': kind, 'record_id': str(uuid.uuid4()),
-                  'recorded_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                  'project_id': marker['project_id'], 'story_revision': marker['story_revision'],
-                  'previous_sha256': execution._digest(data['records'][-1]) if data['records'] else None,
-                  'evidence': evidence, 'authority': dict(AUTHORITY, grants=[]), key: payload}
-        data = {**data, 'records': [*data['records'], record]}
-        path = root / ARTIFACT
-        path.parent.mkdir(parents=True, exist_ok=True)
-        temp = path.with_name('.' + path.name + '-' + str(uuid.uuid4()) + '.tmp')
-        try:
-            with temp.open('x') as stream:
-                json.dump(data, stream, indent=2, allow_nan=False)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temp, path)
-        finally:
-            temp.unlink(missing_ok=True)
-        return record, execution._digest(record), _effective(data, marker)
+    marker = _marker(root)
+    governance = marker.get('governance') or {}
+    if governance.get('mode') != 'strict' or governance.get('version') != '1.0':
+        # Controls are enforced only by strict governed preflight; recording
+        # them on a legacy project would report enforcement that never runs.
+        _fail('episode controls require a strict governed project')
+    data = _load(root) or {'version': VERSION, 'project_id': marker['project_id'], 'records': []}
+    if data['project_id'] != marker['project_id']:
+        _fail('controls artifact belongs to another project')
+    record = {'kind': kind, 'record_id': str(uuid.uuid4()),
+              'recorded_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              'project_id': marker['project_id'], 'story_revision': marker['story_revision'],
+              'previous_sha256': execution._digest(data['records'][-1]) if data['records'] else None,
+              'evidence': evidence, 'authority': dict(AUTHORITY, grants=[]), key: payload}
+    data = {**data, 'records': [*data['records'], record]}
+    path = root / ARTIFACT
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp = path.with_name('.' + path.name + '-' + str(uuid.uuid4()) + '.tmp')
+    try:
+        with temp.open('x') as stream:
+            json.dump(data, stream, indent=2, allow_nan=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
+    return record, execution._digest(record), _effective(data, marker)
 
 
 def record_episode_controls(project_dir, controls, *, evidence):
@@ -198,6 +203,14 @@ def record_episode_controls(project_dir, controls, *, evidence):
     controls = _check_controls(controls)
     evidence = _evidence(root, evidence)
     record, digest, effective = _append(root, 'controls', 'controls', controls, evidence)
+    return {'record_id': record['record_id'], 'record_sha256': digest, 'effective': effective}
+
+
+def _record_episode_controls_locked(root, controls, *, evidence):
+    """Same canonical recorder for an authenticated activation holding its lock."""
+    controls = _check_controls(controls)
+    evidence = _evidence(root, evidence)
+    record, digest, effective = _append_locked(root, 'controls', 'controls', controls, evidence)
     return {'record_id': record['record_id'], 'record_sha256': digest, 'effective': effective}
 
 
