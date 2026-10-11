@@ -184,16 +184,17 @@ def _materialized_manifest_requirements(root, shot_id, baseline, materialized):
     return expected, rows
 
 
-def _validate_standing_basis(root, policy, baselines):
+def _validate_standing_basis(root, policy, baselines, *, check_first_pass_capacity=True):
     try:
-        return _validate_standing_basis_impl(root, policy, baselines)
+        return _validate_standing_basis_impl(root, policy, baselines,
+            check_first_pass_capacity=check_first_pass_capacity)
     except StandingSetupRequired:
         raise
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise StandingSetupRequired('standing setup cannot be validated: ' + str(exc)) from exc
 
 
-def _validate_standing_basis_impl(root, policy, baselines):
+def _validate_standing_basis_impl(root, policy, baselines, *, check_first_pass_capacity=True):
     """Validate declared actual message provenance and containment, never invent it."""
     basis = policy.get('activation_basis', {})
     identity = basis.get('identity_id')
@@ -277,7 +278,8 @@ def _validate_standing_basis_impl(root, policy, baselines):
                     _validate_generated_board_source(root, asset, expected=asset)
     from lib import production_boards as boards, production_images as images
     if (Path(root) / boards.ARTIFACT).exists() and boards.load_board_pack(root)['specification']['image_nodes']:
-        images._standing_image_definition(root, policy)
+        images._standing_image_definition(root, policy,
+            check_first_pass_capacity=check_first_pass_capacity)
     return setup, command
 
 
@@ -798,7 +800,7 @@ def load_active_policy(root, *, shot_id=None):
                 raise AutonomyError('shot outside retained policy')
             _validate_local_protected_planning(root, policy, baselines)
         if policy.get('activation_basis'):
-            _validate_standing_basis(root, policy, baselines)
+            _validate_standing_basis(root, policy, baselines, check_first_pass_capacity=False)
         # Retained original sources remain immutable authority even if a legal
         # request drops a reference or chooses separate approved substitute bytes.
         source_baselines = ([baselines[shot_id]] if shot_id is not None else []) if local else baselines.values()

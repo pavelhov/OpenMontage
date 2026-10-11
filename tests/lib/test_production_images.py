@@ -10,6 +10,7 @@ import pytest
 from lib import production_images as images
 from lib.production_request import digest
 from lib.shot_contract import file_sha256
+from tests.lib.test_production_request import neutral_package  # noqa: F401
 
 
 # A real one-pixel PNG fixture, retained byte-for-byte rather than re-encoded.
@@ -943,3 +944,248 @@ def test_native_supplement_rejects_mismatched_evidence(board_package, mutation):
             supplemental_to='0'*64 if mutation == 'wrong_original' else incomplete['sha256'])
     assert images._load(root) == before
     assert not (root/'production_images/supplement/host-return-supplement.json').exists()
+
+
+def standing_board_fixture(package_fixture, *, limit=6, max_batches=6, end_depends_start=False):
+    """Real standing contracts over synthetic bytes; never invokes a host."""
+    from lib import production_autonomy as pa, production_execution as execution, production_request as request
+    from tests.lib.test_production_factory import creator_fixture, prospective_package, make_policy
+    root, package, bind = package_fixture
+    package = prospective_package(package)
+    # End initially shares identity, rather than a declared start dependency;
+    # a producer may explicitly request reviewed start from frozen inventory.
+    if not end_depends_start:
+        next(n for n in package['boards']['image_nodes'] if n['slot_id'] == 'end')['image_dependencies'] = []
+    request.prepare_package(root, bind(package))
+    marker = json.loads((root / 'project.json').read_text())
+    marker.update(identity_id='fixture-identity', pipeline_type='cinematic')
+    write(root / 'project.json', marker)
+    contract = execution.load_shot_contract(root)
+    script = json.loads((root / 'artifacts/script.json').read_text())
+    baselines = {}
+    for shot in contract['shots']:
+        projection = pa.current_projection(root, shot['id'])
+        baselines[shot['id']] = {'projection': projection,
+            'planned_request_template': execution.planned_request_template({'duration': shot['duration_seconds']}, project_dir=root),
+            'script_snapshot': script, 'dialogue_coverage': pa.dialogue_occurrences(projection),
+            'approval_plan_sha256': execution.approval_plan_digest(contract, shot['id'])}
+    policy = make_policy(project_id=package['project_id'], story_revision='r1',
+        locked={'cast': {}, 'dialogue': {}, 'sources': [], 'story_predicates': [], 'controls': {}})
+    accounts = {'grok_cli': 'fixture-grok', 'openart_cli': 'fixture-cli', 'native_imagegen': 'fixture-native'}
+    setup = {'version': '1.0', 'identity_id': 'fixture-identity', 'enabled': True,
+        'providers': policy['providers'], 'provider_accounts': {k: v for k, v in accounts.items() if k != 'native_imagegen'},
+        'caps': policy['caps'], 'checkpoint_stages': policy['checkpoint_stages'], 'flex': policy['flex'],
+        'approved_source_sha256': [r['sha256'] for r in package['boards']['references']], 'required_permissions': [],
+        'native_images': {'account': accounts['native_imagegen'], 'image_allowance': limit, 'allowed_image_routes': ['native_imagegen']},
+        'source_transfer': [{'provider': route, 'account': account,
+            'roles': ['identity', 'start_frame', 'end_frame', 'payoff_board'], 'generated_board_sources': True,
+            'max_files': 8, 'max_file_bytes': 10000, 'max_batch_bytes': 80000, 'max_batches': max_batches}
+            for route, account in accounts.items()]}
+    standing = creator_fixture(root, 'standing', setup)
+    command = creator_fixture(root, 'command', {'version': '1.0', 'identity_id': 'fixture-identity',
+        'project_id': package['project_id'], 'story_revision': 'r1', 'command': 'make_video',
+        'standing_setup_sha256': standing['sha256']})
+    pa.activate_standing_run(root, policy=policy, baselines=baselines, standing_setup=standing,
+        run_command=command, identity_id='fixture-identity')
+    images.activate_standing_image_envelope(root)
+    return root
+
+
+def import_standing_board(root, slot, *, call_id=None, correction=None, fail=False):
+    from lib import production_boards as boards
+    prepared = boards.prepare_image_request(root, slot, correction=correction, images=images)
+    scope = images.derive_native_image_scope(root, prepared['packet'], slot, prepared['arguments'],
+        output_path=prepared['output_path'], correction_intent=prepared.get('correction_intent'))
+    call_id = call_id or 'synthetic-' + slot
+    call = boards.reserve_board_image(root, slot, scope_id=scope, call_id=call_id, correction=correction, images=images)
+    envelope = images.begin_native_image(root, call_id)
+    images.import_native_image(root, call_id, host_receipt=host_receipt(root, envelope, name=call_id))
+    binding = boards.bind_imported_board(root, slot, call_id, images=images)
+    retain_board_verdict(root, slot, binding, call_id, fail=fail)
+    return prepared, call
+
+
+def retain_board_verdict(root, slot, binding, label, *, fail=False):
+    from lib import production_boards as boards
+    review = {'review_id': 'review-' + label, 'reviewer': 'persistent reviewer', 'story_revision': 'r1',
+        'subject_sha256': binding['sha256'], 'status': 'fail' if fail else 'pass', 'predicates': [
+            {'name': name, 'status': 'fail' if fail and name == 'cast_identity' else 'pass', 'severity': 'critical',
+                'evidence': 'SYNTHETIC current-byte observation only.'} for name in ('asset_quality', 'cast_identity')]}
+    pack = boards.load_board_pack(root)
+    return boards.record_board_review(root, slot, review, roles=boards._roles(pack, slot), images=images)
+
+
+def prepare_standing_correction(root, slot='end', *, replacement=False, reference_ids=None):
+    from lib import production_boards as boards
+    correction = boards.board_correction_intent(root, slot, changes='SYNTHETIC restore essential cast invariant.',
+        **({'replacement_prompt': 'SYNTHETIC complete corrective prompt.'} if replacement else {}),
+        **({'reference_ids': reference_ids} if reference_ids is not None else {}))
+    request = boards.prepare_image_request(root, slot, correction=correction, images=images)
+    scope = images.derive_native_image_scope(root, request['packet'], slot, request['arguments'],
+        output_path=request['output_path'], correction_intent=correction)
+    return correction, request, scope
+
+
+@pytest.mark.parametrize('replacement', [False, True])
+def test_standing_critical_board_correction_retains_exact_proof_and_immutable_originals(neutral_package, replacement):
+    from lib import production_boards as boards
+    root = standing_board_fixture(neutral_package)
+    original_request, original_call = import_standing_board(root, 'end', fail=True)
+    originals = {p: p.read_bytes() for p in (root / 'production_images').rglob('*') if p.is_file()}
+    before = json.loads((root / 'production_scopes.json').read_text())
+    spec = boards.load_board_pack(root)['specification']
+    correction, prepared, scope = prepare_standing_correction(root, replacement=replacement)
+    assert prepared['correction_intent'] == correction
+    assert correction['preceding_request_sha256'] == original_call['request_sha256']
+    assert images.derive_native_image_scope(root, prepared['packet'], 'end', prepared['arguments'],
+        output_path=prepared['output_path'], correction_intent=correction) == scope
+    corrected_request, corrected_call = import_standing_board(root, 'end', call_id='corrected-end', correction=correction)
+    assert corrected_request == prepared and corrected_call['scope_id'] != original_call['scope_id']
+    current = json.loads((root / 'production_scopes.json').read_text())
+    assert current['image_envelope'] == before['image_envelope']
+    assert current['scopes'][:-1] == before['scopes']
+    assert originals == {p: p.read_bytes() for p in originals}
+    assert boards.load_board_pack(root)['specification'] == spec
+    assert original_request in boards.load_board_pack(root)['image_packet_history']
+    assert images.image_usage(root)['total'] == 2
+    # Successful binding makes failed proof historical, but attribution remains readable.
+    images._imported_envelope_producer(root, current['image_envelope'], images._load(root)['calls'][-1])
+    with pytest.raises(ValueError, match='critical failed|stale'):
+        images.derive_native_image_scope(root, prepared['packet'], 'end', prepared['arguments'],
+            output_path=prepared['output_path'], correction_intent=correction)
+
+
+def test_standing_correction_may_add_only_current_reviewed_inventory_source(neutral_package):
+    root = standing_board_fixture(neutral_package)
+    import_standing_board(root, 'start')
+    import_standing_board(root, 'end', fail=True)
+    intent, prepared, scope = prepare_standing_correction(root, replacement=True, reference_ids=['cast', 'start'])
+    assert intent['reference_ids'] == ['cast', 'start']
+    assert [r['id'] for r in prepared['packet']['references']] == ['cast', 'start']
+    assert prepared['arguments']['referenced_image_paths'] == [str(root / 'assets/images/cast.png'), str(root / 'assets/images/start.png')]
+    images.reserve_native_image(root, prepared['packet'], 'end', prepared['arguments'],
+        output_path=prepared['output_path'], scope_id=scope, call_id='corrected-with-start')
+    images.begin_native_image(root, 'corrected-with-start')
+    assert images.image_usage(root)['total'] == 3
+
+
+@pytest.mark.parametrize('boundary', ['source', 'review', 'intent', 'preceding', 'receipt', 'packet', 'prepared_sources', 'output', 'scope', 'account', 'reference'])
+@pytest.mark.parametrize('phase', ['reserve', 'begin'])
+def test_standing_correction_revalidates_current_proof_before_dispatch(neutral_package, boundary, phase):
+    from lib import production_boards as boards
+    root = standing_board_fixture(neutral_package)
+    import_standing_board(root, 'start')
+    import_standing_board(root, 'end', fail=True)
+    intent, prepared, scope = prepare_standing_correction(root, replacement=True, reference_ids=['cast', 'start'])
+    if phase == 'begin':
+        images.reserve_native_image(root, prepared['packet'], 'end', prepared['arguments'],
+            output_path=prepared['output_path'], scope_id=scope, call_id='correction')
+    pack = boards.load_board_pack(root)
+    if boundary == 'source': (root / pack['board_bindings']['end']['path']).write_bytes(b'changed')
+    if boundary == 'review':
+        pack['observations'][-1]['review']['predicates'][0]['evidence'] = 'Changed review proof'
+        write(root / boards.ARTIFACT, pack)
+    if boundary == 'intent':
+        pack['image_packets']['end']['correction_intent']['changes'] = 'Changed correction'
+        write(root / boards.ARTIFACT, pack)
+    if boundary == 'preceding':
+        pack['image_packet_history'][-1]['arguments']['prompt'] = 'Changed preceding prompt'
+        write(root / boards.ARTIFACT, pack)
+    if boundary == 'receipt':
+        receipt = root / images._load(root)['calls'][1]['host_receipt']['path']
+        receipt.chmod(0o644); receipt.write_text('{}')
+    if boundary == 'packet':
+        pack['image_packets']['end']['packet']['prepared_at'] = 'Changed packet'
+        write(root / boards.ARTIFACT, pack)
+    if boundary == 'prepared_sources':
+        pack['image_packets']['end']['source_bindings']['cast']['sha256'] = '0' * 64
+        write(root / boards.ARTIFACT, pack)
+    if boundary == 'output': (root / prepared['output_path']).write_bytes(b'Already occupied')
+    if boundary == 'scope':
+        scopes = json.loads((root / 'production_scopes.json').read_text())
+        scopes['scopes'][-1]['board_correction_intent']['changes'] = 'Changed scope proof'
+        write(root / 'production_scopes.json', scopes)
+    if boundary == 'account':
+        setup = root / 'notes/standing.json'; record = json.loads(setup.read_text())
+        record['native_images']['account'] = 'Different account'; write(setup, record)
+    if boundary == 'reference':
+        retain_board_verdict(root, 'start', pack['board_bindings']['start'], 'start-now-failed', fail=True)
+    with pytest.raises(ValueError):
+        if phase == 'begin': images.begin_native_image(root, 'correction')
+        else: images.reserve_native_image(root, prepared['packet'], 'end', prepared['arguments'],
+            output_path=prepared['output_path'], scope_id=scope, call_id='correction')
+    assert images.image_usage(root)['total'] == 2 + (phase == 'begin')
+    if phase == 'begin': assert images.image_call_status(root, 'correction')['state'] == 'reserved'
+
+
+@pytest.mark.parametrize('references', [['start'], ['cast', 'start', 'cast'], ['cast', 'end'], ['cast', 'not-approved'], ['cast', 'start']])
+def test_standing_correction_rejects_dropped_duplicate_self_missing_or_unreviewed_sources(neutral_package, references):
+    root = standing_board_fixture(neutral_package)
+    import_standing_board(root, 'start', fail=True)
+    import_standing_board(root, 'end', fail=True)
+    with pytest.raises((ValueError, KeyError)):
+        prepare_standing_correction(root, reference_ids=references)
+    assert images.image_usage(root)['total'] == 2
+
+
+def test_standing_corrections_preserve_cap_and_readable_provenance(neutral_package):
+    root = standing_board_fixture(neutral_package, limit=4, max_batches=8)
+    prepared, call = import_standing_board(root, 'end', fail=True)
+    for index in range(3):
+        intent, correction, scope = prepare_standing_correction(root)
+        assert scope != call['scope_id']
+        prepared, call = import_standing_board(root, 'end', call_id='correction-' + str(index), correction=intent, fail=True)
+    assert images.image_usage(root)['total'] == 4
+    retained = images.activate_standing_image_envelope(root)
+    from lib.production_autonomy import load_active_policy, require_active_policy
+    assert load_active_policy(root)[0] is not None
+    require_active_policy(root)
+    for original in images._load(root)['calls']:
+        images._imported_envelope_producer(root, retained, original)
+    from lib import production_boards as boards
+    intent = boards.board_correction_intent(root, 'end', changes='SYNTHETIC final essential repair')
+    final = boards.prepare_image_request(root, 'end', correction=intent, images=images)
+    with pytest.raises(ValueError, match='allowance exhausted'):
+        images.derive_native_image_scope(root, final['packet'], 'end', final['arguments'],
+            output_path=final['output_path'], correction_intent=intent)
+    assert images.image_usage(root)['total'] == 4
+
+
+def test_standing_correction_transfer_batch_cap_remains_cumulative(neutral_package):
+    root = standing_board_fixture(neutral_package, max_batches=1)
+    import_standing_board(root, 'end', fail=True)
+    with pytest.raises(ValueError, match='batch allowance exhausted'):
+        prepare_standing_correction(root)
+    assert images.image_usage(root)['total'] == 1
+
+
+def test_standing_correction_rejects_transitive_reference_cycle_before_request_or_reservation(neutral_package):
+    from lib import production_boards as boards
+    root = standing_board_fixture(neutral_package, end_depends_start=True)
+    import_standing_board(root, 'start')
+    import_standing_board(root, 'end')
+    pack = boards.load_board_pack(root)
+    retain_board_verdict(root, 'start', pack['board_bindings']['start'], 'start-critical-fail', fail=True)
+    before = (root / boards.ARTIFACT).read_bytes()
+    with pytest.raises(ValueError, match='transitively depends'):
+        boards.board_correction_intent(root, 'start', changes='SYNTHETIC repair invariant', reference_ids=['cast', 'end'])
+    assert (root / boards.ARTIFACT).read_bytes() == before
+    assert images.image_usage(root)['total'] == 2
+
+
+def test_manual_exact_scope_append_correction_preserves_legacy_proof_light_preparation(neutral_package):
+    from lib import production_boards as boards, production_request as request
+    root, package, bind = neutral_package
+    request.prepare_package(root, bind(package))
+    source = root / 'assets/images/start.png'; source.write_bytes(PNG)
+    pack = boards.load_board_pack(root)
+    binding = {'path': 'assets/images/start.png', 'sha256': file_sha256(source), 'origin': 'manually_bound_fixture'}
+    pack['board_bindings']['start'] = binding
+    write(root / boards.ARTIFACT, pack)
+    retain_board_verdict(root, 'start', binding, 'manual-start', fail=True)
+    intent = boards.board_correction_intent(root, 'start', changes='SYNTHETIC manually approved exact repair')
+    assert 'preceding_request' not in intent and 'source_binding' not in intent
+    prepared = boards.prepare_image_request(root, 'start', correction=intent, images=images)
+    assert prepared['arguments']['prompt'] == 'SYNTHETIC start\nTargeted correction: SYNTHETIC manually approved exact repair'
+    assert prepared['correction_intent'] == intent
+    assert images.image_usage(root)['total'] == 0

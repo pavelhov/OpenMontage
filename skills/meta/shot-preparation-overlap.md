@@ -96,6 +96,28 @@ unchanged valid roles carry. Preparation promotion does not itself alter frozen
 motion plans or grant dispatch. Record actual preparation, import, review and
 promotion boundaries; absent provider timestamps remain unknown.
 
+For an actual standing native image run, describe a completed board's critical
+failure with `board_correction_intent`, then `prepare_image_request(...,
+correction=intent)` and `derive_native_image_scope(...,
+correction_intent=request["correction_intent"])`. The producer authors the exact
+changes and may supply a complete `replacement_prompt`; omission appends the
+targeted changes. Both forms retain the current failed role review, original
+imported source and preceding request proof. The original authored package,
+prompt templates, scopes and outputs remain frozen. Optional ordered
+`reference_ids` preserve the base sources and may add only current reviewed
+sources already in the immutable standing inventory, with same-run attribution
+for generated boards and no dependency cycle back to the corrected slot.
+Reservation and emission recheck this evidence, exact account/route, source
+transfer limits and the cumulative image allowance. Each correction has one
+deterministic new output and exact scope; neither resets the allowance. Missing,
+unknown or cosmetic findings do not admit this corrective path. Manual exact
+image scopes keep their existing approval contract.
+
+Factory `review_board` actions name the evidence still missing or unknown. Inspect
+only those gaps, then return a complete verdict for the requested roles carrying
+the supplied `retained_predicates` unchanged. Completing one role does not replace
+another role's current verdict or erase known failed evidence.
+
 ## Keep the canonical plan fixed
 
 The existing shot contract can validate one requested target and its dependency
