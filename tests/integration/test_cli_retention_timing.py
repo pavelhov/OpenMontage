@@ -172,7 +172,11 @@ def test_reconciliation_no_output_or_invalid_original_has_no_success_clock(produ
         result.success = False
         result.data['dispatch_status'] = 'failed'
         result.data['conditioning_receipt']['dispatch_status'] = 'failed'
-        assert execution.reconcile_attempt(p.root, aid, result, request_sha256=digest)['status'] == 'failed'
+        # Relabeling the wrapper cannot turn the retained completed native job
+        # into a failure or authorize a new attempt.
+        with pytest.raises(execution.ProductionGovernanceError):
+            execution.reconcile_attempt(p.root, aid, result, request_sha256=digest)
+        assert execution.load_attempt_result(p.root, aid)['status'] == 'uncertain'
     else:
         if outcome == 'no_output':
             Path(bound['submitted_inputs']['output_path']).unlink()
