@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import warnings
 from pathlib import Path
 
 import pytest
@@ -107,6 +108,47 @@ def make_policy(root=None, **over):
               'evidence': {'path': 'approvals/x.json', 'sha256': '0' * 64}}
     policy.update(over)
     return policy
+
+
+@pytest.mark.parametrize('resolver_kind', ['default', 'legacy'])
+@pytest.mark.parametrize('case, expected_path', [
+    ('valid', None),
+    ('invalid_authority', ('evidence', 'sha256')),
+    ('missing_authority', ()),
+    ('invalid_caps', ('caps', 'max_total_attempts')),
+])
+def test_autonomy_schema_fragment_refs_preserve_authority_validation(resolver_kind, case, expected_path):
+    from jsonschema import Draft202012Validator
+    from schemas.artifacts import load_schema
+
+    policy = make_policy(evidence={'path': f'approvals/autonomy-policy-{H("p")}.json', 'sha256': H('e')})
+    if case == 'invalid_authority':
+        policy['evidence']['sha256'] = 'invalid'
+    elif case == 'missing_authority':
+        policy.pop('evidence')
+    elif case == 'invalid_caps':
+        policy['caps']['max_total_attempts'] = 0
+
+    schema = load_schema('autonomy_policy')
+    if resolver_kind == 'legacy':
+        # Older producer environments use this resolver by default. All refs
+        # are local fragments; validating authority must never retrieve a URL.
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore', DeprecationWarning)
+            from jsonschema import RefResolver
+        resolver = RefResolver.from_schema(schema)
+        resolver.resolve_remote = lambda uri: pytest.fail(f'unexpected remote schema retrieval: {uri}')
+        validator = Draft202012Validator(schema, resolver=resolver)
+    else:
+        validator = Draft202012Validator(schema)
+
+    errors = list(validator.iter_errors(policy))
+    if expected_path is None:
+        assert errors == []
+        assert pa.schema_errors(policy) == []
+    else:
+        assert any(tuple(error.absolute_path) == expected_path for error in errors)
+        assert pa.schema_errors(policy)
 
 
 def install_existing(root, policy, *, templates, selected=None, approved=True, marker=None):

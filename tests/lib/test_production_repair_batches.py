@@ -103,6 +103,67 @@ def test_same_model_pass_unwanted_does_not_change_global_policy_or_reviews(p):
     assert len(p.transport.native_requests) == 2
 
 
+@pytest.mark.parametrize('invalid', [None, 'output_bytes', 'outgoing_bytes', 'review',
+                                   'missing_predicate', 'foreign_source', 'accepted'])
+def test_selected_creator_repair_does_not_reopen_passing_source(p, invalid):
+    from lib.shot_contract import selection_digest, UPSTREAM_PREDICATES
+    from tests.integration.test_first_pass_workflow import attestation, PIXEL
+    enable(p.root)
+    first = p.generate('entry')
+    original = p.select('entry', first)
+    cut = draft.compose_first_cut(p.root, compose=fake_cut)
+    item = batch_item(p, 'entry', original['attempt_id'])
+    batches.record_creator_repair_batch(p.root, batch_id='passing-source', cut=cut_binding(cut),
+        items=[item], evidence=approval(p.root, 'creator-intent'))
+    exact_scope(p, item, 'creator-scope')
+    batches.prepare_repair_item(p.root, 'passing-source', 'item', scope_id='creator-scope')
+    receipt = batches.resume_repair_batch(p.root, 'passing-source', tools={'grok_cli': p.selector})
+    assert receipt['errors'] == [] and receipt['items'][0]['state'] == 'completed', receipt
+    aid = receipt['items'][0]['attempt_id']
+    output = execution.load_attempt_result(p.root, aid)['output']
+    frame = p.root / 'assets/images/creator-replacement-outgoing.png'
+    frame.write_bytes(PIXEL + aid.encode())
+    replacement = {'attempt_id': aid, 'output': output,
+                   'outgoing_frame': {'path': str(frame), 'sha256': file_sha256(frame)}}
+    replacement['review'] = attestation(selection_digest(replacement), UPSTREAM_PREDICATES)
+    execution.record_selection(p.root, 'entry', replacement)
+    source = next(a for a in execution._attempts(p.root) if a['attempt_id'] == original['attempt_id'])
+    state = execution.load_attempt_result(p.root, source['attempt_id'])
+    source_directory = p.root / 'production_attempts' / source['attempt_id']
+    originals = {path: path.read_bytes() for path in source_directory.rglob('*') if path.is_file()}
+    originals[p.root / state['output']['path']] = (p.root / state['output']['path']).read_bytes()
+    original_frame = p.root / original['outgoing_frame']['path']
+    originals[original_frame] = original_frame.read_bytes()
+    selected = execution.load_selected_attempts(p.root)
+    if invalid in {'output_bytes', 'outgoing_bytes'}:
+        role = 'output' if invalid == 'output_bytes' else 'outgoing_frame'
+        (p.root / selected['entry'][role]['path']).write_bytes(b'SYNTHETIC CHANGED BYTES')
+    elif invalid in {'review', 'missing_predicate'}:
+        if invalid == 'review':
+            selected['entry']['review']['subject_sha256'] = '0' * 64
+        else:
+            selected['entry']['review']['predicates'].pop()
+        (p.root / 'artifacts/selected_attempts.json').write_text(json.dumps(selected))
+    elif invalid == 'foreign_source':
+        source = {**source, 'attempt_id': 'unrelated-original'}
+    elif invalid == 'accepted':
+        cut = draft.compose_first_cut(p.root, compose=fake_cut)
+        evidence = approval(p.root, 'accept-original')
+        draft.record_first_cut_acceptance(p.root, cut_binding(cut), accepted_by=evidence['approved_by'],
+            evidence={k: v for k, v in evidence.items() if k != 'approved_by'})
+    candidates = {row['shot_id']: row for row in draft.first_cut_candidates(p.root)
+                  if row['status'] == 'candidate'}
+    assert execution._rejected_and_superseded(p.root, source, state, selected, candidates) is (invalid is None)
+    if invalid is None:
+        assert execution.next_production_action(p.root)['kind'] != 'review_selection'
+    elif invalid not in {'foreign_source', 'accepted'}:
+        action = execution.next_production_action(p.root)
+        assert action['kind'] == 'review_selection' and action['subject'] == original['attempt_id']
+    assert all(path.read_bytes() == raw for path, raw in originals.items())
+    assert controls.generation_usage(p.root)['total'] == 2
+    assert len(p.transport.native_requests) == 2
+
+
 @pytest.mark.parametrize('mapping', ['exact', 'legacy'])
 def test_native_tool_mapping_keeps_exact_and_legacy_callers_compatible(p, mapping):
     enable(p.root)

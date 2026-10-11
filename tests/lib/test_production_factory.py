@@ -4117,3 +4117,55 @@ def test_frame_conditioned_grok_to_mini_repair_retains_public_layout_and_origina
     assert pa.root_attempt_counts(root, policy)['total'] == 2
     assert pa.root_attempt_counts(root, policy)['repair'] == 1
     assert len(calls) == 1 and jobs.attempt_state(root, 'SYNTHETIC-mini-repair')['status'] == 'uncertain'
+
+    # A consumed handoff is recovered through the original receipt, never begin.
+    repair_id = 'SYNTHETIC-mini-repair'
+    frozen = jobs.frozen_request(root, repair_id)
+    assert jobs.resume_original(root, repair_id)['next_action']['action'] == 'blocked_original_host_reply_unavailable'
+    with pytest.raises(ValueError):
+        jobs.begin(root, repair_id, authority_fn=execution.prepare_openart_mcp_handoff)
+    jobs.receive(root, repair_id, outcome={'historyId': 'SYNTHETIC-mini-history', 'status': 'PENDING'})
+    poll = jobs.poll_args(root, repair_id)
+    assert poll['arguments'] == {'historyId': 'SYNTHETIC-mini-history'}
+    jobs.record_status(root, repair_id, result={'historyId': 'SYNTHETIC-mini-history', 'status': 'RUNNING'})
+    assert jobs.resume_original(root, repair_id)['next_action']['action'] == 'poll_original'
+    assert jobs.frozen_request(root, repair_id) == {**frozen, 'status': 'submitted'}
+    assert pa.root_attempt_counts(root, policy)['total'] == 2
+    jobs.record_status(root, repair_id, result={'historyId': 'SYNTHETIC-mini-history', 'status': 'COMPLETED',
+        'resources': [{'id': 'SYNTHETIC-mini-video', 'mediaType': 'video', 'status': 'COMPLETED',
+                       'url': 'https://fixture.invalid/mini-original.mp4'}]})
+    from tests.integration.test_openart_mcp_governance import install_fake_download
+    replacement = lavfi(root / 'SYNTHETIC-mini-transport.mp4', 'green', 660, seconds=5)
+    install_fake_download(monkeypatch, jobs, replacement)
+    download = jobs.download_original(root, repair_id)
+    jobs.collect(root, repair_id, downloaded_path=download['downloaded_path'])
+    repair_output = execution.load_attempt_result(root, repair_id)['output']
+    assert repair_output['sha256'] != output['sha256']
+    # Synthetic provenance is rejected by production; only its existing test seam admits it.
+    with pytest.raises(execution.ProductionGovernanceError, match='fixture-only connector evidence'):
+        provenance.validate_attempt_provenance(root, repair_id, shot_id='s1',
+            story_revision=policy['story_revision'], expected_output=repair_output)
+    monkeypatch.setattr(provenance, '_ALLOW_OPENART_FIXTURE_PROVENANCE', True)
+    from lib.shot_contract import UPSTREAM_PREDICATES, file_sha256, selection_digest
+    frame = root / 'assets/images/SYNTHETIC-mini-outgoing.png'
+    import subprocess
+    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-sseof', '-0.2', '-i', repair_output['path'],
+                    '-frames:v', '1', str(frame)], check=True, capture_output=True)
+    selection = {'attempt_id': repair_id, 'output': repair_output,
+        'outgoing_frame': {'path': str(frame), 'sha256': file_sha256(frame)}}
+    selection['review'] = attestation(selection_digest(selection), UPSTREAM_PREDICATES,
+        revision=policy['story_revision'])
+    selection['review']['reviewer'] = 'SYNTHETIC offline repair reviewer'
+    execution.record_selection(root, 's1', selection)
+    assert execution.load_selected_attempts(root)['s1']['attempt_id'] == repair_id
+    assert jobs.attempt_state(root, repair_id)['status'] == 'collected'
+    stable = file_bytes(root)
+    jobs.collect(root, repair_id, downloaded_path=download['downloaded_path'])
+    jobs.resume_original(root, repair_id)
+    assert file_bytes(root) == stable
+    assert file_bytes(root / 'production_attempts' / aid) == retained_original
+    assert Path(output['path']).read_bytes() == output_bytes
+    assert Path(candidate['image_path']).read_bytes() == board_bytes
+    assert pa.root_attempt_counts(root, policy)['total'] == 2
+    assert pa.root_attempt_counts(root, policy)['repair'] == 1
+    assert len(calls) == 1 and len(jobs.list_attempts(root)) == 1

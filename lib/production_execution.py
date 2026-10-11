@@ -1865,11 +1865,12 @@ def _retained_grok_launch(directory, request, expected, native_tool, cwd):
     return launch
 
 
-def _grok_prompt_boundary_original(root, request):
+def _grok_prompt_boundary_original(root, request, *, allow_pending=False):
     """Qualify an uncertain original or historical prompt rejection from native logs."""
     from urllib.parse import quote
     from tools._grok_cli_media import (retained_grok_session_stream, _parse_stream,
-        _trusted_session_artifact, _sealed_arguments_match, _probe_artifact, _validate_media_contract)
+        _trusted_session_artifact, _sealed_arguments_match, _probe_artifact, _validate_media_contract,
+        GrokCLIContractError)
     directory = root / 'production_attempts' / request['attempt_id']
     state = _state(root, request)
     previous = state.get('result') or {}
@@ -1918,13 +1919,47 @@ def _grok_prompt_boundary_original(root, request):
     updates_sha256 = file_sha256(log)
     stream = (retained_grok_session_stream(session_directory, request['cli_session_id'])
               if log.name == 'updates.jsonl' else log.read_text())
-    calls = [json.loads(line) for line in stream.splitlines() if json.loads(line).get('type') == 'tool_call']
+    events = [json.loads(line) for line in stream.splitlines() if line.strip()]
+    if any(not isinstance(event, dict) or not isinstance(event.get('type'), str) for event in events):
+        _fail('original recovery native stream is invalid')
+    calls = [event for event in events if event.get('type') == 'tool_call']
     if len(calls) != 1:
         _fail('original prompt recovery requires exactly one native call')
     observed = calls[0].get('rawInput')
     if (not isinstance(observed, dict) or (boundary and observed.get('prompt') == expected.get('prompt'))
             or not _sealed_arguments_match(observed, expected)):
         _fail('original protocol change is not prompt-only ASCII boundary whitespace')
+    # A concurrent original can have only its exact call and progress updates.
+    # Collection must leave that attempt unchanged until its final stream exists;
+    # End-bearing and failed records still use the strict final parser below.
+    updates = [event for event in events if event.get('type') == 'tool_call_update']
+    if (allow_pending and uncertain and not any(event.get('type') == 'end' for event in events)
+            and not any(str(event.get('status', '')).lower() == 'failed' for event in updates)):
+        call_id = calls[0].get('toolCallId')
+        if ((calls[0].get('toolName') or calls[0].get('title')) != native_tool
+                or not isinstance(call_id, str) or not call_id
+                or any(event.get('toolCallId') != call_id
+                       or event.get('status') not in {None, 'pending', 'in_progress', 'completed'}
+                       or (event.get('status') != 'completed' and event.get('rawOutput') not in (None, {}))
+                       for event in updates)
+                or any(event.get('type') not in {'tool_call', 'tool_call_update'} for event in events)):
+            _fail('original pending stream differs from the exact native call')
+        if any(event.get('status') == 'completed' for event in updates):
+            # The native writer appends completion before turn_completed. Only
+            # the strict parser's exact missing-end outcome qualifies; duplicate
+            # completions, failed output and malformed rawOutput remain errors.
+            try:
+                _parse_stream(stream, tool_name=native_tool, expected_arguments=expected)
+            except GrokCLIContractError as exc:
+                if exc.category != 'protocol' or str(exc) != 'expected one terminal end event, observed 0':
+                    raise
+            else:
+                _fail('pending original stream unexpectedly has terminal completion')
+        for asset in request['input_assets']:
+            if file_sha256(_inside(asset['path'], root)) != asset['sha256']:
+                _fail('original recovery input bytes changed')
+        return {'status': 'pending', 'attempt_id': request['attempt_id'],
+                'request_sha256': request['request_sha256'], 'provider_calls': 0, 'reservations': 0}, None, receipt, expected
     path, _, session_id = _parse_stream(stream, tool_name=native_tool, expected_arguments=expected)
     if session_id != request['cli_session_id']:
         _fail('original completion session differs')
@@ -1965,7 +2000,9 @@ def collect_original_grok_prompt_boundary(project_dir, attempt_id, *, request_sh
         request = _read(directory / 'request.json')
         if request_sha256 != request['request_sha256']:
             _fail('original collection request digest differs')
-        proof, source, original_receipt, arguments = _grok_prompt_boundary_original(root, request)
+        proof, source, original_receipt, arguments = _grok_prompt_boundary_original(root, request, allow_pending=True)
+        if proof.get('status') == 'pending':
+            return proof
         if dry_run:
             return {'attempt_id':attempt_id, 'request_sha256':request_sha256,
                     'provider_calls':0, 'reservations':0, 'would_collect_original':True,
@@ -2823,11 +2860,9 @@ def _bind_selected_upstream(root, action):
 
 
 def _rejected_and_superseded(root, request, observed, selected, current_candidates):
-    """A generated attempt with a retained output-bound failed review whose shot
-    is now selected on another attempt needs no further selection review. Its
-    evidence and count stay retained; unselected rejected drafts are unchanged.
-    The selected replacement must still be the shot's current playable candidate
-    (current bytes/selection), so a stale verdict never hides required work."""
+    """Retained failures and exact creator-selected sources need no repeat review
+    while a current selected replacement owns their shot. Original jobs, evidence
+    and counts stay retained; stale replacements never hide required work."""
     from lib.production_draft import _current_findings
     sid = request['shot_id']
     current = selected.get(sid)
@@ -2839,7 +2874,44 @@ def _rejected_and_superseded(root, request, observed, selected, current_candidat
         return False
     _, findings = _current_findings(root, sid, request['attempt_id'], output['sha256'],
                                     request.get('story_revision'), selected)
-    return bool(findings)
+    if findings:
+        return True
+    if not row.get('strict_selected'):
+        return False
+    from lib import production_repair_batches as repairs
+    from lib.shot_contract import UPSTREAM_PREDICATES, required_review_predicates, audio_review_disabled
+    try:
+        for role in ('output', 'outgoing_frame'):
+            binding = current[role]
+            if file_sha256(_inside(binding['path'], root)) != binding['sha256']:
+                return False
+        review, _ = _current_findings(root, sid, current['attempt_id'], current['output']['sha256'],
+                                    request['story_revision'], selected)
+        if review is None or review['status'] != 'pass':
+            return False
+        predicates = {p['name']: p for p in review['predicates']}
+        required = required_review_predicates(root, UPSTREAM_PREDICATES)
+        if (not required.issubset(predicates)
+                or any(p.get('severity') == 'cosmetic' for name, p in predicates.items() if name in required)
+                or any(p['status'] != 'pass' for name, p in predicates.items()
+                       if not (name == 'speaker_source' and audio_review_disabled(root))
+                       and (name in required or p.get('severity', 'critical') == 'critical'))):
+            return False
+        replacement = next(a for a in _attempts(root) if a['attempt_id'] == current['attempt_id'])
+        scope = replacement.get('scope', replacement.get('scope_snapshot', {}))
+        creator = scope.get('creator_repair')
+        item = repairs.validate_creator_repair_intent(root, creator, shot_id=sid,
+            provider=scope.get('provider'), model=replacement['submitted_inputs'].get('model'),
+            replaces_attempt_ids=[request['attempt_id']])
+        if item['source_output']['sha256'] != output['sha256']:
+            return False
+        status = repairs.repair_batch_status(root, creator['batch_id'])
+        return not status['closed'] and any(
+            i['item_id'] == creator['item_id'] and i['scope_id'] == replacement['scope_id']
+            and i['attempt_id'] == current['attempt_id'] and i['state'] == 'completed'
+            and i['source_attempt_id'] == request['attempt_id'] for i in status['items'])
+    except (ValueError, OSError, KeyError, TypeError, StopIteration):
+        return False
 
 
 def _board_review_work(pack, asset_id, roles, *, boards, motion_roles=()):
