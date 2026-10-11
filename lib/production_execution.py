@@ -2896,6 +2896,10 @@ def next_production_action(project_dir):
         return _production_action(root, kind, subject=subject, binding=binding, **kwargs)
     pack = boards.load_board_pack(root) if (root / boards.ARTIFACT).exists() else None
     board_action = None
+    board_actions = {}
+    payoff_progress_action = None
+    deferred_payoff_action = None
+    pending_image_action = None
     motion_action = None
     pending_motion_shots = set()
     derived_names = ['script', 'scene_plan', 'asset_manifest']
@@ -2931,10 +2935,12 @@ def next_production_action(project_dir):
                     # the lane stay retained/counted; only bindable imports promote.
                     and boards.imported_board_eligibility(root, pack, call['slot_id'], call['call_id'],
                                                           images=images) in {'current', 'restore'}):
-                board_action = action('promote_imported_board', call['call_id'],
+                original_action = action('promote_imported_board', call['call_id'],
                     {'call_id': call['call_id'], 'slot_id': call['slot_id'], 'request_sha256': call['request_sha256'],
                      'output': call['output'], 'host_receipt': call.get('host_receipt')})
-                break
+                board_actions.setdefault(call['slot_id'], original_action)
+                board_action = board_action or original_action
+                continue
             if call['state'] not in images.PENDING:
                 continue
             binding = {'call_id': call['call_id'], 'request_sha256': call['request_sha256'],
@@ -2948,13 +2954,19 @@ def next_production_action(project_dir):
                     # actual bytes can never be emitted; keep it retained/counted.
                     if linked.get('state') != 'uncertain' or linked.get('output'):
                         continue
-                board_action = action('begin_native_image', call['call_id'], binding)
-                break
-            board_action = action('receive_native_image', call['call_id'], binding, host=True,
+                original_action = action('begin_native_image', call['call_id'], binding)
+                if pack:
+                    board_actions.setdefault(call['slot_id'], original_action)
+                board_action = board_action or original_action
+                continue
+            original_action = action('receive_native_image', call['call_id'], binding, host=True,
                 inputs={'call_id': call['call_id'], 'original_request_sha256': call['request_sha256'],
                         'supplemental_to': (call.get('host_receipt') or {}).get('sha256')},
                 reason='Retrieve and retain the exact original host return; the begun call is never emitted again.')
-            break
+            if pack:
+                board_actions.setdefault(call['slot_id'], original_action)
+            board_action = board_action or original_action
+            pending_image_action = pending_image_action or original_action
     if pack:
         schedule = boards.board_schedule(root, images=images)
         correction_action = None
@@ -2977,13 +2989,15 @@ def next_production_action(project_dir):
                     motion_roles=motion_roles.get(aid, ()))
                 retained_predicates = ([p for p in preceding['review']['predicates'] if p['status'] != 'unknown']
                                        if preceding else [])
-                board_action = board_action or action('review_board', aid,
+                review_action = action('review_board', aid,
                     {'source': binding, 'roles': review_roles, 'observations': work['observations']}, host=True,
                     inputs={'asset_id': aid, 'roles': review_roles, 'source': binding,
                             'required_predicates': review_work['missing_predicates'],
                             'review_status_required': review_work['review_status_required'],
                             'retained_predicates': retained_predicates},
                     reason='Inspect only the named missing/unknown evidence; return a complete successor verdict carrying retained_predicates unchanged.')
+                board_actions.setdefault(aid, review_action)
+                board_action = board_action or review_action
             elif work['failed_predicates'] and aid in pack['prompt_pack']:
                 correction_action = correction_action or action('prepare_board_correction', aid,
                     {'source': binding, 'roles': roles, 'observations': work['observations'],
@@ -3006,11 +3020,30 @@ def next_production_action(project_dir):
             return any(failed_source(source, seen) for source in
                        node.get('reference_ids', []) + node.get('image_dependencies', []))
         ready_images = [slot for slot in schedule['ready_images'] if not failed_source(slot)]
+        for slot in ready_images:
+            board_actions.setdefault(slot, action('prepare_board_image', slot,
+                {'specification_sha256': pack['specification_sha256'],
+                 'source_bindings': copy.deepcopy(pack['board_bindings'])}, inputs={'slot_id': slot}))
         if ready_images and board_action is None:
-            slot = ready_images[0]
-            board_action = action('prepare_board_image', slot, {'specification_sha256': pack['specification_sha256'],
-                'source_bindings': copy.deepcopy(pack['board_bindings'])}, inputs={'slot_id': slot})
+            board_action = board_actions[ready_images[0]]
         board_action = board_action or correction_action or completed_blocker
+        # A project review needs its declared payoff evidence, not every board.
+        # Resolve only an existing progress action in that image/source closure.
+        payoff_id = contract.get('payoff_asset_id') if contract else None
+        if payoff_id and (not boards._binding_current(root, pack, payoff_id)
+                or boards._review_blockers(pack, payoff_id, 'payoff_board')):
+            seen = set()
+            def payoff_dependency(slot):
+                if slot in seen:
+                    return None
+                seen.add(slot)
+                node = pack['prompt_pack'].get(slot, {})
+                for source in node.get('reference_ids', []) + node.get('image_dependencies', []):
+                    progress = payoff_dependency(source)
+                    if progress is not None:
+                        return progress
+                return board_actions.get(slot)
+            payoff_progress_action = payoff_dependency(payoff_id)
     selected = load_selected_attempts(root)
     candidates = []
     if contract_path.exists():
@@ -3098,6 +3131,16 @@ def next_production_action(project_dir):
             blocked_shots.setdefault(sid, []).extend(errors)
         review_only = errors and all('project_review' in e or f'shots.{sid}.review' in e for e in errors)
         if review_only:
+            project_review = contract.get('project_review') or {}
+            project_failed = (project_review.get('status') == 'fail' or any(
+                p.get('status') == 'fail'
+                for p in project_review.get('predicates', [])))
+            if (payoff_progress_action is not None and not project_failed
+                    and any(e.startswith('project_review') for e in errors)):
+                deferred_payoff_action = payoff_progress_action
+                # Continue scanning for independently eligible motion. At the end,
+                # collect existing originals before advancing this exact dependency.
+                continue
             return action('review_planning', sid, {'project_subject': project_review_subject(contract),
                 'shot_subject': shot_review_subject(contract, sid)}, host=True,
                 inputs={'shot_id': sid, 'project_subject': project_review_subject(contract),
@@ -3107,6 +3150,10 @@ def next_production_action(project_dir):
                 inputs={'shot_id': sid}, reason='Producer prepares exact registered-route request and actual named preparation review; engine admits and dispatches it.')
     if motion_action is not None:
         return motion_action
+    if deferred_payoff_action is not None:
+        if pending_image_action is not None:
+            return pending_image_action
+        return deferred_payoff_action
     if board_action is not None:
         return board_action
     if reviewed_candidates:
@@ -3249,15 +3296,26 @@ def complete_action(project_dir, action, *, outcome):
         call_id = 'board-' + prepared['request_sha256'][:24]
         boards.reserve_board_image(root, aid, scope_id=scope, call_id=call_id, correction=correction, images=images)
     elif kind == 'review_planning':
-        if set(outcome) != {'project_review', 'shot_review'}:
-            _fail('planning review requires actual project and target verdicts')
+        if set(outcome) not in ({'project_review', 'shot_review'}, {'shot_review'}):
+            _fail('planning review requires an actual target verdict and a current project verdict')
         from lib.shot_contract import project_review_subject, shot_review_subject
         with _lock(root):
             contract = load_shot_contract(root)
-            if (outcome['project_review'].get('subject_sha256') != project_review_subject(contract)
+            project_review = outcome.get('project_review', contract.get('project_review'))
+            if (not isinstance(project_review, dict)
+                    or project_review.get('subject_sha256') != project_review_subject(contract)
                     or outcome['shot_review'].get('subject_sha256') != shot_review_subject(contract, aid)):
                 _fail('actual review does not bind current planning')
-            candidate = copy.deepcopy(contract); candidate['project_review'] = outcome['project_review']
+            if 'project_review' not in outcome:
+                checked = validate_shot_contract(contract, project_dir=root, shot_id=aid,
+                    story_revision=_read(root / 'project.json')['story_revision'],
+                    selected_upstream=load_selected_attempts(root))
+                if (project_review.get('status') != 'pass' or any(
+                        e.startswith('project_review') for e in checked['errors'])):
+                    _fail('omitted project verdict requires the exact current passing project review')
+            candidate = copy.deepcopy(contract)
+            if 'project_review' in outcome:
+                candidate['project_review'] = outcome['project_review']
             next(s for s in candidate['shots'] if s['id'] == aid)['review'] = outcome['shot_review']
             from jsonschema import Draft202012Validator
             from schemas.artifacts import load_schema

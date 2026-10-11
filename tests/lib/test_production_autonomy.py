@@ -61,6 +61,28 @@ def test_unknown_cost_template_cannot_activate_policy(tmp_path):
         pa.baseline_descriptor(retained, tmp_path)
 
 
+def test_optional_export_profile_preserves_native_descriptor_and_binds_evidence(tmp_path):
+    fixture_planning(tmp_path)
+    baselines = retained_fixture(tmp_path)
+    original = copy.deepcopy(baselines)
+    descriptor = pa.baseline_descriptor(baselines['entry'], tmp_path)
+    policy = make_policy(tmp_path)
+    original_sha = pa.policy_sha256(policy, original)
+    baselines['entry']['export_profile'] = 'tiktok_720p'
+    assert pa.baseline_descriptor(baselines['entry'], tmp_path) == descriptor
+    assert baselines['entry']['planned_request_template'] == original['entry']['planned_request_template']
+    assert pa.policy_sha256(policy, baselines) != original_sha
+
+
+@pytest.mark.parametrize('profile', [None, '', 1, True, {}, 'unknown-profile'])
+def test_optional_export_profile_rejects_invalid_names(tmp_path, profile):
+    fixture_planning(tmp_path)
+    baseline = retained_fixture(tmp_path)['entry']
+    baseline['export_profile'] = profile
+    with pytest.raises(pa.AutonomyError, match='export profile'):
+        pa.baseline_descriptor(baseline, tmp_path)
+
+
 def make_policy(root=None, **over):
     # Descriptors are finalized from real retained planning by install(); root allows direct use.
     if root is not None:

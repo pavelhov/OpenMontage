@@ -145,7 +145,11 @@ def _materialized_manifest_requirements(root, shot_id, baseline, materialized):
         return copy.deepcopy(baseline), {row['id']: row for row in baseline['assets']}
     # Authority comes from the hash-bound retained package bytes; the live pack
     # specification is only co-located and may not widen handoff scope.
-    spec = json.loads(images._bound_file(root, pack['package_binding'], 'production package').read_text())['boards']
+    package = json.loads(images._bound_file(root, pack['package_binding'], 'production package').read_text())
+    if 'authoring_form' in package or 'compact' in package:
+        from lib.production_request import _expand_compact_package
+        package = _expand_compact_package(package)
+    spec = package['boards']
     contract = load_shot_contract(root)
     roles = {a['id']: a['role'] for a in contract['assets']}
     references = {r['id']: r for r in spec['references']}
@@ -223,6 +227,9 @@ def _validate_standing_basis_impl(root, policy, baselines, *, check_first_pass_c
         raise StandingSetupRequired('standing runs require prospective local planning')
     if basis.get('plan_sha256') != digest(baselines):
         raise StandingSetupRequired('internally retained exact plan differs from run binding')
+    profiles = [baseline.get('export_profile') for baseline in baselines.values()]
+    if any(profile is not None for profile in profiles) and len(set(profiles)) != 1:
+        raise StandingSetupRequired('retained export profiles disagree or are incomplete')
     if any(provider not in setup['providers'] for provider in policy['providers']):
         raise StandingSetupRequired('provider/account/billing terms exceed standing setup')
     accounts = setup['provider_accounts']
@@ -1255,9 +1262,17 @@ def dialogue_occurrences(projection):
 
 
 def baseline_descriptor(retained, root=None):
-    if set(retained) != {'projection', 'planned_request_template', 'script_snapshot',
+    if set(retained) - {'export_profile'} != {'projection', 'planned_request_template', 'script_snapshot',
                          'dialogue_coverage', 'approval_plan_sha256'}:
         raise AutonomyError('incomplete retained baseline')
+    if 'export_profile' in retained:
+        from lib.media_profiles import get_profile
+        if not isinstance(retained['export_profile'], str) or not retained['export_profile']:
+            raise AutonomyError('retained export profile must be an explicit profile name')
+        try:
+            get_profile(retained['export_profile'])
+        except ValueError as exc:
+            raise AutonomyError('invalid retained export profile: ' + str(exc)) from exc
     projection = retained['projection']
     if retained['dialogue_coverage'] != dialogue_occurrences(projection):
         raise AutonomyError('ordered dialogue retention differs')
@@ -1809,7 +1824,10 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
     # Full root canonical compilation preserves ordered duplicate speech/speaker/source,
     # including all implicit lines absent from explicit locked.dialogue maps.
     provider = native.get('provider', 'openart_cli')
-    canonical = preparation.compile_provider_prompt(root, shot_id, provider=provider, **({'model': native['model']} if provider == 'openart_mcp' else {}))
+    if historical is not None or policy_context is not None:
+        canonical = preparation._compile_historical_provider_prompt(root, shot_id, provider=provider, native=native)
+    else:
+        canonical = preparation.compile_provider_prompt(root, shot_id, provider=provider, **({'model': native['model']} if provider == 'openart_mcp' else {}))
     body = preparation._body(native)
     prompt = body['params'].get('sceneDescription' if provider == 'openart_mcp' and native.get('prompt_param_path') == '/params/sceneDescription' else 'prompt')
     if prompt != canonical['prompt'] or compiled['coverage'] != canonical['coverage']:
