@@ -56,6 +56,13 @@ _UNSUPPORTED_FRAME_ALIASES = frozenset({
     "seamless_loop",
 })
 _URL_FINAL_FRAME_KEYS = frozenset({"last_image_url"})
+# Route/planning fields carried by governed requests and selector plans. They
+# select the route and remain in governed provenance/digests; the native
+# request projection drops exactly these, never unknown controls.
+ROUTE_PLANNING_KEYS = (
+    "preferred_tool", "hosting_provider", "preferred_provider", "preferred_provider_gap",
+    "allowed_providers", "task_context", "target_operation",
+)
 
 
 def validate_execution_settings(inputs: dict[str, Any]) -> int:
@@ -84,6 +91,7 @@ def build_native_video_request(
     controls are accepted for caller compatibility but remain execute concerns.
     """
     try:
+        inputs = {key: value for key, value in inputs.items() if key not in ROUTE_PLANNING_KEYS}
         unsupported = _UNSUPPORTED_FRAME_ALIASES.intersection(inputs)
         if unsupported:
             raise GrokCLIContractError(

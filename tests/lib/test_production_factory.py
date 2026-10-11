@@ -695,7 +695,8 @@ def test_standing_mcp_zero_source_prepare_then_begin_at_final_media_slot(lifecyc
     with pytest.raises(ValueError): validate()
 
 
-def test_grok_final_inline_batch_scope_revalidates_after_original_reservation(tmp_path):
+def grok_final_fixture(tmp_path, **extra):
+    """Real activated Grok policy with reviewed compiled request; no provider calls."""
     kwargs = standing_fixture(tmp_path)
     contract = execution.load_shot_contract(tmp_path); shot = contract['shots'][0]
     inputs = {'project_dir': str(tmp_path), 'governance': {'shot_id': 'entry'},
@@ -705,6 +706,7 @@ def test_grok_final_inline_batch_scope_revalidates_after_original_reservation(tm
     consumer = required_asset_ids(contract, shot)
     inputs['reference_image_paths'] = [str(tmp_path / a['path']) for a in contract['assets']
         if a['id'] in consumer and a['id'] != 'start']
+    inputs.update(extra)
     kwargs['baselines']['entry']['planned_request_template'] = execution.planned_request_template(inputs, project_dir=tmp_path)
     setup = json.loads((tmp_path / kwargs['standing_setup']['path']).read_text()); setup.pop('authorization')
     next(t for t in setup['source_transfer'] if t['provider'] == 'grok_cli')['max_batches'] = 1
@@ -731,6 +733,11 @@ def test_grok_final_inline_batch_scope_revalidates_after_original_reservation(tm
         'reviewer': 'SYNTHETIC offline reviewer', 'status': 'pass', 'subject_sha256': request.digest(compiled),
         'evidence_kind': 'reviewed', 'predicates': [{'name': p, 'status': 'pass', 'severity': 'critical',
             'evidence': 'SYNTHETIC software fixture only'} for p in sorted(request.PREDICATES)]})
+    return contract, inputs, observation
+
+
+def test_grok_final_inline_batch_scope_revalidates_after_original_reservation(tmp_path):
+    contract, inputs, observation = grok_final_fixture(tmp_path)
     scope = pa.derive_scope(tmp_path, inputs, provider='grok_cli', observation=observation)
     inputs['governance']['scope_id'] = scope['id']
     write(tmp_path, 'production_attempts/final-reservation/request.json', {'attempt_id': 'final-reservation',
@@ -913,3 +920,52 @@ def test_standing_board_materialization_derives_exact_authored_handoff_only(neut
     pa.require_active_policy(root, shot_id='s1')
     projection = pa.current_projection(root, 's1')
     assert pa.contract_delta(root, 's1', projection) == (None, [])
+
+
+def test_prepare_motion_actual_grok_dry_run_observes_fresh_outside_lock_and_resumes_scope(tmp_path, monkeypatch):
+    """Actual derive, canonical dry run, preflight and registered execute; only CLI boundaries are fake."""
+    import fcntl
+    from tools import _grok_cli_media as media
+    from tools.base_tool import ToolResult
+    from tools.video import grok_cli_video
+    planning = {'preferred_tool': 'grok_cli_video', 'hosting_provider': 'grok_cli', 'preferred_provider': 'grok_cli',
+        'preferred_provider_gap': 0.1, 'allowed_providers': ['grok_cli'], 'task_context': 'synthetic offline plan',
+        'target_operation': 'reference_to_video'}
+    contract, inputs, observation = grok_final_fixture(tmp_path, allow_unknown_cost=True, **planning)
+    lock = tmp_path / '.production-execution.lock'
+    observed, submitted = [], []
+    def observe(path, *, cwd):
+        if lock.exists():
+            with lock.open('a+b') as probe:  # raises if production lock is held during observation
+                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB); fcntl.flock(probe.fileno(), fcntl.LOCK_UN)
+        observed.append(str(cwd)); return dict(observation)
+    def transport(**kw):
+        submitted.append(copy.deepcopy(kw))
+        return ToolResult(success=True, data={'cli_version': observation['cli_version'],
+            'session_id': kw['session_id'], 'dispatch_status': 'synthetic_offline'})
+    monkeypatch.setattr(media, 'observe_grok_cli_compatibility', observe)
+    monkeypatch.setattr(grok_cli_video, 'execute_grok_cli_media', transport)
+    monkeypatch.setenv('GROK_CLI_PATH', observation['grok_path'])
+    action = execution._production_action(tmp_path, 'prepare_motion', subject='entry', binding={}, host=True)
+    monkeypatch.setattr(execution, 'next_production_action', lambda _: action)
+    real = execution._execute_governed
+    def crash(*a): raise RuntimeError('synthetic crash after canonical dry run before reservation')
+    monkeypatch.setattr(execution, '_execute_governed', crash)
+    outcome = {'provider': 'grok_cli', 'inputs': copy.deepcopy(inputs), 'observation': dict(observation)}
+    with pytest.raises(RuntimeError, match='before reservation'):
+        execution.complete_action(tmp_path, action, outcome=copy.deepcopy(outcome))
+    scopes = json.loads((tmp_path / 'production_scopes.json').read_text())['scopes']
+    assert len(scopes) == 1 and submitted == [] and not execution._attempts(tmp_path)
+    assert len(observed) == 2  # dry run and execute each observe afresh
+    monkeypatch.setattr(execution, '_execute_governed', real)
+    result = execution.complete_action(tmp_path, action, outcome=copy.deepcopy(outcome))
+    assert json.loads((tmp_path / 'production_scopes.json').read_text())['scopes'] == scopes
+    assert result['status'] == 'dispatched' and result['dry_run']['governed'] and result['dry_run']['provider_calls'] == 0
+    assert result['result']['success'] is True, result['result']
+    assert len(submitted) == 1 and len(execution._attempts(tmp_path)) == 1 and len(observed) == 4
+    # Native transport receives only CLI controls; the durable record keeps the
+    # full governed request (planning fields included) bound to its digest.
+    assert not set(planning) & set(submitted[0]['arguments'])
+    attempt = execution._attempts(tmp_path)[0]
+    assert {k: attempt['submitted_inputs'][k] for k in planning} == planning
+    assert attempt['request_sha256'] == scopes[0]['requests']['entry']

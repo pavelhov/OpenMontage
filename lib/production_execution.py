@@ -1041,9 +1041,9 @@ def preflight(tool, inputs, *, _local_continuation=None):
     if provider == 'grok_cli' and kind == 'motion':
         from tools.video.grok_cli_video import build_native_video_request
         native_inputs = _paths(_clean(inputs), root, lambda key, path: str(path))
-        if tool.provider == 'selector':
-            for key in ('preferred_provider', 'preferred_provider_gap', 'allowed_providers', 'task_context', 'target_operation'):
-                native_inputs.pop(key, None)
+        # The native builder projects out ROUTE_PLANNING_KEYS itself (shared by
+        # direct execute, recovery and reconciliation); the governed digest and
+        # submitted_inputs keep the full request.
         build_native_video_request(native_inputs, adapter_version=getattr(tool, 'version', None))
     return {'openart':openart, 'governed': True, 'root': root, 'marker': marker, 'scope': scope,
             'shot_id': shot_id, 'kind': kind, 'contract': contract, 'request_sha256': digest,
@@ -1492,10 +1492,8 @@ def _execute_local_grok_continuation(tool, inputs, invoke):
         _ACTIVE.reset(token)
 
 
-def execute_governed(tool, inputs, invoke):
-    """Fresh Grok observation occurs outside project/ledger locks for policy dispatch."""
-    if isinstance(inputs, dict) and isinstance(inputs.get("governance"), dict) and "continue_local_attempt_id" in inputs["governance"]:
-        return _execute_local_grok_continuation(tool, inputs, invoke)
+def _fresh_policy_grok_observation(tool, inputs):
+    """Observe Grok CLI compatibility outside locks for a derived Grok policy scope."""
     observation = None
     if (not _ACTIVE.get() and isinstance(inputs, dict) and _kind(tool, inputs) == 'motion'
             and (tool.provider == 'grok_cli' or
@@ -1515,6 +1513,14 @@ def execute_governed(tool, inputs, invoke):
                 import os
                 configured = getattr(tool, '_grok_path', None) or os.environ.get('GROK_CLI_PATH', DEFAULT_GROK_PATH)
                 observation = observe_grok_cli_compatibility(configured, cwd=inputs.get('cwd') or root)
+    return observation
+
+
+def execute_governed(tool, inputs, invoke):
+    """Fresh Grok observation occurs outside project/ledger locks for policy dispatch."""
+    if isinstance(inputs, dict) and isinstance(inputs.get("governance"), dict) and "continue_local_attempt_id" in inputs["governance"]:
+        return _execute_local_grok_continuation(tool, inputs, invoke)
+    observation = _fresh_policy_grok_observation(tool, inputs)
     token = _GROK_COMPATIBILITY.set(observation or _GROK_COMPATIBILITY.get())
     try:
         return _execute_governed(tool, inputs, invoke)
@@ -1739,7 +1745,12 @@ def _execute_governed(tool, inputs, invoke):
 
 
 def governed_dry_run(tool, inputs):
-    result = preflight(tool, inputs)
+    observation = _fresh_policy_grok_observation(tool, inputs)
+    token = _GROK_COMPATIBILITY.set(observation or _GROK_COMPATIBILITY.get())
+    try:
+        result = preflight(tool, inputs)
+    finally:
+        _GROK_COMPATIBILITY.reset(token)
     return {'tool':tool.name,'governed':result['governed'], 'would_execute':True,
             'paid_submission':False,'provider_calls':0,'reservations':0,
             'request_sha256':result.get('request_sha256'), 'label':result.get('label', 'governed_preflight')}
