@@ -324,7 +324,8 @@ def activate_standing_run(project_dir, *, policy, baselines, standing_setup, run
         if schema_errors(candidate):
             raise StandingSetupRequired('standing policy schema is incomplete: ' + ', '.join(schema_errors(candidate)))
         _validate_checkpoint_stages(root, candidate['checkpoint_stages'])
-        _validate_standing_basis(root, candidate, baselines)
+        setup, _ = _validate_standing_basis(root, candidate, baselines)
+        controls = _standing_episode_controls(root, setup, candidate['activation_basis'])
         _validate_local_protected_planning(root, candidate, baselines)
         if is_benchmark(root, _json(root / 'project.json')) or policy_conflicts(candidate, baselines):
             raise StandingSetupRequired('benchmark or contradictory standing scope cannot activate')
@@ -359,10 +360,27 @@ def activate_standing_run(project_dir, *, policy, baselines, standing_setup, run
         log = _json(log_path) if log_path.exists() else {'version': '1.0', 'project_id': candidate['project_id'], 'decisions': []}
         if log['project_id'] != candidate['project_id'] or (root / 'decision_log.json').exists() and (root / 'artifacts/decision_log.json').exists():
             raise StandingSetupRequired('canonical decision log identity/alias conflict')
+        if log_path.exists():
+            _decision_entries(root)  # Canonical schema, identity and unique-ID check before publication.
+        else:
+            Draft202012Validator(load_schema('decision_log')).validate(log)
         decision_id = 'standing-' + sha[:24]
         choice = 'auto_continue:' + sha
-        if any(d.get('decision_id') == decision_id for d in log['decisions']):
+        if any(d.get('decision_id') == decision_id or (d.get('category') == ACTIVATION_CATEGORY
+                and d.get('subject') == ACTIVATION_SUBJECT and d.get('selected') == choice)
+                for d in log['decisions']):
             raise StandingSetupRequired('existing activation decision is invalid or revoked')
+        if controls is not None:
+            from lib import episode_production_controls as episode
+            record = _standing_controls_initial(root, candidate, controls)
+            if record is None:
+                if path.exists():
+                    raise StandingSetupRequired('interrupted standing activation lacks its initial episode controls')
+                episode._record_episode_controls_locked(root, controls[0], evidence=controls[1])
+                record = _standing_controls_initial(root, candidate, controls)
+            decision_id += '-controls-' + digest(record)
+        if any(d.get('decision_id') == decision_id for d in log['decisions']):
+            raise StandingSetupRequired('existing activation decision ID conflicts with retained episode controls')
         log['decisions'].append({'decision_id': decision_id, 'stage': 'proposal', 'category': ACTIVATION_CATEGORY,
             'subject': ACTIVATION_SUBJECT, 'selected': choice, 'user_approved': True,
             'reason': 'Exact media run authorized by retained creator standing setup and actual run command; no human plan or semantic review claimed.',
@@ -383,6 +401,62 @@ def activate_standing_run(project_dir, *, policy, baselines, standing_setup, run
         temporary = log_path.with_suffix('.json.activation-tmp')
         temporary.write_text(json.dumps(log, indent=2)); temporary.replace(log_path)
         return {'policy_sha256': sha, 'decision_id': decision_id, 'replayed': replayed, 'provider_calls': 0}
+
+
+def _standing_episode_controls(root, setup, basis):
+    """Only the explicit complete snapshot authenticated in the standing setup."""
+    if 'episode_controls' not in setup:
+        return None
+    from lib import episode_production_controls as episode
+    try:
+        payload = episode._check_controls(setup['episode_controls'])
+        authorization = _bound_document(root, setup['authorization'], 'standing creator authorization')
+        evidence = episode._evidence(root, {**basis['standing_setup'],
+            'approved_by': 'creator:' + basis['identity_id'] + ':' + authorization['message_id']})
+        return payload, evidence
+    except episode.EpisodeControlsError as exc:
+        raise StandingSetupRequired(str(exc)) from exc
+
+
+def _standing_controls_initial(root, policy, controls):
+    """Exact first current-story record; later amendments/restrictions stay intact."""
+    from lib import episode_production_controls as episode
+    try:
+        data = episode._load(root)
+        if data is None:
+            return None
+        if data['project_id'] != policy['project_id']:
+            raise StandingSetupRequired('standing episode controls project differs')
+        records = [record for record in data['records'] if record['story_revision'] == policy['story_revision']]
+        if not records:
+            return None
+        first = records[0]
+        if first['kind'] != 'controls' or first['controls'] != controls[0] or first['evidence'] != controls[1]:
+            raise StandingSetupRequired('standing initial episode controls differ from authenticated setup')
+        return first
+    except episode.EpisodeControlsError as exc:
+        raise StandingSetupRequired(str(exc)) from exc
+
+
+def _validate_standing_controls_activation(root, policy, sha, decision):
+    """Check new activation's initial record, including a linked frame successor."""
+    from lib import production_frame_amendment as frame
+    if (Path(root) / frame.POINTER).exists():
+        record = frame._completed_record(root)  # Existing owner authenticates the original activation chain.
+        policy = _json(frame._bound(root, record['originals'][POLICY_ARTIFACT]))
+        sha = record['plan']['expected']['policy_sha256']
+        old_log_path = next(path for path in record['originals'] if Path(path).name == 'decision_log.json')
+        original_log = _json(frame._bound(root, record['originals'][old_log_path]))
+        decision = next(entry for entry in reversed(original_log['decisions'])
+            if entry.get('category') == ACTIVATION_CATEGORY and entry.get('subject') == ACTIVATION_SUBJECT)
+    prefix = 'standing-' + sha[:24] + '-controls-'
+    if not decision or not decision.get('decision_id', '').startswith(prefix):
+        return  # Older activations never retrofit ignored optional setup fields.
+    setup, _ = _validate_standing_basis(root, policy, retained_baselines(root, policy), check_first_pass_capacity=False)
+    controls = _standing_episode_controls(root, setup, policy['activation_basis'])
+    initial = _standing_controls_initial(root, policy, controls) if controls is not None else None
+    if initial is None or decision['decision_id'] != prefix + digest(initial):
+        raise StandingSetupRequired('standing activation initial episode controls missing or changed')
 
 
 def _require_unstarted_standing_run(root):
@@ -819,6 +893,8 @@ def load_active_policy(root, *, shot_id=None):
                 if not asset.get('upstream_source') and not asset.get('preparation_pending') and hashlib.sha256(_inside(root, asset['path']).read_bytes()).hexdigest() != asset['sha256']:
                     raise AutonomyError('retained original static source bytes changed')
         decision = activation_decision(root)
+        if policy.get('activation_basis'):
+            _validate_standing_controls_activation(root, policy, sha, decision)
         if not decision or decision.get('selected') != f'auto_continue:{sha}' \
                 or decision.get('user_approved') is not True:
             reasons.append('no current user approval (missing, stale or revoked)')

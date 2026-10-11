@@ -27,6 +27,18 @@ Existing retained activations and original-job collection/replay are preserved.
 
 The account's one-time standing setup and the explicit `make_video` command bind a creator-authorized identity, source/rights scope, routes/accounts, source-transfer limits, and generation caps. The creator's command activates the current authored plan for that account. Internal planning, eligible board work, dispatch, evidence review, any already-authorized bounded repair, composition and delivery continue in the same producer run. There is no routine plan or per-shot approval step. Missing setup, rights, source permission, account readiness or scope blocks only the affected work; an expanded route, source or allowance needs new authority.
 
+An authenticated standing setup may explicitly include complete `episode_controls`:
+`max_generations_per_shot`, `alternate_repair`, `access_fallback`, and optional
+`first_cut: {enabled: bool}`. Fresh activation records that exact creator-bound
+snapshot through the canonical episode controls owner before activating the run.
+No client default, package or command supplies omitted controls; absent `first_cut`
+remains disabled. Replay preserves later creator amendments and provider restrictions
+and never backfills an older activation's ignored setup fields. If publication is
+interrupted, retry the same `activate_standing_run` call: only its exact retained
+initial controls record can complete the activation, without appending a duplicate.
+Missing or changed initial evidence stops new admission; original collection remains
+under its retained authority. These controls grant no routes, billing or allowance.
+
 The producer handles each actual returned host envelope and continues the same run. OpenMontage owns execution, original-job recovery, cumulative counts, composition and cut status; it does not invent semantic findings. A saved cut may be an honest draft with disclosed defects or unknown evidence. Certification remains a separate evidence gate. One initial take is the default; repairs use only exact retained authority and caps. Provider submission counts can be unknown for the whole run when host-mediated work or provider-managed batching obscures them. Never report unknown as zero, automatically resubmit an uncertain original, add a timer/service/ledger, or schedule or publish from this factory.
 
 An imported native board with an actual current critical failure can receive a

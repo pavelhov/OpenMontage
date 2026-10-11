@@ -84,6 +84,288 @@ def test_standing_activation_exact_replay_and_current_creator_bytes(tmp_path):
     assert not list(tmp_path.glob('**/*checkpoint*'))
 
 
+def standing_controls_fixture(root, controls):
+    """Explicit controls in the exact synthetic creator-approved setup."""
+    kwargs = standing_fixture(root)
+    setup = json.loads((root / kwargs['standing_setup']['path']).read_text())
+    setup.pop('authorization')
+    setup['episode_controls'] = copy.deepcopy(controls)
+    kwargs['standing_setup'] = creator_fixture(root, 'standing', setup)
+    command = json.loads((root / kwargs['run_command']['path']).read_text())
+    command.pop('authorization')
+    command['standing_setup_sha256'] = kwargs['standing_setup']['sha256']
+    kwargs['run_command'] = creator_fixture(root, 'command', command)
+    return kwargs
+
+
+def test_fresh_standing_activation_projects_explicit_creator_episode_controls(tmp_path):
+    from lib import episode_production_controls as controls
+    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'different_provider_or_media_model',
+        'access_fallback': True, 'first_cut': {'enabled': True}}
+    kwargs = standing_controls_fixture(tmp_path, payload)
+    before = pa.root_attempt_counts(tmp_path, kwargs['policy'])
+    result = pa.activate_standing_run(tmp_path, **kwargs)
+    effective = controls.effective_controls(tmp_path)
+    assert effective is not None
+    assert {key: effective[key] for key in payload} == payload
+    assert controls.first_cut_enabled(tmp_path)
+    assert effective['records'] == 1 and effective['restricted_providers'] == []
+    assert pa.root_attempt_counts(tmp_path, kwargs['policy']) == before
+    assert result['provider_calls'] == 0
+    records = json.loads((tmp_path / controls.ARTIFACT).read_text())['records']
+    assert records[0]['evidence'] == {**kwargs['standing_setup'],
+        'approved_by': 'creator:fixture-identity:SYNTHETIC-standing'}
+    assert records[0]['authority']['grants'] == []
+    assert result['decision_id'].endswith('-controls-' + request.digest(records[0]))
+    assert pa.require_active_policy(tmp_path)[2] == result['decision_id']
+
+
+@pytest.mark.parametrize('payload', [None, {'max_generations_per_shot': 1,
+    'alternate_repair': 'disabled', 'access_fallback': False, 'first_cut': {'enabled': False}}])
+def test_standing_episode_controls_absence_and_explicit_overrides_preserve_defaults(tmp_path, payload):
+    from lib import episode_production_controls as controls
+    kwargs = standing_fixture(tmp_path) if payload is None else standing_controls_fixture(tmp_path, payload)
+    activation = pa.activate_standing_run(tmp_path, **kwargs)
+    assert not controls.first_cut_enabled(tmp_path)
+    if payload is None:
+        assert controls.effective_controls(tmp_path) is None
+        assert not (tmp_path / controls.ARTIFACT).exists()
+    else:
+        effective = controls.effective_controls(tmp_path)
+        assert {key: effective[key] for key in payload} == payload
+    before = file_bytes(tmp_path)
+    assert pa.activate_standing_run(tmp_path, **kwargs) == dict(activation, replayed=True)
+    assert file_bytes(tmp_path) == before
+
+
+@pytest.mark.parametrize('payload', [None, {}, {'first_cut': {'enabled': True}},
+    {'max_generations_per_shot': True, 'alternate_repair': 'disabled', 'access_fallback': False},
+    {'max_generations_per_shot': 0, 'alternate_repair': 'disabled', 'access_fallback': False},
+    {'max_generations_per_shot': 2, 'alternate_repair': 'unknown', 'access_fallback': False},
+    {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': 'yes'},
+    {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False,
+     'first_cut': {'enabled': True, 'extra': True}},
+    {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False, 'provider': 'anything'}])
+def test_standing_episode_controls_invalid_explicit_snapshot_writes_no_authority(tmp_path, payload):
+    kwargs = standing_controls_fixture(tmp_path, payload)
+    with execution._lock(tmp_path): pass
+    before = file_bytes(tmp_path)
+    with pytest.raises(pa.StandingSetupRequired, match='episode controls'):
+        pa.activate_standing_run(tmp_path, **kwargs)
+    assert file_bytes(tmp_path) == before
+
+
+@pytest.mark.parametrize('change', ['setup_bytes', 'creator_subject', 'creator_identity', 'command_setup'])
+def test_standing_episode_controls_require_exact_creator_setup_and_command(tmp_path, change):
+    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False}
+    kwargs = standing_controls_fixture(tmp_path, payload)
+    setup = json.loads((tmp_path / kwargs['standing_setup']['path']).read_text())
+    if change == 'setup_bytes':
+        setup['episode_controls']['max_generations_per_shot'] = 3
+        kwargs['standing_setup'] = write(tmp_path, kwargs['standing_setup']['path'], setup)
+    elif change.startswith('creator'):
+        auth = json.loads((tmp_path / setup['authorization']['path']).read_text())
+        auth['subject_sha256' if change == 'creator_subject' else 'identity_id'] = 'forged'
+        setup['authorization'] = write(tmp_path, setup['authorization']['path'], auth)
+        kwargs['standing_setup'] = write(tmp_path, kwargs['standing_setup']['path'], setup)
+    command = json.loads((tmp_path / kwargs['run_command']['path']).read_text()); command.pop('authorization')
+    command['standing_setup_sha256'] = '0' * 64 if change == 'command_setup' else kwargs['standing_setup']['sha256']
+    kwargs['run_command'] = creator_fixture(tmp_path, 'command', command)
+    with execution._lock(tmp_path): pass
+    before = file_bytes(tmp_path)
+    with pytest.raises(pa.StandingSetupRequired):
+        pa.activate_standing_run(tmp_path, **kwargs)
+    assert file_bytes(tmp_path) == before
+
+
+@pytest.mark.parametrize('payload', [{'first_cut': 'malformed-old-ignored-extra'},
+    {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False,
+     'first_cut': {'enabled': True}}])
+def test_old_standing_activation_never_retrofits_ignored_episode_controls(tmp_path, monkeypatch, payload):
+    from lib import episode_production_controls as controls
+    kwargs = standing_controls_fixture(tmp_path, payload)
+    # Reproduce only the old activation's omission in this synthetic fixture.
+    with monkeypatch.context() as patch:
+        patch.setattr(pa, '_standing_episode_controls', lambda *args: None)
+        old = pa.activate_standing_run(tmp_path, **kwargs)
+    assert controls.effective_controls(tmp_path) is None
+    before = file_bytes(tmp_path)
+    assert pa.activate_standing_run(tmp_path, **kwargs) == dict(old, replayed=True)
+    assert file_bytes(tmp_path) == before
+
+
+def test_standing_episode_controls_replay_preserves_later_creator_records(tmp_path):
+    from lib import episode_production_controls as controls
+    from tests.lib.test_episode_production_controls import approval
+    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False,
+        'first_cut': {'enabled': True}}
+    kwargs = standing_controls_fixture(tmp_path, payload)
+    activation = pa.activate_standing_run(tmp_path, **kwargs)
+    amended = {**payload, 'max_generations_per_shot': 1, 'first_cut': {'enabled': False}}
+    controls.record_episode_controls(tmp_path, amended, evidence=approval(tmp_path, 'SYNTHETIC-later-controls'))
+    controls.restrict_episode_provider(tmp_path, ['grok_cli'], evidence=approval(tmp_path, 'SYNTHETIC-restrict'),
+        reason='SYNTHETIC prospective creator restriction')
+    before = file_bytes(tmp_path)
+    assert pa.activate_standing_run(tmp_path, **kwargs) == dict(activation, replayed=True)
+    assert file_bytes(tmp_path) == before
+    effective = controls.effective_controls(tmp_path)
+    assert effective['max_generations_per_shot'] == 1 and effective['records'] == 3
+    assert effective['restricted_providers'] == ['grok_cli'] and not controls.first_cut_enabled(tmp_path)
+    assert pa.require_active_policy(tmp_path)[2] == activation['decision_id']
+
+
+@pytest.mark.parametrize('stage', ['controls', 'evidence', 'policy', 'decision', 'after_decision'])
+def test_standing_episode_controls_interrupted_fresh_activation_reuses_exact_record(tmp_path, monkeypatch, stage):
+    from lib import episode_production_controls as controls
+    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False,
+        'first_cut': {'enabled': True}}
+    kwargs = standing_controls_fixture(tmp_path, payload)
+    original_write = execution._write_new
+    original_replace = Path.replace
+    def fail_write(path, value):
+        if (stage == 'evidence' and path.parent.name == 'approvals'
+                or stage == 'policy' and path.name == 'autonomy_policy.json'):
+            raise OSError('SYNTHETIC activation interruption')
+        return original_write(path, value)
+    def fail_replace(path, target):
+        if Path(target).name == 'decision_log.json':
+            if stage == 'after_decision': original_replace(path, target)
+            raise OSError('SYNTHETIC activation interruption')
+        return original_replace(path, target)
+    with monkeypatch.context() as patch:
+        if stage == 'controls':
+            patch.setattr(controls, '_record_episode_controls_locked', lambda *a, **k: (_ for _ in ()).throw(OSError('SYNTHETIC activation interruption')))
+        elif stage in {'evidence', 'policy'}: patch.setattr(execution, '_write_new', fail_write)
+        else: patch.setattr(Path, 'replace', fail_replace)
+        with pytest.raises(OSError, match='SYNTHETIC activation interruption'):
+            pa.activate_standing_run(tmp_path, **kwargs)
+    assert pa.load_active_policy(tmp_path)[0] is None or stage == 'after_decision'
+    artifact = tmp_path / controls.ARTIFACT
+    recorded = artifact.read_bytes() if artifact.exists() else None
+    recovered = pa.activate_standing_run(tmp_path, **kwargs)
+    assert pa.require_active_policy(tmp_path)[2] == recovered['decision_id']
+    assert controls.effective_controls(tmp_path)['records'] == 1
+    if recorded is not None: assert artifact.read_bytes() == recorded
+    before = file_bytes(tmp_path)
+    assert pa.activate_standing_run(tmp_path, **kwargs) == dict(recovered, replayed=True)
+    assert file_bytes(tmp_path) == before
+
+
+@pytest.mark.parametrize('change', ['remove', 'payload', 'record_identity', 'project', 'revoke'])
+def test_standing_episode_controls_initial_binding_refuses_tampering_or_revocation(tmp_path, change):
+    from lib import episode_production_controls as controls
+    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False}
+    kwargs = standing_controls_fixture(tmp_path, payload)
+    pa.activate_standing_run(tmp_path, **kwargs)
+    path = tmp_path / controls.ARTIFACT
+    if change == 'remove': path.unlink()
+    elif change == 'revoke':
+        log = json.loads((tmp_path / 'artifacts/decision_log.json').read_text())
+        log['decisions'][-1]['user_approved'] = False
+        write(tmp_path, 'artifacts/decision_log.json', log)
+    else:
+        data = json.loads(path.read_text())
+        if change == 'payload': data['records'][0]['controls']['max_generations_per_shot'] = 3
+        elif change == 'record_identity': data['records'][0]['record_id'] = 'forged-record'
+        else: data['project_id'] = 'foreign'
+        write(tmp_path, str(controls.ARTIFACT), data)
+    before = file_bytes(tmp_path)
+    assert pa.load_active_policy(tmp_path)[0] is None
+    with pytest.raises((pa.StandingSetupRequired, controls.EpisodeControlsError),
+            match='initial episode controls|activation decision|controls record belongs to another project'):
+        pa.activate_standing_run(tmp_path, **kwargs)
+    assert file_bytes(tmp_path) == before
+
+
+def test_standing_episode_controls_refuse_different_preexisting_current_controls(tmp_path):
+    from lib import episode_production_controls as controls
+    from tests.lib.test_episode_production_controls import approval
+    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False}
+    kwargs = standing_controls_fixture(tmp_path, payload)
+    controls.record_episode_controls(tmp_path, {**payload, 'max_generations_per_shot': 1},
+        evidence=approval(tmp_path, 'SYNTHETIC-existing-controls'))
+    before = file_bytes(tmp_path)
+    with pytest.raises(pa.StandingSetupRequired, match='initial episode controls differ'):
+        pa.activate_standing_run(tmp_path, **kwargs)
+    assert file_bytes(tmp_path) == before
+
+
+def test_standing_absent_controls_replay_preserves_manual_episode_controls(tmp_path):
+    from lib import episode_production_controls as controls
+    from tests.lib.test_episode_production_controls import approval
+    kwargs = standing_fixture(tmp_path)
+    activation = pa.activate_standing_run(tmp_path, **kwargs)
+    controls.record_episode_controls(tmp_path, {'max_generations_per_shot': 2,
+        'alternate_repair': 'different_provider_or_media_model', 'access_fallback': False,
+        'first_cut': {'enabled': False}}, evidence=approval(tmp_path, 'SYNTHETIC-manual-override'))
+    before = file_bytes(tmp_path)
+    assert pa.activate_standing_run(tmp_path, **kwargs) == dict(activation, replayed=True)
+    assert file_bytes(tmp_path) == before
+    assert controls.effective_controls(tmp_path)['records'] == 1
+    assert not controls.first_cut_enabled(tmp_path)
+
+
+def test_standing_episode_controls_validate_existing_log_before_authority_writes(tmp_path):
+    from jsonschema import ValidationError
+    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False}
+    kwargs = standing_controls_fixture(tmp_path, payload)
+    write(tmp_path, 'artifacts/decision_log.json', {'version': '1.0',
+        'project_id': kwargs['policy']['project_id'], 'decisions': [{'decision_id': 'malformed'}]})
+    with execution._lock(tmp_path): pass
+    before = file_bytes(tmp_path)
+    with pytest.raises(ValidationError): pa.activate_standing_run(tmp_path, **kwargs)
+    assert file_bytes(tmp_path) == before
+
+
+def test_standing_episode_controls_duplicate_valid_decisions_write_no_authority(tmp_path):
+    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False,
+        'first_cut': {'enabled': True}}
+    kwargs = standing_controls_fixture(tmp_path, payload)
+    row = {'decision_id': 'duplicate-existing', 'stage': 'edit', 'category': 'composition_mode',
+        'subject': 'SYNTHETIC unrelated composition choice', 'selected': 'fixture',
+        'reason': 'SYNTHETIC schema-valid unrelated decision',
+        'options_considered': [{'option_id': 'fixture', 'label': 'SYNTHETIC composition',
+            'score': 1, 'reason': 'SYNTHETIC unrelated choice'}]}
+    write(tmp_path, 'artifacts/decision_log.json', {'version': '1.0',
+        'project_id': kwargs['policy']['project_id'], 'decisions': [row, copy.deepcopy(row)]})
+    with execution._lock(tmp_path): pass
+    before = file_bytes(tmp_path)
+    with pytest.raises(pa.AutonomyError, match='duplicate decision IDs'):
+        pa.activate_standing_run(tmp_path, **kwargs)
+    assert file_bytes(tmp_path) == before
+
+
+def test_standing_episode_controls_interrupted_full_decision_id_collision_writes_nothing(tmp_path, monkeypatch):
+    from lib import episode_production_controls as controls
+    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False,
+        'first_cut': {'enabled': True}}
+    kwargs = standing_controls_fixture(tmp_path, payload)
+    original_replace = Path.replace
+    def interrupt(path, target):
+        if Path(target).name == 'decision_log.json': raise OSError('SYNTHETIC before decision publication')
+        return original_replace(path, target)
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, 'replace', interrupt)
+        with pytest.raises(OSError, match='SYNTHETIC before decision publication'):
+            pa.activate_standing_run(tmp_path, **kwargs)
+    policy = json.loads((tmp_path / pa.POLICY_ARTIFACT).read_text())
+    sha = pa.policy_sha256(policy, pa.retained_baselines(tmp_path, policy))
+    initial = json.loads((tmp_path / controls.ARTIFACT).read_text())['records'][0]
+    collision = 'standing-' + sha[:24] + '-controls-' + request.digest(initial)
+    row = {'decision_id': collision, 'stage': 'edit', 'category': 'composition_mode',
+        'subject': 'SYNTHETIC unrelated composition choice', 'selected': 'fixture',
+        'reason': 'SYNTHETIC unique existing row owns the full candidate ID',
+        'options_considered': [{'option_id': 'fixture', 'label': 'SYNTHETIC composition',
+            'score': 1, 'reason': 'SYNTHETIC unrelated choice'}]}
+    write(tmp_path, 'artifacts/decision_log.json', {'version': '1.0',
+        'project_id': kwargs['policy']['project_id'], 'decisions': [row]})
+    assert pa._decision_entries(tmp_path) == [row]
+    before = file_bytes(tmp_path)
+    with pytest.raises(pa.StandingSetupRequired, match='activation decision ID conflicts'):
+        pa.activate_standing_run(tmp_path, **kwargs)
+    assert file_bytes(tmp_path) == before
+
+
 def standing_stage_fixture(root, stages):
     kwargs = standing_fixture(root)
     kwargs['policy']['checkpoint_stages'] = stages
@@ -2764,7 +3046,7 @@ def test_conflicting_incomplete_role_observations_receive_separate_carried_succe
     assert images.image_usage(root)['total'] == 3
 
 
-def frame_amendment_fixture(neutral_package, monkeypatch, *, cast_bearing=False):
+def frame_amendment_fixture(neutral_package, monkeypatch, *, cast_bearing=False, episode_controls=None):
     """Legacy incompatible synthetic activation, complete current board evidence."""
     from lib import production_boards as boards
     root, package, bind = neutral_package
@@ -2824,6 +3106,8 @@ def frame_amendment_fixture(neutral_package, monkeypatch, *, cast_bearing=False)
     setup['caps'] = copy.deepcopy(kwargs['policy']['caps'])
     for term in setup['source_transfer']:
         term['max_batches'] = 8
+    if episode_controls is not None:
+        setup['episode_controls'] = copy.deepcopy(episode_controls)
     kwargs['standing_setup'] = creator_fixture(root, 'standing', setup)
     command = json.loads((root / kwargs['run_command']['path']).read_text()); command.pop('authorization')
     command['standing_setup_sha256'] = kwargs['standing_setup']['sha256']
@@ -2864,6 +3148,33 @@ def frame_amendment_fixture(neutral_package, monkeypatch, *, cast_bearing=False)
         'human_delegation': {'message_id': 'SYNTHETIC', 'text': 'SYNTHETIC delegated correction authority.'},
         'proposal_sha256': proposal['sha256']})
     return root, proposal, authority
+
+
+@pytest.mark.parametrize('change', ['remove', 'payload'])
+def test_standing_episode_controls_original_binding_survives_frame_successor(neutral_package, monkeypatch, change):
+    from lib import production_frame_amendment as amendment, episode_production_controls as controls
+    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False,
+        'first_cut': {'enabled': True}}
+    root, proposal, authority = frame_amendment_fixture(neutral_package, monkeypatch, episode_controls=payload)
+    original_envelope = json.loads((root / 'production_scopes.json').read_text())['image_envelope']
+    usage = images.image_usage(root)
+    expected = amendment.expected_original(root)
+    plan = amendment.plan_frame_input_amendment(root, expected=expected, proposal=proposal, authority=authority)
+    result = amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
+        expected=expected, proposal=proposal, authority=authority)
+    assert pa.require_active_policy(root)[2] == result['successor_decision_id']
+    assert controls.first_cut_enabled(root)
+    path = root / controls.ARTIFACT
+    if change == 'remove': path.unlink()
+    else:
+        data = json.loads(path.read_text())
+        data['records'][0]['controls']['max_generations_per_shot'] = 3
+        write(root, str(controls.ARTIFACT), data)
+    before = file_bytes(root)
+    assert pa.load_active_policy(root)[0] is None
+    assert amendment.historical_image_envelope(root, original_envelope)
+    assert images.image_usage(root) == usage
+    assert file_bytes(root) == before
 
 
 def test_frame_amendment_is_pure_linked_preserves_usage_and_stales_planning(neutral_package, monkeypatch):
