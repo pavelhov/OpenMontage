@@ -227,6 +227,9 @@ def _validate_standing_basis_impl(root, policy, baselines, *, check_first_pass_c
         raise StandingSetupRequired('standing runs require prospective local planning')
     if basis.get('plan_sha256') != digest(baselines):
         raise StandingSetupRequired('internally retained exact plan differs from run binding')
+    profiles = [baseline.get('export_profile') for baseline in baselines.values()]
+    if any(profile is not None for profile in profiles) and len(set(profiles)) != 1:
+        raise StandingSetupRequired('retained export profiles disagree or are incomplete')
     if any(provider not in setup['providers'] for provider in policy['providers']):
         raise StandingSetupRequired('provider/account/billing terms exceed standing setup')
     accounts = setup['provider_accounts']
@@ -1183,9 +1186,17 @@ def dialogue_occurrences(projection):
 
 
 def baseline_descriptor(retained, root=None):
-    if set(retained) != {'projection', 'planned_request_template', 'script_snapshot',
+    if set(retained) - {'export_profile'} != {'projection', 'planned_request_template', 'script_snapshot',
                          'dialogue_coverage', 'approval_plan_sha256'}:
         raise AutonomyError('incomplete retained baseline')
+    if 'export_profile' in retained:
+        from lib.media_profiles import get_profile
+        if not isinstance(retained['export_profile'], str) or not retained['export_profile']:
+            raise AutonomyError('retained export profile must be an explicit profile name')
+        try:
+            get_profile(retained['export_profile'])
+        except ValueError as exc:
+            raise AutonomyError('invalid retained export profile: ' + str(exc)) from exc
     projection = retained['projection']
     if retained['dialogue_coverage'] != dialogue_occurrences(projection):
         raise AutonomyError('ordered dialogue retention differs')
