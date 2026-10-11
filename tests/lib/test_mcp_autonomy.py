@@ -86,7 +86,12 @@ def seam(tmp_path, monkeypatch):
     monkeypatch.setattr(lib, 'openart_mcp', fake, raising=False)
     monkeypatch.setattr(preparation, 'validate_preparation', lambda *args: {'compiled_sha256': H('fixture compiled')})
     monkeypatch.setattr(pa, '_historical_current_preparation', lambda *args: {'compiled_sha256': H('fixture compiled')})
-    monkeypatch.setattr(pa, 'lock_proof', lambda *args, **kw: H('fixture locks'))
+    # This synthetic seam fakes both active and retained-authority rooted proof.
+    # The actual lifecycle tests below keep the real compiled/lock validation.
+    def fixture_lock_proof(*args, **kwargs):
+        return H('fixture locks')
+    monkeypatch.setattr(pa, 'lock_proof', fixture_lock_proof)
+    monkeypatch.setattr(pa, '_root_lock_proof', fixture_lock_proof)
     monkeypatch.setattr(pa, 'cross_provider_block', lambda *args: [])
     monkeypatch.setattr(execution, '_attempts', lambda _: [])
     # Empty credit snapshot is read-only; no ledger is opened or initialized.
