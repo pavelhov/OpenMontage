@@ -2898,6 +2898,7 @@ def next_production_action(project_dir):
     board_action = None
     board_actions = {}
     payoff_progress_action = None
+    payoff_retained_evidence = False
     deferred_payoff_action = None
     pending_image_action = None
     motion_action = None
@@ -2999,14 +3000,14 @@ def next_production_action(project_dir):
                 board_actions.setdefault(aid, review_action)
                 board_action = board_action or review_action
             elif work['failed_predicates'] and aid in pack['prompt_pack']:
-                slot_correction_action = action('prepare_board_correction', aid,
+                slot_correction = action('prepare_board_correction', aid,
                     {'source': binding, 'roles': roles, 'observations': work['observations'],
                      'correction_observation': work['correction_observation'],
                      'specification_sha256': pack['specification_sha256']}, host=True,
                     inputs={'slot_id': aid, 'source': binding, 'failed_predicates': work['failed_predicates']},
                     reason='Producer supplies exact targeted changes and optional complete replacement prompt/references; retained image authority and caps still apply.')
-                board_actions.setdefault(aid, slot_correction_action)
-                correction_action = correction_action or slot_correction_action
+                board_actions.setdefault(aid, slot_correction)
+                correction_action = correction_action or slot_correction
             elif work['blocked']:
                 completed_blocker = completed_blocker or action('blocked', aid,
                     {'source': binding, 'roles': roles, 'observations': work['observations']},
@@ -3046,6 +3047,9 @@ def next_production_action(project_dir):
                         return progress
                 return board_actions.get(slot)
             payoff_progress_action = payoff_dependency(payoff_id)
+            # Current payoff bytes can still need their first observation after
+            # a correction; the failed project verdict remains a motion gate.
+            payoff_retained_evidence = failed_source(payoff_id) or boards._binding_current(root, pack, payoff_id)
     selected = load_selected_attempts(root)
     candidates = []
     if contract_path.exists():
@@ -3137,7 +3141,7 @@ def next_production_action(project_dir):
             project_failed = (project_review.get('status') == 'fail' or any(
                 p.get('status') == 'fail'
                 for p in project_review.get('predicates', [])))
-            if (payoff_progress_action is not None and not project_failed
+            if (payoff_progress_action is not None and (not project_failed or payoff_retained_evidence)
                     and any(e.startswith('project_review') for e in errors)):
                 deferred_payoff_action = payoff_progress_action
                 # Continue scanning for independently eligible motion. At the end,
