@@ -498,10 +498,17 @@ def board_schedule(project_dir, *, images):
     counts = {slot: len(uses(slot)) for slot in nodes}
     ready.sort(key=lambda slot: -counts[slot])
     shot_blockers, candidates = {}, []
+    from lib.shot_contract import shot_local, required_asset_ids
+    template = pack['specification'].get('motion_binding', {}).get('contract_template', {})
+    local = shot_local(template)
     for shot in pack["specification"]["shots"]:
         reasons = []
+        consumer = next((s for s in template.get('shots', []) if s['id'] == shot['shot_id']), None)
+        needed = required_asset_ids(template, consumer) if local and consumer else None
         for role in pack["specification"].get("shared_roles", []) + shot["roles"]:
             asset_id = role["asset_id"]
+            if needed is not None and asset_id not in needed:
+                continue
             if asset_id not in pack["board_bindings"] or asset_id in stale:
                 reasons.append(asset_id + ": missing/stale bytes")
             else:
@@ -802,7 +809,8 @@ def _promote_motion_bindings(root, pack, *, publish=True):
     """
     from jsonschema import Draft202012Validator
     from schemas.artifacts import load_schema
-    from lib.shot_contract import contract_digest
+    from lib.shot_contract import (contract_digest, shot_local, required_asset_ids,
+        project_review_subject, shot_review_subject)
     bridge = pack["specification"].get("motion_binding")
     if bridge is None:
         return
@@ -817,19 +825,25 @@ def _promote_motion_bindings(root, pack, *, publish=True):
         if any(metadata.get(k) != pack[k] for k in ("project_id", "story_revision")):
             raise ValueError("motion projection needs current package artifacts")
     template = _motion_template_for_plan(pack["specification"], plan)
+    local = shot_local(template)
     ready, pending, ready_aliases = [], [], set()
     for asset in template["assets"]:
         aid, role = asset["id"], asset["role"]
         if not _binding_current(root, pack, aid) or _review_blockers(pack, aid, role):
             pending.append(aid)
+            if local and not asset.get('upstream_source'):
+                asset['preparation_pending'] = True
             continue
         observation = _observation(pack, aid, role)
         binding = pack["board_bindings"][aid]
         path = str(_inside(root, binding["path"]).relative_to(root))
         asset.update(path=path, sha256=binding["sha256"], review=deepcopy(observation["review"]))
+        asset.pop('preparation_pending', None)
         shared = any(r["asset_id"] == aid for r in pack["specification"].get("shared_roles", []))
         users = [s["shot_id"] for s in pack["specification"]["shots"]
                  if shared or any(r["asset_id"] == aid for r in s["roles"])]
+        if local:
+            users = [s['id'] for s in template['shots'] if aid in required_asset_ids(template, s)]
         if not users:
             users = [pack["specification"]["shots"][0]["shot_id"]]
         for index, sid in enumerate(users):
@@ -858,22 +872,59 @@ def _promote_motion_bindings(root, pack, *, publish=True):
             manifest.setdefault("metadata", {}).setdefault("motion_handoffs", {})[aid] = deepcopy(handoff)
     targets = {manifest_path: manifest}
     digest = None
-    if not pending:
+    if local:
+        obsolete = {aid for aid, binding in manifest.get('metadata', {}).get('source_bindings', {}).items()
+                    if binding.get('board_asset_id') in pending}
+        manifest['assets'] = [asset for asset in manifest['assets'] if asset['id'] not in obsolete]
+        for aid in obsolete:
+            manifest['metadata']['source_bindings'].pop(aid, None)
+        handoffs = manifest.get('metadata', {}).get('motion_handoffs', {})
+        for aid in list(handoffs):
+            if aid in obsolete or handoffs[aid].get('pinned_final_frame', {}).get('asset_id') in obsolete:
+                handoffs.pop(aid)
+    if not pending or local:
         Draft202012Validator(load_schema("shot_contract")).validate(template)
         digest = contract_digest(template)
         contract_path = root / "artifacts/shot_contract.json"
+        if local and not contract_path.exists():
+            # Restore real reviews only from exact immutable attempt snapshots.
+            # The authored package and current board originals derive semantics;
+            # a snapshot is never used to recreate authority or a receipt.
+            for request_path in sorted((root / 'production_attempts').glob('*/request.json')):
+                request = json.loads(request_path.read_text())
+                snapshot_path = request_path.parent / 'shot_contract.json'
+                if not snapshot_path.exists():
+                    continue
+                snapshot = json.loads(snapshot_path.read_text())
+                if (request.get('project_id') != pack['project_id']
+                        or request.get('story_revision') != pack['story_revision']
+                        or contract_digest(snapshot) != request.get('contract_sha256')):
+                    raise ValueError('retained motion snapshot has changed or belongs to another run')
+                scope = request.get('scope', {})
+                evidence = request.get('approval_evidence', {})
+                if (scope.get('planning_mode') != 'shot_local_v1' or not evidence.get('path')
+                        or not _current(root, evidence)):
+                    continue
+                if project_review_subject(snapshot) == project_review_subject(template):
+                    template['project_review'] = deepcopy(snapshot['project_review'])
+                for shot in template['shots']:
+                    prior = next((s for s in snapshot['shots'] if s['id'] == shot['id']), None)
+                    if prior is not None and shot_review_subject(snapshot, shot['id']) == shot_review_subject(template, shot['id']):
+                        shot['review'] = deepcopy(prior['review'])
         if contract_path.exists():
             retained = json.loads(contract_path.read_text())
             retained_digest = contract_digest(retained)
-            if retained_digest != digest and retained_digest != pack.get("motion_projection", {}).get("contract_digest"):
+            if not local and retained_digest != digest and retained_digest != pack.get("motion_projection", {}).get("contract_digest"):
                 raise ValueError("existing canonical contract differs from retained motion projection")
-            if retained_digest == digest:
+            if retained_digest == digest or local:
                 # A semantic reviewer can bind the completed projection later;
                 # replay must preserve that real verdict rather than the template.
-                template["project_review"] = retained["project_review"]
+                if not local or project_review_subject(retained) == project_review_subject(template):
+                    template["project_review"] = retained["project_review"]
                 reviews = {s["id"]: s.get("review") for s in retained["shots"]}
                 for shot in template["shots"]:
-                    if reviews[shot["id"]] is not None:
+                    if reviews[shot["id"]] is not None and (not local or
+                            shot_review_subject(retained, shot['id']) == shot_review_subject(template, shot['id'])):
                         shot["review"] = reviews[shot["id"]]
         targets[contract_path] = template
     Draft202012Validator(load_schema("asset_manifest")).validate(manifest)
@@ -887,7 +938,8 @@ def _promote_motion_bindings(root, pack, *, publish=True):
                if not path.exists() or json.loads(path.read_text()) != value}
     scopes_path = root / "production_scopes.json"
     scopes = json.loads(scopes_path.read_text()).get("scopes", []) if scopes_path.exists() else []
-    if changed and any(scope.get("phase") != "image" for scope in scopes):
+    if changed and any(scope.get("phase") != "image" and
+                       (not local or scope.get('planning_mode') != 'shot_local_v1') for scope in scopes):
         raise ValueError("motion bindings are frozen by retained scopes; use existing fresh/carried-scope workflow")
     if not publish:
         return
@@ -897,8 +949,8 @@ def _promote_motion_bindings(root, pack, *, publish=True):
         temporary.replace(path)
     projection = {"ready_assets": ready, "pending_assets": pending,
         "contract_digest": digest,
-        "needs_current_semantic_reviews": bool(digest and (template["project_review"]["subject_sha256"] != digest
-            or any(s.get("review", {}).get("subject_sha256") != digest for s in template["shots"]))),
+        "needs_current_semantic_reviews": bool(digest and (template["project_review"]["subject_sha256"] != project_review_subject(template)
+            or any(s.get("review", {}).get("subject_sha256") != shot_review_subject(template, s['id']) for s in template["shots"]))),
         "authority": "fresh exact canonical motion dry-run and retained scope required"}
     if pack.get("motion_projection") != projection:
         pack["motion_projection"] = projection

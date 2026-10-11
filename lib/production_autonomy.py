@@ -41,6 +41,395 @@ class AutonomyError(ValueError):
     """A policy-derived action is not provably inside the approved envelope."""
 
 
+class StandingSetupRequired(AutonomyError):
+    """Actual one-time account/source authority is missing or insufficient."""
+
+
+def _bound_authorization(root, record, identity_id):
+    binding = record.get('authorization')
+    if not isinstance(binding, dict) or set(binding) != {'path', 'sha256'}:
+        raise StandingSetupRequired('retained actual creator authorization required')
+    path = _inside(root, binding['path'])
+    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != binding['sha256']:
+        raise StandingSetupRequired('creator authorization missing or changed')
+    evidence = _json(path)
+    subject = digest({key: value for key, value in record.items() if key != 'authorization'})
+    if (not isinstance(evidence, dict) or evidence.get('version') != '1.0'
+            or evidence.get('kind') != 'creator_authorization' or evidence.get('origin') != 'user_message'
+            or evidence.get('identity_id') != identity_id or evidence.get('subject_sha256') != subject
+            or not isinstance(evidence.get('message_id'), str) or not evidence['message_id'].strip()
+            or not isinstance(evidence.get('text'), str) or not evidence['text'].strip()):
+        raise StandingSetupRequired('actual creator-message evidence does not bind exact authority')
+
+
+def _bound_document(root, binding, label):
+    if not isinstance(binding, dict) or set(binding) != {'path', 'sha256'}:
+        raise StandingSetupRequired(label + ' needs exact retained binding')
+    path = _inside(root, binding['path'])
+    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != binding['sha256']:
+        raise StandingSetupRequired(label + ' missing or changed')
+    return _json(path)
+
+
+def _validate_generated_board_source(root, asset, *, expected):
+    """Pending slots resolve only to a same-project reviewed canonical original."""
+    from lib import production_boards as boards, production_execution as execution
+    aid = expected['id']
+    pack = boards.load_board_pack(root)
+    declaration = next((a for a in pack['specification'].get('motion_binding', {}).get('contract_template', {}).get('assets', [])
+                        if a['id'] == aid), None)
+    if (declaration is None or aid not in pack['prompt_pack']
+            or any(asset.get(key) != expected.get(key) or declaration.get(key) != expected.get(key)
+                   for key in ('id', 'role', 'cast_ids'))):
+        raise AutonomyError('generated source differs from exact retained board declaration')
+    record = execution.resolve_board_input(root, {'asset_id': aid})
+    binding = pack['board_bindings'][aid]
+    if (binding.get('origin') != 'canonical_image_import'
+            or record['sha256'] != asset.get('sha256')
+            or _inside(root, record['path']) != _inside(root, asset.get('path', ''))
+            or boards._review_blockers(pack, aid, asset['role'])):
+        raise AutonomyError('generated source is not reviewed same-run original board bytes')
+
+
+def _materialized_projection(root, projection):
+    from lib.production_execution import load_shot_contract
+    current = {a['id']: a for a in load_shot_contract(root)['assets']}
+    value = copy.deepcopy(projection)
+    for index, source in enumerate(value['assets']):
+        if source.get('preparation_pending'):
+            asset = current.get(source['id'])
+            if not asset or asset.get('preparation_pending'):
+                raise AutonomyError('required board slot remains pending')
+            _validate_generated_board_source(root, asset, expected=source)
+            value['assets'][index] = {k: copy.deepcopy(v) for k, v in asset.items() if k != 'review'}
+    return value
+
+
+def _validate_standing_basis(root, policy, baselines):
+    try:
+        return _validate_standing_basis_impl(root, policy, baselines)
+    except StandingSetupRequired:
+        raise
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise StandingSetupRequired('standing setup cannot be validated: ' + str(exc)) from exc
+
+
+def _validate_standing_basis_impl(root, policy, baselines):
+    """Validate declared actual message provenance and containment, never invent it."""
+    basis = policy.get('activation_basis', {})
+    identity = basis.get('identity_id')
+    setup = _bound_document(root, basis.get('standing_setup'), 'standing setup')
+    command = _bound_document(root, basis.get('run_command'), 'run command')
+    marker = _json(Path(root) / 'project.json')
+    required = {'version', 'identity_id', 'enabled', 'providers', 'provider_accounts', 'caps',
+                'approved_source_sha256', 'checkpoint_stages', 'flex', 'source_transfer',
+                'required_permissions', 'authorization'}
+    if (not isinstance(setup, dict) or not required.issubset(setup)
+            or setup.get('version') != '1.0' or setup.get('enabled') is not True
+            or setup.get('identity_id') != identity):
+        raise StandingSetupRequired('complete enabled one-time identity setup required')
+    if (not isinstance(command, dict) or set(command) != {'version', 'identity_id', 'project_id',
+            'story_revision', 'command', 'standing_setup_sha256', 'authorization'}
+            or command.get('version') != '1.0' or command.get('identity_id') != identity
+            or command.get('command') != 'make_video'
+            or command.get('standing_setup_sha256') != basis['standing_setup']['sha256']
+            or any(command.get(key) != marker.get(key) or policy.get(key) != marker.get(key)
+                   for key in ('project_id', 'story_revision'))):
+        raise StandingSetupRequired('actual run command must bind identity, setup and current project/story')
+    if marker.get('identity_id', identity) != identity:
+        raise StandingSetupRequired('run identity differs from project identity')
+    _bound_authorization(root, setup, identity); _bound_authorization(root, command, identity)
+    if policy.get('planning_mode') != 'shot_local_v1':
+        raise StandingSetupRequired('standing runs require prospective local planning')
+    if basis.get('plan_sha256') != digest(baselines):
+        raise StandingSetupRequired('internally retained exact plan differs from run binding')
+    if any(provider not in setup['providers'] for provider in policy['providers']):
+        raise StandingSetupRequired('provider/account/billing terms exceed standing setup')
+    accounts = setup['provider_accounts']
+    if not isinstance(accounts, dict) or any(not isinstance(accounts.get(provider['id']), str)
+            or not accounts[provider['id']].strip() for provider in policy['providers']):
+        raise StandingSetupRequired('named configured account context required for every provider')
+    if (not isinstance(setup['caps'], dict) or any(type(setup['caps'].get(key)) is not int
+            or policy['caps'][key] > setup['caps'][key] for key in policy['caps'])
+            or not set(policy['checkpoint_stages']).issubset(setup['checkpoint_stages'])
+            or policy['flex'] != setup['flex']):
+        raise StandingSetupRequired('caps, checkpoint stages or flex exceed standing setup')
+    if not isinstance(setup['approved_source_sha256'], list) or not isinstance(setup['required_permissions'], list):
+        raise StandingSetupRequired('explicit original-source and permission inventory required')
+    for permission in setup['required_permissions']:
+        retained = _bound_document(root, permission, 'required artist/source permission')
+        if (retained.get('status') != 'approved' or retained.get('identity_id') != identity
+                or retained.get('source_sha256') not in setup['approved_source_sha256']):
+            raise StandingSetupRequired('required artist/source permission is unresolved')
+    transfers = setup['source_transfer']
+    if not isinstance(transfers, list):
+        raise StandingSetupRequired('explicit bounded source transfer permission required')
+    for provider in policy['providers']:
+        routes = [term for term in transfers if term.get('provider') == provider['id']
+                  and term.get('account') == accounts[provider['id']]]
+        if len(routes) != 1:
+            raise StandingSetupRequired('one exact source-transfer term required for each transport/account')
+        term = routes[0]
+        if (not isinstance(term.get('roles'), list) or type(term.get('generated_board_sources')) is not bool
+                or any(type(term.get(key)) is not int or term[key] < 1
+                       for key in ('max_files', 'max_file_bytes', 'max_batch_bytes', 'max_batches'))):
+            raise StandingSetupRequired('source transfer needs roles and positive file/batch limits')
+        for baseline in baselines.values():
+            for asset in baseline['projection']['assets']:
+                if asset.get('upstream_source'):
+                    if not term['generated_board_sources']:
+                        raise StandingSetupRequired('selected run-generated source transfer is not permitted')
+                    continue
+                if asset['role'] not in term['roles']:
+                    raise StandingSetupRequired('source role outside transport permission')
+                if asset.get('preparation_pending'):
+                    if not term['generated_board_sources']:
+                        raise StandingSetupRequired('declared generated board transfer not permitted')
+                    from lib.production_boards import load_board_pack
+                    pack = load_board_pack(root)
+                    declared = [a for a in pack['specification']['motion_binding']['contract_template']['assets']
+                                if a['id'] == asset['id']]
+                    if len(declared) != 1 or asset['id'] not in pack['prompt_pack'] or any(
+                            declared[0].get(key) != asset.get(key) for key in ('id', 'role', 'cast_ids')):
+                        raise StandingSetupRequired('pending source has no exact same-run declared node')
+                elif asset['sha256'] not in setup['approved_source_sha256']:
+                    if not term['generated_board_sources']:
+                        raise StandingSetupRequired('original source hash outside setup permission')
+                    _validate_generated_board_source(root, asset, expected=asset)
+    from lib import production_boards as boards, production_images as images
+    if (Path(root) / boards.ARTIFACT).exists() and boards.load_board_pack(root)['specification']['image_nodes']:
+        images._standing_image_definition(root, policy)
+    return setup, command
+
+
+def activate_standing_run(project_dir, *, policy, baselines, standing_setup, run_command, identity_id):
+    """Bind actual standing media authority + actual run command to authored work.
+
+    Uses existing policy/evidence/decision owners only. It supplies no human
+    semantic verdict or checkpoint approval. Named Grok account context is
+    configuration authority; its adapter exposes no runtime account attestation.
+    """
+    from lib import production_execution as execution
+    root = Path(project_dir).resolve()
+    with execution._lock(root):
+        path = root / POLICY_ARTIFACT
+        if path.exists():
+            retained = _json(path)
+            basis = retained.get('activation_basis', {})
+            ignored = {'evidence', 'shots', 'activation_basis', 'planning_mode'}
+            if (basis.get('identity_id') == identity_id and basis.get('standing_setup') == standing_setup
+                    and basis.get('run_command') == run_command
+                    and {k: v for k, v in retained.items() if k not in ignored}
+                        == {k: v for k, v in policy.items() if k not in ignored}):
+                active, sha, decision_id, reasons = load_active_policy(root)
+                if active is not None:
+                    # Resume uses the retained internally derived plan. Current
+                    # observed board bytes never mint a replacement activation.
+                    return {'policy_sha256': sha, 'decision_id': decision_id, 'replayed': True, 'provider_calls': 0}
+        candidate = copy.deepcopy(policy)
+        candidate['planning_mode'] = 'shot_local_v1'
+        candidate['shots'] = {sid: baseline_descriptor(value, root) for sid, value in baselines.items()}
+        candidate['activation_basis'] = {'version': '1.0', 'kind': 'standing_run', 'identity_id': identity_id,
+            'standing_setup': copy.deepcopy(standing_setup), 'run_command': copy.deepcopy(run_command),
+            'plan_sha256': digest(baselines)}
+        candidate['evidence'] = {'path': 'approvals/autonomy-policy-' + '0' * 64 + '.json', 'sha256': '0' * 64}
+        if schema_errors(candidate):
+            raise StandingSetupRequired('standing policy schema is incomplete: ' + ', '.join(schema_errors(candidate)))
+        _validate_standing_basis(root, candidate, baselines)
+        _validate_local_protected_planning(root, candidate, baselines)
+        if is_benchmark(root, _json(root / 'project.json')) or policy_conflicts(candidate, baselines):
+            raise StandingSetupRequired('benchmark or contradictory standing scope cannot activate')
+        for sid, baseline in baselines.items():
+            if current_projection(root, sid) != baseline['projection']:
+                raise StandingSetupRequired('activation baseline is not actual current authored planning')
+        if set(baselines) != {s['id'] for s in execution.load_shot_contract(root)['shots']}:
+            raise StandingSetupRequired('standing activation must bind every shot in the actual retained run plan')
+        counts = root_attempt_counts(root, candidate)
+        if (counts['total'] > candidate['caps']['max_total_attempts']
+                or counts['repair'] > candidate['caps']['max_repair_attempts']
+                or any(value > candidate['caps']['max_attempts_per_shot'] for value in counts['per_shot'].values())):
+            raise StandingSetupRequired('retained cumulative usage exceeds standing allowance')
+        missing_shots = [sid for sid in baselines if counts['per_shot'].get(sid, 0) == 0]
+        if counts['total'] + len(missing_shots) > candidate['caps']['max_total_attempts']:
+            raise StandingSetupRequired('fixed motion allowance cannot cover retained usage plus planned first-pass shots')
+        sha = policy_sha256(candidate, baselines)
+        content = evidence_content(candidate, baselines)
+        payload = json.dumps(content, indent=2, allow_nan=False).encode()
+        candidate['evidence'] = {'path': f'approvals/autonomy-policy-{sha}.json', 'sha256': hashlib.sha256(payload).hexdigest()}
+        path = root / POLICY_ARTIFACT
+        replayed = path.exists()
+        if path.exists():
+            current = _json(path)
+            if current != candidate:
+                raise StandingSetupRequired('existing project policy differs; explicit amendment required')
+            active, got, decision_id, reasons = load_active_policy(root)
+            if active is not None and got == sha:
+                return {'policy_sha256': sha, 'decision_id': decision_id, 'replayed': True, 'provider_calls': 0}
+        log_path = execution._artifact_path(root, 'decision_log.json')
+        log = _json(log_path) if log_path.exists() else {'version': '1.0', 'project_id': candidate['project_id'], 'decisions': []}
+        if log['project_id'] != candidate['project_id'] or (root / 'decision_log.json').exists() and (root / 'artifacts/decision_log.json').exists():
+            raise StandingSetupRequired('canonical decision log identity/alias conflict')
+        decision_id = 'standing-' + sha[:24]
+        choice = 'auto_continue:' + sha
+        if any(d.get('decision_id') == decision_id for d in log['decisions']):
+            raise StandingSetupRequired('existing activation decision is invalid or revoked')
+        log['decisions'].append({'decision_id': decision_id, 'stage': 'proposal', 'category': ACTIVATION_CATEGORY,
+            'subject': ACTIVATION_SUBJECT, 'selected': choice, 'user_approved': True,
+            'reason': 'Exact media run authorized by retained creator standing setup and actual run command; no human plan or semantic review claimed.',
+            'options_considered': [{'option_id': choice, 'label': 'Retained standing media run', 'score': 1,
+                'reason': 'Within the actual configured account, source and cumulative allowance.'}]})
+        Draft202012Validator(load_schema('decision_log')).validate(log)
+        evidence_path = root / candidate['evidence']['path']
+        evidence_path.parent.mkdir(parents=True, exist_ok=True)
+        if evidence_path.exists():
+            if evidence_path.read_bytes() != payload:
+                raise StandingSetupRequired('retained activation evidence changed')
+        else:
+            execution._write_new(evidence_path, content)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            execution._write_new(path, candidate)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = log_path.with_suffix('.json.activation-tmp')
+        temporary.write_text(json.dumps(log, indent=2)); temporary.replace(log_path)
+        return {'policy_sha256': sha, 'decision_id': decision_id, 'replayed': replayed, 'provider_calls': 0}
+
+
+def _validate_standing_transfer(root, policy, inputs, provider, *, exclude_scope_id=None):
+    """Actual source bytes fit retained per-transport/account file and batch limits."""
+    if not policy.get('activation_basis'):
+        return
+    from lib import production_execution as execution
+    from lib.shot_contract import required_asset_ids
+    setup = _bound_document(root, policy['activation_basis']['standing_setup'], 'standing setup')
+    account = setup['provider_accounts'][provider]
+    term = next(t for t in setup['source_transfer'] if t['provider'] == provider and t['account'] == account)
+    contract = execution.load_shot_contract(root)
+    shot = next(s for s in contract['shots'] if s['id'] == inputs['governance']['shot_id'])
+    assets = [a for a in contract['assets'] if a['id'] in required_asset_ids(contract, shot)]
+    actual = []
+    def bind(role, path):
+        matches = [a for a in assets if a.get('path') and _inside(root, a['path']) == path
+                   and a.get('sha256') == hashlib.sha256(path.read_bytes()).hexdigest()]
+        if not matches or not any(a['role'] in term['roles'] for a in matches):
+            raise StandingSetupRequired('actual transport source lies outside reviewed consumer roles')
+        size = path.stat().st_size
+        if size > term['max_file_bytes']:
+            raise StandingSetupRequired('actual source exceeds retained file limit')
+        actual.append((path, size))
+        return str(path)
+    execution._paths(execution._clean(inputs), Path(root).resolve(), bind)
+    if len(actual) > term['max_files'] or sum(size for _, size in actual) > term['max_batch_bytes']:
+        raise StandingSetupRequired('actual source batch exceeds retained transfer limit')
+    # Grok transfers local bytes inline with each original motion call. OpenArt
+    # reuses separately uploaded remote sources; its existing upload authorities
+    # and owners count those batches, not every generation using their URLs.
+    prior = []
+    if provider == 'grok_cli':
+        for attempt in execution._attempts(Path(root)):
+            if (attempt.get('scope', attempt.get('scope_snapshot', {})).get('provider') != provider
+                    or exclude_scope_id is not None and attempt.get('scope_id') == exclude_scope_id):
+                continue
+            bound = []
+            execution._paths(execution._clean(attempt.get('submitted_inputs', {})), Path(root).resolve(),
+                lambda role, path: bound.append(path) or str(path))
+            if bound:
+                prior.append(attempt)
+    if actual and len(prior) >= term['max_batches']:
+        raise StandingSetupRequired('retained source transfer batch allowance exhausted')
+
+
+def _standing_upload_material(root, *, shot_id, provider, files, account, openart_project_id=None):
+    """Pure existing-format source-transfer authority from the real standing run."""
+    import mimetypes
+    from lib import production_execution as execution, production_request as preparation
+    policy, sha, decision_id = require_active_policy(root, shot_id=shot_id)
+    if not policy.get('activation_basis') or provider not in {'openart_cli', 'openart_mcp'}:
+        raise StandingSetupRequired('standing OpenArt source transfer authority required')
+    spec = _provider_spec(policy, provider)
+    if provider == 'openart_cli':
+        expected_account = {'account_id_sha256': spec['account_id_sha256'], 'workspace': spec['workspace']}
+        if account != expected_account or openart_project_id is not None:
+            raise StandingSetupRequired('CLI upload account/workspace differs from standing setup')
+    elif (not isinstance(account, dict) or account.get('uid_sha256') != spec['uid_sha256']
+            or openart_project_id != spec['project_id']):
+        raise StandingSetupRequired('MCP upload account/project differs from standing setup')
+    if (not isinstance(files, list) or not files or any(not isinstance(p, str) for p in files)
+            or provider == 'openart_cli' and len(files) != 1):
+        raise StandingSetupRequired('exact supported ordered source files required')
+    packet = preparation.source_packet(root, shot_id, provider=provider, check_native_controls=False)
+    consumer_assets = {a['id']: a for a in execution.load_shot_contract(root)['assets']}
+    manifest, assets = [], []
+    for supplied in files:
+        path = _inside(root, supplied)
+        if Path(supplied).is_symlink() or not path.is_file():
+            raise StandingSetupRequired('upload requires regular current consumer source bytes')
+        source_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+        matches = [a for a in packet['binding']['references'] if consumer_assets[a['id']].get('path')
+            and _inside(root, consumer_assets[a['id']]['path']) == path and a['sha256'] == source_sha]
+        if not matches:
+            raise StandingSetupRequired('upload source is outside exact reviewed consumer binding')
+        media_type = (mimetypes.guess_type(str(path))[0] or '').split('/')[0]
+        if media_type not in {'image', 'video', 'audio'}:
+            raise StandingSetupRequired('upload source media type is unsupported')
+        manifest.append({'path': str(path), 'sha256': source_sha, 'type': media_type}); assets.append(matches[0])
+    if len({r['path'] for r in manifest}) != len(manifest):
+        raise StandingSetupRequired('upload source paths must be unique')
+    _validate_standing_transfer(root, policy, {'governance': {'shot_id': shot_id},
+        'reference_image_paths': [r['path'] for r in manifest]}, provider)
+    binding = {'policy_sha256': sha, 'decision_id': decision_id, 'shot_id': shot_id,
+        'source_binding': packet['binding'], 'account': account, 'files': manifest,
+        'openart_project_id': openart_project_id}
+    upload_id = 'standing-' + digest(binding)[:32]
+    approved_by = 'standing_media_authority:' + decision_id
+    if provider == 'openart_cli':
+        record = {'version': '1.0', 'upload_id': upload_id, 'asset_id': assets[0]['id'],
+            'shot_id': shot_id, 'source_sha256': manifest[0]['sha256'], 'source_binding': packet['binding'],
+            'approved_by': approved_by, 'evidence_path': policy['evidence']['path'], 'evidence_sha256': policy['evidence']['sha256']}
+        name = 'upload_approval-' + upload_id + '.json'
+    else:
+        record = {'provider': provider, 'status': 'approved', 'purpose': 'source_transfer_only',
+            'project_id': policy['project_id'], 'story_revision': policy['story_revision'],
+            'account_uid_sha256': spec['uid_sha256'], 'openart_project_id': openart_project_id,
+            'files': manifest, 'no_enforceable_credit_ceiling': True, 'delayed_charges_unknown': True,
+            'max_upload_batches': 1, 'approved_by': approved_by, 'evidence': copy.deepcopy(policy['evidence']),
+            'derived_from_standing_run': binding}
+        name = 'openart_mcp_upload_authorization-' + upload_id + '.json'
+    return policy, record, name
+
+
+def derive_standing_upload_authority(project_dir, *, shot_id, provider, files, account, openart_project_id=None):
+    """Retain exact legacy-format upload authority; no upload/account discovery call."""
+    from lib import production_execution as execution
+    root = Path(project_dir).resolve()
+    with execution._lock(root):
+        policy, record, name = _standing_upload_material(root, shot_id=shot_id, provider=provider,
+            files=files, account=account, openart_project_id=openart_project_id)
+        path = root / 'artifacts' / name
+        if path.exists():
+            if _json(path) != record:
+                raise StandingSetupRequired('retained upload authority differs from exact current source/account')
+            return {'upload_id': name.removeprefix('upload_approval-').removeprefix('openart_mcp_upload_authorization-').removesuffix('.json'),
+                'authority': record, 'replayed': True, 'provider_calls': 0}
+        setup = _bound_document(root, policy['activation_basis']['standing_setup'], 'standing setup')
+        term = next(t for t in setup['source_transfer'] if t['provider'] == provider
+            and t['account'] == setup['provider_accounts'][provider])
+        prefix = 'upload_approval-' if provider == 'openart_cli' else 'openart_mcp_upload_authorization-'
+        if len(list((root / 'artifacts').glob(prefix + '*.json'))) >= term['max_batches']:
+            raise StandingSetupRequired('retained upload batch allowance exhausted')
+        execution._write_new(path, record)
+        return {'upload_id': name.removeprefix(prefix).removesuffix('.json'), 'authority': record,
+            'replayed': False, 'provider_calls': 0}
+
+
+def validate_standing_mcp_upload(root, authority, *, files, account, openart_project_id):
+    binding = authority.get('derived_from_standing_run', {})
+    _, expected, _ = _standing_upload_material(Path(root).resolve(), shot_id=binding['shot_id'], provider='openart_mcp',
+        files=[r['path'] for r in files], account=binding['account'], openart_project_id=openart_project_id)
+    if authority != expected or account.get('uid_sha256') != authority['account_uid_sha256'] or files != authority['files']:
+        raise StandingSetupRequired('current upload account/source/run authority differs')
+
+
 # ---------------------------------------------------------------- evidence
 
 def evidence_content(policy, baselines):
@@ -122,7 +511,7 @@ def is_benchmark(root, marker):
         or (root / 'artifacts' / 'provider_benchmark.json').exists()
 
 
-def load_active_policy(root):
+def load_active_policy(root, *, shot_id=None):
     """Return ``(policy, sha, decision_id, reasons)``; policy ``None`` means Strict. Zero writes."""
     root = Path(root)
     reasons = []
@@ -136,11 +525,19 @@ def load_active_policy(root):
             return None, None, None, [f'schema: {e}' for e in errors]
         baselines = retained_baselines(root, policy)
         sha = digest(evidence_content(policy, baselines))
+        local = policy.get('planning_mode') == 'shot_local_v1'
+        if local:
+            if shot_id is not None and shot_id not in baselines:
+                raise AutonomyError('shot outside retained policy')
+            _validate_local_protected_planning(root, policy, baselines)
+        if policy.get('activation_basis'):
+            _validate_standing_basis(root, policy, baselines)
         # Retained original sources remain immutable authority even if a legal
         # request drops a reference or chooses separate approved substitute bytes.
-        for retained in baselines.values():
+        source_baselines = ([baselines[shot_id]] if shot_id is not None else []) if local else baselines.values()
+        for retained in source_baselines:
             for asset in retained['projection']['assets']:
-                if not asset.get('upstream_source') and hashlib.sha256(_inside(root, asset['path']).read_bytes()).hexdigest() != asset['sha256']:
+                if not asset.get('upstream_source') and not asset.get('preparation_pending') and hashlib.sha256(_inside(root, asset['path']).read_bytes()).hexdigest() != asset['sha256']:
                     raise AutonomyError('retained original static source bytes changed')
         decision = activation_decision(root)
         if not decision or decision.get('selected') != f'auto_continue:{sha}' \
@@ -168,10 +565,12 @@ def load_active_policy(root):
                      if s.get('human_approval_default') is True and s['name'] != 'publish'}
             if not set(policy['checkpoint_stages']).issubset(gated):
                 reasons.append('checkpoint stages are not actual gated pipeline stages')
-        _validate_global_planning(root, policy, baselines)
-        for shot_id, retained in baselines.items():
-            current = current_projection(root, shot_id)
-            _validate_delta(policy, shot_id, current, retained['projection'], allow_global_shift=True)
+        if not local:
+            _validate_global_planning(root, policy, baselines)
+        subjects = ([shot_id] if shot_id is not None else []) if local else baselines
+        for subject in subjects:
+            current = current_projection(root, subject)
+            _validate_delta(policy, subject, current, baselines[subject]['projection'], allow_global_shift=True, root=root)
     except Exception as exc:
         return None, None, None, [f'unreadable policy: {exc}']
     if reasons:
@@ -179,8 +578,8 @@ def load_active_policy(root):
     return policy, sha, decision.get('decision_id'), []
 
 
-def require_active_policy(root):
-    policy, sha, decision_id, reasons = load_active_policy(root)
+def require_active_policy(root, *, shot_id=None):
+    policy, sha, decision_id, reasons = load_active_policy(root, shot_id=shot_id)
     if policy is None:
         raise AutonomyError('Strict: ' + '; '.join(reasons))
     return policy, sha, decision_id
@@ -215,10 +614,14 @@ def _load_historical_policy(root, scope, *, _source_shot_id=None):
         raise AutonomyError('historical policy schema: ' + '; '.join(errors))
     baselines = retained_baselines(root, policy)
     sha = digest(evidence_content(policy, baselines))
-    source_baselines = baselines.values() if _source_shot_id is None else [baselines[_source_shot_id]]
+    if policy.get('planning_mode') == 'shot_local_v1':
+        subject = _source_shot_id or next(iter(scope.get('requests', {})), None)
+        source_baselines = [baselines[subject]] if subject in baselines else []
+    else:
+        source_baselines = baselines.values() if _source_shot_id is None else [baselines[_source_shot_id]]
     for retained in source_baselines:
         for asset in retained['projection']['assets']:
-            if not asset.get('upstream_source') and hashlib.sha256(_inside(root, asset['path']).read_bytes()).hexdigest() != asset['sha256']:
+            if not asset.get('upstream_source') and not asset.get('preparation_pending') and hashlib.sha256(_inside(root, asset['path']).read_bytes()).hexdigest() != asset['sha256']:
                 raise AutonomyError('retained original static source bytes changed')
     if derived.get('policy_sha256') != sha:
         raise AutonomyError('historical attempt policy bytes differ')
@@ -333,7 +736,7 @@ def policy_conflicts(policy, baselines=None):
     if baselines is not None:
         implicit.update((a['sha256'], a['role']) for retained in baselines.values()
                         for a in retained['projection']['assets']
-                        if not a.get('upstream_source') and
+                        if not a.get('upstream_source') and not a.get('preparation_pending') and
                         set(a.get('cast_ids', [])) & set(retained['projection']['implicit_cast_ids']))
     cast_roles = set(CAST_ROLES) | {r for _, r in locked_cast | implicit}
     source_roles = {a['role'] for b in policy['shots'].values() for a in b['static_input_assets']
@@ -368,12 +771,11 @@ def static_planning_projection(contract, scene_plan, script, shot_id, manifest=N
     if shot_reference_free:
         cast, needed = set(), set()
     else:
-        cast = set(shot['cast_ids']) | set(contract['late_cast_ids']) | set(contract['payoff_speaker_ids'])
-        needed = set(shot['asset_ids'])
-        if contract.get('payoff_asset_id') is not None:
-            needed.add(contract['payoff_asset_id'])
-        needed.update(a['id'] for a in contract['assets']
-                      if not a.get('upstream_source') and cast.intersection(a['cast_ids']))
+        from lib.shot_contract import required_asset_ids, shot_local
+        cast = set(shot['cast_ids'])
+        if not shot_local(contract):
+            cast |= set(contract['late_cast_ids']) | set(contract['payoff_speaker_ids'])
+        needed = required_asset_ids(contract, shot)
     assets = []
     for source in contract['assets']:
         if source['id'] not in needed:
@@ -405,16 +807,32 @@ def static_planning_projection(contract, scene_plan, script, shot_id, manifest=N
                             {'attempt_id', 'output_sha256', 'outgoing_frame_sha256', 'review_sha256'}}
                             for u in item.get('upstream', [])]
     cards = scene_plan.get('metadata', {}).get('visual_development', {}).get('shot_cards', {})
+    from lib.shot_contract import shot_local
+    local = shot_local(contract)
+    if local:
+        assets.sort(key=lambda asset: asset['id'])
     return copy.deepcopy({'story': contract['story'], 'shot': shot, 'assets': assets,
         'late_cast_ids': contract['late_cast_ids'], 'payoff_speaker_ids': contract['payoff_speaker_ids'],
         'payoff_asset_id': contract.get('payoff_asset_id'), 'implicit_cast_ids': sorted(cast),
         'order': {'shots': [s['id'] for s in contract['shots']],
                   'scenes': [s['id'] for s in scene_plan['scenes']],
                   'script_sections': [s['id'] for s in script['sections']]},
-        'scene': scenes[0], 'script_section': sections[0],
+        'scene': local_timing(scenes[0]) if local else scenes[0],
+        'script_section': local_timing(sections[0]) if local else sections[0],
         'shot_card': cards.get(shot_id) if isinstance(cards, dict) else cards,
         'manifest_requirements': _manifest_requirement_binding(manifest, shot_id),
         'contract_snapshot': snapshot, 'scene_snapshot': copy.deepcopy(scene_plan)})
+
+
+def local_timing(record):
+    """Clip planning binds relative timing; cut placement belongs to assembly."""
+    value = copy.deepcopy(record)
+    if 'start_seconds' in value:
+        start = value['start_seconds']
+        if 'end_seconds' in value:
+            value['end_seconds'] = round(value['end_seconds'] - start, 6)
+        value['start_seconds'] = 0
+    return value
 
 
 def current_projection(root, shot_id):
@@ -427,7 +845,7 @@ def current_projection(root, shot_id):
     projection = static_planning_projection(read('shot_contract'), read('scene_plan'), read('script'),
                                           shot_id, _json(manifest_path) if manifest_path.exists() else None)
     for asset in projection['assets']:
-        if not asset.get('upstream_source'):
+        if not asset.get('upstream_source') and not asset.get('preparation_pending'):
             if hashlib.sha256(_inside(root, asset['path']).read_bytes()).hexdigest() != asset['sha256']:
                 raise AutonomyError('static reference bytes changed')
     return projection
@@ -460,7 +878,13 @@ def baseline_descriptor(retained, root=None):
     upstream = []
     def visit(value, pointer=''):
         if isinstance(value, dict):
-            if '$upstream' in value:
+            if '$board' in value:
+                from lib.production_execution import _board_binding
+                binding = _board_binding(value)
+                slots = [a for a in projection['assets'] if a['id'] == binding['asset_id']]
+                if projection['contract_snapshot'].get('planning_mode') != 'shot_local_v1' or len(slots) != 1:
+                    raise AutonomyError('declared board input lies outside prospective consumer baseline')
+            elif '$upstream' in value:
                 from lib.production_execution import _upstream_binding
                 binding = _upstream_binding(value)
                 upstream.append({'name': '$upstream' + pointer.replace('/', '.'), **binding})
@@ -472,7 +896,8 @@ def baseline_descriptor(retained, root=None):
                 visit(v, pointer + '/' + str(i))
     visit(template['inputs'])
     from lib.production_execution import approval_plan_digest
-    if approval_plan_digest(projection['contract_snapshot']) != retained['approval_plan_sha256']:
+    if approval_plan_digest(projection['contract_snapshot'],
+            projection['shot']['id'] if projection['contract_snapshot'].get('planning_mode') == 'shot_local_v1' else None) != retained['approval_plan_sha256']:
         raise AutonomyError('retained full approval plan digest differs')
     return {'planned_request_template_sha256': digest(template), 'static_input_assets': static,
             'upstream': upstream, 'approval_plan_digest': retained['approval_plan_sha256'],
@@ -513,6 +938,27 @@ def _validate_global_planning(root, policy, baselines):
     _apply_reference_planning_flex(policy, expected_contract, current['contract_snapshot'])
     if current['contract_snapshot'] != expected_contract or current['scene_snapshot'] != expected_scene or script != expected_script:
         raise AutonomyError('whole retained planning changed outside deterministic flex')
+
+
+def _validate_local_protected_planning(root, policy, baselines):
+    """Prospective policy keeps story/order global, live eligibility local."""
+    from lib.production_execution import load_shot_contract, _artifact_path
+    from lib.shot_contract import protected_planning, shot_local
+    current = load_shot_contract(root)
+    if not shot_local(current):
+        raise AutonomyError('local policy requires explicitly prospective contract')
+    first = next(iter(baselines.values()))
+    protected = protected_planning(first['projection']['contract_snapshot'])
+    if protected_planning(current) != protected:
+        raise AutonomyError('protected story or shot order changed')
+    scene = _json(_artifact_path(Path(root), 'scene_plan.json'))
+    script = _json(_artifact_path(Path(root), 'script.json'))
+    order = {'shots': [s['id'] for s in current['shots']], 'scenes': [s['id'] for s in scene['scenes']],
+             'script_sections': [s['id'] for s in script['sections']]}
+    for retained in baselines.values():
+        if (protected_planning(retained['projection']['contract_snapshot']) != protected
+                or retained['projection']['order'] != order):
+            raise AutonomyError('retained protected story/order differs')
 
 
 def _round(value):
@@ -568,7 +1014,7 @@ def _diff(a, b, path=''):
 def contract_delta(root, shot_id, candidate, *, policy=None):
     """Compare only against retained evidence, never against a caller baseline."""
     if policy is None:
-        policy, _, _ = require_active_policy(root)
+        policy, _, _ = require_active_policy(root, shot_id=shot_id)
     baseline = retained_baselines(root, policy)[shot_id]['projection']
     if candidate.get('contract_snapshot') != current_projection(root, shot_id)['contract_snapshot'] or candidate.get('scene_snapshot') != current_projection(root, shot_id)['scene_snapshot']:
         raise AutonomyError('candidate global planning differs from validated current bytes')
@@ -576,10 +1022,10 @@ def contract_delta(root, shot_id, candidate, *, policy=None):
     duration = candidate.get('shot', {}).get('duration_seconds')
     if candidate != current and (duration not in policy['flex']['duration_s'] or candidate != retime(current, duration)):
         raise AutonomyError('candidate is not actual planning or deterministic prospective retime')
-    return _validate_delta(policy, shot_id, candidate, baseline, allow_global_shift=True)
+    return _validate_delta(policy, shot_id, candidate, baseline, allow_global_shift=True, root=root)
 
 
-def _validate_delta(policy, shot_id, candidate, baseline_projection, *, allow_global_shift=False):
+def _validate_delta(policy, shot_id, candidate, baseline_projection, *, allow_global_shift=False, root=None):
     """Return ``(flexed_duration_or_None, changed_paths)``; raise outside the envelope."""
     baseline = policy['shots'].get(shot_id)
     if baseline is None:
@@ -591,7 +1037,18 @@ def _validate_delta(policy, shot_id, candidate, baseline_projection, *, allow_gl
     for value in (candidate, baseline_projection):
         value.pop('contract_snapshot', None)
         value.pop('scene_snapshot', None)
-    if allow_global_shift:
+    if policy.get('planning_mode') == 'shot_local_v1':
+        observed = {asset['id']: asset for asset in candidate['assets']}
+        for index, asset in enumerate(baseline_projection['assets']):
+            if not asset.get('preparation_pending'):
+                continue
+            current = observed.get(asset['id'])
+            if current and not current.get('preparation_pending'):
+                if root is None:
+                    raise AutonomyError('pending source materialization needs canonical attribution')
+                _validate_generated_board_source(root, current, expected=asset)
+                baseline_projection['assets'][index] = copy.deepcopy(current)
+    if allow_global_shift and policy.get('planning_mode') != 'shot_local_v1':
         baseline_projection['assets'] = copy.deepcopy(candidate['assets'])
         baseline_projection['shot']['asset_ids'] = copy.deepcopy(candidate['shot']['asset_ids'])
         for key in ('scene', 'script_section'):
@@ -775,7 +1232,7 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
     from lib import production_request as preparation
     from lib.production_execution import _paths, _clean, _artifact_path
     if historical is None and policy_context is None:
-        policy, sha, _ = require_active_policy(root)
+        policy, sha, _ = require_active_policy(root, shot_id=shot_id)
     elif historical is None:
         # Retained-authority replay: the caller already proved the historical policy.
         policy, sha = policy_context
@@ -783,6 +1240,8 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
         policy, sha = historical['policy'], historical['policy_sha256']
     retained = retained_baselines(root, policy)[shot_id]
     projection = retained['projection']
+    if policy.get('planning_mode') == 'shot_local_v1':
+        projection = _materialized_projection(root, projection)
     contract_delta(root, shot_id, current_projection(root, shot_id), policy=policy)
     if historical is None:
         if policy_context is None:
@@ -945,6 +1404,8 @@ def _scope_record(policy, sha, decision_id, *, shot_id, provider, request_digest
             'resolved_upstream': copy.deepcopy(resolved_upstream or {}),
         },
     }
+    if policy.get('planning_mode') == 'shot_local_v1':
+        scope['planning_mode'] = 'shot_local_v1'
     if phase == 'repair':
         scope['replaces_attempt_ids'] = list(replaces_attempt_ids)
     if repair_basis == 'access_fallback':
@@ -1080,7 +1541,8 @@ def _validate_retained_packet_policy_mcp_attempt(root, scope, *, inputs, native,
     policy, sha, decision_id = _load_historical_policy(root, scope,
         _source_shot_id=shot_id if _original_contract is not None else None)
     if (_original_contract is not None
-            and execution.approval_plan_digest(_original_contract) != scope['approval_plan_sha256']):
+            and execution.approval_plan_digest(_original_contract,
+                inputs['governance']['shot_id'] if scope.get('planning_mode') == 'shot_local_v1' else None) != scope['approval_plan_sha256']):
         raise AutonomyError('historical MCP original planning differs from retained scope')
     current_profile, current_native = _prepare_mcp_policy_native(root, policy, shot_id, inputs)
     if digest(current_native) != digest(native) or digest(current_profile) != digest(profile):
@@ -1090,7 +1552,8 @@ def _validate_retained_packet_policy_mcp_attempt(root, scope, *, inputs, native,
     material = {'shot_id': shot_id, 'provider': 'openart_mcp',
         'request_digest': execution.planned_request_digest(inputs, project_dir=root),
         'approval_plan_sha256': execution.approval_plan_digest(
-            execution.load_shot_contract(root) if _original_contract is None else _original_contract),
+            execution.load_shot_contract(root) if _original_contract is None else _original_contract,
+            inputs['governance']['shot_id'] if scope.get('planning_mode') == 'shot_local_v1' else None),
         'lock_digest': locks, 'compiled_request_sha256': digest(compiled),
         'preparation_review_id': inputs['preparation_review_id'], 'resolved_upstream': selected}
     material['unknown_cost_authorization_sha256'] = scope.get('unknown_cost_authorization_sha256')
@@ -1127,12 +1590,12 @@ def _refuse_unknown_cost(inputs, *, derived_unknown_id=None, allow_evidence=Fals
         raise AutonomyError('unknown-cost Auto-continue is unavailable; use separate Strict approval')
 
 
-def _scope_material(root, inputs, provider, observation=None, *, derived_unknown_id=None, historical_scope=None):
+def _scope_material(root, inputs, provider, observation=None, *, derived_unknown_id=None, historical_scope=None, replay_scope_id=None):
     _refuse_unknown_cost(inputs, derived_unknown_id=derived_unknown_id, allow_evidence=True)
     from lib import production_request as preparation, production_execution as execution
     # Historical replay proves the retained approving policy; only new admission needs an active one.
     policy, sha, decision_id = (load_historical_policy(root, historical_scope) if historical_scope is not None
-                                else require_active_policy(root))
+                                else require_active_policy(root, shot_id=inputs['governance']['shot_id']))
     unknown = _is_unknown(_provider_spec(policy, provider))
     if provider not in {'openart_cli', 'openart_mcp'} and _is_unknown(_openart_spec(policy)) and any(key in inputs for key in ('unknown_cost_evidence_id', 'unknown_cost_authorization_id')):
         raise AutonomyError('unknown-cost authority is OpenArt-only')
@@ -1156,6 +1619,8 @@ def _scope_material(root, inputs, provider, observation=None, *, derived_unknown
     if provider not in {p['id'] for p in policy['providers']}:
         raise AutonomyError('route provider outside approved policy')
     _validate_request_delta(root, policy, shot_id, inputs, provider)
+    if historical_scope is None:
+        _validate_standing_transfer(root, policy, inputs, provider, exclude_scope_id=replay_scope_id)
     if provider == 'openart_cli':
         from lib import openart_jobs as jobs
         from tools.tool_registry import _openart_route
@@ -1193,7 +1658,8 @@ def _scope_material(root, inputs, provider, observation=None, *, derived_unknown
     resolved = {producer: copy.deepcopy(selected[producer]) for producer in producers}
     material = {'shot_id': shot_id, 'provider': provider,
         'request_digest': execution.planned_request_digest(inputs, project_dir=root),
-        'approval_plan_sha256': execution.approval_plan_digest(execution.load_shot_contract(root)),
+        'approval_plan_sha256': execution.approval_plan_digest(execution.load_shot_contract(root),
+            shot_id if policy.get('planning_mode') == 'shot_local_v1' else None),
         'lock_digest': locks, 'compiled_request_sha256': proof['compiled_sha256'],
         'preparation_review_id': inputs['preparation_review_id'],
         'resolved_upstream': resolved}
@@ -1219,7 +1685,7 @@ def validate_derived_scope(root, scope, *, inputs, observation=None):
     if not isinstance(derived, dict):
         raise AutonomyError('malformed derived_from_policy')
     policy, sha, decision_id, material = _scope_material(root, inputs, scope.get('provider'), observation,
-                                                         derived_unknown_id=scope.get('id'))
+                                                         derived_unknown_id=scope.get('id'), replay_scope_id=scope.get('id'))
     if derived.get('policy_sha256') != sha or derived.get('decision_id') != decision_id:
         raise AutonomyError('derived scope cites inactive policy')
     _require_route_decision(root, sha, decision_id, material['shot_id'], scope['provider'])
@@ -1461,7 +1927,7 @@ def _controls_admission(root, shot_id, provider, inputs, phase, replaces_attempt
 
 
 def derive_scope(root, inputs, *, provider, observation=None, phase='first_pass', replaces_attempt_ids=None,
-                 repair_basis='critical_review', creator_repair=None):
+                 repair_basis='critical_review', creator_repair=None, reuse_undispatched=False):
     """Append a normal exact one-attempt scope under the project lock, without CLI calls."""
     from lib import production_execution as execution
     root = Path(root).resolve()
@@ -1478,8 +1944,16 @@ def derive_scope(root, inputs, *, provider, observation=None, phase='first_pass'
         scopes = data['scopes']
         used_scopes = {a['scope_id'] for a in execution._attempts(root)}
         from lib.production_repair_batches import closed_unsubmitted_creator_scope
-        if any(s['id'] not in used_scopes and shot_id in s.get('requests', {}) and 'derived_from_policy' in s
-               and not closed_unsubmitted_creator_scope(root, s) for s in scopes):
+        pending = [s for s in scopes if s['id'] not in used_scopes and shot_id in s.get('requests', {})
+                   and 'derived_from_policy' in s and not closed_unsubmitted_creator_scope(root, s)]
+        if pending and reuse_undispatched:
+            if (len(pending) != 1 or pending[0]['provider'] != provider or pending[0]['phase'] != phase
+                    or pending[0].get('replaces_attempt_ids') != replaces_attempt_ids
+                    or pending[0]['requests'][shot_id] != material['request_digest']):
+                raise AutonomyError('undispatched scope differs from exact original request/route/phase')
+            validate_derived_scope(root, pending[0], inputs=inputs, observation=observation)
+            return copy.deepcopy(pending[0])
+        if pending:
             raise AutonomyError('an undispatched derived scope already exists for this shot')
         if repair_basis not in ('critical_review', 'access_fallback', 'creator_batch'):
             raise AutonomyError('unknown repair basis')
@@ -1743,7 +2217,8 @@ def validate_policy_attempt(root, request, scope, frozen_contract, *, frozen_ope
         raise AutonomyError('historical policy approval authority differs')
     if scope['requests'] != {shot_id: request['request_sha256']} or scope['attempts_per_shot'] != {shot_id: 1}:
         raise AutonomyError('historical policy scope is not exact singleton')
-    if scope['approval_plan_sha256'] != execution.approval_plan_digest(frozen_contract):
+    if scope['approval_plan_sha256'] != execution.approval_plan_digest(frozen_contract,
+            shot_id if scope.get('planning_mode') == 'shot_local_v1' else None):
         raise AutonomyError('historical frozen planning differs')
     directory = root / 'production_attempts' / request['attempt_id']
     if scope['provider'] == 'openart_cli':
@@ -2045,6 +2520,17 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider):
     selected = execution.load_selected_attempts(root)
     dynamic = []
     def resolve(value, pointer='', key=None):
+        if isinstance(value, dict) and '$board' in value:
+            binding = execution._board_binding(value)
+            if key not in execution.INPUT_PATH_KEYS:
+                raise AutonomyError('declared board must occupy exact asset input')
+            record = execution.resolve_board_input(root, binding)
+            slots = [a for a in retained['projection']['assets'] if a['id'] == binding['asset_id']]
+            if policy.get('planning_mode') != 'shot_local_v1' or len(slots) != 1:
+                raise AutonomyError('board input lies outside exact prospective consumer')
+            _validate_generated_board_source(root, {**slots[0], **record}, expected=slots[0])
+            dynamic.append((pointer, copy.deepcopy(binding), record['sha256']))
+            return {'sha256': record['sha256']}
         if isinstance(value, dict) and '$upstream' in value:
             binding = execution._upstream_binding(value)
             record = selected.get(binding['shot_id'], {}).get(binding['role'], {})

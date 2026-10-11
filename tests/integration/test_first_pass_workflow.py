@@ -64,6 +64,7 @@ class NativeTransport:
         self.root = root
         self.native_requests = []
         self.timeout_next = False
+        self.fail_next = False
         self.original_sessions = {}
         self.duration = 8
 
@@ -83,22 +84,28 @@ class NativeTransport:
             args = json.loads(Path(argv[argv.index('--prompt-file') + 1]).read_text().splitlines()[1])
             self.duration = args['duration']
             self.native_requests.append({'session_id': sid, 'arguments': args, 'request': request})
-            artifact = self.root / 'sessions' / quote(str(self.root), safe='') / sid / 'videos' / 'clip.mp4'
+            artifact = self.root / 'sessions' / quote(str(kwargs['cwd']), safe='') / sid / 'videos' / 'clip.mp4'
             artifact.parent.mkdir(parents=True, exist_ok=True)
-            artifact.write_bytes(f'SYNTHETIC NATIVE VIDEO {request["shot_id"]} {sid}'.encode())
+            native_failed = self.fail_next
+            self.fail_next = False
+            if not native_failed:
+                artifact.write_bytes(f'SYNTHETIC NATIVE VIDEO {request["shot_id"]} {sid}'.encode())
             events = [
                 {'type':'tool_call', 'toolCallId':'native-1', 'toolName':'reference_to_video', 'rawInput':args},
                 {'type':'tool_call_update', 'toolCallId':'native-1', 'status':'completed',
                  'rawOutput':{'type':'ReferenceToVideo', 'path':str(artifact), 'filename':artifact.name}},
                 {'type':'end', 'stopReason':'end_turn', 'sessionId':sid},
             ]
+            if native_failed:
+                events[1].update(status='failed', rawOutput={'error': 'Synthetic authoritative original native failure'})
             stream = '\n'.join(json.dumps(event) for event in events) + '\n'
             (artifact.parent.parent / 'events.jsonl').write_text(stream)
             self.original_sessions[sid] = {'stream':stream, 'artifact':artifact, 'arguments':args}
             if self.timeout_next:
                 self.timeout_next = False
                 # Plausible output bytes may exist when the host loses the result.
-                Path(request['submitted_inputs']['output_path']).write_bytes(artifact.read_bytes())
+                if not native_failed:
+                    Path(request['submitted_inputs']['output_path']).write_bytes(artifact.read_bytes())
                 raise subprocess.TimeoutExpired(argv, kwargs.get('timeout', 600), output='')
             return subprocess.CompletedProcess(argv, 0, stream, '')
         if Path(str(argv[0])).name == 'ffprobe':
@@ -326,6 +333,33 @@ def test_valid_story_to_mocked_cli_attempts_and_current_final(production):
     certify_final(p.root, review)
     path = write_checkpoint(p.root.parent, p.root.name, 'compose', 'completed', {'render_report':report,'final_review':review})
     assert read(path)['metadata']['release_status'] == 'final'
+
+
+def test_local_selection_survives_unrelated_pending_shot_and_scene(production):
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    p = production
+    p.contract['planning_mode'] = 'shot_local_v1'
+    p.contract['project_review'] = attestation(project_review_subject(p.contract), PROJECT_PREDICATES)
+    for shot in p.contract['shots']:
+        shot['review'] = attestation(shot_review_subject(p.contract, shot['id']), SHOT_PREDICATES)
+    p.scope.update(planning_mode='shot_local_v1',
+        approval_plan_sha256=approval_plan_digest(p.contract, 'entry'),
+        requests={'entry': p.scope['requests']['entry']}, attempts_per_shot={'entry': 1})
+    p.persist_contract(); p.persist_scope()
+    # A later shot has no reviewed source bytes yet; opening remains eligible.
+    p.contract['assets'] = [a for a in p.contract['assets'] if not a['id'].startswith('payoff-')]
+    p.persist_contract()
+    result = p.generate('entry')
+    assert result.success, result.error
+    frozen = (p.root / 'production_attempts' / result.data['production_attempt_id'] / 'request.json').read_bytes()
+    p.contract['shots'][-1]['dominant_action'] = 'Future alternative action'
+    p.persist_contract()
+    plan_path = p.root / 'artifacts/scene_plan.json'
+    plan = read(plan_path); plan['scenes'][-1]['description'] = 'Future alternative scene'
+    save(plan_path, plan)
+    selected = p.select('entry', result)
+    assert load_selected_attempts(p.root)['entry'] == selected
+    assert (p.root / 'production_attempts' / result.data['production_attempt_id'] / 'request.json').read_bytes() == frozen
 
 
 @pytest.mark.parametrize('bad_asset', ['sen', 'payoff-board'])
@@ -589,6 +623,20 @@ def test_native_terminal_failure_reconciliation_allows_exact_motion_repair(produ
     original=p.generate('entry')
     aid=original.data['production_attempt_id']
     request=read(p.root/'production_attempts'/aid/'request.json')
+    # Replace only this temporary fixture's synthetic completion with an actual
+    # correlated failed terminal stream. Caller labels cannot prove failure.
+    native = p.transport.original_sessions[aid]
+    folder = native['artifact'].parent.parent
+    native['artifact'].unlink()
+    Path(request['submitted_inputs']['output_path']).unlink()
+    events = [
+        {'type': 'tool_call', 'toolCallId': 'native-1', 'toolName': 'reference_to_video',
+         'rawInput': native['arguments']},
+        {'type': 'tool_call_update', 'toolCallId': 'native-1', 'status': 'failed',
+         'rawOutput': {'error': 'SYNTHETIC authoritative native failure'}},
+        {'type': 'end', 'stopReason': 'end_turn', 'sessionId': aid},
+    ]
+    (folder / 'events.jsonl').write_text('\n'.join(json.dumps(event) for event in events) + '\n')
     failed=copy.deepcopy(original)
     failed.error='Synthetic authoritative original native failure'
     failed.data['conditioning_receipt'].update(submission_evidence='verified_native_call',dispatch_status='failed')

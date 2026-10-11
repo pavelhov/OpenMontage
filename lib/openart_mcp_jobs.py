@@ -161,6 +161,7 @@ def receive(project_dir, attempt_id, *, outcome=None, error=None):
         state = _load(root, aid)
         if state['begin_envelope'] is None: _fail('not_begun', 'connector original was not begun')
         if (outcome is None) == (error is None): _fail('invalid_argument', 'receive requires exactly one original result or error')
+        reply_path = _path(root, aid).parent / 'original-host-reply.json'
         if state['receipt'] is not None:
             if error is None and mcp.digest(outcome) == state['receipt_sha256']:
                 return attempt_state(root, aid)
@@ -168,10 +169,70 @@ def receive(project_dir, attempt_id, *, outcome=None, error=None):
         if error is not None or not isinstance(outcome, dict) or not isinstance(outcome.get('historyId'), str) or not outcome.get('historyId'):
             state['status']='uncertain'; _event(state, 'uncertain', error=str(error) if error is not None else 'missing original historyId')
         else:
+            # Retain the exact original host reply before updating state. On a
+            # receive interruption the same reply can be replayed without begin.
+            reply = {'attempt_id': aid, 'frozen_sha256': state['frozen_sha256'],
+                     'request_sha256': state['frozen']['authority']['request_sha256'],
+                     'begin_envelope_sha256': mcp.digest(state['begin_envelope']),
+                     'outcome': copy.deepcopy(outcome), 'outcome_sha256': mcp.digest(outcome)}
+            if reply_path.exists():
+                if _read(reply_path) != reply:
+                    _fail('receipt_exists', 'retained original host reply cannot be replaced')
+            else:
+                _write(reply_path, reply)
             state['receipt']=copy.deepcopy(outcome); state['receipt_sha256']=mcp.digest(outcome); state['status']='submitted'
             _event(state, 'submission_receipt_retained', history_id=outcome['historyId'])
         _save(root, aid, state)
         return attempt_state(root, aid)
+
+def resume_original(project_dir, attempt_id, *, outcome=None, request_sha256=None):
+    """Inspect the original handoff, or replay its exact retrievable host reply.
+
+    No plain inspection writes, connector calls, polling, new reservations or
+    assumption that a consumed begin was unsubmitted. ``outcome`` must be the
+    original host response for this exact frozen handoff, never a replacement.
+    """
+    root = _root(project_dir); aid = _id(attempt_id)
+    state = _load(root, aid)
+    original_request = state['frozen']['authority']['request_sha256']
+    if request_sha256 is not None and request_sha256 != original_request:
+        _fail('original_request_mismatch', 'recovery request differs from original handoff')
+    reply_path = _path(root, aid).parent / 'original-host-reply.json'
+    reply = None
+    if reply_path.exists():
+        reply = _read(reply_path)
+        if (reply.get('attempt_id') != aid or reply.get('frozen_sha256') != state['frozen_sha256']
+                or reply.get('request_sha256') != original_request
+                or reply.get('begin_envelope_sha256') != mcp.digest(state['begin_envelope'])
+                or not isinstance(reply.get('outcome'), dict)
+                or reply.get('outcome_sha256') != mcp.digest(reply['outcome'])):
+            _fail('original_reply_mismatch', 'retained host reply differs from exact original handoff')
+    if outcome is not None:
+        if request_sha256 != original_request:
+            _fail('original_request_mismatch', 'original reply replay requires exact request digest')
+        if reply is not None and mcp.digest(outcome) != reply['outcome_sha256']:
+            _fail('original_reply_mismatch', 'retrieved reply differs from retained original reply')
+        return receive(root, aid, outcome=outcome)
+    result = attempt_state(root, aid)
+    result.update(request_sha256=original_request, provider_calls=0, reservations=0)
+    if state['status'] == 'prepared' and state['begin_envelope'] is None:
+        result['next_action'] = {'action': 'begin_original', 'function': 'lib.openart_mcp_jobs.begin',
+                                 'attempt_id': aid, 'authority_revalidation_required': True}
+    elif state['receipt'] is None:
+        result['next_action'] = ({'action': 'receive_original', 'function': 'lib.openart_mcp_jobs.resume_original',
+                                  'attempt_id': aid, 'request_sha256': original_request,
+                                  'outcome': copy.deepcopy(reply['outcome'])} if reply else
+                                 {'action': 'blocked_original_host_reply_unavailable',
+                                  'reason': 'Consumed original handoff has no retrievable historyId; retrieve its exact host reply and replay receive. Never begin again.',
+                                  'attempt_id': aid, 'request_sha256': original_request})
+    elif state['status'] == 'submitted':
+        result['next_action'] = {'action': 'poll_original', **poll_args(root, aid)}
+    elif state['status'] == 'completed':
+        result['next_action'] = {'action': 'download_original', 'function': 'lib.openart_mcp_jobs.download_original', 'attempt_id': aid}
+    else:
+        result['next_action'] = {'action': 'inspect_original', 'status': state['status']}
+    return result
+
 
 def poll_args(project_dir, attempt_id):
     state = _load(project_dir, _id(attempt_id))
@@ -308,7 +369,7 @@ def terminal_failure_record(project_dir, attempt_id):
 def _capture_evidence(root,inputs,native,authority):
     from lib.production_request import source_packet
     from lib.production_execution import _artifact_path
-    from lib.shot_contract import contract_digest, file_sha256, review_digest
+    from lib.shot_contract import contract_digest, file_sha256, review_digest, shot_local, shot_review_subject
     compiled_path=_artifact_path(root,'compiled_request-'+_id(inputs['compiled_request_id'])+'.json')
     review_path=_artifact_path(root,'preparation_review-'+_id(inputs['preparation_review_id'])+'.json')
     compiled=json.loads(compiled_path.read_text());review=json.loads(review_path.read_text())
@@ -323,7 +384,8 @@ def _capture_evidence(root,inputs,native,authority):
     # Source bindings identify reviewed assets; paths belong to the authoritative
     # contract, not the compiled reference projection.
     contract=json.loads(_artifact_path(root,'shot_contract.json').read_text())
-    if contract_digest(contract)!=packet['binding']['contract_sha256']:
+    subject = shot_review_subject(contract, authority['shot_id']) if shot_local(contract) else contract_digest(contract)
+    if subject != packet['binding']['contract_sha256']:
         _fail('evidence_changed','contract changed while capturing reference evidence')
     reference_hashes={}
     for row in packet['binding'].get('references',[]):
@@ -540,6 +602,12 @@ def _upload_authority(root, files, declaration, account, project_id):
     evidence=authority.get('evidence',{})
     if not isinstance(evidence,dict) or not evidence.get('path') or _sha(_inside(root,evidence['path']))!=evidence.get('sha256'):
         _fail('upload_authority_invalid','source-transfer approval evidence changed')
+    if authority.get('derived_from_standing_run') is not None:
+        from lib.production_autonomy import validate_standing_mcp_upload
+        try:
+            validate_standing_mcp_upload(root, authority, files=files, account=account, openart_project_id=project_id)
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            _fail('upload_authority_invalid', 'current standing source-transfer authority invalid: ' + str(exc))
     return authority,mcp.digest(authority)
 
 def prepare_upload(project_dir, *, files, billing_declaration, openart_project_id=None):
@@ -671,22 +739,75 @@ def download_original(project_dir, attempt_id):
             if state['download_receipt_sha256']!=mcp.digest(receipt) or _sha(receipt['path'])!=receipt['sha256']:_fail('download_changed','retained original download changed')
             return {'downloaded_path':receipt['path'],'sha256':receipt['sha256'],'history_id':receipt['history_id']}
         directory=_path(root,aid).parent;path=directory/'download-original.mp4'
+        retained_path = directory/'download-receipt.json'
+        if retained_path.exists():
+            receipt = _read(retained_path)
+            if not path.exists() and receipt.get('publication_source'):
+                import re
+                staged = Path(receipt['publication_source'])
+                # Only the exact verified stream retained by collect_output is
+                # eligible; arbitrary nearby mp4s and caller paths never are.
+                if (receipt.get('history_id') != state['receipt']['historyId']
+                        or receipt.get('resource_url') != url
+                        or receipt.get('resource_id') != resource['id']
+                        or receipt.get('resource_sha256') != mcp.digest(resource)
+                        or receipt.get('terminal_sha256') != mcp.digest(terminal)
+                        or receipt.get('path') != str(path)
+                        or receipt.get('provenance') != 'read_only_original_resource_download'
+                        or staged.parent != directory
+                        or not re.fullmatch(r'\.openart-download-[a-f0-9]{32}', staged.name)
+                        or staged.is_symlink() or not staged.is_file()
+                        or _sha(staged) != receipt.get('sha256')
+                        or staged.stat().st_size != receipt.get('bytes')):
+                    _fail('download_changed', 'interrupted publication staging does not bind verified original bytes')
+                try:
+                    os.link(staged, path, follow_symlinks=False)
+                except FileExistsError:
+                    pass  # Recheck the exact canonical bytes below.
+                descriptor = os.open(directory, os.O_RDONLY)
+                try: os.fsync(descriptor)
+                finally: os.close(descriptor)
+            if (receipt.get('provenance') != 'read_only_original_resource_download'
+                    or receipt.get('history_id') != state['receipt']['historyId']
+                    or receipt.get('resource_id') != resource['id']
+                    or receipt.get('resource_url') != url
+                    or receipt.get('resource_sha256') != mcp.digest(resource)
+                    or receipt.get('terminal_sha256') != mcp.digest(terminal)
+                    or receipt.get('path') != str(path)
+                    or path.is_symlink() or not path.is_file()
+                    or receipt.get('sha256') != _sha(path)
+                    or receipt.get('bytes') != path.stat().st_size):
+                _fail('download_changed', 'interrupted original download receipt does not bind current original bytes')
+            state['download_receipt'] = receipt
+            state['download_receipt_sha256'] = mcp.digest(receipt)
+            _event(state, 'download_receipt_recovered', history_id=receipt['history_id'],
+                   resource_id=resource['id'], output_sha256=receipt['sha256'])
+            _save(root, aid, state)
+            return {'downloaded_path':str(path),'sha256':receipt['sha256'],'history_id':receipt['history_id']}
         if path.exists():_fail('download_uncertain','unreceipted original download exists; review it before another download')
         from lib import openart_download
         from urllib.parse import urlsplit
         _event(state, 'download_started', history_id=state['receipt']['historyId'], resource_id=resource['id'])
         _save(root, aid, state)
+        def retain_verified_download(downloaded):
+            receipt = {'history_id': state['receipt']['historyId'], 'resource_id': resource['id'],
+                'resource_url': url, 'final_url': downloaded['final_url'],
+                'redirect_chain': downloaded['redirect_chain'], 'resource_sha256': mcp.digest(resource),
+                'terminal_sha256': mcp.digest(terminal), 'path': str(path),
+                'sha256': downloaded['sha256'], 'bytes': downloaded['size'],
+                'provenance': 'read_only_original_resource_download',
+                'publication_source': downloaded['publication_source']}
+            _write(retained_path, receipt)
         try:
             downloaded=openart_download.collect_output(url,path,allowed_hosts={urlsplit(url).hostname},
                 output_root=directory,max_bytes=512*1024*1024,timeout=60,
-                allow_public_redirects=True,retain_private_trace=True)
+                allow_public_redirects=True,retain_private_trace=True,
+                before_publish=retain_verified_download)
         except openart_download.OpenArtDownloadError as exc:
             _fail('download_failed',str(exc))
-        final_url=downloaded['final_url'];size=downloaded['size']
-        receipt={'history_id':state['receipt']['historyId'],'resource_id':resource['id'],'resource_url':url,
-            'final_url':final_url,'redirect_chain':downloaded['redirect_chain'],'resource_sha256':mcp.digest(resource),'terminal_sha256':mcp.digest(terminal),
-            'path':str(path),'sha256':_sha(path),'bytes':size,'provenance':'read_only_original_resource_download'}
-        _write(directory/'download-receipt.json',receipt)
+        receipt = _read(retained_path)
+        if receipt['sha256'] != _sha(path) or receipt['bytes'] != path.stat().st_size:
+            _fail('download_changed', 'published original differs from verified download stream')
         state['download_receipt']=receipt;state['download_receipt_sha256']=mcp.digest(receipt)
         _event(state, 'download_retained', history_id=receipt['history_id'], resource_id=resource['id'], output_sha256=receipt['sha256'])
         _save(root, aid, state)

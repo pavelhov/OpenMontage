@@ -185,12 +185,19 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
         rows.extend(_leaf(shot[key], f'/shot_contract/shots/{index}/{key}'))
     refs = []
     payoff_id = contract.get('payoff_asset_id')
-    needed_assets = set(shot['asset_ids']) | ({payoff_id} if not reference_free else set())
-    needed_cast = (set() if reference_free else
-                   set(shot['cast_ids']) | set(contract['late_cast_ids']) | set(contract['payoff_speaker_ids']))
-    needed_assets.update(a['id'] for a in contract['assets'] if a['role'] == 'identity_reference' and needed_cast.intersection(a['cast_ids']))
+    from lib.shot_contract import required_asset_ids, shot_local, shot_review_subject
+    if shot_local(contract):
+        needed_assets = required_asset_ids(contract, shot)
+    else:
+        # Historical source packets intentionally omit native references for a
+        # per-shot free cutaway; the legacy validator still checks global boards.
+        needed_assets = set(shot['asset_ids']) | ({payoff_id} if not reference_free else set())
+        needed_cast = set() if reference_free else set(shot['cast_ids']) | set(contract['late_cast_ids']) | set(contract['payoff_speaker_ids'])
+        needed_assets.update(a['id'] for a in contract['assets'] if a['role'] == 'identity_reference' and needed_cast.intersection(a['cast_ids']))
     # All contract review bindings are retained: review prose is outside contract_digest.
-    for ai, asset in enumerate(contract['assets']):
+    consumer_assets = (sorted((asset for asset in contract['assets'] if asset['id'] in needed_assets), key=lambda a: a['id'])
+                       if shot_local(contract) else contract['assets'])
+    for ai, asset in enumerate(consumer_assets):
         if asset['id'] not in needed_assets:
             continue
         path = (root / asset['path']).resolve()
@@ -200,7 +207,9 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
                      'sha256': asset['sha256'], 'review_sha256': review_digest(asset['review'])})
         if asset['id'] in shot['asset_ids'] or asset['id'] == payoff_id or asset['role'] == 'identity_reference':
             for key in ('id', 'role', 'cast_ids'):
-                rows.extend(_leaf(asset[key], f'/shot_contract/assets/{ai}/{key}'))
+                pointer = ('/shot_contract/assets/by_id/' + asset['id'].replace('~', '~0').replace('/', '~1')
+                           if shot_local(contract) else f'/shot_contract/assets/{ai}')
+                rows.extend(_leaf(asset[key], pointer + '/' + key))
     scene_plan = original_artifacts[1] if original_artifacts is not None else _read(root, 'scene_plan.json')
     _schema('scene_plan', scene_plan)
     from lib.production_execution import _artifact_path
@@ -250,6 +259,14 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
                'approval_plan_sha256': approval_plan_digest(contract), 'references': refs,
                'upstream': upstream, 'script_sha256': digest(script), 'scene_plan_sha256': digest(scene_plan), 'asset_manifest_sha256': digest(_manifest_requirement_binding(manifest, shot_id)),
                'reviews_sha256': digest([contract['project_review'], shot.get('review')])}
+    if shot_local(contract):
+        cards = scene_plan.get('metadata', {}).get('visual_development', {}).get('shot_cards', {})
+        from lib.production_autonomy import local_timing
+        binding.update(contract_sha256=shot_review_subject(contract, shot_id),
+            approval_plan_sha256=approval_plan_digest(contract, shot_id),
+            script_sha256=digest({'order': ids, 'section': local_timing(section)}),
+            scene_plan_sha256=digest({'order': [s['id'] for s in scene_plan['scenes']],
+                'scene': local_timing(scenes[0]), 'shot_card': cards.get(shot_id) if isinstance(cards, dict) else cards}))
     if reference_free:
         binding['reference_mode'] = 'reference_free'
     elif reference_guided:
@@ -275,6 +292,8 @@ def _compile_packet(packet, *, native_pointer='/params/prompt'):
             label = 'Story ' + ' '.join(part.replace('_', ' ') for part in parts[3:])
         elif parts[2] == 'shots':
             label = ' '.join(part.replace('_', ' ') for part in parts[4:])
+        elif parts[2:4] == ['assets', 'by_id']:
+            label = 'Reference ' + parts[4].replace('~1', '/').replace('~0', '~') + ' ' + ' '.join(part.replace('_', ' ') for part in parts[5:])
         else:
             label = 'Reference ' + str(int(parts[3]) + 1) + ' ' + ' '.join(part.replace('_', ' ') for part in parts[4:])
         if parts[1] == 'script':
@@ -711,6 +730,19 @@ def approved_upload_lookup(project_root, upload_id, source_sha256):
         evidence = (root / record['evidence_path']).resolve()
         if not evidence.is_relative_to(root) or file_sha256(evidence) != record['evidence_sha256']:
             return None
+        if record['approved_by'].startswith('standing_media_authority:'):
+            from lib import production_autonomy as autonomy
+            from lib.production_execution import load_shot_contract
+            policy, _, decision_id = autonomy.require_active_policy(root, shot_id=record['shot_id'])
+            spec = autonomy._provider_spec(policy, 'openart_cli')
+            account = {'account_id_sha256': spec['account_id_sha256'], 'workspace': spec['workspace']}
+            _, expected_record, _ = autonomy._standing_upload_material(root, shot_id=record['shot_id'], provider='openart_cli',
+                files=[next(a['path'] for a in load_shot_contract(root)['assets'] if a['id'] == asset['id'])], account=account)
+            if record != expected_record:
+                return None
+            return {'state': 'approved', 'upload_id': upload_id, 'source_sha256': source_sha256,
+                'approval_sha256': digest(record), 'standing_account_id_sha256': spec['account_id_sha256'],
+                'standing_models': spec.get('models', [r['model'] for r in spec.get('routes', [])])}
         return {'state': 'approved', 'upload_id': upload_id, 'source_sha256': source_sha256, 'approval_sha256': digest(record)}
     except (ValueError, OSError, KeyError, TypeError, StopIteration, ValidationError):
         return None
@@ -873,15 +905,48 @@ def _compile_package_targets(root, package_binding):
     package_path = images._bound_file(root, package_binding, 'production package')
     package = json.loads(package_path.read_text())
     marker = json.loads((root / 'project.json').read_text())
-    if (set(package) - {'version', 'project_id', 'story_revision', 'title', 'shots', 'boards', 'approval_preview'}
+    if (set(package) - {'version', 'project_id', 'story_revision', 'title', 'shots', 'boards', 'approval_preview', 'planning_mode'}
             or not {'version', 'project_id', 'story_revision', 'title', 'shots', 'boards'} <= set(package)
             or package['version'] != '1.0'
             or any(package[k] != marker[k] for k in ('project_id', 'story_revision'))
             or not isinstance(package['title'], str) or not package['title'].strip()):
         raise ValueError('package requires exact current project/story binding and title')
-    spec = package['boards']
+    spec = copy.deepcopy(package['boards'])
     if spec.get('version') != '1.1' or not spec.get('motion_binding'):
         raise ValueError('new production package requires boards version 1.1 and an explicit motion_binding')
+    if 'planning_mode' in package:
+        if package['planning_mode'] != 'shot_local_v1':
+            raise ValueError('unsupported prospective planning mode')
+        template = spec['motion_binding']['contract_template']
+        template['planning_mode'] = 'shot_local_v1'
+        authored = package['shots']
+        originals = {shot['id']: shot for shot in template.get('shots', [])}
+        derived = []
+        for shot in authored:
+            sid = shot['id']
+            mapping = next((item for item in spec['shots'] if item['shot_id'] == sid), None)
+            if mapping is None:
+                raise ValueError('authored shot has no exact board mapping')
+            motion = shot.get('motion', {})
+            allowed = {'initial_state', 'endpoint_completion', 'required_visible_speakers',
+                       'dialogue', 'allowed_transformations', 'transition'}
+            if not isinstance(motion, dict) or set(motion) - allowed:
+                raise ValueError('motion contains unsupported authored semantic fields')
+            values = {'id': sid, 'dominant_action': shot['action'],
+                'duration_seconds': shot['duration_seconds'],
+                **({'completed_end_state': shot['end_state']} if 'end_state' in shot else {}),
+                **({'cast_ids': shot['cast']} if 'cast' in shot else {}),
+                **({'prop_body_invariants': shot['preserve']} if 'preserve' in shot else {}),
+                **motion}
+            original = copy.deepcopy(originals.get(sid, {}))
+            for key, value in values.items():
+                if key in original and original[key] != value:
+                    raise ValueError('duplicated motion fact contradicts authored shot ' + sid + '/' + key)
+            original.update(values)
+            original.setdefault('asset_ids', [r['asset_id'] for r in mapping['roles']])
+            original.setdefault('upstream', [{'shot_id': dep} for dep in mapping.get('video_dependencies', [])])
+            derived.append(original)
+        template['shots'] = derived
     nodes = boards._validate_spec(root, spec)
     source_paths = {boards._inside(root, b['path']) for b in
         [package_binding, spec['story'], spec['approval'], *spec['references']]}
@@ -909,8 +974,10 @@ def _compile_package_targets(root, package_binding):
     clock = 0
     for shot in shots:
         if set(shot) - {'id', 'script', 'action', 'duration_seconds', 'end_state', 'preserve',
-                'pinned_initial_frame', 'pinned_final_frame', 'cast'}:
+                'pinned_initial_frame', 'pinned_final_frame', 'cast', 'motion'}:
             raise ValueError('unsupported authored shot field')
+        if 'motion' in shot and package.get('planning_mode') != 'shot_local_v1':
+            raise ValueError('authored motion fields require prospective planning mode')
         sid = shot['id']
         if (not isinstance(sid, str) or not sid.strip() or Path(sid).name != sid
                 or sid in ('.', '..') or sid in ids):
@@ -1049,7 +1116,7 @@ def _compile_package_targets(root, package_binding):
         if boards.load_board_pack(root)['specification_sha256'] != boards._digest(spec):
             raise ValueError('current board pack already binds another specification')
     if any(not path.exists() for path in targets):
-        if images.image_usage(root)['total'] or episode_production_status(root)['usage']['total']:
+        if not same_pack and (images.image_usage(root)['total'] or episode_production_status(root)['usage']['total']):
             raise ValueError('cannot materialize missing package artifacts after dispatch')
     return spec, records, targets
 
@@ -1100,6 +1167,20 @@ def prepare_package(project_dir, package_binding):
 
     spec = materialize(root)
     pack = boards.prepare_board_pack(root, spec, images=images)
+    # The existing board pack indexes the immutable authored source, so missing
+    # derived views can be rebuilt without reconstructing authority or receipts.
+    retained_binding = {'path': str(images._bound_file(root, package_binding, 'production package').relative_to(root)),
+                        'sha256': package_binding['sha256']}
+    @boards._board_transaction
+    def retain_package(root):
+        current = boards.load_board_pack(root)
+        if current.get('package_binding') != retained_binding:
+            if current.get('package_binding') is not None:
+                raise ValueError('board pack already indexes a different retained package')
+            current['package_binding'] = retained_binding
+            boards._save(root, current)
+        return current
+    pack = retain_package(root)
     projection = pack.get('motion_projection')
     if projection is None:
         raise ValueError('package motion projection incomplete; replay preparation to reconcile')

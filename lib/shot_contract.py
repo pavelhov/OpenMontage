@@ -10,6 +10,7 @@ state, and snapshot/recheck inputs at dispatch to close the file mutation race.
 from __future__ import annotations
 
 import hashlib
+import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,63 @@ def contract_digest(contract: dict) -> str:
     plan["assets"] = [{k: v for k, v in asset.items() if k != "review"} for asset in contract.get("assets", [])]
     plan["shots"] = [{k: v for k, v in shot.items() if k != "review"} for shot in contract.get("shots", [])]
     return _digest(plan)
+
+
+def shot_local(contract: dict) -> bool:
+    """Only an explicitly authored prospective contract opts into local validity."""
+    return contract.get("planning_mode") == "shot_local_v1"
+
+
+def protected_planning(contract: dict) -> dict:
+    """Story and ordered shot identities remain shared protected planning."""
+    return {**{key: copy.deepcopy(value) for key, value in contract.items()
+               if key not in {"assets", "shots", "project_review"}},
+            "shot_order": [shot["id"] for shot in contract["shots"]]}
+
+
+def required_asset_ids(contract: dict, shot: dict) -> set:
+    reference_free = contract.get("reference_mode") == "reference_free" or shot.get("reference_mode") == "reference_free"
+    cast = set(shot["cast_ids"])
+    required = set(shot["asset_ids"])
+    if not shot_local(contract):
+        cast |= set(contract["late_cast_ids"]) | set(contract["payoff_speaker_ids"])
+        if contract.get("reference_mode") != "reference_free":
+            required.add(contract.get("payoff_asset_id"))
+    required.update(asset["id"] for asset in contract["assets"]
+                    if asset["role"] == "identity_reference" and cast.intersection(asset["cast_ids"]))
+    return required
+
+
+def shot_planning_subject(contract: dict, shot_id: str, *, approval=False) -> dict:
+    """Bind only this consumer's planning, sources and actual upstream evidence.
+
+    Full snapshots still use contract_digest. Approval omits observed serial
+    handoff facts, matching the existing exact retained authority convention.
+    """
+    shots = [shot for shot in contract["shots"] if shot["id"] == shot_id]
+    if len(shots) != 1:
+        raise ValueError("shot must occur exactly once")
+    shot = copy.deepcopy(shots[0]); shot.pop("review", None)
+    needed = required_asset_ids(contract, shot)
+    assets = [{key: copy.deepcopy(value) for key, value in asset.items() if key != "review"}
+              for asset in contract["assets"] if asset["id"] in needed]
+    if shot_local(contract):
+        assets.sort(key=lambda asset: asset['id'])
+    if approval:
+        shot["upstream"] = [{"shot_id": item["shot_id"]} for item in shot.get("upstream", [])]
+        for asset in assets:
+            if asset.get("upstream_source"):
+                asset.pop("path", None); asset.pop("sha256", None)
+    return {"protected": protected_planning(contract), "shot": shot, "assets": assets,
+            "required_asset_ids": sorted(needed)}
+
+
+def project_review_subject(contract: dict) -> str:
+    return _digest(protected_planning(contract)) if shot_local(contract) else contract_digest(contract)
+
+
+def shot_review_subject(contract: dict, shot_id: str) -> str:
+    return _digest(shot_planning_subject(contract, shot_id)) if shot_local(contract) else contract_digest(contract)
 
 
 def review_digest(review: dict) -> str:
@@ -251,7 +309,7 @@ def _validate_shot_contract(
     except (ValueError, TypeError) as exc:
         errors.append(f"$: invalid JSON planning value ({exc})")
         return result()
-    check_review(contract["project_review"], digest, PROJECT_PREDICATES, "project_review")
+    check_review(contract["project_review"], project_review_subject(contract), PROJECT_PREDICATES, "project_review")
     assets = {}
     for asset in contract["assets"]:
         if asset["id"] in assets:
@@ -272,12 +330,16 @@ def _validate_shot_contract(
     # Legacy board-backed contracts retain the global payoff gate.
     payoff_id = contract.get("payoff_asset_id")
     payoff = assets.get(payoff_id)
-    if not project_reference_free and (not payoff or payoff["role"] != "payoff_board"):
+    payoff_required = not project_reference_free and (not shot_local(contract) or payoff_id in shot["asset_ids"])
+    if payoff_required and (not payoff or payoff["role"] != "payoff_board"):
         errors.append("payoff_asset_id: missing payoff_board role")
-    elif not project_reference_free and not set(contract["payoff_speaker_ids"]).issubset(payoff["cast_ids"]):
+    elif payoff_required and not set(contract["payoff_speaker_ids"]).issubset(payoff["cast_ids"]):
         errors.append("payoff_speaker_ids: missing payoff speaker in board cast")
-    required_assets = set(shot["asset_ids"]) | ({payoff_id} if not project_reference_free else set())
-    for cast_id in set(contract["late_cast_ids"]) | set(shot["cast_ids"]) | set(contract["payoff_speaker_ids"]):
+    required_assets = required_asset_ids(contract, shot)
+    required_cast = set(shot["cast_ids"])
+    if not shot_local(contract):
+        required_cast |= set(contract["late_cast_ids"]) | set(contract["payoff_speaker_ids"])
+    for cast_id in required_cast:
         identity = [a for a in assets.values() if a["role"] == "identity_reference" and cast_id in a["cast_ids"]]
         if not identity:
             errors.append(f"cast_ids.{cast_id}: missing identity_reference asset")
@@ -336,7 +398,7 @@ def _validate_shot_contract(
     for transformation in transformations.values():
         if not set(shot["prop_body_invariants"]).issubset(transformation["preserved_invariants"]):
             errors.append(f"shots.{shot_id}.allowed_transformations: must preserve prop/body invariants")
-    check_review(shot.get("review"), digest, SHOT_PREDICATES, f"shots.{shot_id}.review")
+    check_review(shot.get("review"), shot_review_subject(contract, shot_id), SHOT_PREDICATES, f"shots.{shot_id}.review")
 
     for binding in shot["upstream"]:
         upstream_id = binding["shot_id"]

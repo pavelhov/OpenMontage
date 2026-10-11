@@ -190,7 +190,8 @@ def _open_output_parent(output_path, output_root):
 
 def collect_output(url, output_path, *, allowed_hosts, output_root,
                    expected_sha256=None, max_bytes=536870912, timeout=30.0,
-                   max_redirects=5, allow_public_redirects=False, retain_private_trace=False):
+                   max_redirects=5, allow_public_redirects=False, retain_private_trace=False,
+                   before_publish=None):
     """Download and atomically publish one result; returns verified local metadata.
 
     Root and destination parent must already exist and have no symlink ancestors.
@@ -200,6 +201,7 @@ def collect_output(url, output_path, *, allowed_hosts, output_root,
     temporary = None
     connection = None
     response = None
+    publication_retained = False
     try:
         if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or not 0 < max_bytes <= 2**63 - 1:
             _fail("Invalid result byte limit")
@@ -280,14 +282,21 @@ def collect_output(url, output_path, *, allowed_hosts, output_root,
                 output.flush()
                 os.fsync(output.fileno())
             _remaining(deadline)
+            result = {"path": str(target), "size": size, "sha256": sha256,
+                      "source_url": source_url, "source_host": original_host}
+            if retain_private_trace:
+                result.update(final_url=current, redirect_chain=private_trace)
+            # The original-job owner durably binds the verified stream before
+            # publication. A crash after link cannot strand unreceipted bytes.
+            if before_publish is not None:
+                if not callable(before_publish):
+                    _fail("Invalid result publication callback")
+                publication_retained = True
+                before_publish(dict(result, publication_source=str(target.parent / temporary)))
             os.link(temporary, target.name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
             os.unlink(temporary, dir_fd=parent)
             temporary = None
             os.fsync(parent)
-            result = {"path": str(target), "size": size, "sha256": sha256,
-                    "source_url": source_url, "source_host": original_host}
-            if retain_private_trace:
-                result.update(final_url=current, redirect_chain=private_trace)
             return result
         _fail("Result redirect limit exceeded")
     except OpenArtDownloadError:
@@ -303,7 +312,7 @@ def collect_output(url, output_path, *, allowed_hosts, output_root,
                     pass
         if parent is not None:
             try:
-                if temporary is not None:
+                if temporary is not None and not publication_retained:
                     try:
                         os.unlink(temporary, dir_fd=parent)
                     except FileNotFoundError:

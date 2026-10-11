@@ -230,6 +230,55 @@ def test_fixture_is_directly_valid_and_synthetic():
     assert validate_shot_contract(contract, project_dir=FIXTURES, shot_id="entry")["eligible"]
 
 
+def local_reviews(contract):
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    for shot in contract['shots']:
+        shot['review']['subject_sha256'] = shot_review_subject(contract, shot['id'])
+
+
+def test_prospective_independent_shot_ignores_unready_later_boards(package):
+    contract, _ = package
+    later = copy.deepcopy(contract['shots'][0]); later['id'] = 'S06'
+    later['asset_ids'] = ['unprepared-start', 'unprepared-end']
+    contract['shots'].append(later)
+    contract['planning_mode'] = 'shot_local_v1'
+    contract['assets'] = [a for a in contract['assets'] if a['id'] not in {'payoff', 'doctor'}]
+    local_reviews(contract)
+    assert check(package)['eligible']
+    assert not check(package, 'S06')['eligible']
+    before = contract['shots'][0]['review']['subject_sha256']
+    later['dominant_action'] = 'A different future action'
+    assert check(package)['eligible']
+    assert contract['shots'][0]['review']['subject_sha256'] == before
+
+
+def test_local_shared_source_only_invalidates_actual_consumers(package):
+    contract, _ = package
+    future = copy.deepcopy(contract['shots'][0]); future.update(id='S06', cast_ids=['doctor'])
+    contract['shots'].append(future); contract['planning_mode'] = 'shot_local_v1'
+    local_reviews(contract)
+    doctor = next(a for a in contract['assets'] if a['id'] == 'doctor')
+    doctor['sha256'] = 'a' * 64
+    assert check(package)['eligible']
+    assert not check(package, 'S06')['eligible']
+    patient = next(a for a in contract['assets'] if a['id'] == 'patient')
+    patient['sha256'] = 'b' * 64
+    assert not check(package)['eligible']
+
+
+def test_local_pending_upstream_and_protected_story_still_block(package):
+    contract, _ = package
+    selected = dependency(package)
+    contract['planning_mode'] = 'shot_local_v1'; local_reviews(contract)
+    assert check(package, 'interior', selected_upstream=selected)['eligible']
+    contract['shots'][1]['upstream'] = [{'shot_id': 'entry'}]
+    local_reviews(contract)
+    assert not check(package, 'interior', selected_upstream=selected)['eligible']
+    contract['story']['payoff'] = 'Changed protected ending'
+    assert not check(package)['eligible']
+
+
 def test_declared_serial_handoff_binds_current_selected_frame(package):
     selected = dependency(package)
     contract = package[0]

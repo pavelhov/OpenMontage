@@ -27,7 +27,11 @@ def reserved(production, monkeypatch):
     inputs.pop('allowed_providers', None)
     p.scope['requests']['entry'] = execution.planned_request_digest(inputs, project_dir=p.root)
     p.persist_scope()
+    from tools.video.grok_cli_video import build_native_video_request as current_builder
     def prior_builder(*args, **kwargs):
+        # Reproduce the historical execute-time defect without weakening new preflight.
+        if execution._ACTIVE.get() is None:
+            return current_builder(*args, **kwargs)
         raise GrokCLIContractError('invalid_argument',
             'reference_to_video requires between 1 and 14 local image path(s)')
     with monkeypatch.context() as old:

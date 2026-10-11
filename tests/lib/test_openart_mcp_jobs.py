@@ -163,3 +163,150 @@ def test_capture_evidence_resolves_pathless_reference_binding_by_asset_id(tmp_pa
         assert base64.b64decode(archived['bytes_base64'])==image.read_bytes()
         assert captured['source_packet']==packet
         assert not (root/'openart_mcp').exists()
+
+
+@pytest.mark.parametrize('tamper', [None, 'history_id', 'resource_sha256', 'terminal_sha256', 'path', 'sha256', 'bytes', 'unreceipted'])
+def test_download_receipt_crash_recovers_without_get(fixture_observations,tmp_path,monkeypatch,tamper):
+    root,_,_=begun(tmp_path);jobs.receive(root,'one',outcome={'historyId':'original'})
+    jobs.record_status(root,'one',result={'historyId':'original','status':'COMPLETED',
+        'resources':[{'id':'v','mediaType':'video','url':'https://fixture.invalid/original.mp4'}]})
+    source=tmp_path/'synthetic.mp4';source.write_bytes(b'synthetic original bytes')
+    install_fake_download(monkeypatch,jobs,source)
+    original_save=jobs._save
+    def crash(root,aid,state):
+        if state.get('download_receipt'):raise KeyboardInterrupt()
+        return original_save(root,aid,state)
+    with monkeypatch.context() as interrupt:
+        interrupt.setattr(jobs,'_save',crash)
+        with pytest.raises(KeyboardInterrupt):jobs.download_original(root,'one')
+    receipt_path=jobs._path(root,'one').parent/'download-receipt.json'
+    if tamper=='unreceipted':receipt_path.unlink()
+    elif tamper:
+        receipt=jobs._read(receipt_path);receipt[tamper]=0 if tamper=='bytes' else 'foreign'
+        jobs._write(receipt_path,receipt)
+    from lib import openart_download
+    monkeypatch.setattr(openart_download,'collect_output',lambda *a,**k:pytest.fail('recovery must never GET'))
+    if tamper:
+        with pytest.raises(ValueError):jobs.download_original(root,'one')
+        assert not jobs._load(root,'one').get('download_receipt')
+    else:
+        result=jobs.download_original(root,'one')
+        assert jobs.download_original(root,'one')==result
+        assert jobs._load(root,'one')['download_receipt']['sha256']==result['sha256']
+
+
+def test_interrupted_original_receive_replays_retained_exact_reply(fixture_observations,tmp_path,monkeypatch):
+    root,_,_=begun(tmp_path); original_save=jobs._save
+    reply={'historyId':'original-host-history','status':'PENDING'}
+    def interrupt(root,aid,state):
+        if state.get('receipt'):raise KeyboardInterrupt()
+        return original_save(root,aid,state)
+    with monkeypatch.context() as crash:
+        crash.setattr(jobs,'_save',interrupt)
+        with pytest.raises(KeyboardInterrupt):jobs.receive(root,'one',outcome=reply)
+    before={str(p):p.read_bytes() for p in (root/'openart_mcp').rglob('*') if p.is_file()}
+    guide=jobs.resume_original(root,'one')
+    assert guide['next_action']['action']=='receive_original'
+    assert guide['next_action']['outcome']==reply
+    assert {str(p):p.read_bytes() for p in (root/'openart_mcp').rglob('*') if p.is_file()}==before
+    digest=guide['request_sha256']
+    with pytest.raises(ValueError):jobs.resume_original(root,'one',outcome={'historyId':'foreign'},request_sha256=digest)
+    recovered=jobs.resume_original(root,'one',outcome=guide['next_action']['outcome'],request_sha256=digest)
+    assert recovered['history_id']=='original-host-history'
+    assert jobs.resume_original(root,'one',outcome=reply,request_sha256=digest)==recovered
+    assert jobs.poll_args(root,'one')['arguments']=={'historyId':'original-host-history'}
+    assert len(jobs.list_attempts(root))==1
+
+
+def test_missing_original_host_reply_blocks_without_writes_or_retry(fixture_observations,tmp_path):
+    root,_,_=begun(tmp_path)
+    statepath=jobs._path(root,'one');before=statepath.read_bytes()
+    guide=jobs.resume_original(root,'one')
+    assert guide['next_action']['action']=='blocked_original_host_reply_unavailable'
+    assert guide['provider_calls']==guide['reservations']==0
+    assert statepath.read_bytes()==before
+    with pytest.raises(ValueError):jobs.poll_args(root,'one')
+    with pytest.raises(ValueError):jobs.begin(root,'one',authority_fn=execution.prepare_openart_mcp_handoff)
+
+
+def test_prepared_original_resume_returns_begin_after_exact_revalidation(fixture_observations,tmp_path):
+    inputs,_=prepare_project(tmp_path/'prepared');root=Path(inputs['project_dir'])
+    jobs.prepare(root,attempt_id='one',generation_inputs=inputs,authority_fn=execution.prepare_openart_mcp_handoff)
+    before=jobs._path(root,'one').read_bytes();guide=jobs.resume_original(root,'one')
+    assert guide['next_action']['action']=='begin_original'
+    assert jobs._path(root,'one').read_bytes()==before
+    envelope=jobs.begin(root,'one',authority_fn=execution.prepare_openart_mcp_handoff)
+    assert envelope['arguments']==jobs.frozen_request(root,'one')['native']['body']
+
+
+@pytest.mark.parametrize('tamper',[None,'bytes','resource','terminal'])
+def test_original_publish_before_return_recovers_receipt_without_second_get(fixture_observations,tmp_path,monkeypatch,tamper):
+    from lib import openart_download
+    root,inputs,_=begun(tmp_path);jobs.receive(root,'one',outcome={'historyId':'original'})
+    jobs.record_status(root,'one',result={'historyId':'original','status':'COMPLETED',
+        'resources':[{'id':'v','mediaType':'video','url':'https://fixture.invalid/original.mp4'}]})
+    from tests.integration.test_openart_first_pass_workflow import real_av_clip
+    source=real_av_clip(tmp_path/'synthetic.mp4',seconds=1)
+    install_fake_download(monkeypatch,jobs,source)
+    original_collect=openart_download.collect_output
+    def publish_then_interrupt(*args,**kwargs):
+        original_collect(*args,**kwargs)
+        raise KeyboardInterrupt()
+    with monkeypatch.context() as crash:
+        crash.setattr(openart_download,'collect_output',publish_then_interrupt)
+        with pytest.raises(KeyboardInterrupt):jobs.download_original(root,'one')
+    state=jobs._load(root,'one');directory=jobs._path(root,'one').parent
+    assert not state.get('download_receipt') and (directory/'download-original.mp4').is_file()
+    assert (directory/'download-receipt.json').is_file()
+    if tamper=='bytes':(directory/'download-original.mp4').write_bytes(b'foreign')
+    elif tamper:
+        state['status_observations'][-1]['resources'][0]['id']='foreign' if tamper=='resource' else 'v'
+        if tamper=='terminal':state['status_observations'][-1]['creditsCharged']=999
+        jobs._save(root,'one',state)
+    monkeypatch.setattr(openart_download,'collect_output',lambda *a,**k:pytest.fail('original recovery must never download twice'))
+    if tamper:
+        with pytest.raises(ValueError):jobs.download_original(root,'one')
+    else:
+        result=jobs.download_original(root,'one')
+        assert jobs.collect(root,'one',downloaded_path=result['downloaded_path'])['status']=='collected'
+        proof=jobs.provenance_record(root,'one')
+        assert proof['download_receipt']['history_id']=='original'
+        assert Path(inputs['output_path']).read_bytes()==source.read_bytes()
+    assert len(jobs.list_attempts(root))==1
+
+
+@pytest.mark.parametrize('tamper',[None,'staged_bytes','staged_path'])
+def test_original_receipt_before_publish_resumes_verified_staging_without_get(fixture_observations,tmp_path,monkeypatch,tamper):
+    from lib import openart_download
+    root,_,_=begun(tmp_path);jobs.receive(root,'one',outcome={'historyId':'original'})
+    jobs.record_status(root,'one',result={'historyId':'original','status':'COMPLETED',
+        'resources':[{'id':'v','mediaType':'video','url':'https://fixture.invalid/original.mp4'}]})
+    source=tmp_path/'synthetic.mp4';source.write_bytes(b'synthetic verified original stream')
+    install_fake_download(monkeypatch,jobs,source)
+    original_collect=openart_download.collect_output
+    def interrupt_before_link(*args,**kwargs):
+        callback=kwargs['before_publish']
+        def retain_then_interrupt(metadata):
+            callback(metadata)
+            raise KeyboardInterrupt()
+        return original_collect(*args,**dict(kwargs,before_publish=retain_then_interrupt))
+    with monkeypatch.context() as crash:
+        crash.setattr(openart_download,'collect_output',interrupt_before_link)
+        with pytest.raises(KeyboardInterrupt):jobs.download_original(root,'one')
+    directory=jobs._path(root,'one').parent;receiptpath=directory/'download-receipt.json'
+    receipt=jobs._read(receiptpath);staged=Path(receipt['publication_source'])
+    assert staged.is_file() and not (directory/'download-original.mp4').exists()
+    assert staged.read_bytes()==source.read_bytes()
+    if tamper=='staged_bytes':staged.write_bytes(b'foreign')
+    if tamper=='staged_path':
+        foreign=directory/'arbitrary.mp4';foreign.write_bytes(source.read_bytes())
+        receipt['publication_source']=str(foreign);jobs._write(receiptpath,receipt)
+    monkeypatch.setattr(openart_download,'collect_output',lambda *a,**k:pytest.fail('staging recovery must never GET'))
+    if tamper:
+        with pytest.raises(ValueError):jobs.download_original(root,'one')
+        assert not (directory/'download-original.mp4').exists()
+    else:
+        result=jobs.download_original(root,'one')
+        assert Path(result['downloaded_path']).read_bytes()==source.read_bytes()
+        assert jobs.download_original(root,'one')==result
+    assert len(jobs.list_attempts(root))==1

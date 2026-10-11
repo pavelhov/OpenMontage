@@ -1,0 +1,808 @@
+"""Prospective factory seams with retained synthetic evidence; no provider calls."""
+import copy
+import hashlib
+import json
+
+import pytest
+
+from lib import production_autonomy as pa, production_execution as execution
+from lib import production_request as request, production_images as images
+from lib.shot_contract import project_review_subject, shot_review_subject
+from tests.lib.test_production_autonomy import fixture_planning, make_policy, SCRIPT
+from tests.lib.test_production_images import board_package, reserve, host_receipt  # noqa: F401
+from tests.lib.test_production_request import neutral_package  # noqa: F401
+from tests.lib.test_first_cut import p, production  # noqa: F401
+from tests.integration.test_first_pass_workflow import attestation
+
+
+def write(root, name, value):
+    path = root / name; path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value))
+    return {'path': name, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def creator_fixture(root, name, record):
+    """Clearly synthetic fixture of an actual retained creator-message binding."""
+    record = copy.deepcopy(record)
+    record['authorization'] = write(root, 'notes/' + name + '-authorization.json', {
+        'version': '1.0', 'kind': 'creator_authorization', 'origin': 'user_message',
+        'identity_id': 'fixture-identity', 'message_id': 'SYNTHETIC-' + name,
+        'text': 'SYNTHETIC offline creator authorization fixture; not production authority.',
+        'subject_sha256': request.digest(record)})
+    return write(root, 'notes/' + name + '.json', record)
+
+
+def standing_fixture(root):
+    contract = fixture_planning(root); contract['planning_mode'] = 'shot_local_v1'
+    contract['shots'] = [s for s in contract['shots'] if s['id'] == 'entry']
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    for shot in contract['shots']:
+        shot['review']['subject_sha256'] = shot_review_subject(contract, shot['id'])
+    write(root, 'artifacts/shot_contract.json', contract)
+    write(root, 'project.json', {'project_id': contract['project_id'], 'story_revision': contract['story_revision'],
+        'identity_id': 'fixture-identity', 'pipeline_type': 'cinematic',
+        'governance': {'mode': 'strict', 'version': '1.0'}})
+    policy = make_policy(locked={'cast': {}, 'dialogue': {}, 'sources': [], 'story_predicates': [], 'controls': {}})
+    policy['checkpoint_stages'] = ['proposal', 'script', 'scene_plan', 'assets']
+    template = execution.planned_request_template({'duration': 8, 'image_path': str(root / 'assets/start.svg')}, project_dir=root)
+    projection = pa.current_projection(root, 'entry')
+    baselines = {'entry': {'projection': projection, 'planned_request_template': template,
+        'script_snapshot': copy.deepcopy(SCRIPT), 'dialogue_coverage': pa.dialogue_occurrences(projection),
+        'approval_plan_sha256': execution.approval_plan_digest(contract, 'entry')}}
+    setup = {'version': '1.0', 'identity_id': 'fixture-identity', 'enabled': True,
+        'providers': copy.deepcopy(policy['providers']),
+        'provider_accounts': {'grok_cli': 'fixture-subscription', 'openart_cli': 'fixture-credit-account'},
+        'caps': copy.deepcopy(policy['caps']), 'checkpoint_stages': policy['checkpoint_stages'],
+        'flex': copy.deepcopy(policy['flex']), 'approved_source_sha256': [a['sha256'] for a in contract['assets']],
+        'required_permissions': [], 'source_transfer': [
+            {'provider': p['id'], 'account': 'fixture-subscription' if p['id'] == 'grok_cli' else 'fixture-credit-account',
+             'roles': ['identity_reference', 'start_frame', 'end_frame', 'payoff_board'],
+             'generated_board_sources': False, 'max_files': 8, 'max_file_bytes': 10000,
+             'max_batch_bytes': 80000, 'max_batches': 3} for p in policy['providers']]}
+    setup_binding = creator_fixture(root, 'standing', setup)
+    command_binding = creator_fixture(root, 'command', {'version': '1.0', 'identity_id': 'fixture-identity',
+        'project_id': contract['project_id'], 'story_revision': contract['story_revision'],
+        'command': 'make_video', 'standing_setup_sha256': setup_binding['sha256']})
+    return dict(policy=policy, baselines=baselines, standing_setup=setup_binding,
+        run_command=command_binding, identity_id='fixture-identity')
+
+
+def test_standing_activation_exact_replay_and_current_creator_bytes(tmp_path):
+    kwargs = standing_fixture(tmp_path)
+    result = pa.activate_standing_run(tmp_path, **kwargs)
+    assert result['provider_calls'] == 0 and not result['replayed']
+    active, sha, decision, reasons = pa.load_active_policy(tmp_path)
+    assert not reasons and sha == result['policy_sha256'] and decision == result['decision_id']
+    assert active['activation_basis']['plan_sha256'] == request.digest(kwargs['baselines'])
+    before = {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    assert pa.activate_standing_run(tmp_path, **kwargs) == dict(result, replayed=True)
+    assert {p: p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()} == before
+    (tmp_path / kwargs['run_command']['path']).write_text('{}')
+    assert pa.load_active_policy(tmp_path)[0] is None
+    assert not list(tmp_path.glob('**/*checkpoint*'))
+
+
+def test_supplied_cinematic_work_passes_proposal_with_actual_standing_scope(tmp_path):
+    from lib.checkpoint import write_checkpoint
+    root = tmp_path / 'offline-first-pass'; root.mkdir()
+    kwargs = standing_fixture(root)
+    active = pa.activate_standing_run(root, **kwargs)
+    basis = {'kind': 'supplied_script_scenes', 'artifacts': [
+        {'path': 'artifacts/' + name + '.json', 'sha256': hashlib.sha256((root / 'artifacts' / (name + '.json')).read_bytes()).hexdigest()}
+        for name in ('script', 'scene_plan')]}
+    approval = {'kind': 'policy', 'policy_sha256': active['policy_sha256'], 'decision_id': active['decision_id']}
+    write_checkpoint(tmp_path, root.name, 'research', 'completed', {},
+        pipeline_type='cinematic', metadata={'supplied_basis': basis})
+    path = write_checkpoint(tmp_path, root.name, 'proposal', 'completed', {},
+        pipeline_type='cinematic', metadata={'supplied_basis': basis}, approval_basis=approval)
+    checkpoint = json.loads(path.read_text())
+    assert checkpoint['human_approved'] is False
+    assert 'proposal_packet' not in checkpoint['artifacts']
+    assert checkpoint.get('review', {}) == {}
+    script_binding = {'artifact_path': 'artifacts/script.json', 'artifact_sha256': basis['artifacts'][0]['sha256']}
+    review_binding = write(root, 'notes/script-review.json', {'version': '1.0', 'stage': 'script',
+        **script_binding, 'critical_findings': [], 'findings': []})
+    preauth = {**script_binding, 'review_path': review_binding['path'], 'review_sha256': review_binding['sha256'],
+        'critical_findings': []}
+    path = write_checkpoint(tmp_path, root.name, 'script', 'completed', {'script': SCRIPT},
+        pipeline_type='cinematic', approval_basis=approval, review={'preauth': preauth})
+    assert json.loads(path.read_text())['human_approved'] is False
+
+
+@pytest.mark.parametrize('change', ['account', 'source', 'caps', 'creator', 'permissions'])
+def test_standing_setup_gaps_fail_before_activation(tmp_path, change):
+    kwargs = standing_fixture(tmp_path)
+    setup = json.loads((tmp_path / kwargs['standing_setup']['path']).read_text())
+    setup.pop('authorization')
+    if change == 'account': setup['provider_accounts']['grok_cli'] = ''
+    elif change == 'source': setup['approved_source_sha256'] = []
+    elif change == 'caps': setup['caps']['max_total_attempts'] = 1
+    elif change == 'permissions': setup['required_permissions'] = [write(tmp_path, 'notes/permission.json', {'status': 'pending'})]
+    kwargs['standing_setup'] = creator_fixture(tmp_path, 'standing', setup)
+    command = json.loads((tmp_path / kwargs['run_command']['path']).read_text()); command.pop('authorization')
+    command['standing_setup_sha256'] = kwargs['standing_setup']['sha256']
+    kwargs['run_command'] = creator_fixture(tmp_path, 'command', command)
+    if change == 'creator':
+        evidence = json.loads((tmp_path / kwargs['run_command']['path']).read_text())['authorization']
+        (tmp_path / evidence['path']).write_text('{"origin":"creator"}')
+    with pytest.raises(pa.StandingSetupRequired): pa.activate_standing_run(tmp_path, **kwargs)
+    assert not (tmp_path / 'artifacts/autonomy_policy.json').exists()
+    assert not (tmp_path / 'artifacts/decision_log.json').exists()
+
+
+def test_begun_native_host_action_is_durable_and_never_reemitted(board_package):
+    root, *_ = board_package
+    call = reserve(board_package, call_id='factory-original')
+    first = execution.advance(root)
+    assert first['status'] == 'host_action' and first['host_envelope']['call_id'] == call['call_id']
+    assert first['action']['kind'] == 'receive_native_image'
+    second = execution.advance(root)
+    assert 'host_envelope' not in second and second['action'] == first['action']
+    assert images.image_usage(root)['total'] == 1
+    altered = copy.deepcopy(second['action']); altered['inputs']['call_id'] = 'replacement'
+    with pytest.raises(execution.ProductionGovernanceError, match='stale, foreign or modified'):
+        execution.complete_action(root, altered, outcome={})
+    receipt = host_receipt(root, first['host_envelope'])
+    completed = execution.complete_action(root, second['action'], outcome={'host_receipt': receipt})
+    assert completed['status'] == 'blocked'  # This image-only fixture has no authored motion plan.
+    assert images.image_usage(root)['total'] == 1
+    replayed = execution.complete_action(root, second['action'], outcome={'host_receipt': receipt})
+    assert replayed['replayed'] and replayed['provider_calls'] == 0
+    assert images.image_usage(root)['total'] == 1
+
+
+def test_unsupported_strict_original_retains_exact_id_and_count(tmp_path):
+    write(tmp_path, 'project.json', {'project_id': 'SYNTHETIC-unsupported', 'story_revision': 'r1',
+        'governance': {'mode': 'strict', 'version': '1.0'}})
+    original = {'attempt_id': 'original-only', 'cli_session_id': 'original-native-id',
+        'shot_id': 's1', 'media_kind': 'motion', 'story_revision': 'r1',
+        'request_sha256': 'a'*64, 'scope': {'provider': 'unsupported_strict_provider'}}
+    binding = write(tmp_path, 'production_attempts/original-only/request.json', original)
+    resumed = execution.resume_original_attempt(tmp_path, 'original-only', request_sha256='a'*64)
+    assert resumed['status'] == 'blocked' and resumed['original_id'] == 'original-native-id'
+    assert resumed['counted_original'] and resumed['provider_calls'] == resumed['reservations'] == 0
+    action = execution.next_production_action(tmp_path)
+    assert action['kind'] == 'blocked' and action['inputs']['original_id'] == 'original-native-id'
+    assert len(execution._attempts(tmp_path)) == 1
+    assert hashlib.sha256((tmp_path / binding['path']).read_bytes()).hexdigest() == binding['sha256']
+
+
+def prospective_package(package):
+    package = copy.deepcopy(package); package['planning_mode'] = 'shot_local_v1'
+    # Canonical authored shot facts replace duplicated template facts.
+    for shot in package['boards']['motion_binding']['contract_template']['shots']:
+        shot.pop('prop_body_invariants', None)
+    return package
+
+
+def test_local_package_partial_contract_and_lost_derived_view_restoration(neutral_package, monkeypatch):
+    from lib import production_boards as boards
+    root, package, bind = neutral_package
+    package = prospective_package(package); binding = bind(package)
+    prepared = request.prepare_package(root, binding)
+    assert prepared['motion_projection']['pending_assets']
+    contract = json.loads((root / 'artifacts/shot_contract.json').read_text())
+    assert all(a.get('preparation_pending') and 'sha256' not in a and 'review' not in a for a in contract['assets'])
+    original = (root / 'artifacts/script.json').read_bytes()
+    (root / 'artifacts/script.json').unlink()
+    # Retained same-pack source proves the original authored bytes after usage.
+    monkeypatch.setattr(images, 'image_usage', lambda _: {'total': 1})
+    assert execution.next_production_action(root)['kind'] == 'restore_derived_views'
+    request.prepare_package(root, binding)
+    assert (root / 'artifacts/script.json').read_bytes() == original
+    assert boards.load_board_pack(root)['package_binding'] == binding
+
+
+def test_ready_board_loop_and_completed_image_restore_emit_zero_new_calls(neutral_package):
+    from lib import production_boards as boards
+    from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES, ASSET_PREDICATES
+    root, package, bind = neutral_package
+    package = prospective_package(package)
+    package['boards']['motion_binding']['contract_template']['shots'][0]['endpoint_completion'] = 'completed'
+    binding = bind(package); request.prepare_package(root, binding)
+    for slot in ('start', 'end'):
+        prepared = boards.prepare_image_request(root, slot, images=images)
+        scope = {'id': 'exact-' + slot, 'status': 'approved', 'approved_by': 'SYNTHETIC creator fixture',
+            'project_id': package['project_id'], 'story_revision': 'r1', 'phase': 'image', 'provider': 'native_imagegen',
+            'evidence': {k: package['boards']['approval'][k] for k in ('path', 'sha256')},
+            'image_allowance': 2, 'allowed_image_routes': ['native_imagegen'],
+            'requests': {slot: prepared['request_sha256']}, 'attempts_per_shot': {slot: 1}}
+        scope_path = root / 'production_scopes.json'
+        scopes = json.loads(scope_path.read_text()) if scope_path.exists() else {'version': '1.0', 'scopes': []}
+        scopes['scopes'].append(scope); write(root, 'production_scopes.json', scopes)
+        call = boards.reserve_board_image(root, slot, scope_id=scope['id'], call_id='original-' + slot, images=images)
+        envelope = images.begin_native_image(root, call['call_id'])
+        receipt = host_receipt(root, envelope, name=slot)
+        images.import_native_image(root, call['call_id'], host_receipt=receipt)
+        source = boards.bind_imported_board(root, slot, call['call_id'], images=images)
+        review = attestation(source['sha256'], ASSET_PREDICATES, revision='r1')
+        review['reviewer'] = 'persistent reviewer'
+        boards.record_board_review(root, slot, review, roles=[slot + '_frame'], images=images)
+    contract = execution.load_shot_contract(root)
+    contract['project_review'] = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='r1')
+    contract['shots'][0]['review'] = attestation(shot_review_subject(contract, 's1'), SHOT_PREDICATES, revision='r1')
+    write(root, 'artifacts/shot_contract.json', contract)
+    assert boards.board_schedule(root, images=images)['board_ready_shots'] == ['s1']
+    assert execution.next_production_action(root)['kind'] == 'prepare_motion'
+    retained = {p: p.read_bytes() for p in (root / 'production_images').rglob('*') if p.is_file()}
+    expected = {name: (root / 'artifacts' / (name + '.json')).read_bytes() for name in ('script', 'scene_plan', 'asset_manifest')}
+    for name in expected: (root / 'artifacts' / (name + '.json')).unlink()
+    resumed = execution.advance(root)
+    assert resumed['status'] == 'host_action' and resumed['action']['kind'] == 'prepare_motion'
+    assert 'host_envelope' not in resumed and images.image_usage(root)['total'] == 2
+    assert retained == {p: p.read_bytes() for p in (root / 'production_images').rglob('*') if p.is_file()}
+    for name, raw in expected.items(): assert (root / 'artifacts' / (name + '.json')).read_bytes() == raw
+
+
+def test_local_package_rejects_contradictory_retyped_motion_fact(neutral_package):
+    root, package, bind = neutral_package
+    package = prospective_package(package)
+    package['boards']['motion_binding']['contract_template']['shots'][0]['dominant_action'] = 'Contradictory duplicate'
+    with pytest.raises(ValueError, match='duplicated motion fact contradicts'):
+        request.compile_package(root, bind(package))
+    assert not (root / 'artifacts/board_preparation.json').exists()
+
+
+@pytest.mark.parametrize('insufficient', [None, 'motion', 'images', 'revoked', 'import_crash', 'import_crash_revoked'])
+def test_actual_standing_run_derives_native_image_authority_without_new_creator_gate(neutral_package, insufficient):
+    from lib import production_boards as boards
+    from lib.shot_contract import ASSET_PREDICATES
+    root, package, bind = neutral_package
+    package = prospective_package(package); binding = bind(package)
+    request.prepare_package(root, binding)
+    marker = json.loads((root / 'project.json').read_text()); marker.update(identity_id='fixture-identity', pipeline_type='cinematic')
+    write(root, 'project.json', marker)
+    contract = execution.load_shot_contract(root)
+    script = json.loads((root / 'artifacts/script.json').read_text())
+    baselines = {}
+    for shot in contract['shots']:
+        projection = pa.current_projection(root, shot['id'])
+        first = projection['assets'][0]['id']
+        template = execution.planned_request_template({'duration': shot['duration_seconds'],
+            'image_path': {'$board': {'asset_id': first}}}, project_dir=root)
+        baselines[shot['id']] = {'projection': projection, 'planned_request_template': template,
+            'script_snapshot': script, 'dialogue_coverage': pa.dialogue_occurrences(projection),
+            'approval_plan_sha256': execution.approval_plan_digest(contract, shot['id'])}
+    policy = make_policy(project_id=package['project_id'], story_revision='r1',
+        locked={'cast': {}, 'dialogue': {}, 'sources': [], 'story_predicates': [], 'controls': {}},
+        flex={'duration_s': [1, 10], 'resolution': [], 'references': {'droppable_roles': [], 'substitutes': []}})
+    accounts = {'grok_cli': 'fixture-subscription', 'openart_cli': 'fixture-credit-account', 'native_imagegen': 'fixture-native-account'}
+    setup = {'version': '1.0', 'identity_id': 'fixture-identity', 'enabled': True,
+        'providers': policy['providers'], 'provider_accounts': {k: v for k, v in accounts.items() if k != 'native_imagegen'},
+        'caps': policy['caps'], 'checkpoint_stages': policy['checkpoint_stages'], 'flex': policy['flex'],
+        'approved_source_sha256': [r['sha256'] for r in package['boards']['references']], 'required_permissions': [],
+        'native_images': {'account': accounts['native_imagegen'], 'image_allowance': 4, 'allowed_image_routes': ['native_imagegen']},
+        'source_transfer': [{'provider': route, 'account': account,
+            'roles': ['identity', 'identity_reference', 'start_frame', 'end_frame', 'payoff_board'],
+            'generated_board_sources': True, 'max_files': 8, 'max_file_bytes': 10000,
+            'max_batch_bytes': 80000, 'max_batches': 4} for route, account in accounts.items()]}
+    if insufficient == 'motion':
+        policy['caps']['max_total_attempts'] = 2
+    elif insufficient == 'images':
+        setup['native_images']['image_allowance'] = 3
+    standing = creator_fixture(root, 'standing', setup)
+    command = creator_fixture(root, 'command', {'version': '1.0', 'identity_id': 'fixture-identity',
+        'project_id': package['project_id'], 'story_revision': 'r1', 'command': 'make_video',
+        'standing_setup_sha256': standing['sha256']})
+    kwargs = dict(policy=policy, baselines=baselines, standing_setup=standing, run_command=command, identity_id='fixture-identity')
+    if insufficient in {'motion', 'images'}:
+        with pytest.raises(pa.StandingSetupRequired, match='fixed .* allowance cannot cover'):
+            pa.activate_standing_run(root, **kwargs)
+        assert not (root / 'artifacts/autonomy_policy.json').exists()
+        assert images.image_usage(root)['total'] == 0
+        return
+    active = pa.activate_standing_run(root, **kwargs)
+    begun = execution.advance(root)
+    assert begun['status'] == 'host_action' and begun['action']['kind'] == 'receive_native_image', begun.get('reason', begun)
+    assert begun['host_envelope']['call_id']
+    slot = images.image_call_status(root, begun['host_envelope']['call_id'])['slot_id']
+    if insufficient in {'revoked', 'import_crash_revoked'}:
+        log = json.loads((root / 'artifacts/decision_log.json').read_text())
+        log['decisions'][0]['user_approved'] = False
+        write(root, 'artifacts/decision_log.json', log)
+    receipt = host_receipt(root, begun['host_envelope'])
+    if insufficient in {'import_crash', 'import_crash_revoked'}:
+        # Crash after the canonical original import, before derived pack binding.
+        images.import_native_image(root, begun['action']['subject'], host_receipt=receipt)
+        assert execution.next_production_action(root)['kind'] == 'promote_imported_board'
+        recovered = execution.advance(root)
+        assert recovered['action']['kind'] == 'review_board' and 'host_envelope' not in recovered
+        assert images.image_usage(root)['total'] == 1
+        received = execution.complete_action(root, begun['action'], outcome={'host_receipt': receipt})
+        assert received['replayed']
+    else:
+        received = execution.complete_action(root, begun['action'], outcome={'host_receipt': receipt})
+    assert received['action']['kind'] == 'review_board'
+    source = boards.load_board_pack(root)['board_bindings'][slot]
+    review = attestation(source['sha256'], ASSET_PREDICATES, revision='r1'); review['reviewer'] = 'persistent reviewer'
+    continued = execution.complete_action(root, received['action'], outcome={'review': review})
+    pack = boards.load_board_pack(root)
+    assert boards._observation(pack, slot)['review'] == review
+    scopes = json.loads((root / 'production_scopes.json').read_text())
+    assert scopes['image_envelope']['activation_basis']['policy_sha256'] == active['policy_sha256']
+    assert scopes['image_envelope']['approval']['approved_by'].startswith('standing_media_authority:')
+    if insufficient in {'revoked', 'import_crash_revoked'}:
+        assert continued['status'] == 'blocked'
+        assert images.image_usage(root)['total'] == 1
+        with pytest.raises(pa.AutonomyError): images.activate_standing_image_envelope(root)
+    else:
+        assert pa.activate_standing_run(root, **kwargs) == dict(active, replayed=True)
+
+
+def test_loop_prefers_ready_independent_motion_over_unrelated_host_recovery(p, monkeypatch):
+    p.contract['planning_mode'] = 'shot_local_v1'
+    p.contract['project_review']['subject_sha256'] = project_review_subject(p.contract)
+    for shot in p.contract['shots']:
+        shot['review']['subject_sha256'] = shot_review_subject(p.contract, shot['id'])
+    p.persist_contract()
+    # The source closure is real; unrelated submitted host intent cannot hold it.
+    (p.root / images.ARTIFACT).write_text('{}')
+    monkeypatch.setattr(images, '_load', lambda _: {'calls': [{'call_id': 'later-original', 'state': 'submitted',
+        'request_sha256': 'a'*64, 'scope_sha256': 'b'*64}]})
+    action = execution.next_production_action(p.root)
+    assert action['kind'] == 'prepare_motion' and action['subject'] == 'entry'
+
+
+def test_loop_discloses_usable_failed_candidate_for_draft_without_fake_selection(p):
+    result = p.generate('entry')
+    aid = result.data['production_attempt_id']
+    output_sha = hashlib.sha256((p.root / result.artifacts[0]).read_bytes()).hexdigest()
+    review = attestation(output_sha, ['possession'])
+    review.update(status='fail', predicates=[{'name': 'possession', 'status': 'fail', 'evidence': 'SYNTHETIC duplicate bill'}])
+    execution.record_rejection(p.root, aid, review)
+    # Remaining dependent shots cannot start from a failed upstream selection.
+    action = execution.next_production_action(p.root)
+    assert action['kind'] == 'compose_cut'
+    candidate = action['inputs']['candidates'][0]
+    assert candidate['review'] == 'fail' and candidate['strict_selected'] is False
+    assert execution.load_selected_attempts(p.root) == {}
+
+
+def test_completed_original_cannot_be_relabelled_failed_and_status_stays_unknown(p):
+    from lib.production_draft import first_cut_candidates
+    p.transport.timeout_next = True
+    original = p.generate('entry'); aid = original.data['production_attempt_id']
+    retained = json.loads((p.root / 'production_attempts' / aid / 'request.json').read_text())
+    failed = copy.deepcopy(original)
+    failed.data['conditioning_receipt'].update(submission_evidence='verified_native_call', dispatch_status='failed')
+    failed.data['dispatch_status'] = 'failed'
+    with pytest.raises(execution.ProductionGovernanceError, match='failed native completion'):
+        execution.reconcile_attempt(p.root, aid, failed, request_sha256=retained['request_sha256'])
+    row = first_cut_candidates(p.root)[0]
+    assert row['reason'] == 'original_pending' and row['detail']['status'] == 'uncertain'
+    assert len(p.transport.native_requests) == len(execution._attempts(p.root)) == 1
+
+
+def test_local_packet_and_baseline_survive_unrelated_asset_insert_and_prior_timing(p):
+    p.contract['planning_mode'] = 'shot_local_v1'
+    next(s for s in p.contract['shots'] if s['id'] == 'interior')['upstream'] = []
+    p.contract['project_review']['subject_sha256'] = project_review_subject(p.contract)
+    for shot in p.contract['shots']:
+        shot['review']['subject_sha256'] = shot_review_subject(p.contract, shot['id'])
+    p.persist_contract()
+    scene_path = p.root / 'artifacts/scene_plan.json'; scenes = json.loads(scene_path.read_text())
+    sections = []
+    for i, scene in enumerate(scenes['scenes']):
+        scene['script_section_id'] = 'section-' + scene['id']
+        scene.update(start_seconds=i*8, end_seconds=(i+1)*8)
+        sections.append({'id': scene['script_section_id'], 'text': 'SYNTHETIC local ' + scene['id'],
+            'start_seconds': i*8, 'end_seconds': (i+1)*8})
+    write(p.root, 'artifacts/scene_plan.json', scenes)
+    write(p.root, 'artifacts/script.json', {'version': '1.0', 'title': 'SYNTHETIC local timing',
+        'total_duration_seconds': len(sections)*8, 'sections': sections})
+    # Interior follows entry; its local timing changes only in cut placement.
+    before = pa.current_projection(p.root, 'interior')
+    packet = request.source_packet(p.root, 'interior', provider='grok_cli')
+    unrelated = copy.deepcopy(p.contract['assets'][-1]); unrelated['id'] = 'unrelated-insert'
+    p.contract['assets'].insert(0, unrelated)
+    p.contract['shots'][0]['dominant_action'] = 'Unrelated earlier action'
+    p.persist_contract()
+    scene_path = p.root / 'artifacts/scene_plan.json'; scenes = json.loads(scene_path.read_text())
+    script_path = p.root / 'artifacts/script.json'; script = json.loads(script_path.read_text())
+    for scene in scenes['scenes'][1:]:
+        scene['start_seconds'] += 1; scene['end_seconds'] += 1
+    scenes['scenes'][0]['end_seconds'] += 1
+    for section in script['sections'][1:]:
+        section['start_seconds'] += 1; section['end_seconds'] += 1
+    script['sections'][0]['end_seconds'] += 1; script['total_duration_seconds'] += 1
+    write(p.root, 'artifacts/scene_plan.json', scenes); write(p.root, 'artifacts/script.json', script)
+    after = pa.current_projection(p.root, 'interior')
+    for value in (before, after):
+        value.pop('contract_snapshot'); value.pop('scene_snapshot')
+    assert before == after
+    assert packet == request.source_packet(p.root, 'interior', provider='grok_cli')
+
+
+def test_prepare_motion_preserves_mcp_stage_at_registered_schema_boundary(p, monkeypatch):
+    from jsonschema import Draft202012Validator
+    from tools.base_tool import ToolResult
+    from tools.video.openart_mcp_video import OpenArtMCPVideo
+    from tools.tool_registry import registry
+    action = execution.next_production_action(p.root)
+    assert action['kind'] == 'prepare_motion'
+    inputs = {'project_dir': str(p.root), 'governance': {'scope_id': 'placeholder',
+        'shot_id': 'entry', 'stage': 'assets'}, 'model': 'pixverseV6', 'mode': 'text2video', 'prompt': 'Synthetic offline shot'}
+    tool = OpenArtMCPVideo(); submitted = []
+    monkeypatch.setattr(pa, 'derive_scope', lambda *a, **kw: {'id': 'derived'})
+    monkeypatch.setattr(registry, 'ensure_discovered', lambda *a: None)
+    monkeypatch.setattr(registry, 'get', lambda name: tool)
+    def dry(selected, actual):
+        Draft202012Validator(selected.input_schema).validate(actual)
+        return {'scope_id': actual['governance']['scope_id']}
+    monkeypatch.setattr(execution, 'governed_dry_run', dry)
+    monkeypatch.setattr(tool, 'execute', lambda actual: submitted.append(copy.deepcopy(actual)) or ToolResult(success=True))
+    execution.complete_action(p.root, action, outcome={'provider': 'openart_mcp', 'inputs': inputs})
+    assert submitted[0]['governance'] == {'scope_id': 'derived', 'shot_id': 'entry', 'stage': 'assets'}
+
+
+def test_motion_scope_crash_reuses_exact_scope_before_one_submission(tmp_path, monkeypatch):
+    from tools.base_tool import ToolResult
+    from tools.tool_registry import registry
+    kwargs = standing_fixture(tmp_path); pa.activate_standing_run(tmp_path, **kwargs)
+    policy, sha, decision = pa.require_active_policy(tmp_path)
+    inputs = {'governance': {'shot_id': 'entry'}, 'duration': 8}
+    material = dict(shot_id='entry', provider='grok_cli',
+        request_digest=execution.planned_request_digest(inputs, project_dir=tmp_path),
+        approval_plan_sha256=execution.approval_plan_digest(execution.load_shot_contract(tmp_path), 'entry'),
+        lock_digest='a'*64, compiled_request_sha256='b'*64, preparation_review_id='fixture-review', resolved_upstream={})
+    monkeypatch.setattr(pa, '_scope_material', lambda *a, **kw: (policy, sha, decision, copy.deepcopy(material)))
+    action = execution._production_action(tmp_path, 'prepare_motion', subject='entry', binding={}, host=True)
+    monkeypatch.setattr(execution, 'next_production_action', lambda _: action)
+    class OfflineTool:
+        def execute(self, actual):
+            submitted.append(copy.deepcopy(actual))
+            return ToolResult(success=True)
+    submitted = []; tool = OfflineTool()
+    monkeypatch.setattr(registry, 'ensure_discovered', lambda *a: None)
+    monkeypatch.setattr(registry, 'get', lambda name: tool)
+    def crash(*args): raise RuntimeError('synthetic crash after scope derivation before reservation')
+    monkeypatch.setattr(execution, 'governed_dry_run', crash)
+    with pytest.raises(RuntimeError, match='after scope derivation'):
+        execution.complete_action(tmp_path, action, outcome={'provider': 'grok_cli', 'inputs': inputs})
+    scopes = json.loads((tmp_path / 'production_scopes.json').read_text())['scopes']
+    assert len(scopes) == 1 and submitted == []
+    monkeypatch.setattr(execution, 'governed_dry_run', lambda *a: {})
+    execution.complete_action(tmp_path, action, outcome={'provider': 'grok_cli', 'inputs': inputs})
+    assert json.loads((tmp_path / 'production_scopes.json').read_text())['scopes'] == scopes
+    assert len(submitted) == 1 and submitted[0]['governance']['scope_id'] == scopes[0]['id']
+    changed = dict(material, request_digest='c'*64)
+    monkeypatch.setattr(pa, '_scope_material', lambda *a, **kw: (policy, sha, decision, changed))
+    with pytest.raises(pa.AutonomyError, match='undispatched scope differs'):
+        pa.derive_scope(tmp_path, inputs, provider='grok_cli', reuse_undispatched=True)
+    assert len(submitted) == 1
+
+
+@pytest.mark.parametrize('provider', ['grok_cli', 'openart_mcp'])
+def test_motion_waiting_original_does_not_hold_independent_ready_shot(p, monkeypatch, provider):
+    from lib import production_draft as draft, openart_mcp_jobs as jobs
+    p.contract['planning_mode'] = 'shot_local_v1'
+    next(s for s in p.contract['shots'] if s['id'] == 'interior')['upstream'] = []
+    p.contract['project_review']['subject_sha256'] = project_review_subject(p.contract)
+    for shot in p.contract['shots']:
+        shot['review']['subject_sha256'] = shot_review_subject(p.contract, shot['id'])
+    p.persist_contract()
+    original = {'attempt_id': 'synthetic-waiting-original', 'shot_id': 'entry', 'media_kind': 'motion',
+        'request_sha256': 'a'*64, 'provider': provider, 'scope': {'provider': provider}}
+    monkeypatch.setattr(execution, '_attempts', lambda _: [original])
+    monkeypatch.setattr(execution, '_state', lambda *a: {'status': 'uncertain'})
+    monkeypatch.setattr(draft, 'first_cut_candidates', lambda _: [])
+    monkeypatch.setattr(jobs, 'resume_original', lambda *a: {'request_sha256': 'a'*64,
+        'next_action': {'action': 'poll_original', 'attempt_id': original['attempt_id']}})
+    action = execution.next_production_action(p.root)
+    assert action['kind'] == 'prepare_motion' and action['subject'] == 'interior'
+
+
+@pytest.mark.parametrize('cut', [
+    {'status': 'incomplete', 'technical': {'has_audio': True}, 'missing': ['payoff']},
+    {'status': 'complete', 'technical': None, 'missing': []}])
+def test_current_first_cut_requires_complete_technical_master(p, monkeypatch, cut):
+    from lib import production_draft as draft
+    candidates = [{'shot_id': s['id'], 'status': 'candidate', 'review': 'pass'} for s in p.contract['shots']]
+    monkeypatch.setattr(draft, 'first_cut_candidates', lambda _: candidates)
+    monkeypatch.setattr(draft, 'latest_first_cut', lambda _: dict(cut, path='existing-cut.json', sha256='a'*64))
+    monkeypatch.setattr(draft, 'first_cut_status', lambda *a: {'status': 'current'})
+    assert execution.advance(p.root)['status'] == 'ready_to_compose'
+
+
+def upload_standing_fixture(root, *, provider, max_batches=1, uid_sha256=None):
+    kwargs = standing_fixture(root)
+    setup = json.loads((root / kwargs['standing_setup']['path']).read_text()); setup.pop('authorization')
+    if provider == 'openart_mcp':
+        spec = {'id': provider, 'billing': 'unknown_cost_no_ceiling',
+            'exposure_acknowledgement': 'no_enforceable_credit_ceiling', 'uid_sha256': uid_sha256,
+            'project_id': 'fixture-openart-project', 'routes': [{'model': 'pixverseV6', 'mode': 'image2video'}]}
+        kwargs['policy']['providers'].append(spec); setup['providers'].append(copy.deepcopy(spec))
+        setup['provider_accounts'][provider] = 'fixture-mcp-account'
+        setup['source_transfer'].append(dict(setup['source_transfer'][0], provider=provider, account='fixture-mcp-account'))
+    for term in setup['source_transfer']: term['max_batches'] = max_batches
+    kwargs['standing_setup'] = creator_fixture(root, 'standing', setup)
+    command = json.loads((root / kwargs['run_command']['path']).read_text()); command.pop('authorization')
+    command['standing_setup_sha256'] = kwargs['standing_setup']['sha256']
+    kwargs['run_command'] = creator_fixture(root, 'command', command)
+    pa.activate_standing_run(root, **kwargs)
+    return pa.require_active_policy(root)[0]
+
+
+def test_inline_transfer_final_batch_revalidates_same_original_and_zero_sources(tmp_path):
+    policy = upload_standing_fixture(tmp_path, provider='grok_cli')
+    inputs = {'governance': {'shot_id': 'entry'}, 'image_path': str(tmp_path / 'assets/start.svg')}
+    pa._validate_standing_transfer(tmp_path, policy, inputs, 'grok_cli')
+    write(tmp_path, 'production_attempts/final-original/request.json', {'attempt_id': 'final-original',
+        'scope_id': 'exact-final-scope', 'scope': {'provider': 'grok_cli'}, 'submitted_inputs': inputs})
+    # Adapter revalidation validates the current original, not another batch.
+    pa._validate_standing_transfer(tmp_path, policy, inputs, 'grok_cli', exclude_scope_id='exact-final-scope')
+    with pytest.raises(pa.StandingSetupRequired, match='batch allowance exhausted'):
+        pa._validate_standing_transfer(tmp_path, policy, inputs, 'grok_cli')
+    pa._validate_standing_transfer(tmp_path, policy, {'governance': {'shot_id': 'entry'}}, 'grok_cli')
+    # A zero-source original never consumes source-transfer allowance.
+    write(tmp_path, 'production_attempts/no-source/request.json', {'attempt_id': 'no-source',
+        'scope_id': 'no-source', 'scope': {'provider': 'grok_cli'}, 'submitted_inputs': {'duration': 8}})
+    pa._validate_standing_transfer(tmp_path, policy, inputs, 'grok_cli', exclude_scope_id='exact-final-scope')
+
+
+def test_cli_standing_upload_exact_final_batch_replay_account_bytes_and_revocation(tmp_path, monkeypatch):
+    policy = upload_standing_fixture(tmp_path, provider='openart_cli')
+    spec = pa._provider_spec(policy, 'openart_cli')
+    account = {'account_id_sha256': spec['account_id_sha256'], 'workspace': spec['workspace']}
+    source = str(tmp_path / 'assets/start.svg')
+    kwargs = dict(shot_id='entry', provider='openart_cli', files=[source], account=account)
+    first = pa.derive_standing_upload_authority(tmp_path, **kwargs)
+    assert first['provider_calls'] == 0 and first['authority']['approved_by'].startswith('standing_media_authority:')
+    # Already-counted motion using a remote upload is not a fresh upload batch.
+    write(tmp_path, 'production_attempts/motion/request.json', {'attempt_id': 'motion', 'scope_id': 'motion',
+        'scope': {'provider': 'openart_cli'}, 'submitted_inputs': {'image_path': source}})
+    assert pa.derive_standing_upload_authority(tmp_path, **kwargs) == dict(first, replayed=True)
+    sha = hashlib.sha256((tmp_path / 'assets/start.svg').read_bytes()).hexdigest()
+    assert request.approved_upload_lookup(tmp_path, first['upload_id'], sha)['state'] == 'approved'
+    with pytest.raises(pa.StandingSetupRequired, match='upload batch allowance exhausted'):
+        pa.derive_standing_upload_authority(tmp_path, **dict(kwargs, files=[str(tmp_path / 'assets/end.svg')]))
+    with pytest.raises(pa.StandingSetupRequired, match='account/workspace'):
+        pa.derive_standing_upload_authority(tmp_path, **dict(kwargs, account=dict(account, workspace='other')))
+    from lib import openart_jobs as cli_jobs
+    monkeypatch.setattr(cli_jobs, '_upload_profile', lambda *a: {'mode': 'image2video', 'model': 'kling-3', 'account_id_sha256': 'f'*64})
+    monkeypatch.setattr(cli_jobs, 'upload_binding', lambda *a: {})
+    monkeypatch.setattr(cli_jobs, '_UPLOAD_APPROVAL_LOOKUP', request.approved_upload_lookup)
+    with pytest.raises(cli_jobs.OpenArtCLIError, match='account/model differs'):
+        cli_jobs.upload_reference(tmp_path, first['upload_id'], tmp_path / 'assets/start.svg', model='kling-3', mode='image2video')
+    raw = (tmp_path / 'assets/start.svg').read_bytes()
+    (tmp_path / 'assets/start.svg').write_bytes(raw + b'changed')
+    assert request.approved_upload_lookup(tmp_path, first['upload_id'], sha) is None
+    (tmp_path / 'assets/start.svg').write_bytes(raw)
+    log = json.loads((tmp_path / 'artifacts/decision_log.json').read_text()); log['decisions'][0]['user_approved'] = False
+    write(tmp_path, 'artifacts/decision_log.json', log)
+    assert request.approved_upload_lookup(tmp_path, first['upload_id'], sha) is None
+    assert len(list((tmp_path / 'artifacts').glob('upload_approval-*.json'))) == 1
+
+
+from tests.integration.test_openart_mcp_governance import fixture_observations  # noqa: F401,E402
+from tests.integration.test_openart_mcp_autonomy import lifecycle  # noqa: F401,E402
+
+
+def test_mcp_standing_upload_final_batch_original_receipt_and_account_revalidation(tmp_path, fixture_observations):
+    from lib import openart_mcp as mcp, openart_mcp_jobs as jobs
+    root = tmp_path / 'standing-mcp'; root.mkdir()
+    account = mcp.account_summary()
+    upload_standing_fixture(root, provider='openart_mcp', uid_sha256=account['uid_sha256'])
+    args = dict(shot_id='entry', provider='openart_mcp', files=[str(root / 'assets/start.svg')],
+        account={'uid_sha256': account['uid_sha256']}, openart_project_id='fixture-openart-project')
+    authority = pa.derive_standing_upload_authority(root, **args)
+    declaration = {'upload_authorization_id': authority['upload_id']}
+    begun = jobs.prepare_upload(root, files=args['files'], billing_declaration=declaration,
+        openart_project_id=args['openart_project_id'])
+    # The canonical consumed batch is revalidated at its original receipt.
+    assert pa.derive_standing_upload_authority(root, **args) == dict(authority, replayed=True)
+    result = {'projectId': args['openart_project_id'], 'results': [{'fileId': 'fixture-source',
+        'status': 'SUCCESS', 'visualReference': {'id': 'fixture-ref', 'type': 'image',
+            'url': 'https://fixture.invalid/source.svg', 'metadata': {}}}]}
+    with pytest.raises(ValueError, match='different|invalid|exact'):
+        jobs._upload_authority(root, authority['authority']['files'], declaration,
+            {'uid_sha256': 'f'*64}, args['openart_project_id'])
+    # Exact existing owner can still resolve the final already-started batch.
+    jobs.record_upload_receipt(root, upload_id=begun['upload_id'], result=result)
+    with pytest.raises(pa.StandingSetupRequired, match='upload batch allowance exhausted'):
+        pa.derive_standing_upload_authority(root, **dict(args, files=[str(root / 'assets/end.svg')]))
+    with pytest.raises(ValueError, match='already consumed'):
+        jobs.prepare_upload(root, files=args['files'], billing_declaration=declaration,
+            openart_project_id=args['openart_project_id'])
+
+
+@pytest.mark.parametrize('unrelated', [False, True])
+def test_standing_mcp_zero_source_prepare_then_begin_at_final_media_slot(lifecycle, monkeypatch, tmp_path, unrelated):
+    from tests.integration.test_openart_alternate_model_repair import _compile
+    root, policy, _, inputs, _, _, jobs = lifecycle
+    contract = execution.load_shot_contract(root); contract['planning_mode'] = 'shot_local_v1'
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    contract['shots'][0]['review']['subject_sha256'] = shot_review_subject(contract, 'entry')
+    if unrelated:
+        other = copy.deepcopy(contract['shots'][0]); other['id'] = 'other'; contract['shots'].append(other)
+        contract['project_review']['subject_sha256'] = project_review_subject(contract)
+        for shot in contract['shots']: shot['review']['subject_sha256'] = shot_review_subject(contract, shot['id'])
+        scenes = json.loads((root / 'artifacts/scene_plan.json').read_text())
+        scene = copy.deepcopy(scenes['scenes'][0]); scene['id'] = 'other'; scenes['scenes'].append(scene)
+        write(root, 'artifacts/scene_plan.json', scenes)
+        policy['caps']['max_total_attempts'] = 2
+    write(root, 'artifacts/shot_contract.json', contract)
+    marker = json.loads((root / 'project.json').read_text()); marker['identity_id'] = 'fixture-identity'
+    write(root, 'project.json', marker)
+    timing = json.loads((root / 'artifacts/compiled_request-original.json').read_text())['timing']
+    inputs, native, _ = _compile(root, inputs, 'standing-zero-source', timing)
+    projection = pa.current_projection(root, 'entry')
+    baselines = {'entry': {'projection': projection,
+        'planned_request_template': execution.planned_request_template(inputs, project_dir=root),
+        'script_snapshot': json.loads((root / 'artifacts/script.json').read_text()),
+        'dialogue_coverage': pa.dialogue_occurrences(projection),
+        'approval_plan_sha256': execution.approval_plan_digest(contract, 'entry')}}
+    if unrelated:
+        other_projection = pa.current_projection(root, 'other')
+        baselines['other'] = dict(copy.deepcopy(baselines['entry']), projection=other_projection,
+            dialogue_coverage=pa.dialogue_occurrences(other_projection),
+            approval_plan_sha256=execution.approval_plan_digest(contract, 'other'))
+    accounts = {p['id']: 'fixture-' + p['id'] for p in policy['providers']}
+    setup = {'version': '1.0', 'identity_id': 'fixture-identity', 'enabled': True,
+        'providers': policy['providers'], 'provider_accounts': accounts, 'caps': policy['caps'],
+        'checkpoint_stages': policy['checkpoint_stages'], 'flex': policy['flex'],
+        'approved_source_sha256': [], 'required_permissions': [],
+        'source_transfer': [{'provider': provider, 'account': account, 'roles': [],
+            'generated_board_sources': False, 'max_files': 1, 'max_file_bytes': 1,
+            'max_batch_bytes': 1, 'max_batches': 1} for provider, account in accounts.items()]}
+    standing = creator_fixture(root, 'standing', setup)
+    command = creator_fixture(root, 'command', {'version': '1.0', 'identity_id': 'fixture-identity',
+        'project_id': contract['project_id'], 'story_revision': contract['story_revision'],
+        'command': 'make_video', 'standing_setup_sha256': standing['sha256']})
+    # Fixture replaces unspent fixture authority, never a production record.
+    (root / 'artifacts/autonomy_policy.json').unlink(); (root / 'artifacts/decision_log.json').unlink()
+    write(root, 'production_scopes.json', {'version': '1.0', 'scopes': []})
+    activation = pa.activate_standing_run(root, policy=policy, baselines=baselines,
+        standing_setup=standing, run_command=command, identity_id='fixture-identity')
+    scope = pa.derive_scope(root, inputs, provider='openart_mcp'); inputs['governance']['scope_id'] = scope['id']
+    jobs.prepare(root, attempt_id='standing-final-original', generation_inputs=inputs,
+        authority_fn=execution.prepare_openart_mcp_handoff)
+    begun = jobs.begin(root, 'standing-final-original', authority_fn=execution.prepare_openart_mcp_handoff)
+    assert begun['arguments'] == native['body']
+    assert jobs.frozen_request(root, 'standing-final-original')['authority']['billing']['policy_sha256'] == activation['policy_sha256']
+    assert pa.root_attempt_counts(root, pa.require_active_policy(root)[0])['total'] == 1
+    with pytest.raises(ValueError): jobs.begin(root, 'standing-final-original', authority_fn=execution.prepare_openart_mcp_handoff)
+    from tests.integration.test_openart_first_pass_workflow import real_av_clip
+    from tests.integration.test_openart_mcp_governance import install_fake_download
+    from lib import production_provenance as provenance
+    from lib.shot_contract import file_sha256, selection_digest, UPSTREAM_PREDICATES
+    from tests.lib.test_production_images import PNG
+    aid = 'standing-final-original'
+    jobs.receive(root, aid, outcome={'historyId': 'fixture-standing-original', 'status': 'PENDING'})
+    jobs.record_status(root, aid, result={'historyId': 'fixture-standing-original', 'status': 'COMPLETED',
+        'resources': [{'id': 'fixture-video', 'mediaType': 'video', 'status': 'COMPLETED',
+            'url': 'https://fixture.invalid/standing.mp4'}]})
+    media = real_av_clip(tmp_path / 'fixture-standing.mp4', seconds=1)
+    install_fake_download(monkeypatch, jobs, media)
+    downloaded = jobs.download_original(root, aid); jobs.collect(root, aid, downloaded_path=downloaded['downloaded_path'])
+    monkeypatch.setattr(provenance, '_ALLOW_OPENART_FIXTURE_PROVENANCE', True)
+    output = {'path': inputs['output_path'], 'sha256': file_sha256(inputs['output_path'])}
+    validate = lambda: provenance.validate_attempt_provenance(root, aid, shot_id='entry',
+        story_revision=contract['story_revision'], expected_output=output)
+    assert validate()['result']['status'] == 'generated'
+    if unrelated:
+        current = execution.load_shot_contract(root)
+        current['shots'][1]['dominant_action'] = 'SYNTHETIC unrelated new action'
+        write(root, 'artifacts/shot_contract.json', current)
+        assert validate()['result']['status'] == 'generated'
+    frame = root / 'observed-outgoing.png'; frame.write_bytes(PNG)
+    selection = {'attempt_id': aid, 'output': output, 'outgoing_frame': {'path': str(frame), 'sha256': file_sha256(frame)}}
+    selection['review'] = attestation(selection_digest(selection), UPSTREAM_PREDICATES, revision=contract['story_revision'])
+    execution.record_selection(root, 'entry', selection)
+    assert execution.load_selected_attempts(root)['entry'] == selection
+    current = execution.load_shot_contract(root); current['shots'][0]['dominant_action'] = 'SYNTHETIC changed target action'
+    write(root, 'artifacts/shot_contract.json', current)
+    with pytest.raises(ValueError): validate()
+
+
+def test_grok_final_inline_batch_scope_revalidates_after_original_reservation(tmp_path):
+    kwargs = standing_fixture(tmp_path)
+    contract = execution.load_shot_contract(tmp_path); shot = contract['shots'][0]
+    inputs = {'project_dir': str(tmp_path), 'governance': {'shot_id': 'entry'},
+        'prompt': 'Synthetic placeholder before activation', 'operation': 'reference_to_video', 'duration': 8, 'image_path': str(tmp_path / 'assets/start.svg'),
+        'output_path': str(tmp_path / 'clip.mp4'), 'compiled_request_id': 'final', 'preparation_review_id': 'final'}
+    from lib.shot_contract import required_asset_ids
+    consumer = required_asset_ids(contract, shot)
+    inputs['reference_image_paths'] = [str(tmp_path / a['path']) for a in contract['assets']
+        if a['id'] in consumer and a['id'] != 'start']
+    kwargs['baselines']['entry']['planned_request_template'] = execution.planned_request_template(inputs, project_dir=tmp_path)
+    setup = json.loads((tmp_path / kwargs['standing_setup']['path']).read_text()); setup.pop('authorization')
+    next(t for t in setup['source_transfer'] if t['provider'] == 'grok_cli')['max_batches'] = 1
+    kwargs['standing_setup'] = creator_fixture(tmp_path, 'standing', setup)
+    command = json.loads((tmp_path / kwargs['run_command']['path']).read_text()); command.pop('authorization')
+    command['standing_setup_sha256'] = kwargs['standing_setup']['sha256']
+    kwargs['run_command'] = creator_fixture(tmp_path, 'command', command)
+    pa.activate_standing_run(tmp_path, **kwargs)
+    observation = {'cli_version': '1.0.34', 'grok_path': '/synthetic-offline/grok'}
+    authored = request.compile_provider_prompt(tmp_path, 'entry', provider='grok_cli')
+    inputs['prompt'] = authored['prompt']
+    native = request.prepare_grok_native(inputs, observation)
+    timing = {'method': 'segmented_estimate', 'duration_seconds': 8, 'language': 'en', 'margin_seconds': .5,
+        'rationale': 'Synthetic offline fixture', 'overlap_policy': 'serial', 'overlap_rationale': 'Synthetic serial windows',
+        'segments': [{'dialogue_index': i, 'text_sha256': request.digest(line['text']), 'language': 'en',
+            'word_count': 2, 'words_per_minute': 180, 'pause_seconds': 0, 'rationale': 'Synthetic fixture'}
+            for i, line in enumerate(shot['dialogue'])],
+        'action_windows': [{'source_pointer': '/shot_contract/shots/0/' + key, 'value_sha256': request.digest(shot[key]),
+            'start_seconds': start, 'end_seconds': end, 'rationale': 'Synthetic fixture'}
+            for key, start, end in [('dominant_action', 4.1, 7), ('completed_end_state', 7, 7.4)]]}
+    compiled = request.prepare_compiled_request(inputs, native, {'source': 'real'}, coverage=authored['coverage'], timing=timing)
+    write(tmp_path, 'artifacts/compiled_request-final.json', compiled)
+    write(tmp_path, 'artifacts/preparation_review-final.json', {'version': '1.0', 'review_id': 'final',
+        'reviewer': 'SYNTHETIC offline reviewer', 'status': 'pass', 'subject_sha256': request.digest(compiled),
+        'evidence_kind': 'reviewed', 'predicates': [{'name': p, 'status': 'pass', 'severity': 'critical',
+            'evidence': 'SYNTHETIC software fixture only'} for p in sorted(request.PREDICATES)]})
+    scope = pa.derive_scope(tmp_path, inputs, provider='grok_cli', observation=observation)
+    inputs['governance']['scope_id'] = scope['id']
+    write(tmp_path, 'production_attempts/final-reservation/request.json', {'attempt_id': 'final-reservation',
+        'scope_id': scope['id'], 'scope': scope, 'shot_id': 'entry', 'story_revision': contract['story_revision'],
+        'media_kind': 'motion', 'phase': 'first_pass', 'request_sha256': scope['requests']['entry'],
+        'submitted_inputs': copy.deepcopy(inputs)})
+    assert pa.validate_derived_scope(tmp_path, scope, inputs=inputs, observation=observation)
+    with pytest.raises(pa.StandingSetupRequired, match='batch allowance exhausted'):
+        pa.derive_scope(tmp_path, inputs, provider='grok_cli', observation=observation)
+    assert len(execution._attempts(tmp_path)) == 1
+
+
+@pytest.mark.parametrize('second_referenced', [False, True])
+def test_standing_two_native_boards_zero_source_calls_preserve_transfer_batch(neutral_package, second_referenced):
+    from lib import production_boards as boards
+    root, package, bind = neutral_package
+    package = prospective_package(package); spec = package['boards']
+    keep = {'start', 'other'}
+    spec['image_nodes'] = [n for n in spec['image_nodes'] if n['slot_id'] in keep]
+    for node in spec['image_nodes']:
+        node['reference_ids'] = ['cast'] if second_referenced and node['slot_id'] == 'other' else []
+        node['image_dependencies'] = []
+    spec['shots'] = [s for s in spec['shots'] if s['shot_id'] in {'s1', 's3'}]
+    for shot in spec['shots']: shot['roles'] = [r for r in shot['roles'] if r['asset_id'] in keep or r['asset_id'] == 'cast']
+    spec['shared_roles'] = [r for r in spec['shared_roles'] if r['asset_id'] == 'cast']
+    template = spec['motion_binding']['contract_template']; template['payoff_asset_id'] = 'other'
+    template['assets'] = [a for a in template['assets'] if a['id'] in keep]
+    template['shots'] = [s for s in template['shots'] if s['id'] in {'s1', 's3'}]
+    for shot in template['shots']: shot['asset_ids'] = [a for a in shot['asset_ids'] if a in keep]
+    package['shots'] = [s for s in package['shots'] if s['id'] in {'s1', 's3'}]
+    request.prepare_package(root, bind(package))
+    marker = json.loads((root / 'project.json').read_text()); marker.update(identity_id='fixture-identity', pipeline_type='cinematic')
+    write(root, 'project.json', marker)
+    contract = execution.load_shot_contract(root); script = json.loads((root / 'artifacts/script.json').read_text())
+    baselines = {}
+    for shot in contract['shots']:
+        projection = pa.current_projection(root, shot['id'])
+        baselines[shot['id']] = {'projection': projection,
+            'planned_request_template': execution.planned_request_template({'duration': shot['duration_seconds']}, project_dir=root),
+            'script_snapshot': script, 'dialogue_coverage': pa.dialogue_occurrences(projection),
+            'approval_plan_sha256': execution.approval_plan_digest(contract, shot['id'])}
+    policy = make_policy(project_id=contract['project_id'], story_revision=contract['story_revision'],
+        locked={'cast': {}, 'dialogue': {}, 'sources': [], 'story_predicates': [], 'controls': {}})
+    accounts = {'grok_cli': 'fixture-grok', 'openart_cli': 'fixture-cli', 'native_imagegen': 'fixture-native'}
+    setup = {'version': '1.0', 'identity_id': 'fixture-identity', 'enabled': True,
+        'providers': policy['providers'], 'provider_accounts': {k: v for k, v in accounts.items() if k != 'native_imagegen'},
+        'caps': policy['caps'], 'checkpoint_stages': policy['checkpoint_stages'], 'flex': policy['flex'],
+        'approved_source_sha256': [r['sha256'] for r in spec['references']], 'required_permissions': [],
+        'native_images': {'account': accounts['native_imagegen'], 'image_allowance': 2, 'allowed_image_routes': ['native_imagegen']},
+        'source_transfer': [{'provider': provider, 'account': account, 'roles': ['identity', 'start_frame', 'end_frame'],
+            'generated_board_sources': True, 'max_files': 8, 'max_file_bytes': 10000,
+            'max_batch_bytes': 80000, 'max_batches': 1} for provider, account in accounts.items()]}
+    standing = creator_fixture(root, 'standing', setup)
+    command = creator_fixture(root, 'command', {'version': '1.0', 'identity_id': 'fixture-identity',
+        'project_id': contract['project_id'], 'story_revision': contract['story_revision'], 'command': 'make_video',
+        'standing_setup_sha256': standing['sha256']})
+    pa.activate_standing_run(root, policy=policy, baselines=baselines, standing_setup=standing,
+        run_command=command, identity_id='fixture-identity')
+    retained = images.activate_standing_image_envelope(root)
+    for slot in ('start', 'other'):
+        prepared = boards.prepare_image_request(root, slot, images=images)
+        assert bool(prepared['packet']['references']) == (second_referenced and slot == 'other')
+        scope = images.derive_native_image_scope(root, prepared['packet'], slot, prepared['arguments'], output_path=prepared['output_path'])
+        call = boards.reserve_board_image(root, slot, scope_id=scope, call_id='fixture-' + slot, images=images)
+        envelope = images.begin_native_image(root, call['call_id'])
+        # Exact already-counted original admission excludes itself from batch count.
+        images._standing_native_transfer(root, retained, prepared['packet'], exclude_call_id=call['call_id'])
+        images.import_native_image(root, call['call_id'], host_receipt=host_receipt(root, envelope, name='receipt-' + slot))
+        boards.bind_imported_board(root, slot, call['call_id'], images=images)
+    assert images.image_usage(root)['total'] == 2
+    calls = images._load(root)['calls']
+    assert sum(bool(call['packet']['references']) for call in calls) == int(second_referenced)
+    if second_referenced:
+        with pytest.raises(pa.StandingSetupRequired, match='batch allowance exhausted'):
+            images._standing_native_transfer(root, retained, calls[-1]['packet'])

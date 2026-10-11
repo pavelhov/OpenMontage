@@ -21,7 +21,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from lib.shot_contract import (
     CRITICAL_PREDICATES, PROJECT_PREDICATES, UPSTREAM_PREDICATES,
     contract_digest, file_sha256, review_digest, selection_digest,
-    validate_shot_contract,
+    validate_shot_contract, audio_review_disabled, required_review_predicates,
 )
 from schemas.artifacts import load_schema
 
@@ -75,15 +75,17 @@ def validate_final_review(
         return {'eligible': not errors, 'release_status': 'draft' if errors else 'final',
                 'errors': errors, 'warnings': warnings}
 
-    if not isinstance(review, dict) or review.get('version') != CURRENT_VERSION:
-        errors.append('final_review: current v2 full AV review required; v1 is legacy/draft evidence')
+    visual_only = audio_review_disabled(project_dir)
+    version = '3.0' if visual_only else CURRENT_VERSION
+    if not isinstance(review, dict) or review.get('version') != version:
+        errors.append(f'final_review: current v{version} review required; legacy evidence remains unchanged')
         return result()
     try:
         json.dumps(review, allow_nan=False)
     except (TypeError, ValueError) as exc:
         errors.append(f'final_review: invalid JSON value ({exc})')
         return result()
-    current_schema = load_schema('final_review')['oneOf'][1]
+    current_schema = load_schema('final_review')['oneOf'][2 if visual_only else 1]
     for error in Draft202012Validator(current_schema, format_checker=FormatChecker()).iter_errors(review):
         field = '.'.join(map(str, error.absolute_path)) or '$'
         errors.append(f'final_review.{field}: {error.message}')
@@ -145,22 +147,25 @@ def validate_final_review(
     except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError) as exc:
         errors.append(f'master duration: technical probe unavailable/invalid ({exc})')
         duration = review['duration_seconds']
-    for dimension in DIMENSIONS:
+    for dimension in (d for d in DIMENSIONS if not (visual_only and d == 'audio')):
         if review['dimensions'][dimension]['status'] != 'pass':
             errors.append(f'{dimension}: {review["dimensions"][dimension]["status"]}')
-    av = review['av_review']
-    if av['status'] != 'pass' or av['mode'] != 'synchronized_av' or not av['watched_full'] or not av['listened_full']:
-        errors.append('av_review: complete synchronized viewing AND listening must pass')
+    av = review['visual_review' if visual_only else 'av_review']
+    if av['status'] != 'pass' or not av['watched_full'] or (not visual_only and (av['mode'] != 'synchronized_av' or not av['listened_full'])):
+        errors.append('playback review: complete required viewing scope must pass')
     if abs(av['start_seconds']) > TIMING_TOLERANCE or abs(av['end_seconds'] - duration) > TIMING_TOLERANCE:
-        errors.append('av_review: playback evidence must cover the full master from start through ending')
+        errors.append(('visual_review' if visual_only else 'av_review') + ': playback evidence must cover the full master from start through ending')
 
     def predicates(items, required, label):
+        required = required_review_predicates(root, required)
         seen = set()
         for item in items:
             name = item['name']
             if name in seen:
                 errors.append(f'{label}.{name}: duplicate/conflicting predicate')
             seen.add(name)
+            if visual_only and name == 'speaker_source':
+                continue
             critical = name in CRITICAL_PREDICATES or item.get('severity', 'critical') == 'critical'
             if name in CRITICAL_PREDICATES and item.get('severity') == 'cosmetic':
                 errors.append(f'{label}.{name}: critical predicate cannot be cosmetic')

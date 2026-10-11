@@ -176,7 +176,7 @@ def _validate_artifacts_for_stage(
         required_artifact is not None
         and status in {"completed", "awaiting_human"}
         and required_artifact not in artifacts
-        and not (stage == "research" and isinstance(metadata, dict)
+        and not (stage in {"research", "proposal"} and isinstance(metadata, dict)
                  and _supplied_basis_shape_error(metadata.get("supplied_basis")) is None)
     ):
         raise CheckpointValidationError(
@@ -466,6 +466,7 @@ def _enforce_stage_prerequisites(
                 _validate_policy_checkpoint(
                     pipeline_dir / project_id, pipeline_type, predecessor,
                     basis, checkpoint.get("review"), checkpoint["artifacts"],
+                    supplied_basis=checkpoint.get('metadata', {}).get('supplied_basis'),
                 )
 
     if incomplete or unapproved:
@@ -488,6 +489,7 @@ def _validate_policy_checkpoint(
     approval_basis: Any,
     review: Any,
     artifacts: dict[str, Any],
+    *, supplied_basis: Any = None,
 ) -> None:
     """Revalidate retained policy authority and reviewed bytes without writes."""
     try:
@@ -500,6 +502,14 @@ def _validate_policy_checkpoint(
             raise ValueError("policy preauthorization requires an actual manifest gate")
         definitions = _load_checkpoint_schema()["$defs"]
         jsonschema.validate(approval_basis, definitions["approval_basis"])
+        if stage == 'proposal' and supplied_basis is not None and 'proposal_packet' not in artifacts:
+            _validate_supplied_basis(project_root, supplied_basis)
+            from lib.production_autonomy import require_active_policy
+            policy, sha, decision_id = require_active_policy(project_root)
+            if (not policy.get('activation_basis') or stage not in policy['checkpoint_stages']
+                    or approval_basis != {'kind': 'policy', 'policy_sha256': sha, 'decision_id': decision_id}):
+                raise ValueError('supplied proposal requires exact active standing run authority')
+            return True
         if not isinstance(review, dict):
             raise ValueError("policy preauthorization requires review.preauth")
         preauth = review.get("preauth")
@@ -727,9 +737,10 @@ def write_checkpoint(
             raise CheckpointValidationError(
                 "GATE VIOLATION: policy approval requires a completed manifest-gated stage"
             )
-        _validate_policy_checkpoint(
+        supplied_gate = _validate_policy_checkpoint(
             pipeline_dir / project_id, pipeline_type, stage,
             approval_basis, review, artifacts,
+            supplied_basis=(metadata or {}).get('supplied_basis') if isinstance(metadata, dict) else None,
         )
         if metadata is not None and not isinstance(metadata, dict):
             raise CheckpointValidationError("GATE VIOLATION: policy checkpoint metadata must be an object")
@@ -748,7 +759,7 @@ def write_checkpoint(
         metadata = dict(metadata or {})
         metadata["approval_basis"] = dict(approval_basis)
         # Retain the exact validated binding for later prerequisite checks.
-        review = dict(review, preauth=dict(review["preauth"]))
+        review = dict(review or {}) if supplied_gate else dict(review, preauth=dict(review["preauth"]))
         policy_approved = True
     if gated:
         human_approval_required = True
@@ -768,8 +779,8 @@ def write_checkpoint(
             )
 
     if isinstance(metadata, dict) and "supplied_basis" in metadata:
-        if stage != "research":
-            raise CheckpointValidationError("supplied basis applies only to the research stage")
+        if stage not in {"research", "proposal"}:
+            raise CheckpointValidationError("supplied basis applies only to research/proposal stages")
         _validate_supplied_basis(pipeline_dir / project_id, metadata["supplied_basis"])
 
     _enforce_stage_prerequisites(

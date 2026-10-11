@@ -32,7 +32,7 @@ def production(tmp_path, monkeypatch):
             value['shots'] = value['shots'][:1]
         return value
     monkeypatch.setattr(workflow, 'read', one_shot_story)
-    root = init_project('offline-first-pass', title='Synthetic final-review fixture',
+    root = init_project('thisaccountisawarcrime-offline-first-pass', title='Synthetic final-review fixture',
         pipeline_type='cinematic', pipeline_dir=tmp_path, governance='strict',
         story_revision='courier-story-1')
     dispatched = workflow.Production(root, monkeypatch)

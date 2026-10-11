@@ -18,7 +18,7 @@ from jsonschema.exceptions import ValidationError
 from lib.shot_contract import (
     ASSET_PREDICATES, CRITICAL_PREDICATES, PROJECT_PREDICATES, SHOT_PREDICATES,
     UPSTREAM_PREDICATES, contract_digest, file_sha256, review_digest,
-    selection_digest, provisional_audio_review,
+    selection_digest, provisional_audio_review, required_review_predicates, audio_review_disabled,
 )
 from schemas.artifacts import load_schema
 from lib.production_trim_validation import (
@@ -162,6 +162,13 @@ def _validate_attempt_provenance(
         from lib.production_autonomy import validate_policy_attempt
         validate_policy_attempt(root, request, scope, contract,
                                 frozen_openart=execution.load_openart_frozen(request) if openart else None)
+    elif scope.get('planning_mode') == 'shot_local_v1':
+        from lib.shot_contract import shot_local
+        require(shot_local(contract) and shot_local(current), 'prospective scope requires local contract')
+        require(scope.get('approval_plan_sha256') == execution.approval_plan_digest(contract, shot_id),
+                'frozen local scope differs')
+        require(execution.approval_plan_digest(contract, shot_id) == execution.approval_plan_digest(current, shot_id),
+                'approved local planning semantics changed')
     elif local_continuation_applicable:
         # The validated once-only original claim proves exact own-shot authority;
         # unrelated later shot semantics grant no new generation or carry scope.
@@ -216,7 +223,9 @@ def _validate_attempt_provenance(
     if _historical_source:
         current_assets = {asset['id']:asset for asset in current.get('assets', [])}
         frozen_shot = next(shot for shot in contract['shots'] if shot['id'] == shot_id)
-        for asset_id in continuity._closure(contract,frozen_shot):
+        from lib.shot_contract import required_asset_ids, shot_local
+        closure = required_asset_ids(contract, frozen_shot) if shot_local(contract) else continuity._closure(contract,frozen_shot)
+        for asset_id in closure:
             asset = current_assets.get(asset_id)
             require(asset is not None, 'current historical static source missing')
             if not asset.get('upstream_source'):
@@ -237,24 +246,23 @@ def _validate_attempt_provenance(
         provisional = audio_provisional or accepted is not None
         require((review['status'] == 'pass' or provisional) and review['subject_sha256'] == subject
                 and review['story_revision'] == story_revision, f'{label}: failed/stale review')
+        names = required_review_predicates(root, names)
         seen = [predicate['name'] for predicate in review['predicates']]
         require(len(seen) == len(set(seen)) and names.issubset(seen), f'{label}: missing/duplicated required predicates')
         for predicate in review['predicates']:
+            if predicate['name'] == 'speaker_source' and audio_review_disabled(root):
+                continue
             critical = predicate['name'] in CRITICAL_PREDICATES or predicate.get('severity', 'critical') == 'critical'
             require(not (predicate['name'] in CRITICAL_PREDICATES and predicate.get('severity') == 'cosmetic'), f'{label}: critical predicate downgraded')
             deferred = (audio_provisional and predicate['name'] == 'speaker_source' and predicate['status'] == 'unknown') or (predicate['name'] == accepted and predicate['status'] == 'fail')
             require(not critical or predicate['status'] == 'pass' or deferred, f'{label}: critical evidence not passing')
 
-    bound_review(contract['project_review'], digest, PROJECT_PREDICATES, 'frozen project review')
-    bound_review(shot['review'], digest, SHOT_PREDICATES, 'frozen shot review')
+    from lib.shot_contract import project_review_subject, shot_review_subject, required_asset_ids
+    bound_review(contract['project_review'], project_review_subject(contract), PROJECT_PREDICATES, 'frozen project review')
+    bound_review(shot['review'], shot_review_subject(contract, shot_id), SHOT_PREDICATES, 'frozen shot review')
     assets = {asset['id']: asset for asset in contract['assets']}
     require(len(assets) == len(contract['assets']), 'duplicate frozen asset IDs')
-    required_assets = set(shot['asset_ids'])
-    if not project_reference_free:
-        required_assets.add(contract['payoff_asset_id'])
-    for asset in assets.values():
-        if asset['role'] == 'identity_reference' and set(asset['cast_ids']) & (set(shot['cast_ids']) | set(contract['late_cast_ids'])):
-            required_assets.add(asset['id'])
+    required_assets = required_asset_ids(contract, shot)
     for asset_id in required_assets:
         require(asset_id in assets, 'required frozen asset missing')
         asset = assets[asset_id]
@@ -386,6 +394,17 @@ def _validate_attempt_provenance(
             and receipt.get('native_tool') == native_tool and receipt.get('session_id') == request['cli_session_id']
             and receipt.get('dispatch_status') == 'completed' and receipt.get('submission_evidence') == 'verified_native_call', 'native receipt route/session/submission differs')
     require(nonempty(receipt.get('adapter_version')) and nonempty(receipt.get('cli_version')), 'actual adapter/CLI version missing')
+    launch = execution._retained_grok_launch(directory, request, expected_args, native_tool,
+        Path(request['submitted_inputs'].get('cwd') or Path(request['submitted_inputs']['output_path']).parent).resolve())
+    if launch is not None:
+        require(receipt.get('cli_version') == launch['cli_version']
+                and receipt.get('adapter_version') == launch['adapter_version']
+                and data.get('cli_version') == launch['cli_version'],
+                'actual adapter/CLI version differs from retained original launch')
+        recovery = data.get('original_session_recovery')
+        if recovery is not None:
+            require(recovery.get('original_sha256', {}).get('grok_launch.json') == file_sha256(directory / 'grok_launch.json'),
+                    'original recovery launch evidence changed')
     require(receipt.get('agent_model') and receipt.get('model_role') == 'agent'
             and receipt.get('media_model') is None and receipt.get('media_model_status') == 'unreported', 'CLI/media model provenance misrepresented')
     require(receipt.get('submitted_arguments') == expected_args, 'native receipt changed approved controls')
@@ -415,6 +434,13 @@ def _validate_attempt_provenance(
         raw_path = directory / 'local_continuation_raw_result.json'
         original_path = directory / 'local_continuation_result.json'
     reconciliation = (directory / 'reconciliation.json').exists()
+    if reconciliation and request.get('media_kind') == 'motion':
+        from types import SimpleNamespace
+        original = execution._verify_original_grok_motion_success(root, directory, request, SimpleNamespace(data=data))
+        retained_reconciliation = read(directory / 'reconciliation.json')
+        if retained_reconciliation.get('original_session_evidence') is not None:
+            require(retained_reconciliation['original_session_evidence'] == original,
+                    'reconciled original session evidence changed')
     if provider_path.exists() and not reconciliation:
         native_result = read(directory / 'provider_result.json')
         require(native_result.get('success') is True and native_result.get('data', {}).get('conditioning_receipt') == receipt
@@ -844,12 +870,14 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
     packet = snapshot['source_packet']
     frozen_shots = [item for item in frozen_contract['shots'] if item['id'] == shot_id]
     require(len(frozen_shots) == 1 and frozen_shots[0] == packet['shot'], 'frozen source shot differs')
-    require(contract_digest(frozen_contract) == packet['binding']['contract_sha256']
+    from lib.shot_contract import shot_local, shot_review_subject
+    frozen_subject = shot_review_subject(frozen_contract, shot_id) if shot_local(frozen_contract) else contract_digest(frozen_contract)
+    require(frozen_subject == packet['binding']['contract_sha256']
             and preparation.digest([frozen_contract['project_review'], frozen_shots[0].get('review')])
                 == packet['binding']['reviews_sha256'], 'frozen contract/reviews differ')
     from lib.production_continuity import historical_shot_planning_digest
     digest_shot_plan = historical_shot_planning_digest if _historical_source else shot_planning_digest
-    planning_digest = lambda contract: digest_shot_plan(contract, shot_id)
+    planning_digest = (lambda contract: execution.approval_plan_digest(contract, shot_id)) if shot_local(frozen_contract) else (lambda contract: digest_shot_plan(contract, shot_id))
     require(planning_digest(frozen_contract) == planning_digest(current_contract),
             'current MCP planning semantics changed')
     historical_selected = {}

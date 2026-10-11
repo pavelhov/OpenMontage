@@ -444,6 +444,7 @@ def require_admission(project_dir, **kwargs):
 
 def _review_entry(root, shot_id, selection, selected=None):
     from lib.production_review_successors import resolve_selection_review
+    from lib.shot_contract import audio_review_disabled
     entry = {'attempt_id': (selection or {}).get('attempt_id') if isinstance(selection, dict) else None,
              'review_status': None, 'warnings': [], 'critical': [], 'unknown': [], 'error': None}
     try:
@@ -453,10 +454,15 @@ def _review_entry(root, shot_id, selection, selected=None):
         entry.update(review_status='invalid', error=f'{type(exc).__name__}: {exc}')
         return entry
     entry['review_status'] = review.get('status') or review.get('verdict')
+    visual_only = audio_review_disabled(root)
     for item in review.get('findings') or review.get('predicates') or []:
         if not isinstance(item, dict) or item.get('status') == 'pass':
             continue
         name = item.get('name') or item.get('id')
+        # Keep optional audio observations in the retained review, but use the
+        # same validated future-project scope as selection/final eligibility.
+        if visual_only and name == 'speaker_source':
+            continue
         if item.get('status') == 'unknown' or item.get('severity') == 'unknown':
             entry['unknown'].append(name)
         elif item.get('severity', 'critical') == 'critical':

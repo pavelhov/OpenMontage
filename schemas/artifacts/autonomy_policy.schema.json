@@ -293,6 +293,41 @@
           "$ref": "#/$defs/sha"
         }
       }
+    },
+    "planning_mode": {
+      "const": "shot_local_v1"
+    },
+    "activation_basis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "kind",
+        "identity_id",
+        "standing_setup",
+        "run_command",
+        "plan_sha256"
+      ],
+      "properties": {
+        "version": {
+          "const": "1.0"
+        },
+        "kind": {
+          "const": "standing_run"
+        },
+        "identity_id": {
+          "$ref": "#/$defs/text"
+        },
+        "standing_setup": {
+          "$ref": "#/$defs/evidence"
+        },
+        "run_command": {
+          "$ref": "#/$defs/evidence"
+        },
+        "plan_sha256": {
+          "$ref": "#/$defs/sha"
+        }
+      }
     }
   },
   "$defs": {
@@ -684,6 +719,22 @@
               }
             }
           }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/text"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha"
         }
       }
     }

@@ -96,6 +96,10 @@
         "reference_guided"
       ],
       "description": "Explicit reference_free is text-only; reference_guided uses reviewed boards as targets and separate native references, without temporal frame pins. Absence retains literal boarded prerequisites."
+    },
+    "planning_mode": {
+      "const": "shot_local_v1",
+      "description": "Prospective shot-local eligibility. Absence retains immutable legacy whole-plan bindings."
     }
   },
   "required": [
@@ -325,6 +329,10 @@
             }
           },
           "additionalProperties": false
+        },
+        "preparation_pending": {
+          "const": true,
+          "description": "Declared prospective board slot; no source bytes or verdict exist yet."
         }
       },
       "required": [
@@ -342,11 +350,39 @@
           },
           "then": {},
           "else": {
-            "required": [
-              "path",
-              "sha256",
-              "review"
-            ]
+            "if": {
+              "required": [
+                "preparation_pending"
+              ]
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "path"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "sha256"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "review"
+                    ]
+                  }
+                ]
+              }
+            },
+            "else": {
+              "required": [
+                "path",
+                "sha256",
+                "review"
+              ]
+            }
           }
         }
       ]
@@ -725,6 +761,24 @@
             }
           }
         }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "assets": {
+            "contains": {
+              "required": [
+                "preparation_pending"
+              ]
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "planning_mode"
+        ]
       }
     }
   ]

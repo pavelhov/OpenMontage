@@ -88,6 +88,7 @@ def test_unreviewed_candidate_stays_unknown_and_later_pending_keeps_candidate(p)
 
 def test_pending_and_failed_originals_report_exact_reasons_without_repair(p):
     p.transport.timeout_next = True
+    p.transport.fail_next = True  # The retained original actually failed, without native media.
     original = p.generate('entry')
     aid = original.data['production_attempt_id']
     assert rows(p)['entry'] == {'shot_id': 'entry', 'status': 'missing', 'reason': 'original_pending',

@@ -58,8 +58,25 @@ _UNSUPPORTED_FRAME_ALIASES = frozenset({
 _URL_FINAL_FRAME_KEYS = frozenset({"last_image_url"})
 
 
+def validate_execution_settings(inputs: dict[str, Any]) -> int:
+    """Validate local execution controls without CLI discovery or reservation."""
+    if "cli_session_id" in inputs:
+        if inputs["cli_session_id"] is None:
+            raise GrokCLIContractError("invalid_argument", "cli_session_id must be a safe token, not null")
+        validate_session_id(inputs["cli_session_id"])
+    timeout = inputs.get("timeout_seconds", 600)
+    if isinstance(timeout, bool) or not isinstance(timeout, int):
+        raise GrokCLIContractError("invalid_argument", "timeout_seconds must be an integer")
+    if not 30 <= timeout <= 900:
+        raise GrokCLIContractError("invalid_argument", "timeout_seconds must be between 30 and 900")
+    if inputs.get("allow_unknown_cost") is not True:
+        raise GrokCLIContractError("spending_approval",
+            "Grok CLI media pricing is unknown; set allow_unknown_cost=true only after explicit approval")
+    return timeout
+
+
 def build_native_video_request(
-    inputs: dict[str, Any], *, adapter_version: str, provider: str = "grok_cli",
+    inputs: dict[str, Any], *, adapter_version: str | None, provider: str = "grok_cli",
 ) -> dict[str, Any]:
     """Prepare exact native arguments and provenance without dispatch or CLI discovery.
 
@@ -577,16 +594,7 @@ class GrokCLIVideo(BaseTool):
                 or os.environ.get("GROK_SESSIONS_ROOT")
                 or (Path.home() / ".grok" / "sessions")
             )
-            timeout_seconds = inputs.get("timeout_seconds", 600)
-            if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int):
-                raise GrokCLIContractError("invalid_argument", "timeout_seconds must be an integer")
-            if not 30 <= timeout_seconds <= 900:
-                raise GrokCLIContractError("invalid_argument", "timeout_seconds must be between 30 and 900")
-            if inputs.get("allow_unknown_cost") is not True:
-                raise GrokCLIContractError(
-                    "spending_approval",
-                    "Grok CLI media pricing is unknown; set allow_unknown_cost=true only after explicit approval",
-                )
+            timeout_seconds = validate_execution_settings(inputs)
         except GrokCLIContractError as exc:
             return self._error_result(exc, session_id)
         except (TypeError, ValueError, OSError) as exc:
@@ -602,6 +610,7 @@ class GrokCLIVideo(BaseTool):
             timeout_seconds=timeout_seconds,
             media_kind="video",
             session_id=session_id,
+            adapter_version=self.version,
         )
         receipt.update(cli_version=result.data.get("cli_version"),
             session_id=result.data.get("session_id"),

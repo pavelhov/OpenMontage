@@ -13,7 +13,7 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 from schemas.artifacts import load_schema
 from lib.shot_contract import (UPSTREAM_PREDICATES, CRITICAL_PREDICATES, file_sha256,
-                               selection_digest, provisional_audio_review, draft_audio_policy_digest)
+                               selection_digest, provisional_audio_review, draft_audio_policy_digest, audio_review_disabled)
 
 _KEYS = {'version', 'mode', 'project_id', 'story_revision', 'shot_id', 'attempt_id',
          'contract', 'output', 'outgoing_frame', 'failed_review', 'failed_predicate',
@@ -490,12 +490,14 @@ def compose_first_cut(project_dir, *, audio_path=None, compose=None):
             log = {'path': _rel(root, log_path), 'sha256': file_sha256(log_path)}
     # Audio is required only by included dialogue (native clip bytes must carry it;
     # padded export silence proves nothing) or an explicit external track.
-    # Approved silent coverage completes without any audio stream.
+    # Approved silent coverage completes without any audio stream. Future visual-only
+    # projects retain availability facts below but do not gate completion on them.
     audio_required = bool(dialogue or audio_path)
     audio_missing = [row['shot_id'] for row in clips if shots[row['shot_id']].get('dialogue')
                      and not _probe(root / row['output']['path'])['has_audio']]
-    complete = (export is not None and not missing and not audio_missing
-                and (technical['has_audio'] or not audio_path)
+    visual_only = audio_review_disabled(root)
+    complete = (export is not None and not missing
+                and (visual_only or (not audio_missing and (technical['has_audio'] or not audio_path)))
                 and abs(technical['duration_seconds'] - cursor) <= 0.05 + 0.04 * len(placed))
     record = {'version': '1.0', 'kind': 'first_cut', 'sequence': sequence, 'project_id': marker['project_id'],
               'story_revision': marker['story_revision'], 'contract_sha256': contract_digest(contract),

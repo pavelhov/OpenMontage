@@ -1069,6 +1069,10 @@ def upload_reference(project_root: Path, upload_id: str, source_path: Path, *, m
             or approval.get("upload_id") != upload_id or approval.get("source_sha256") != pre_sha \
             or not approval.get("approval_sha256"):
         raise OpenArtCLIError("upload_unapproved", "no matching approved reference for this source")
+    if 'standing_account_id_sha256' in approval and (
+            approval['standing_account_id_sha256'] != profile['account_id_sha256']
+            or profile['model'] not in approval['standing_models']):
+        raise OpenArtCLIError('upload_unapproved', 'qualified upload account/model differs from standing authority')
     cli.private_dir("uploads")
     snapshot = _upload_snapshot_path(upload_id, source.suffix)
     try:

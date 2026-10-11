@@ -211,6 +211,12 @@ def _paths(inputs, root, visitor, *, allow_upstream=False):
             if allow_upstream and isinstance(value, dict) and '$upstream' in value:
                 _upstream_binding(value)
                 return copy.deepcopy(value)
+            if allow_upstream and isinstance(value, dict) and '$board' in value:
+                from lib.shot_contract import shot_local
+                if not shot_local(load_shot_contract(root)):
+                    _fail('declared board inputs require prospective shot-local planning')
+                _board_binding(value)
+                return copy.deepcopy(value)
             if isinstance(value, list):
                 return [walk(item, key) for item in value]
             if not isinstance(value, str) or '://' in value:
@@ -390,8 +396,11 @@ def planned_request_digest(inputs, *, project_dir):
     return _digest(bound)
 
 
-def approval_plan_digest(contract):
+def approval_plan_digest(contract, shot_id=None):
     """Stable user scope: retain semantics, omit only observed serial handoff facts."""
+    from lib.shot_contract import shot_local, shot_planning_subject
+    if shot_id is not None and shot_local(contract):
+        return _digest(shot_planning_subject(contract, shot_id, approval=True))
     plan = copy.deepcopy(contract)
     plan.pop("project_review", None)
     for asset in plan.get("assets", []):
@@ -411,6 +420,37 @@ def _upstream_binding(item):
             or set(binding) != {'shot_id', 'role'} or binding['role'] != 'outgoing_frame'):
         _fail('invalid dynamic upstream request binding')
     return binding
+
+
+def _board_binding(item):
+    binding = item.get('$board')
+    if (set(item) != {'$board'} or not isinstance(binding, dict)
+            or set(binding) != {'asset_id'} or not isinstance(binding['asset_id'], str)
+            or not binding['asset_id'].strip()):
+        _fail('board input must name one exact declared asset_id')
+    return binding
+
+
+def resolve_board_input(project_dir, binding):
+    """Resolve a reviewed canonical board to real bytes, without host work."""
+    from lib import production_boards as boards, production_images as images
+    root = Path(project_dir).resolve()
+    aid = binding['asset_id']
+    pack = boards.load_board_pack(root)
+    current = pack['board_bindings'].get(aid)
+    if not current or not boards._binding_current(root, pack, aid):
+        _fail('declared board input has no current original bytes')
+    roles = boards._roles(pack, aid)
+    if not roles or any(boards._review_blockers(pack, aid, role) for role in roles):
+        _fail('declared board input lacks current role review')
+    if current.get('origin') == 'canonical_image_import':
+        state = images.image_call_status(root, current['call_id'])
+        if (state['slot_id'] != aid or state['state'] != 'imported' or not state.get('output_current')
+                or state['output']['sha256'] != current['sha256']):
+            _fail('declared board input differs from same-project original call')
+    elif current.get('origin') != 'reuse':
+        _fail('declared board input lacks qualified canonical attribution')
+    return {'path': str(_inside(current['path'], root)), 'sha256': current['sha256']}
 
 
 def planned_request_template(inputs, *, project_dir):
@@ -443,6 +483,10 @@ def approved_request_digest(value, *, project_dir, selected_attempts=None):
     position = 0
     def resolve(item, key=None):
         nonlocal position
+        if isinstance(item, dict) and '$board' in item:
+            if key not in INPUT_PATH_KEYS:
+                _fail('declared board must be an asset input')
+            return resolve_board_input(root, _board_binding(item))
         if isinstance(item, dict) and '$upstream' in item:
             if key not in INPUT_PATH_KEYS:
                 _fail('dynamic upstream must be an asset input')
@@ -748,6 +792,9 @@ def preflight(tool, inputs, *, _local_continuation=None):
         if inputs.get('governance') is not None:
             _fail('production project is not enrolled in strict governance')
         return {'governed': False, 'label': 'ungoverned_legacy'}
+    if (tool.provider == 'grok_cli' or tool.provider == 'selector' and inputs.get('preferred_provider') == 'grok_cli') and _kind(tool, inputs) == 'motion':
+        from tools.video.grok_cli_video import validate_execution_settings
+        validate_execution_settings(inputs)
     if marker['governance'].get('version') != '1.0':
         _fail('unsupported governance version')
     qualification = marker.get('pipeline_type') == 'provider-qualification'
@@ -875,7 +922,8 @@ def preflight(tool, inputs, *, _local_continuation=None):
             from lib.production_continuity import validate_carried_scope
             if validate_carried_scope(root, scope, effective, scopes.get('scopes', [])) != carried['scope_id']:
                 _fail('carried scope lineage differs')
-        elif not local_applicable and scope.get('approval_plan_sha256') != approval_plan_digest(effective):
+        elif not local_applicable and scope.get('approval_plan_sha256') != approval_plan_digest(
+                effective, shot_id if scope.get('planning_mode') == 'shot_local_v1' else None):
             _fail('approval scope has a stale contract binding')
         if 'derived_from_policy' in scope:
             from lib.production_autonomy import validate_derived_scope
@@ -990,6 +1038,13 @@ def preflight(tool, inputs, *, _local_continuation=None):
                                        request_sha256=digest)
         except ValueError as exc:
             _fail(str(exc))
+    if provider == 'grok_cli' and kind == 'motion':
+        from tools.video.grok_cli_video import build_native_video_request
+        native_inputs = _paths(_clean(inputs), root, lambda key, path: str(path))
+        if tool.provider == 'selector':
+            for key in ('preferred_provider', 'preferred_provider_gap', 'allowed_providers', 'task_context', 'target_operation'):
+                native_inputs.pop(key, None)
+        build_native_video_request(native_inputs, adapter_version=getattr(tool, 'version', None))
     return {'openart':openart, 'governed': True, 'root': root, 'marker': marker, 'scope': scope,
             'shot_id': shot_id, 'kind': kind, 'contract': contract, 'request_sha256': digest,
             'scope_attempt_index':scope_used, 'policy_validated': policy_validated}
@@ -1589,7 +1644,8 @@ def _execute_governed(tool, inputs, invoke):
         request = {'version':'1.0', 'attempt_id':session_id, 'cli_session_id':session_id,
             'project_id':checked['marker']['project_id'], 'story_revision':checked['marker']['story_revision'],
             'shot_id':checked['shot_id'], 'scope_id':scope['id'], 'phase':scope['phase'],
-            'media_kind':checked['kind'], 'tool_name':tool.name, 'scope_attempt_index':checked['scope_attempt_index'],
+            'media_kind':checked['kind'], 'tool_name':tool.name, 'tool_version':getattr(tool, 'version', None),
+            'scope_attempt_index':checked['scope_attempt_index'],
             'approval_evidence':{'path':str(directory / ('approval-evidence' + Path(scope['evidence']['path']).suffix)),
                                  'sha256':scope['evidence']['sha256']},
             'request_sha256':checked['request_sha256'], 'contract_sha256':contract_digest(checked['contract']) if checked['contract'] else None,
@@ -1735,8 +1791,71 @@ def _grok_native_arguments(inputs, media_kind='motion'):
     return arguments
 
 
+def retain_grok_launch(*, session_id, cli_version, grok_path, sessions_root, cwd,
+                       native_tool, arguments, adapter_version):
+    """Retain actual checked launch metadata before the single native process.
+
+    Called only by the adapter after its real compatibility read. This adds
+    attempt evidence without rewriting the frozen approved request.
+    """
+    import os
+    from urllib.parse import quote
+    active = _ACTIVE.get()
+    if not active or active.get('provider') != 'grok_cli':
+        return
+    directory = active['directory']
+    request = _read(directory / 'request.json')
+    if session_id != active['session_id'] or session_id != request['cli_session_id']:
+        _fail('Grok launch session differs from reserved original')
+    if request['media_kind'] != 'motion':
+        return
+    expected = _grok_native_arguments(request['submitted_inputs'], request['media_kind'])
+    if arguments != expected or native_tool != _grok_native_operation(request['submitted_inputs']):
+        _fail('Grok launch controls differ from reserved original')
+    # Resolve the actual configured root now; later environment/config changes
+    # are not evidence about this launch.
+    session_root = Path(sessions_root).expanduser().resolve()
+    launch = {'version': '1.0', 'attempt_id': request['attempt_id'],
+              'request_sha256': request['request_sha256'],
+              'request_record_sha256': file_sha256(directory / 'request.json'),
+              'adapter_version': adapter_version, 'cli_version': cli_version,
+              'grok_path': str(grok_path), 'sessions_root': str(session_root),
+              'cwd': str(cwd), 'session_id': session_id,
+              'session_directory': str(session_root / quote(str(cwd), safe='') / session_id),
+              'native_tool': native_tool, 'arguments_sha256': _digest(arguments),
+              'evidence': 'actual_cli_compatibility_read_before_native_launch'}
+    _write_new(directory / 'grok_launch.json', launch)
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _retained_grok_launch(directory, request, expected, native_tool, cwd):
+    path = directory / 'grok_launch.json'
+    if not path.exists():
+        return None
+    from urllib.parse import quote
+    launch = _read(path)
+    if (path.is_symlink() or launch.get('version') != '1.0'
+            or launch.get('attempt_id') != request['attempt_id']
+            or launch.get('request_sha256') != request['request_sha256']
+            or launch.get('request_record_sha256') != file_sha256(directory / 'request.json')
+            or not isinstance(launch.get('adapter_version'), str) or not launch['adapter_version']
+            or launch.get('session_id') != request['cli_session_id']
+            or launch.get('cwd') != str(cwd) or launch.get('native_tool') != native_tool
+            or launch.get('arguments_sha256') != _digest(expected)
+            or not isinstance(launch.get('cli_version'), str) or not launch['cli_version']
+            or not isinstance(launch.get('sessions_root'), str)
+            or launch.get('evidence') != 'actual_cli_compatibility_read_before_native_launch'
+            or launch.get('session_directory') != str(Path(launch['sessions_root']) / quote(str(cwd), safe='') / request['cli_session_id'])):
+        _fail('original Grok launch evidence differs from frozen request')
+    return launch
+
+
 def _grok_prompt_boundary_original(root, request):
-    """Qualify only the old sealed-prompt boundary rejection from original logs."""
+    """Qualify an uncertain original or historical prompt rejection from native logs."""
     from urllib.parse import quote
     from tools._grok_cli_media import (retained_grok_session_stream, _parse_stream,
         _trusted_session_artifact, _sealed_arguments_match, _probe_artifact, _validate_media_contract)
@@ -1744,35 +1863,55 @@ def _grok_prompt_boundary_original(root, request):
     state = _state(root, request)
     previous = state.get('result') or {}
     data = previous.get('data', {})
+    boundary = (state['status'] == 'failed' and previous.get('success') is False
+        and previous.get('error') == 'Grok CLI protocol error: Grok changed the sealed media-tool arguments; the artifact was rejected'
+        and data.get('error_category') == 'protocol' and data.get('dispatch_status') == 'failed')
+    uncertain = state['status'] == 'uncertain'
     if (request['scope']['provider'] != 'grok_cli' or request['media_kind'] != 'motion'
-            or state['status'] != 'failed' or previous.get('success') is not False
-            or previous.get('error') != 'Grok CLI protocol error: Grok changed the sealed media-tool arguments; the artifact was rejected'
-            or data.get('error_category') != 'protocol' or data.get('dispatch_status') != 'failed'
-            or data.get('session_id') != request['cli_session_id']
+            or not (boundary or uncertain)):
+        _fail('only an uncertain original or exact sealed-prompt boundary rejection can be reconciled')
+    if previous and (data.get('session_id') != request['cli_session_id']
             or data.get('dispatch_session_id') != request['cli_session_id']
             or _read(directory / 'raw_result.json') != previous
             or data.get('retry_attempted') is not False or data.get('fallback_attempted') is not False):
-        _fail('only an uncertain original or exact sealed-prompt boundary rejection can be reconciled')
+        _fail('original returned evidence differs from the exact frozen session')
     submitted = request['submitted_inputs']
     receipt = data.get('conditioning_receipt', {})
     expected = _grok_native_arguments(submitted, request['media_kind'])
     native_tool = _grok_native_operation(submitted, request['media_kind'])
-    if (receipt.get('submitted_arguments') != expected or receipt.get('native_tool') != native_tool
+    if receipt and (receipt.get('submitted_arguments') != expected or receipt.get('native_tool') != native_tool
             or receipt.get('provider') != 'grok_cli' or receipt.get('session_id') != request['cli_session_id']):
         _fail('original prompt rejection conditioning differs from frozen request')
     # The original journal chooses the session root, never a caller-supplied source.
     cwd = Path(submitted.get('cwd') or Path(submitted['output_path']).parent).resolve()
-    session_directory = Path(data.get('session_directory', '')).expanduser()
+    # Returned session diagnostics are retained evidence. For a process crash
+    # before a result exists, use only the adapter's explicit configured root.
+    launch = _retained_grok_launch(directory, request, expected, native_tool, cwd)
+    session_path = (launch or {}).get('session_directory') or data.get('session_directory')
+    if launch and data.get('session_directory') and data['session_directory'] != session_path:
+        _fail('returned Grok session differs from retained launch')
+    if launch and receipt and receipt.get('cli_version') != launch['cli_version']:
+        _fail('returned Grok CLI version differs from retained launch')
+    if not session_path:
+        import os
+        sessions_root = os.environ.get('GROK_SESSIONS_ROOT') or str(Path.home() / '.grok' / 'sessions')
+        session_path = str(Path(sessions_root) / quote(str(cwd), safe='') / request['cli_session_id'])
+    session_directory = Path(session_path).expanduser()
     if (session_directory.name != request['cli_session_id']
             or session_directory.parent.name != quote(str(cwd), safe='')
             or session_directory.is_symlink() or not session_directory.is_dir()):
         _fail('original session directory differs from frozen working directory')
-    stream = retained_grok_session_stream(session_directory, request['cli_session_id'])
+    log = session_directory / ('updates.jsonl' if (session_directory / 'updates.jsonl').exists() else 'events.jsonl')
+    if log.is_symlink() or not log.is_file():
+        _fail('original recovery requires authoritative native terminal evidence')
+    updates_sha256 = file_sha256(log)
+    stream = (retained_grok_session_stream(session_directory, request['cli_session_id'])
+              if log.name == 'updates.jsonl' else log.read_text())
     calls = [json.loads(line) for line in stream.splitlines() if json.loads(line).get('type') == 'tool_call']
     if len(calls) != 1:
         _fail('original prompt recovery requires exactly one native call')
     observed = calls[0].get('rawInput')
-    if (not isinstance(observed, dict) or observed.get('prompt') == expected.get('prompt')
+    if (not isinstance(observed, dict) or (boundary and observed.get('prompt') == expected.get('prompt'))
             or not _sealed_arguments_match(observed, expected)):
         _fail('original protocol change is not prompt-only ASCII boundary whitespace')
     path, _, session_id = _parse_stream(stream, tool_name=native_tool, expected_arguments=expected)
@@ -1787,12 +1926,21 @@ def _grok_prompt_boundary_original(root, request):
     source_sha256 = file_sha256(source)
     metadata = _probe_artifact(source, media_kind='video')
     _validate_media_contract(metadata, tool_name=native_tool, arguments=expected)
-    if file_sha256(source) != source_sha256:
-        _fail('original artifact changed during probe')
-    proof = {'version':'1.0', 'mode':'prompt_boundary_ascii_whitespace', 'session_id':session_id,
-             'updates_sha256':file_sha256(session_directory / 'updates.jsonl'),
+    if file_sha256(source) != source_sha256 or file_sha256(log) != updates_sha256:
+        _fail('original artifact or native session evidence changed during probe')
+    if not receipt:
+        from tools.video.grok_cli_video import build_native_video_request
+        # The launch journal records execution metadata separately from approved
+        # controls. Legacy missing metadata stays unknown; current code is no
+        # evidence of the version that actually launched an interrupted job.
+        version = (launch or {}).get('adapter_version') or (request.get('tool_version') if request.get('tool_name') == 'grok_cli_video' else None)
+        native = build_native_video_request(submitted, adapter_version=version, provider='grok_cli')
+        receipt = dict(native['receipt'], cli_version=(launch or {}).get('cli_version'), session_id=request['cli_session_id'],
+                       dispatch_status='uncertain', submission_evidence='unconfirmed')
+    proof = {'version':'1.0', 'mode':'prompt_boundary_ascii_whitespace' if boundary else 'uncertain_original_session', 'session_id':session_id,
+             'updates_sha256':updates_sha256, 'session_directory':str(session_directory),
              'source_sha256':source_sha256, 'media_metadata':metadata,
-             'original_sha256':{name:file_sha256(directory / name) for name in ('request.json','raw_result.json','result.json')}}
+             'original_sha256':{name:file_sha256(directory / name) for name in ('request.json','raw_result.json','result.json','grok_launch.json') if (directory / name).exists()}}
     return proof, source, receipt, expected
 
 
@@ -1823,7 +1971,16 @@ def collect_original_grok_prompt_boundary(project_dir, attempt_id, *, request_sh
                                           tool_name=original_receipt['native_tool'], arguments=arguments)
         if file_sha256(output) != proof['source_sha256'] or file_sha256(source) != proof['source_sha256']:
             _fail('original artifact changed during collection')
-        data = copy.deepcopy(_state(root, request)['result']['data'])
+        data = copy.deepcopy((_state(root, request).get('result') or {}).get('data', {}))
+        from tools._grok_cli_media import PINNED_MODEL, MODEL_PROVENANCE
+        data.setdefault('provider', 'grok_cli')
+        data.setdefault('model', PINNED_MODEL)
+        for key, value in MODEL_PROVENANCE.items():
+            data.setdefault(key, value)
+        data.setdefault('cli_version', original_receipt.get('cli_version'))
+        data.setdefault('conditioning_receipt', copy.deepcopy(original_receipt))
+        data.update(session_id=request['cli_session_id'], dispatch_session_id=request['cli_session_id'],
+                    retry_attempted=False, fallback_attempted=False)
         data.update(dispatch_status='completed', source_artifact=str(source), output=str(output),
                     reported_session_id=request['cli_session_id'], original_session_recovery=proof, **metadata)
         data.pop('error_category', None)
@@ -1832,6 +1989,163 @@ def collect_original_grok_prompt_boundary(project_dir, attempt_id, *, request_sh
     reconcile_attempt(root, attempt_id, result, request_sha256=request_sha256)
     result.data.update(production_attempt_id=attempt_id, production_request_sha256=request_sha256)
     return result
+
+
+def _retained_grok_original(root, directory, request, *, request_sha256, dry_run):
+    from tools.base_tool import ToolResult
+    attempt_id = request['attempt_id']
+    retained = _read(directory / 'reconciliation.json')
+    if retained.get('status') != 'generated' or not isinstance(retained.get('result'), dict):
+        _fail('retained original reconciliation is not collected output')
+    result = ToolResult(**retained['result'])
+    receipt = result.data.get('conditioning_receipt', {})
+    if (not result.success or receipt.get('session_id') != request['cli_session_id']
+            or receipt.get('submission_evidence') != 'verified_native_call'
+            or receipt.get('submitted_arguments') != _grok_native_arguments(request['submitted_inputs'], 'motion')):
+        _fail('retained original reconciliation lacks exact native receipt')
+    evidence = _verify_original_grok_motion_success(root, directory, request, result)
+    if retained.get('original_session_evidence') != evidence:
+        _fail('retained original reconciliation native evidence changed')
+    for key in ('output', 'preserved_output'):
+        item = retained.get(key, {})
+        if not item.get('path') or file_sha256(item['path']) != item.get('sha256'):
+            _fail('retained original reconciliation output changed')
+    if dry_run:
+        return {'attempt_id': attempt_id, 'request_sha256': request_sha256,
+                'provider_calls': 0, 'reservations': 0, 'already_collected_original': True}
+    result.data.update(production_attempt_id=attempt_id, production_request_sha256=request_sha256)
+    return result
+
+
+def _original_grok_motion_stream(root, directory, request, result):
+    """Locate only frozen launch/native evidence, never caller-selected media."""
+    from urllib.parse import quote
+    from tools._grok_cli_media import retained_grok_session_stream
+    submitted = request['submitted_inputs']
+    expected = _grok_native_arguments(submitted, 'motion')
+    native_tool = _grok_native_operation(submitted, 'motion')
+    cwd = Path(submitted.get('cwd') or Path(submitted['output_path']).parent).resolve()
+    launch = _retained_grok_launch(directory, request, expected, native_tool, cwd)
+    prefix = 'local_continuation_' if (directory / 'local_continuation_claim.json').exists() else ''
+    raw_path = directory / (prefix + 'raw_result.json')
+    original_path = directory / (prefix + 'result.json')
+    if raw_path.exists():
+        # Raw native return evidence is authoritative: corrupt bytes fail closed.
+        prior = _read(raw_path)
+    else:
+        try:
+            prior = (_read(original_path).get('result') or {}) if original_path.exists() else {}
+        except ProductionGovernanceError:
+            # Adapter journal parsing may itself have crashed. Preserve these
+            # bytes; only exact launch/session/native evidence can recover them.
+            prior = {}
+    if not isinstance(prior, dict) or not isinstance(prior.get('data', {}), dict):
+        _fail('original motion adapter evidence is malformed')
+    hints = prior.get('data', {})
+    if (any(hints.get(key) is not None and hints[key] != request['cli_session_id']
+            for key in ('session_id', 'dispatch_session_id'))
+            or launch and hints.get('session_directory') and hints['session_directory'] != launch['session_directory']):
+        _fail('original motion adapter evidence contradicts exact frozen launch')
+    session_path = ((launch or {}).get('session_directory') or prior.get('data', {}).get('session_directory')
+                    or (result.data.get('original_session_recovery') or {}).get('session_directory'))
+    if not session_path:
+        _fail('original motion reconciliation requires retained exact session evidence')
+    session = Path(session_path).expanduser()
+    if (session.name != request['cli_session_id'] or session.parent.name != quote(str(cwd), safe='')
+            or session.is_symlink() or not session.is_dir()):
+        _fail('original motion session differs from frozen launch')
+    log = session / ('updates.jsonl' if (session / 'updates.jsonl').exists() else 'events.jsonl')
+    if log.is_symlink() or not log.is_file():
+        _fail('original motion reconciliation requires retained native terminal evidence')
+    log_sha = file_sha256(log)
+    stream = (retained_grok_session_stream(session, request['cli_session_id'])
+              if log.name == 'updates.jsonl' else log.read_text())
+    for asset in request['input_assets']:
+        if file_sha256(_inside(asset['path'], root)) != asset['sha256']:
+            _fail('original motion reconciliation input bytes changed')
+    receipt = result.data.get('conditioning_receipt', {})
+    if launch and (receipt.get('cli_version') != launch['cli_version']
+                   or receipt.get('adapter_version') != launch['adapter_version']):
+        _fail('reconciliation version differs from original launch')
+    return submitted, expected, native_tool, session, log, log_sha, stream, launch
+
+
+def _verify_original_grok_motion_success(root, directory, request, result):
+    """Read original native evidence, never caller assertions about canonical media."""
+    from tools._grok_cli_media import (_parse_stream, _trusted_session_artifact,
+                                     _probe_artifact, _validate_media_contract)
+    submitted, expected, native_tool, session, log, log_sha, stream, launch = _original_grok_motion_stream(root, directory, request, result)
+    source_path, _, session_id = _parse_stream(stream, tool_name=native_tool, expected_arguments=expected)
+    if session_id != request['cli_session_id']:
+        _fail('original motion completion session differs')
+    source = _trusted_session_artifact(source_path, session.parent.parent, session_id)
+    if not source.is_relative_to(session.resolve()):
+        _fail('original motion artifact differs from exact original session')
+    digest = file_sha256(source)
+    output = _inside(submitted['output_path'], root)
+    if output.is_symlink() or not output.is_file() or file_sha256(output) != digest:
+        _fail('reconciliation output differs from verified original session bytes')
+    if result.data.get('source_artifact') is not None and Path(result.data['source_artifact']).resolve() != source:
+        _fail('reconciliation source differs from retained native original')
+    for asset in request['input_assets']:
+        if file_sha256(_inside(asset['path'], root)) != asset['sha256']:
+            _fail('original motion reconciliation input bytes changed')
+    metadata = _probe_artifact(source, media_kind='video')
+    _validate_media_contract(metadata, tool_name=native_tool, arguments=expected)
+    if log_sha != file_sha256(log) or digest != file_sha256(source) or digest != file_sha256(output):
+        _fail('original motion evidence changed during reconciliation')
+    receipt = result.data.get('conditioning_receipt', {})
+    if launch and (receipt.get('cli_version') != launch['cli_version']
+                   or receipt.get('adapter_version') != launch['adapter_version']):
+        _fail('reconciliation version differs from original launch')
+    return {'session_id': session_id, 'session_directory': str(session),
+            'native_evidence': {'path': str(log), 'sha256': log_sha},
+            'source': {'path': str(source), 'sha256': digest}, 'media_metadata': metadata}
+
+
+def _verify_original_grok_motion_failure(root, directory, request, result):
+    """A caller's failure label cannot erase an original native completion."""
+    from tools._grok_cli_media import _sealed_arguments_match, _parse_stream, GrokCLIContractError
+    submitted, expected, native_tool, session, log, log_sha, stream, launch = _original_grok_motion_stream(root, directory, request, result)
+    try:
+        events = [json.loads(line) for line in stream.splitlines() if line.strip()]
+    except ValueError:
+        _fail('original terminal failure native evidence is invalid')
+    if any(not isinstance(event, dict) for event in events):
+        _fail('original terminal failure native evidence is invalid')
+    calls = [e for e in events if e.get('type') == 'tool_call']
+    ends = [e for e in events if e.get('type') == 'end']
+    updates = [e for e in events if e.get('type') == 'tool_call_update']
+    if (len(calls) != 1 or calls[0].get('toolName') != native_tool
+            or not isinstance(calls[0].get('toolCallId'), str) or not calls[0]['toolCallId']
+            or not _sealed_arguments_match(calls[0].get('rawInput'), expected)
+            or len(ends) != 1 or ends[0].get('sessionId') != request['cli_session_id']
+            or ends[0].get('stopReason') != 'end_turn'
+            or any(str(e.get('status', '')).lower() == 'completed' for e in updates)):
+        _fail('original terminal failure lacks exact failed native completion; completed or uncertain original remains collectable')
+    failures = [e for e in updates if e.get('toolCallId') == calls[0]['toolCallId'] and str(e.get('status', '')).lower() == 'failed']
+    raw_failure = failures[0].get('rawOutput') if len(failures) == 1 else None
+    # The adapter's failed native contract uses error/message-only rawOutput.
+    # It is diagnostic evidence; paths/resources/media output are not failures.
+    error_only = (raw_failure is None or raw_failure == {} or
+                  isinstance(raw_failure, dict) and set(raw_failure) <= {'error', 'message'}
+                  and all(isinstance(v, str) for v in raw_failure.values()))
+    if (len(failures) != 1 or not error_only
+            or any(p.is_file() and p.suffix.lower() in {'.mp4', '.mov', '.webm', '.m4v', '.mkv', '.avi'} for p in session.rglob('*'))
+            or Path(submitted['output_path']).exists()):
+        _fail('original terminal failure has no unique authoritative failure or retains original media')
+    try:
+        _parse_stream(stream, tool_name=native_tool, expected_arguments=expected)
+    except GrokCLIContractError as exc:
+        category = exc.category
+    else:
+        _fail('original terminal failure native parser observed success')
+    if file_sha256(log) != log_sha:
+        _fail('original terminal failure evidence changed during verification')
+    return {'session_id': request['cli_session_id'], 'session_directory': str(session),
+            'native_evidence': {'path': str(log), 'sha256': log_sha},
+            'outcome': 'failed', 'error_category': category,
+            'failed_native_update_sha256': _digest(failures[0])}
 
 
 def reconcile_attempt(project_dir, attempt_id, result, *, request_sha256):
@@ -1847,7 +2161,7 @@ def reconcile_attempt(project_dir, attempt_id, result, *, request_sha256):
         request = _read(directory / 'request.json')
         if request['scope']['provider'] == 'openart_cli':
             _fail('OpenArt reconciliation requires collect_openart_attempt on the original attempt')
-        if _state(root, request)['status'] != 'uncertain':
+        if _state(root, request)['status'] != 'uncertain' or result.data.get('original_session_recovery'):
             proof, source, original_receipt, arguments = _grok_prompt_boundary_original(root, request)
             if (not result.success or result.data.get('original_session_recovery') != proof
                     or result.data.get('source_artifact') != str(source)
@@ -1855,6 +2169,10 @@ def reconcile_attempt(project_dir, attempt_id, result, *, request_sha256):
                 _fail('failed reconciliation requires verified original prompt-boundary recovery')
             if any(result.data.get(key) != value for key, value in proof['media_metadata'].items()):
                 _fail('original recovery metadata differs from original artifact probe')
+            expected_receipt = dict(original_receipt, dispatch_status='completed', submission_evidence='verified_native_call')
+            if (result.data.get('conditioning_receipt') != expected_receipt
+                    or result.data.get('cli_version') != expected_receipt.get('cli_version')):
+                _fail('original recovery receipt differs from retained original launch evidence')
         if request_sha256 != request['request_sha256'] or result.data.get('session_id') != request['cli_session_id']:
             _fail('reconciliation does not match original request/session provenance')
         receipt = result.data.get('conditioning_receipt', {})
@@ -1882,6 +2200,9 @@ def reconcile_attempt(project_dir, attempt_id, result, *, request_sha256):
                 _fail('reconciliation native arguments differ from reserved provider request')
         else:
             _fail('reconciliation lacks qualified native control binding for this provider')
+        original_motion_evidence = None
+        if request['scope']['provider'] == 'grok_cli' and request['media_kind'] == 'motion' and result.success:
+            original_motion_evidence = _verify_original_grok_motion_success(root, directory, request, result)
         expected = {(item['path'], item['sha256']) for item in request['input_assets']}
         actual = {(item.get('path'), item.get('sha256')) for item in receipt.get('input_assets', [])}
         if expected != actual:
@@ -1890,6 +2211,8 @@ def reconcile_attempt(project_dir, attempt_id, result, *, request_sha256):
             if result.data.get('dispatch_status') != 'failed' or receipt.get('dispatch_status') != 'failed':
                 _fail('reconciliation outcome is not an authoritative terminal failure')
             record = {'status':'failed', 'result':asdict(result), 'output':None, 'preserved_output':None}
+            if request['media_kind'] == 'motion':
+                record['original_session_evidence'] = _verify_original_grok_motion_failure(root, directory, request, result)
             _write_new(directory / 'reconciliation.json', record)
             return record
         output = Path(request['submitted_inputs']['output_path'])
@@ -1907,6 +2230,8 @@ def reconcile_attempt(project_dir, attempt_id, result, *, request_sha256):
         record = {'status':'generated', 'result':asdict(result),
                   'output':{'path':str(output),'sha256':digest},
                   'preserved_output':{'path':str(preserved),'sha256':digest}}
+        if original_motion_evidence is not None:
+            record['original_session_evidence'] = original_motion_evidence
         _write_new(directory / 'reconciliation.json', record)
         _observe_retained_output(root, request, record)
         return record
@@ -2105,7 +2430,7 @@ def record_selection(project_dir, shot_id, selection):
     The passed review supplies semantic judgment; this helper only validates its
     binding and current evidence. Each superseding selection remains in history.
     """
-    from lib.shot_contract import selection_digest, UPSTREAM_PREDICATES, provisional_audio_review
+    from lib.shot_contract import selection_digest, UPSTREAM_PREDICATES, provisional_audio_review, required_review_predicates, audio_review_disabled
     from schemas.artifacts import load_schema
     from jsonschema import Draft202012Validator
     import os
@@ -2149,11 +2474,12 @@ def record_selection(project_dir, shot_id, selection):
         provisional = audio_provisional or accepted is not None
         if (review['status'] != 'pass' and not provisional) or review['subject_sha256'] != selection_digest(selection) or review['story_revision'] != marker['story_revision']:
             _fail('selection review is failed or stale')
+        required = required_review_predicates(root, UPSTREAM_PREDICATES)
         predicates = {item['name']:item for item in review['predicates']}
-        if (len(predicates) != len(review['predicates']) or not UPSTREAM_PREDICATES.issubset(predicates)
-                or any(item.get('severity') == 'cosmetic' for name, item in predicates.items() if name in UPSTREAM_PREDICATES)
+        if (len(predicates) != len(review['predicates']) or not required.issubset(predicates)
+                or any(item.get('severity') == 'cosmetic' for name, item in predicates.items() if name in required)
                 or any(item['status'] != 'pass' and not ((audio_provisional and name == 'speaker_source' and item['status'] == 'unknown') or (name == accepted and item['status'] == 'fail'))
-                       for name, item in predicates.items() if item.get('severity','critical') == 'critical' or name in UPSTREAM_PREDICATES)):
+                       for name, item in predicates.items() if not (name == 'speaker_source' and audio_review_disabled(root)) and (item.get('severity','critical') == 'critical' or name in required))):
             _fail('selection has missing/failed critical predicates')
         # A shot changed by an authorized planning revision needs a fresh
         # selection bound to that revision and the current contract bytes.
@@ -2339,6 +2665,363 @@ def collect_openart_attempt(project_dir, attempt_id, *, request_sha256, timeout=
         _write_new(directory / 'reconciliation.json', record)
         _observe_retained_output(root, request, record)
         return record
+
+
+def resume_original_attempt(project_dir, attempt_id, *, request_sha256, dry_run=False):
+    """Resume one exact original; qualified collection never reserves a replacement."""
+    root = Path(project_dir).resolve()
+    directory = _inside(Path('production_attempts') / attempt_id, root)
+    if (directory / 'request.json').exists():
+        request = _read(directory / 'request.json')
+        if request.get('attempt_id') != attempt_id or request.get('request_sha256') != request_sha256:
+            _fail('original resume request/attempt binding differs')
+        provider = request['scope']['provider']
+        if provider == 'grok_cli' and request.get('media_kind') == 'motion':
+            if (directory / 'reconciliation.json').exists():
+                with _lock(root):
+                    return _retained_grok_original(root, directory, request,
+                        request_sha256=request_sha256, dry_run=dry_run)
+            return collect_original_grok_prompt_boundary(root, attempt_id,
+                request_sha256=request_sha256, dry_run=dry_run)
+        if provider == 'openart_cli':
+            if dry_run:
+                return {'attempt_id': attempt_id, 'request_sha256': request_sha256,
+                        'provider_calls': 0, 'reservations': 0, 'would_collect_original': True}
+            return collect_openart_attempt(root, attempt_id, request_sha256=request_sha256)
+        return {'status': 'blocked', 'kind': 'unsupported_original_collection', 'attempt_id': attempt_id,
+            'original_id': request.get('cli_session_id', attempt_id), 'request_sha256': request_sha256,
+            'provider': provider, 'counted_original': True, 'provider_calls': 0, 'reservations': 0,
+            'reason': 'Strict original collection is not qualified for this provider; retain original and do not resubmit.'}
+    from lib import openart_mcp_jobs as jobs
+    return jobs.resume_original(root, attempt_id, request_sha256=request_sha256)
+
+
+ACTION_KINDS = frozenset({'restore_derived_views', 'prepare_board_image', 'begin_native_image',
+    'promote_imported_board',
+    'receive_native_image', 'review_board', 'review_planning', 'prepare_motion', 'review_selection',
+    'collect_grok_original', 'collect_openart_original', 'begin_openart_original',
+    'receive_openart_original', 'poll_openart_original', 'download_openart_original',
+    'compose_cut', 'complete', 'blocked'})
+
+
+def _production_action(root, kind, *, subject, binding, inputs=None, reason=None, host=False):
+    if kind not in ACTION_KINDS:
+        _fail('unsupported canonical production operation')
+    marker = _read(root / 'project.json')
+    value = {'version': '1.0', 'kind': kind, 'subject': subject,
+        'binding': {'project_id': marker['project_id'], 'story_revision': marker.get('story_revision'),
+                    **copy.deepcopy(binding)}, 'inputs': copy.deepcopy(inputs or {})}
+    if reason is not None:
+        value['reason'] = reason
+    value['host_required'] = host
+    value['action_id'] = _digest(value)
+    return value
+
+
+def next_production_action(project_dir):
+    """One typed projection of existing canonical state; zero writes or host calls."""
+    from lib import production_images as images, production_boards as boards
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    root = Path(project_dir).resolve()
+    def action(kind, subject, binding, **kwargs):
+        return _production_action(root, kind, subject=subject, binding=binding, **kwargs)
+    pack = boards.load_board_pack(root) if (root / boards.ARTIFACT).exists() else None
+    board_action = None
+    motion_action = None
+    pending_motion_shots = set()
+    derived_names = ['script', 'scene_plan', 'asset_manifest']
+    if pack and (pack.get('motion_projection', {}).get('contract_digest')
+            or pack['specification'].get('motion_binding', {}).get('contract_template', {}).get('planning_mode') == 'shot_local_v1'):
+        derived_names.append('shot_contract')
+    if pack and pack.get('package_binding') and any(not _artifact_path(root, name + '.json').exists()
+            for name in derived_names):
+        return action('restore_derived_views', 'package', {'package': pack['package_binding'],
+            'specification_sha256': pack['specification_sha256']})
+    if (root / images.ARTIFACT).exists():
+        calls = images._load(root)['calls']
+        for call in calls:
+            if (pack and call['state'] == 'imported' and call['slot_id'] in pack['prompt_pack']
+                    and pack['board_bindings'].get(call['slot_id'], {}).get('call_id') != call['call_id']):
+                board_action = action('promote_imported_board', call['call_id'],
+                    {'call_id': call['call_id'], 'slot_id': call['slot_id'], 'request_sha256': call['request_sha256'],
+                     'output': call['output'], 'host_receipt': call.get('host_receipt')})
+                break
+            if call['state'] not in images.PENDING:
+                continue
+            binding = {'call_id': call['call_id'], 'request_sha256': call['request_sha256'],
+                'state': call['state'], 'scope_sha256': call['scope_sha256'],
+                'host_receipt': call.get('host_receipt'), 'host_exception': call.get('host_exception')}
+            if call['state'] == 'reserved':
+                board_action = action('begin_native_image', call['call_id'], binding)
+                break
+            board_action = action('receive_native_image', call['call_id'], binding, host=True,
+                inputs={'call_id': call['call_id'], 'original_request_sha256': call['request_sha256'],
+                        'supplemental_to': (call.get('host_receipt') or {}).get('sha256')},
+                reason='Retrieve and retain the exact original host return; the begun call is never emitted again.')
+            break
+    if pack:
+        schedule = boards.board_schedule(root, images=images)
+        for aid, binding in pack['board_bindings'].items():
+            roles = boards._roles(pack, aid)
+            if boards._binding_current(root, pack, aid) and any(boards._review_blockers(pack, aid, role) for role in roles):
+                board_action = board_action or action('review_board', aid, {'source': binding, 'roles': roles}, host=True,
+                    inputs={'asset_id': aid, 'roles': roles, 'source': binding,
+                            'required_predicates': sorted(__import__('lib.shot_contract', fromlist=['ASSET_PREDICATES']).ASSET_PREDICATES)})
+                break
+        if schedule['ready_images'] and board_action is None:
+            slot = schedule['ready_images'][0]
+            board_action = action('prepare_board_image', slot, {'specification_sha256': pack['specification_sha256'],
+                'source_bindings': copy.deepcopy(pack['board_bindings'])}, inputs={'slot_id': slot})
+    selected = load_selected_attempts(root)
+    contract_path = _artifact_path(root, 'shot_contract.json')
+    candidates = []
+    if contract_path.exists():
+        from lib.production_draft import first_cut_candidates
+        candidates = first_cut_candidates(root)
+    reviewed_candidates = {row['shot_id']: row for row in candidates
+        if row.get('status') == 'candidate' and (row.get('review') == 'pass' or row.get('findings'))}
+    for request in _attempts(root):
+        if request.get('media_kind') != 'motion':
+            continue
+        aid = request['attempt_id']; sid = request['shot_id']
+        if request.get('provider') == 'openart_mcp':
+            from lib import openart_mcp_jobs as jobs
+            state = jobs.resume_original(root, aid)
+            operation = state['next_action']
+            kind = {'begin_original': 'begin_openart_original', 'receive_original': 'receive_openart_original',
+                'poll_original': 'poll_openart_original', 'download_original': 'download_openart_original'}.get(operation['action'])
+            binding = {'attempt_id': aid, 'request_sha256': state['request_sha256'],
+                       'state_sha256': _digest(state)}
+            if kind:
+                pending_motion_shots.add(sid)
+                motion_action = motion_action or action(kind, aid, binding, inputs=operation,
+                    host=kind in {'poll_openart_original'})
+                continue
+            if operation['action'] == 'blocked_original_host_reply_unavailable':
+                pending_motion_shots.add(sid)
+                motion_action = motion_action or action('receive_openart_original', aid, binding, inputs=operation, host=True,
+                              reason=operation['reason'])
+                continue
+            observed = _state(root, request)
+        else:
+            observed = _state(root, request)
+        binding = {'attempt_id': aid, 'request_sha256': request['request_sha256'],
+            'state_sha256': _digest(observed), 'counted_original': True}
+        if observed.get('status') in {'uncertain', 'submitted', 'reserved'}:
+            provider = request.get('scope', {}).get('provider')
+            kind = {'grok_cli': 'collect_grok_original', 'openart_cli': 'collect_openart_original'}.get(provider, 'blocked')
+            pending_motion_shots.add(sid)
+            motion_action = motion_action or action(kind, aid, binding, inputs={'attempt_id': aid,
+                'request_sha256': request['request_sha256'], 'original_id': request.get('cli_session_id', aid),
+                'provider': provider}, reason=('Unsupported strict original collection; preserve original ID/count and never replace.' if kind == 'blocked' else None))
+            continue
+        if (observed.get('status') == 'generated' and selected.get(sid, {}).get('attempt_id') != aid
+                and reviewed_candidates.get(sid, {}).get('attempt_id') != aid):
+            return action('review_selection', aid, binding, host=True,
+                inputs={'shot_id': sid, 'attempt_id': aid, 'output': observed.get('output'),
+                        'preserved_output': observed.get('preserved_output')})
+    if not contract_path.exists():
+        if motion_action is not None:
+            return motion_action
+        if board_action is not None:
+            return board_action
+        return action('blocked', 'planning', {}, reason='Canonical authored planning is missing; no trusted derived source is available.')
+    contract = load_shot_contract(root)
+    shots = contract['shots']
+    if all(s['id'] in reviewed_candidates for s in shots) and motion_action is None:
+        from lib.production_draft import first_cut_status, latest_first_cut
+        cut = latest_first_cut(root)
+        if cut:
+            current = first_cut_status(root, cut)
+            if current.get('status') == 'current' and cut.get('status') == 'complete' and cut.get('technical') and not cut.get('missing'):
+                return action('complete', 'cut', {'first_cut': {'path': cut['path'], 'sha256': cut['sha256']}}, inputs=current)
+        return action('compose_cut', 'cut', {'selections_sha256': _digest(selected),
+            'contract_sha256': contract_digest(contract), 'candidates_sha256': _digest(candidates)}, inputs={'candidates': candidates})
+    for shot in shots:
+        sid = shot['id']
+        if sid in selected or sid in reviewed_candidates or sid in pending_motion_shots:
+            continue
+        # Structural/prerequisite inspection may identify the actual semantic
+        # review needed; it never creates a passing verdict.
+        checked = validate_shot_contract(contract, project_dir=root, shot_id=sid,
+            story_revision=_read(root / 'project.json')['story_revision'], selected_upstream=selected)
+        errors = checked['errors']
+        review_only = errors and all('project_review' in e or f'shots.{sid}.review' in e for e in errors)
+        if review_only:
+            return action('review_planning', sid, {'project_subject': project_review_subject(contract),
+                'shot_subject': shot_review_subject(contract, sid)}, host=True,
+                inputs={'shot_id': sid, 'project_subject': project_review_subject(contract),
+                        'shot_subject': shot_review_subject(contract, sid)})
+        if checked['eligible']:
+            return action('prepare_motion', sid, {'shot_subject': shot_review_subject(contract, sid)}, host=True,
+                inputs={'shot_id': sid}, reason='Producer prepares exact registered-route request and actual named preparation review; engine admits and dispatches it.')
+    if motion_action is not None:
+        return motion_action
+    if board_action is not None:
+        return board_action
+    if reviewed_candidates:
+        return action('compose_cut', 'cut', {'selections_sha256': _digest(selected),
+            'contract_sha256': contract_digest(contract), 'candidates_sha256': _digest(candidates)},
+            inputs={'candidates': candidates}, reason='Compose attributable usable footage with retained findings and gaps disclosed.')
+    return action('blocked', 'prerequisites', {'contract_sha256': contract_digest(contract)},
+        reason='No independent shot is eligible; inspect current source/review/upstream blockers.')
+
+
+def _action_status(action):
+    return ('ready_to_compose' if action['kind'] == 'compose_cut' else 'complete' if action['kind'] == 'complete'
+            else 'blocked' if action['kind'] == 'blocked' else 'host_action' if action['host_required'] else 'mechanical')
+
+
+def advance(project_dir, *, max_steps=8):
+    """Bounded mechanics, then one durable action for the same producer.
+
+    A host envelope is emitted once through its existing intent-before-call
+    owner. On interruption its canonical state yields original receipt recovery.
+    No timer, second action ledger or creative-review impersonation exists here.
+    """
+    from lib import production_images as images, production_boards as boards, production_request as preparation
+    from lib import openart_mcp_jobs as jobs
+    if type(max_steps) is not int or not 1 <= max_steps <= 32:
+        _fail('max_steps must be between 1 and 32')
+    root = Path(project_dir).resolve()
+    for step in range(max_steps):
+        action = next_production_action(root); kind = action['kind']
+        status = _action_status(action)
+        if status != 'mechanical':
+            return {'status': status, 'action': action, 'steps': step, 'provider_calls': 0}
+        try:
+            if kind == 'restore_derived_views':
+                preparation.prepare_package(root, action['binding']['package'])
+            elif kind == 'promote_imported_board':
+                boards.bind_imported_board(root, action['binding']['slot_id'], action['subject'], images=images)
+            elif kind == 'prepare_board_image':
+                if not (root / 'production_scopes.json').exists() or not _read(root / 'production_scopes.json').get('image_envelope'):
+                    images.activate_standing_image_envelope(root)
+                slot = action['inputs']['slot_id']
+                request = boards.prepare_image_request(root, slot, images=images)
+                scope = images.derive_native_image_scope(root, request['packet'], slot, request['arguments'], output_path=request['output_path'])
+                aid = 'board-' + request['request_sha256'][:24]
+                boards.reserve_board_image(root, slot, scope_id=scope, call_id=aid, images=images)
+            elif kind == 'begin_native_image':
+                envelope = images.begin_native_image(root, action['subject'])
+                return {'status': 'host_action', 'action': next_production_action(root),
+                        'host_envelope': envelope, 'steps': step + 1, 'provider_calls': 0}
+            elif kind in {'collect_grok_original', 'collect_openart_original'}:
+                resume_original_attempt(root, action['subject'], request_sha256=action['binding']['request_sha256'])
+            elif kind == 'begin_openart_original':
+                envelope = jobs.begin(root, action['subject'], authority_fn=prepare_openart_mcp_handoff)
+                return {'status': 'host_action', 'action': next_production_action(root),
+                        'host_envelope': envelope, 'steps': step + 1, 'provider_calls': 0}
+            elif kind == 'receive_openart_original':
+                jobs.resume_original(root, action['subject'], outcome=action['inputs']['outcome'],
+                    request_sha256=action['binding']['request_sha256'])
+            elif kind == 'download_openart_original':
+                receipt = jobs.download_original(root, action['subject'])
+                jobs.collect(root, action['subject'], downloaded_path=receipt['downloaded_path'])
+            else:
+                _fail('unsupported mechanical operation')
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            return {'status': 'blocked', 'action': action, 'steps': step, 'provider_calls': 0, 'reason': str(exc)}
+        updated = next_production_action(root)
+        if updated['action_id'] == action['action_id']:
+            return {'status': 'blocked', 'action': updated, 'steps': step + 1, 'provider_calls': 0,
+                    'reason': 'Original operation is still pending; no replacement or duplicate collection was issued.'}
+    action = next_production_action(root)
+    return {'status': _action_status(action), 'action': action, 'steps': max_steps, 'provider_calls': 0}
+
+
+def complete_action(project_dir, action, *, outcome):
+    """Consume actual producer evidence for one fixed current canonical action."""
+    from lib import production_boards as boards, production_images as images, openart_mcp_jobs as jobs
+    root = Path(project_dir).resolve()
+    valid = (isinstance(action, dict) and action.get('kind') in ACTION_KINDS
+        and action.get('action_id') == _digest({k: v for k, v in action.items() if k != 'action_id'}))
+    if valid and action.get('kind') == 'receive_native_image' and isinstance(outcome, dict) and 'host_receipt' in outcome:
+        call = images.image_call_status(root, action['subject'])
+        if call['state'] == 'imported':
+            if (action['binding'].get('request_sha256') != call['request_sha256']
+                    or action['binding'].get('scope_sha256') != call['scope_sha256']
+                    or action['binding'].get('project_id') != _read(root / 'project.json')['project_id']
+                    or action['binding'].get('story_revision') != call['story_revision']
+                    or set(outcome) - {'host_receipt', 'supplemental_to'}):
+                _fail('original image replay binding differs')
+            images.import_native_image(root, action['subject'], host_receipt=outcome['host_receipt'], supplemental_to=outcome.get('supplemental_to'))
+            if (root / boards.ARTIFACT).exists():
+                boards.bind_imported_board(root, call['slot_id'], action['subject'], images=images)
+            current = next_production_action(root)
+            return {'status': _action_status(current), 'action': current, 'provider_calls': 0, 'replayed': True}
+    if not valid or action != next_production_action(root):
+        _fail('production action is stale, foreign or modified')
+    if not isinstance(outcome, dict):
+        _fail('actual structured producer outcome required')
+    kind = action['kind']; aid = action['subject']
+    if kind == 'receive_native_image':
+        if set(outcome) - {'host_receipt', 'supplemental_to', 'host_exception'}:
+            _fail('unsupported original image outcome')
+        if 'host_exception' in outcome:
+            images.record_native_image_host_exception(root, aid, host_exception=outcome['host_exception'])
+        else:
+            imported = images.import_native_image(root, aid, host_receipt=outcome['host_receipt'],
+                supplemental_to=outcome.get('supplemental_to'))
+            if imported['state'] == 'imported':
+                if (root / boards.ARTIFACT).exists():
+                    boards.bind_imported_board(root, imported['slot_id'], aid, images=images)
+    elif kind == 'review_board':
+        if set(outcome) != {'review'}:
+            _fail('board review requires one actual verdict')
+        boards.record_board_review(root, aid, outcome['review'], roles=action['binding']['roles'], images=images)
+    elif kind == 'review_planning':
+        if set(outcome) != {'project_review', 'shot_review'}:
+            _fail('planning review requires actual project and target verdicts')
+        from lib.shot_contract import project_review_subject, shot_review_subject
+        with _lock(root):
+            contract = load_shot_contract(root)
+            if (outcome['project_review'].get('subject_sha256') != project_review_subject(contract)
+                    or outcome['shot_review'].get('subject_sha256') != shot_review_subject(contract, aid)):
+                _fail('actual review does not bind current planning')
+            candidate = copy.deepcopy(contract); candidate['project_review'] = outcome['project_review']
+            next(s for s in candidate['shots'] if s['id'] == aid)['review'] = outcome['shot_review']
+            from jsonschema import Draft202012Validator
+            from schemas.artifacts import load_schema
+            Draft202012Validator(load_schema('shot_contract')).validate(candidate)
+            path = _artifact_path(root, 'shot_contract.json'); temp = path.with_suffix('.json.review-tmp')
+            temp.write_text(json.dumps(candidate, indent=2)); temp.replace(path)
+    elif kind == 'review_selection':
+        if set(outcome) == {'selection'}:
+            record_selection(root, action['inputs']['shot_id'], outcome['selection'])
+        elif set(outcome) == {'rejection'}:
+            record_rejection(root, aid, outcome['rejection'])
+        else:
+            _fail('selection or rejection requires one actual current media verdict')
+    elif kind == 'poll_openart_original':
+        if set(outcome) != {'result'}:
+            _fail('original poll requires exact host result')
+        jobs.record_status(root, aid, result=outcome['result'])
+    elif kind == 'receive_openart_original':
+        if set(outcome) != {'result'}:
+            _fail('original receive requires exact host result')
+        jobs.resume_original(root, aid, outcome=outcome['result'], request_sha256=action['binding']['request_sha256'])
+    elif kind == 'prepare_motion':
+        if set(outcome) - {'inputs', 'provider', 'observation'} or not {'inputs', 'provider'} <= set(outcome):
+            _fail('motion preparation requires exact inputs and approved provider')
+        from lib import production_autonomy as autonomy
+        provider = outcome['provider']; inputs = copy.deepcopy(outcome['inputs'])
+        if provider not in autonomy.ROUTE_TOOLS or inputs.get('governance', {}).get('shot_id') != aid:
+            _fail('prepared motion lies outside exact current action')
+        scope = autonomy.derive_scope(root, inputs, provider=provider, observation=outcome.get('observation'), reuse_undispatched=True)
+        inputs['governance'].update(shot_id=aid, scope_id=scope['id'])
+        from tools.tool_registry import registry
+        registry.ensure_discovered('tools.video')
+        tool = registry.get(autonomy.ROUTE_TOOLS[provider])
+        if tool is None:
+            _fail('exact registered production tool unavailable')
+        dry = governed_dry_run(tool, inputs)
+        result = tool.execute(inputs)
+        return {'status': 'dispatched', 'result': asdict(result), 'dry_run': dry,
+                'action': next_production_action(root)}
+    else:
+        _fail('action does not accept a producer outcome')
+    return advance(root)
 
 
 def _approved_openart_upload(project_root, upload_id, source_sha256):

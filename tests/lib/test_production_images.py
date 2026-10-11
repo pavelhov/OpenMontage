@@ -675,3 +675,271 @@ def test_recovery_output_cannot_collide_with_existing_provider_session(board_pac
         'submitted_inputs':{'output_path':str(root/'assets/images/recovery.png')}})
     with pytest.raises(ValueError,match='unique|output'):
         reserve_recovery(board_package)
+
+
+def envelope_fixture(package, *, limit=2, source_inventory=None):
+    root, packet, args, target = package
+    plan = root/'board-plan.json'
+    write(plan, {'slots': packet['board_slots'], 'prompt': args['prompt']})
+    definition = images.prepare_native_image_envelope(root, packet=packet,
+        board_plan={'path':'board-plan.json','sha256':file_sha256(plan)},
+        templates={'s1-start':{'prompt':args['prompt'], 'transparent_background':False,
+            'output_path':target, 'reference_ids':['doctor']}},
+        source_inventory=packet['references'] if source_inventory is None else source_inventory, image_allowance=limit)
+    evidence = root/'envelope-approval.json'
+    write(evidence, {'kind':'native_image_envelope_activation','project_id':'boards',
+        'story_revision':'story-1','envelope_sha256':digest(definition),'approved_by':'synthetic-fixture'})
+    approval = {'path':str(evidence.relative_to(root)), 'sha256':file_sha256(evidence),
+        'approved_by':'synthetic-fixture'}
+    images.record_native_image_envelope(root,definition,approval=approval)
+    return definition, approval
+
+
+def derived_scope(package, **kwargs):
+    root, packet, args, target = package
+    return images.derive_native_image_scope(root,packet,'s1-start',args,output_path=target,**kwargs)
+
+
+@pytest.mark.parametrize('absolute', [False, True])
+def test_envelope_canonicalizes_supported_authored_reference_paths(board_package, absolute):
+    root, packet, args, target = board_package
+    inventory = copy.deepcopy(packet['references'])
+    inventory[0]['path'] = str(root / inventory[0]['path']) if absolute else './' + inventory[0]['path']
+    definition, _ = envelope_fixture(board_package, source_inventory=inventory)
+    assert definition['source_inventory'] == packet['references']
+    scope = derived_scope(board_package)
+    call = images.reserve_native_image(root,packet,'s1-start',args,output_path=target,
+        scope_id=scope,call_id='canonical-reference')
+    assert call['scope_id'] == scope
+
+
+def test_envelope_initial_replay_handoff_and_no_slot_reset(board_package):
+    root, packet, args, target = board_package
+    definition, approval = envelope_fixture(board_package)
+    assert images.record_native_image_envelope(root,definition,approval=approval)['envelope_sha256'] == digest(definition)
+    scope = derived_scope(board_package)
+    assert derived_scope(board_package) == scope
+    call = images.reserve_native_image(root,packet,'s1-start',args,output_path=target,scope_id=scope,call_id='envelope-first')
+    envelope = images.begin_native_image(root,call['call_id'])
+    images.import_native_image(root,call['call_id'],host_receipt=host_receipt(root,envelope))
+    assert derived_scope(board_package) == scope
+    with pytest.raises(ValueError,match='slot|allowance'):
+        images.reserve_native_image(root,packet,'s1-start',args,output_path=target,scope_id=scope,call_id='reroll')
+    scopes = json.loads((root/'production_scopes.json').read_text())
+    clone = copy.deepcopy(next(s for s in scopes['scopes'] if s['id']==scope)); clone['id']='scope-reset'
+    scopes['scopes'].append(clone); write(root/'production_scopes.json',scopes)
+    with pytest.raises(ValueError,match='derived|scope'):
+        images.reserve_native_image(root,packet,'s1-start',args,output_path=target,scope_id='scope-reset',call_id='reroll-2')
+    assert images.image_usage(root)['total'] == 1
+
+
+def test_envelope_requires_explicit_activation_and_exact_bindings(board_package):
+    root, packet, args, target = board_package
+    with pytest.raises(ValueError,match='envelope'):
+        derived_scope(board_package)
+    definition, approval = envelope_fixture(board_package)
+    for key, value in [('project_id','other'),('story_revision','other')]:
+        changed = copy.deepcopy(definition); changed[key]=value
+        with pytest.raises(ValueError): images.record_native_image_envelope(root,changed,approval=approval)
+    for arguments, output in [({**args,'prompt':'Changed'},target), (args,'assets/images/different.png')]:
+        with pytest.raises(ValueError,match='template|output'):
+            images.derive_native_image_scope(root,packet,'s1-start',arguments,output_path=output)
+    changed = copy.deepcopy(packet); changed['references'][0]['role']='end_frame'
+    changed['packet_sha256']=digest({k:v for k,v in changed.items() if k!='packet_sha256'})
+    with pytest.raises(ValueError,match='source|inventory'):
+        images.derive_native_image_scope(root,changed,'s1-start',args,output_path=target)
+    (root/'envelope-approval.json').write_text('{}')
+    with pytest.raises(ValueError,match='approval|bytes'): derived_scope(board_package)
+
+
+def test_envelope_host_exception_one_successor_and_ceiling(board_package):
+    root, packet, args, target = board_package
+    envelope_fixture(board_package)
+    scope=derived_scope(board_package)
+    first=images.reserve_native_image(root,packet,'s1-start',args,output_path=target,scope_id=scope,call_id='env-exception')
+    host=images.begin_native_image(root,first['call_id'])
+    recovery=Path(target); recovery=str(recovery.with_name(recovery.stem+'-recovery-'+__import__('hashlib').sha256(first['call_id'].encode()).hexdigest()[:12]+recovery.suffix))
+    with pytest.raises(ValueError,match='exception'):
+        images.derive_native_image_scope(root,packet,'s1-start',args,output_path=recovery,replace_exception_call_id=first['call_id'])
+    path=root/'receipts/exception.json'
+    write(path, {'call_id':first['call_id'],'tool_name':host['tool_name'],'arguments':host['arguments'],
+        'exception':{'message':'Synthetic raised host exception','type':'SyntheticError'}})
+    images.record_native_image_host_exception(root,first['call_id'],host_exception={'path':str(path),'sha256':file_sha256(path)})
+    child_scope=images.derive_native_image_scope(root,packet,'s1-start',args,output_path=recovery,replace_exception_call_id=first['call_id'])
+    child=images.reserve_native_image(root,packet,'s1-start',args,output_path=recovery,scope_id=child_scope,
+        call_id='env-child',replace_exception_call_id=first['call_id'])
+    assert images.derive_native_image_scope(root,packet,'s1-start',args,output_path=recovery,
+        replace_exception_call_id=first['call_id'])==child_scope
+    images.begin_native_image(root,child['call_id'])
+    assert images.image_usage(root)['total']==2
+    assert images.image_call_status(root,first['call_id'])['state']=='uncertain'
+    with pytest.raises(ValueError,match='successor|slot|allowance'):
+        images.reserve_native_image(root,packet,'s1-start',args,output_path=recovery,scope_id=child_scope,
+            call_id='env-child-2',replace_exception_call_id=first['call_id'])
+
+
+def test_envelope_rejects_old_scope_evidence_plan_route_and_ceiling_changes(board_package):
+    root, packet, args, target=board_package
+    definition, approval=envelope_fixture(board_package,limit=1)
+    with pytest.raises(ValueError,match='activation'):
+        images.record_native_image_envelope(root,definition,approval=packet['approval'])
+    changed=copy.deepcopy(definition); changed['allowed_image_routes']=['grok_cli']
+    with pytest.raises(ValueError,match='route'):
+        images.record_native_image_envelope(root,changed,approval=approval)
+    changed=copy.deepcopy(definition); changed['image_allowance']=3
+    with pytest.raises(ValueError,match='activation|expanded'):
+        images.record_native_image_envelope(root,changed,approval=approval)
+    scope=derived_scope(board_package)
+    call=images.reserve_native_image(root,packet,'s1-start',args,output_path=target,scope_id=scope,call_id='ceiling')
+    host=images.begin_native_image(root,call['call_id'])
+    path=root/'ceiling-exception.json'
+    write(path,{'call_id':call['call_id'],'tool_name':host['tool_name'],'arguments':host['arguments'],
+        'exception':{'message':'Synthetic exception'}})
+    images.record_native_image_host_exception(root,call['call_id'],host_exception={'path':str(path),'sha256':file_sha256(path)})
+    from hashlib import sha256
+    recovery=Path(target); recovery=str(recovery.with_name(recovery.stem+'-recovery-'+sha256(call['call_id'].encode()).hexdigest()[:12]+recovery.suffix))
+    with pytest.raises(ValueError,match='allowance exhausted'):
+        images.derive_native_image_scope(root,packet,'s1-start',args,output_path=recovery,replace_exception_call_id=call['call_id'])
+    (root/'board-plan.json').write_text('{}')
+    with pytest.raises(ValueError,match='board plan bytes'): derived_scope(board_package)
+
+
+def test_envelope_dynamic_source_requires_imported_producer_and_exact_role(board_package):
+    root, packet, args, target=board_package
+    packet=copy.deepcopy(packet)
+    packet['board_slots'].append({'id':'s1-end','shot_id':'s1','role':'end_frame','status':'unresolved'})
+    packet['packet_sha256']=digest({k:v for k,v in packet.items() if k!='packet_sha256'})
+    plan=root/'board-plan.json'; write(plan,{'slots':packet['board_slots']})
+    templates={'s1-start':{'prompt':args['prompt'],'transparent_background':False,'output_path':target,'reference_ids':['doctor']},
+        's1-end':{'prompt':'Synthetic end image','transparent_background':False,'output_path':'assets/images/s1-end.png','reference_ids':['s1-start']}}
+    dynamic={'id':'s1-start','role':'start_frame','path':target,'source_slot_id':'s1-start',
+        'applicability':{'story_revision':'story-1','roles':['start_frame']}}
+    definition=images.prepare_native_image_envelope(root,packet=packet,
+        board_plan={'path':'board-plan.json','sha256':file_sha256(plan)},templates=templates,
+        source_inventory=[*packet['references'],dynamic],image_allowance=2)
+    evidence=root/'dynamic-approval.json'
+    write(evidence,{'kind':'native_image_envelope_activation','project_id':'boards','story_revision':'story-1',
+        'envelope_sha256':digest(definition),'approved_by':'synthetic-fixture'})
+    images.record_native_image_envelope(root,definition,approval={'path':str(evidence),'sha256':file_sha256(evidence),'approved_by':'synthetic-fixture'})
+    # Local pixels with the nominal path are insufficient canonical provenance.
+    (root/target).write_bytes(PNG)
+    ref={k:v for k,v in dynamic.items() if k!='source_slot_id'}; ref['sha256']=file_sha256(root/target)
+    end_packet=images.build_preboard_packet(root,story=packet['story'],approval=packet['approval'],references=[ref],board_slots=packet['board_slots'])
+    end_args={'prompt':'Synthetic end image','transparent_background':False,'referenced_image_paths':[str(root/target)]}
+    with pytest.raises(ValueError,match='producer'):
+        images.derive_native_image_scope(root,end_packet,'s1-end',end_args,output_path='assets/images/s1-end.png')
+    (root/target).unlink()
+    scope=images.derive_native_image_scope(root,packet,'s1-start',args,output_path=target)
+    first=images.reserve_native_image(root,packet,'s1-start',args,output_path=target,scope_id=scope,call_id='dynamic-producer')
+    host=images.begin_native_image(root,first['call_id'])
+    images.import_native_image(root,first['call_id'],host_receipt=host_receipt(root,host))
+    # No semantic review is fabricated or required for the existing conditioning seam.
+    end_scope=images.derive_native_image_scope(root,end_packet,'s1-end',end_args,output_path='assets/images/s1-end.png')
+    end=images.reserve_native_image(root,end_packet,'s1-end',end_args,output_path='assets/images/s1-end.png',scope_id=end_scope,call_id='dynamic-consumer')
+    images.begin_native_image(root,end['call_id'])
+    assert images.image_usage(root)['total']==2
+    changed=copy.deepcopy(end_packet); changed['references'][0]['role']='identity_reference'
+    changed['packet_sha256']=digest({k:v for k,v in changed.items() if k!='packet_sha256'})
+    with pytest.raises(ValueError,match='role'):
+        images.derive_native_image_scope(root,changed,'s1-end',end_args,output_path='assets/images/s1-end.png')
+
+
+def test_envelope_explicit_grok_route_preserves_shared_ceiling_and_native_slot_limit(board_package):
+    from lib.production_execution import planned_request_digest
+    root, packet, args, target=board_package
+    plan=root/'fallback-board-plan.json'; write(plan,{'slots':packet['board_slots']})
+    definition=images.prepare_native_image_envelope(root,packet=packet,
+        board_plan={'path':str(plan),'sha256':file_sha256(plan)},
+        templates={'s1-start':{'prompt':args['prompt'],'transparent_background':False,
+            'output_path':target,'reference_ids':['doctor']}},source_inventory=packet['references'],
+        image_allowance=2,allowed_image_routes=['native_imagegen','grok_cli'])
+    evidence=root/'fallback-envelope-approval.json'
+    write(evidence,{'kind':'native_image_envelope_activation','project_id':'boards',
+        'story_revision':'story-1','envelope_sha256':digest(definition),'approved_by':'synthetic-fixture'})
+    images.record_native_image_envelope(root,definition,approval={'path':str(evidence),
+        'sha256':file_sha256(evidence),'approved_by':'synthetic-fixture'})
+    scope_id=derived_scope(board_package)
+    native=images.reserve_native_image(root,packet,'s1-start',args,output_path=target,scope_id=scope_id,call_id='route-native')
+    host=images.begin_native_image(root,native['call_id'])
+    images.import_native_image(root,native['call_id'],host_receipt=host_receipt(root,host,
+        result={'isError':True,'error':'Synthetic terminal failure'}))
+    grok_inputs={'prompt':'Synthetic explicitly approved fallback','operation':'image_edit',
+        'image_paths':[str(root/'assets/images/doctor.png')],'allow_unknown_cost':True,
+        'output_path':str(root/'assets/images/fallback.png'),'project_dir':str(root),
+        'governance':{'scope_id':'grok-envelope-fallback','shot_id':'s1-start'}}
+    sha=planned_request_digest(grok_inputs,project_dir=root)
+    scopes=json.loads((root/'production_scopes.json').read_text())
+    shared=next(s for s in scopes['scopes'] if s['id']==scope_id)
+    assert shared['allowed_image_routes']==['native_imagegen','grok_cli']
+    grok={'id':'grok-envelope-fallback','project_id':'boards','story_revision':'story-1',
+        'phase':'image','status':'approved','provider':'grok_cli','approved_by':'synthetic-fixture',
+        'evidence':packet['approval'],'requests':{'s1-start':sha},'attempts_per_shot':{'s1-start':1},
+        'image_allowance_scope_id':scope_id}
+    scopes['scopes'].append(grok); write(root/'production_scopes.json',scopes)
+    assert images.check_grok_image_admission(root,scope=grok,shot_id='s1-start',request_sha256=sha)['remaining']==1
+    changed=copy.deepcopy(scopes)
+    next(s for s in changed['scopes'] if s['id']==scope_id)['allowed_image_routes']=['native_imagegen']
+    write(root/'production_scopes.json',changed)
+    with pytest.raises(ValueError,match='approved envelope'):
+        images.check_grok_image_admission(root,scope=grok,shot_id='s1-start',request_sha256=sha)
+    write(root/'production_scopes.json',scopes)
+    with pytest.raises(ValueError,match='slot allowance'):
+        images.reserve_native_image(root,packet,'s1-start',args,output_path=target,scope_id=scope_id,call_id='route-native-reroll')
+    write(root/'production_attempts/grok-envelope-original/request.json',{'version':'1.0',
+        'attempt_id':'grok-envelope-original','cli_session_id':'grok-envelope-original','project_id':'boards',
+        'story_revision':'story-1','shot_id':'s1-start','scope_id':grok['id'],'phase':'image',
+        'media_kind':'image','tool_name':'grok_cli_image','request_sha256':sha,'scope':grok,'submitted_inputs':grok_inputs})
+    assert images.image_usage(root)['total']==2
+    with pytest.raises(ValueError,match='pending|allowance'):
+        images.check_grok_image_admission(root,scope=grok,shot_id='s1-start',request_sha256=sha)
+
+
+def test_native_supplement_preserves_incomplete_original_and_count(board_package):
+    root, _, _, target = board_package
+    call = reserve(board_package, call_id='supplement')
+    envelope = images.begin_native_image(root, call['call_id'])
+    incomplete = host_receipt(root, envelope, name='incomplete', result={'output_hint':'Synthetic fixture'})
+    with pytest.raises(ValueError, match='unresolved'):
+        images.import_native_image(root, call['call_id'], host_receipt=incomplete)
+    before = images._call(images._load(root), call['call_id'])
+    frozen = (root/before['host_receipt']['path']).read_bytes()
+    complete = host_receipt(root, envelope, name='complete')
+    with pytest.raises(ValueError, match='retained original host return differs'):
+        images.import_native_image(root, call['call_id'], host_receipt=complete)
+    imported = images.import_native_image(root, call['call_id'], host_receipt=complete,
+        supplemental_to=incomplete['sha256'])
+    assert imported['state'] == 'imported'
+    assert imported['host_receipt'] == before['host_receipt']
+    assert imported['provenance'] == before['provenance']
+    assert (root/imported['host_receipt']['path']).read_bytes() == frozen
+    assert imported['supplemental_host_receipt']['original_receipt_sha256'] == incomplete['sha256']
+    assert (root/target).read_bytes() == PNG
+    assert images.image_usage(root)['total'] == 1
+    assert images.import_native_image(root, call['call_id'],host_receipt=complete,
+        supplemental_to=incomplete['sha256']) == imported
+
+
+@pytest.mark.parametrize('mutation', ['hint', 'tool_call_id', 'arguments', 'bad_image', 'wrong_original', 'error', 'collision'])
+def test_native_supplement_rejects_mismatched_evidence(board_package, mutation):
+    root, _, _, _ = board_package
+    call = reserve(board_package, call_id='supplement')
+    envelope = images.begin_native_image(root, call['call_id'])
+    incomplete = host_receipt(root,envelope,name='incomplete',result={'output_hint':'Synthetic fixture'})
+    with pytest.raises(ValueError):
+        images.import_native_image(root,call['call_id'],host_receipt=incomplete)
+    complete = host_receipt(root,envelope,name='complete')
+    path = Path(complete['path']); value = json.loads(path.read_text())
+    if mutation == 'hint': value['result']['output_hint'] = 'Different'
+    if mutation == 'tool_call_id': value['tool_call_id'] = 'different-call'
+    if mutation == 'arguments': value['arguments']['prompt'] = 'Different'
+    if mutation == 'bad_image': value['result']['image_url'] = 'unsupported'
+    if mutation == 'error': value['result']['isError'] = True
+    if mutation == 'collision':
+        (root/board_package[3]).write_bytes(b'preserve existing bytes')
+    write(path,value); complete['sha256'] = file_sha256(path)
+    before = images._load(root)
+    with pytest.raises(ValueError):
+        images.import_native_image(root,call['call_id'],host_receipt=complete,
+            supplemental_to='0'*64 if mutation == 'wrong_original' else incomplete['sha256'])
+    assert images._load(root) == before
+    assert not (root/'production_images/supplement/host-return-supplement.json').exists()

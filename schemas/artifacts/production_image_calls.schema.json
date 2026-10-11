@@ -109,7 +109,8 @@
                   "tool_return",
                   "imported",
                   "failed",
-                  "host_exception"
+                  "host_exception",
+                  "supplemental_tool_return"
                 ]
               },
               "observed_at": {
@@ -342,6 +343,29 @@
             "call_id",
             "receipt_sha256",
             "request_sha256"
+          ]
+        },
+        "supplemental_host_receipt": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "original_receipt_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "required": [
+            "path",
+            "sha256",
+            "original_receipt_sha256"
           ]
         }
       },

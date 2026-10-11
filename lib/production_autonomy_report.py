@@ -544,7 +544,7 @@ def completion_report(project_root, policy_sha):
     findings.extend({'code': 'final_certification_ineligible', 'message': 'Current final certification failed a required check',
                                         'category': 'malformed_current_final_review' if malformed_final or (final_raw is not None and not isinstance(review, dict)) else
                                                     'missing_current_final_review' if review is None else
-                                                    'unsupported_review_version' if review.get('version') != CURRENT_VERSION else
+                                                    'unsupported_review_version' if review.get('version') not in (CURRENT_VERSION, '3.0') else
                                                     'current_final_binding_or_review_failure',
                                         'field': _finding_field(e), 'detail_sha256': hashlib.sha256(str(e).encode()).hexdigest()}
                     for e in result['errors'])

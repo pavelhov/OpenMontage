@@ -835,6 +835,7 @@ def execute_grok_cli_media(
     timeout_seconds: int,
     media_kind: str,
     session_id: str | None = None,
+    adapter_version: str | None = None,
 ) -> ToolResult:
     """Execute one primitive with a caller-reservable identity.
 
@@ -887,8 +888,14 @@ def execute_grok_cli_media(
         resolved = shutil.which(grok_path) if not Path(grok_path).is_absolute() else grok_path
         if resolved:
             grok_path = str(Path(resolved).absolute())
+        sessions_root = str(Path(sessions_root).expanduser().resolve())
         cli_version = _verify_compatibility(grok_path, cwd=working_directory)
         check_cli_feature_gates(cli_version, arguments)
+        from lib.production_execution import retain_grok_launch
+        retain_grok_launch(session_id=dispatch_session_id, cli_version=cli_version,
+                          grok_path=grok_path, sessions_root=sessions_root,
+                          cwd=working_directory, native_tool=tool_name, arguments=arguments,
+                          adapter_version=adapter_version)
         instruction = _build_instruction(tool_name, arguments)
         with tempfile.NamedTemporaryFile(
             mode="w", encoding="utf-8", prefix="openmontage-grok-cli-", suffix=".md", delete=False
