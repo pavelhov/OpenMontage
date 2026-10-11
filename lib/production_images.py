@@ -1089,19 +1089,59 @@ def _original_image(result):
 def import_native_image(project_dir, call_id, *, host_receipt, supplemental_to=None):
     """Import original bytes from retained actual tool return, once.
 
-    Receipt JSON is {tool_name, arguments, result, optional tool_call_id}. Agent
+    host_receipt accepts a bound {path, sha256} pointer or inline observed JSON
+    {tool_name, arguments, result, optional tool_call_id}. Agent
     records the host event as observed; provenance is honestly agent_recorded,
     not provider-attested. The source path must occur inside that actual return.
     supplemental_to links an additive complete return to an unresolved frozen
     receipt SHA, preserving the original journal, provenance and call count.
     """
     root,_ = _root(project_dir)
-    receipt_path = _bound_file(root,host_receipt,'host return')
-    raw = receipt_path.read_bytes(); receipt = json.loads(raw)
-    if hashlib.sha256(raw).hexdigest() != host_receipt['sha256']:
-        raise ValueError('host return bytes changed during import')
+    def canonical_json(value):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True,
+                          separators=(',', ':'), allow_nan=False).encode('utf-8')
+    inline = isinstance(host_receipt, dict) and bool(set(host_receipt) & {'tool_name', 'arguments', 'result', 'tool_call_id'})
+    if inline:
+        if (not {'tool_name', 'arguments', 'result'} <= set(host_receipt)
+                or set(host_receipt) - {'tool_name', 'arguments', 'result', 'tool_call_id'}):
+            raise ValueError('inline host return requires exact observed tool_name, arguments and result')
+        if (not isinstance(call_id, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}', call_id)
+                or ('tool_call_id' in host_receipt and (not isinstance(host_receipt['tool_call_id'], str)
+                    or not host_receipt['tool_call_id'].strip()))):
+            raise ValueError('inline host return requires a safe original call ID and observed tool call ID')
+        receipt = copy.deepcopy(host_receipt)
+        try:
+            raw = canonical_json(receipt)
+        except (TypeError, ValueError) as exc:
+            raise ValueError('inline host return must be JSON observation data') from exc
+        # Retention below owns this same canonical receipt path for both forms.
+        name = 'host-return-supplement.json' if supplemental_to is not None else 'host-return.json'
+        host_receipt = {'path': 'production_images/' + call_id + '/' + name,
+                        'sha256': hashlib.sha256(raw).hexdigest()}
+    else:
+        receipt_path = _bound_file(root,host_receipt,'host return')
+        raw = receipt_path.read_bytes(); receipt = json.loads(raw)
+        if hashlib.sha256(raw).hexdigest() != host_receipt['sha256']:
+            raise ValueError('host return bytes changed during import')
     with _ex()._lock(root):
         value = _load(root); call = _call(value,call_id)
+        if ('submitted_arguments' not in call
+                or receipt.get('tool_name') != NATIVE_TOOL
+                or canonical_json(receipt.get('arguments')) != canonical_json(call['submitted_arguments'])):
+            raise ValueError('host return tool or exact submitted arguments differ')
+        if inline:
+            retained_path = _ex()._inside(host_receipt['path'], root)
+            retained = call.get('supplemental_host_receipt' if supplemental_to is not None else 'host_receipt')
+            if retained:
+                _bound_file(root, retained, 'retained host return')
+            # An inline observation can replay a pointer receipt with different
+            # JSON whitespace. Keep the exact original retained bytes and SHA.
+            if retained_path.exists():
+                retained_raw = retained_path.read_bytes()
+                retained_canonical = canonical_json(json.loads(retained_raw))
+                if retained_canonical == raw:
+                    raw = retained_raw
+                    host_receipt['sha256'] = hashlib.sha256(raw).hexdigest()
         if call['state'] in {'imported','failed'}:
             active = call.get('supplemental_host_receipt', call.get('host_receipt',{}))
             if supplemental_to is not None and active.get('original_receipt_sha256') != supplemental_to:
@@ -1115,10 +1155,6 @@ def import_native_image(project_dir, call_id, *, host_receipt, supplemental_to=N
                 _bound_file(root,call['output'],'imported image')
                 _bound_file(root,{'path':call['output']['preserved_path'],'sha256':call['output']['sha256']},'preserved image')
             return copy.deepcopy(call)
-        if 'submitted_arguments' not in call:
-            raise ValueError('host return requires the original emitted invocation envelope')
-        if (receipt.get('tool_name') != NATIVE_TOOL or receipt.get('arguments') != call['submitted_arguments']):
-            raise ValueError('host return tool or exact submitted arguments differ')
         result = receipt.get('result')
         directory = root/'production_images'/call_id; directory.mkdir(parents=True,exist_ok=True)
         if supplemental_to is not None:
@@ -1132,9 +1168,10 @@ def import_native_image(project_dir, call_id, *, host_receipt, supplemental_to=N
             prior_result = prior.get('result')
             if (not isinstance(prior_result,dict) or not isinstance(result,dict)
                     or prior_result.get('isError') is True or result.get('isError') is True
-                    or any(result.get(key) != value for key,value in prior_result.items())
+                    or any(key not in result or canonical_json(result[key]) != canonical_json(value)
+                           for key,value in prior_result.items())
                     or prior.get('tool_name') != receipt.get('tool_name')
-                    or prior.get('arguments') != receipt.get('arguments')
+                    or canonical_json(prior.get('arguments')) != canonical_json(receipt.get('arguments'))
                     or prior.get('tool_call_id') != receipt.get('tool_call_id')):
                 raise ValueError('supplement must extend the same actual host return without changing retained fields')
             try:

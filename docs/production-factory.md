@@ -289,3 +289,48 @@ scope, runs the governed dry-run and invokes the registered tool. This completio
 is a dispatch boundary, so perform it only within the current run's retained
 route/input/allowance authority. OpenArt uploads and other native prerequisites
 still follow their existing provider contracts.
+
+## Retain a native image observation directly
+
+A current `receive_native_image` action accepts either the existing bound pointer
+or the observed receipt itself under the same `host_receipt` key:
+
+```python
+execution.complete_action(project_dir, action, outcome={
+    "host_receipt": observed_receipt,
+    # "supplemental_to": exact_unresolved_original_receipt_sha256,
+})
+```
+
+`observed_receipt` must contain the actual observed `tool_name`, `arguments`,
+`result`, and optional `tool_call_id`. Record the invocation and return as observed;
+never populate missing name or arguments from the expected envelope. A bare media
+result is insufficient. The image owner validates the observed invocation against
+the frozen submitted arguments before retaining anything, then hashes and stores
+it in the existing original-call directory. Provenance remains agent-recorded,
+not provider-attested. Pointer receipts `{path, sha256}` keep their original bytes
+and hashes; equivalent inline replay preserves them without reformatting.
+
+Unknown returns stay counted and collectable. A genuinely additive completed
+return can use `supplemental_to` with the exact original receipt SHA, retaining the
+original and its provenance. Changed fields, collisions and different replay
+returns still fail. Interrupted retention resumes the same original; imported
+replay never re-emits an image envelope or consumes another allowance.
+
+## Review the project when its declared payoff is observable
+
+When a missing, unknown or stale project review needs an unavailable declared
+payoff board, the action selector can progress that board's existing source/image
+dependency instead of immediately requesting the project review. It uses only an
+existing prepare, receive or review action; pending original collection keeps its
+priority. This is an ordering change for that exact dependency. It does not require
+all episode boards, erase failed observations, or make a shot eligible. Current
+passing project evidence leaves independent motion and local shot review behavior
+unchanged.
+
+A `review_planning` outcome can supply `{"shot_review": actual_target_verdict}`
+when the retained project review already passes the existing checks for the exact
+current protected-plan subject and story revision. The engine carries that project
+verdict unchanged. Otherwise supply both `project_review` and `shot_review` with
+actual current observations. Missing, stale, failed, incomplete or unknown project
+evidence cannot be omitted, and the target still needs its own genuine review.
