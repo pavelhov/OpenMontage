@@ -6,6 +6,15 @@ The package's `boards` section declares only the references and image slots need
 
 For explicit `shot_local_v1` planning with `reference_guided` treatment, motion checks the authored consumer assets and their current reviews without requiring a literal start/end board pair. A declared reviewed `payoff_board` may bind an OpenArt MCP `reference_image` or `environment_reference`; exact native temporal-pin requirements still apply. The authored `endpoint_completion: "unknown"` remains frozen while current subject-bound `completed_action` evidence establishes planning eligibility, and dependent shots require current selected media, outgoing-frame and completion reviews with exact attempt/output/frame/review bindings. Explicit `partial` endpoints and legacy unknown endpoints remain blocked.
 
+In a standing `shot_local_v1` run, call `lib.production_execution.advance` after
+selecting an upstream take. Its mechanical `bind_selected_upstream` step fills
+the authored dependency with the eligible current attempt, output, outgoing-frame
+and original review hashes, preserving story and authority. The resulting
+`review_planning` action requires the producer's actual verdict bound to that
+planning; `prepare_motion` follows only when existing prerequisites pass. Missing
+or ineligible upstream evidence remains blocking. Binding supplies no semantic
+verdict and does not change `endpoint_completion` or native input requirements.
+
 Before new standing activation writes authority, each authored guided shot must
 have at least one approved compatible route after its model lock and per-shot
 selection intent. Guided treatment requires OpenArt MCP `element2video` or

@@ -2707,7 +2707,7 @@ def resume_original_attempt(project_dir, attempt_id, *, request_sha256, dry_run=
     return jobs.resume_original(root, attempt_id, request_sha256=request_sha256)
 
 
-ACTION_KINDS = frozenset({'restore_derived_views', 'prepare_board_image', 'prepare_board_correction', 'begin_native_image',
+ACTION_KINDS = frozenset({'restore_derived_views', 'bind_selected_upstream', 'prepare_board_image', 'prepare_board_correction', 'begin_native_image',
     'promote_imported_board',
     'receive_native_image', 'review_board', 'review_planning', 'prepare_motion', 'review_selection',
     'collect_grok_original', 'collect_openart_original', 'begin_openart_original',
@@ -2727,6 +2727,99 @@ def _production_action(root, kind, *, subject, binding, inputs=None, reason=None
     value['host_required'] = host
     value['action_id'] = _digest(value)
     return value
+
+
+def _validated_upstream_binding(root, contract, shot_id, upstream_id, selection):
+    """Current factual selection plus the existing semantic upstream boundary."""
+    from lib.production_provenance import validate_attempt_provenance
+    from lib.shot_contract import review_digest
+    if not isinstance(selection, dict):
+        _fail('upstream binding requires a current accepted selection')
+    marker = _read(root / 'project.json')
+    if (contract.get('project_id'), contract.get('story_revision')) != (marker['project_id'], marker['story_revision']):
+        _fail('upstream contract differs from current project/story')
+    validate_attempt_provenance(root, selection['attempt_id'], shot_id=upstream_id,
+        story_revision=marker['story_revision'], expected_output=selection['output'])
+    for role in ('output', 'outgoing_frame'):
+        record = selection[role]
+        if file_sha256(_inside(record['path'], root)) != record['sha256']:
+            _fail('upstream selection bytes missing or changed: ' + role)
+    binding = {'shot_id': upstream_id, 'attempt_id': selection['attempt_id'],
+        'output_sha256': selection['output']['sha256'],
+        'outgoing_frame_sha256': selection['outgoing_frame']['sha256'],
+        'review_sha256': review_digest(selection['review'])}
+    candidate = copy.deepcopy(contract)
+    shot = next(s for s in candidate['shots'] if s['id'] == shot_id)
+    matches = [i for i, item in enumerate(shot['upstream']) if item['shot_id'] == upstream_id]
+    if len(matches) != 1:
+        _fail('upstream must be one originally declared dependency')
+    shot['upstream'][matches[0]] = binding
+    from jsonschema import Draft202012Validator
+    from schemas.artifacts import load_schema
+    if not Draft202012Validator(load_schema('shot_contract')).is_valid(candidate):
+        _fail('upstream contract structure is incomplete')
+    checked = validate_shot_contract(candidate, project_dir=root, shot_id=shot_id,
+        story_revision=marker['story_revision'], selected_upstream={upstream_id: selection})
+    label = f'shots.{shot_id}.upstream.{upstream_id}'
+    failures = [error for error in checked['errors'] if error.startswith(label + '.') or error.startswith(label + ':')]
+    if failures:
+        _fail('upstream selection is not eligible: ' + '; '.join(failures))
+    return binding
+
+
+def _selected_upstream_transition(root, contract, shot_id, selected):
+    """Pure prospective observation plan; no authority or review is created."""
+    from lib import production_autonomy as autonomy
+    from lib.shot_contract import shot_local
+    if not shot_local(contract):
+        return None
+    shot = next(s for s in contract['shots'] if s['id'] == shot_id)
+    if not any(set(item) == {'shot_id'} for item in shot['upstream']):
+        return None
+    policy, policy_sha, decision_id = autonomy.require_active_policy(root, shot_id=shot_id)
+    autonomy.contract_delta(root, shot_id, autonomy.current_projection(root, shot_id), policy=policy)
+    candidate = copy.deepcopy(contract)
+    target = next(s for s in candidate['shots'] if s['id'] == shot_id)
+    for index, item in enumerate(shot['upstream']):
+        current = _validated_upstream_binding(root, contract, shot_id, item['shot_id'], selected.get(item['shot_id']))
+        if set(item) != {'shot_id'} and item != current:
+            _fail('materialized upstream selection is stale; explicit rebinding is required')
+        target['upstream'][index] = current
+    return {'contract': candidate, 'binding': {'contract_sha256': contract_digest(contract),
+        'selected_sha256': _digest(selected), 'policy_sha256': policy_sha, 'decision_id': decision_id,
+        'upstream': copy.deepcopy(target['upstream'])}}
+
+
+def _bind_selected_upstream(root, action):
+    """Publish only the still-current mechanically derived contract observation."""
+    import os
+    from lib import production_boards as boards
+    def publish(root):
+        if action != next_production_action(root):
+            _fail('upstream production action is stale, foreign or modified')
+        planned = _selected_upstream_transition(root, load_shot_contract(root), action['subject'],
+            load_selected_attempts(root))
+        if planned is None or action['binding'] != _production_action(root, 'bind_selected_upstream',
+                subject=action['subject'], binding=planned['binding'])['binding']:
+            _fail('upstream production action binding changed')
+        path = _artifact_path(root, 'shot_contract.json')
+        legacy = root / 'shot_contract.json'
+        if path != legacy and legacy.exists() and _read(legacy) != planned['contract']:
+            _fail('legacy canonical upstream artifact conflict')
+        temporary = path.with_name('.upstream-contract-' + str(uuid.uuid4()) + '.tmp')
+        try:
+            with temporary.open('x') as stream:
+                json.dump(planned['contract'], stream, indent=2, allow_nan=False)
+                stream.flush()
+                os.fsync(stream.fileno())
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
+    with _lock(root):
+        if (root / boards.ARTIFACT).exists():
+            boards._board_transaction(publish)(root)
+        else:
+            publish(root)
 
 
 def _rejected_and_superseded(root, request, observed, selected, current_candidates):
@@ -2983,15 +3076,26 @@ def next_production_action(project_dir):
                 return action('complete', 'cut', {'first_cut': {'path': cut['path'], 'sha256': cut['sha256']}}, inputs=current)
         return action('compose_cut', 'cut', {'selections_sha256': _digest(selected),
             'contract_sha256': contract_digest(contract), 'candidates_sha256': _digest(candidates)}, inputs={'candidates': candidates})
+    blocked_shots = {}
     for shot in shots:
         sid = shot['id']
         if sid in selected or sid in reviewed_candidates or sid in pending_motion_shots:
             continue
+        try:
+            transition = _selected_upstream_transition(root, contract, sid, selected)
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            transition = None
+            blocked_shots[sid] = [str(exc)]
+        if transition is not None:
+            return action('bind_selected_upstream', sid, transition['binding'],
+                reason='Bind the current accepted upstream bytes and original review; the target still needs its own current semantic planning verdict.')
         # Structural/prerequisite inspection may identify the actual semantic
         # review needed; it never creates a passing verdict.
         checked = validate_shot_contract(contract, project_dir=root, shot_id=sid,
             story_revision=_read(root / 'project.json')['story_revision'], selected_upstream=selected)
         errors = checked['errors']
+        if errors:
+            blocked_shots.setdefault(sid, []).extend(errors)
         review_only = errors and all('project_review' in e or f'shots.{sid}.review' in e for e in errors)
         if review_only:
             return action('review_planning', sid, {'project_subject': project_review_subject(contract),
@@ -3008,8 +3112,9 @@ def next_production_action(project_dir):
     if reviewed_candidates:
         return action('compose_cut', 'cut', {'selections_sha256': _digest(selected),
             'contract_sha256': contract_digest(contract), 'candidates_sha256': _digest(candidates)},
-            inputs={'candidates': candidates}, reason='Compose attributable usable footage with retained findings and gaps disclosed.')
+            inputs={'candidates': candidates, 'blocked_shots': blocked_shots}, reason='Compose attributable usable footage with retained findings and gaps disclosed.')
     return action('blocked', 'prerequisites', {'contract_sha256': contract_digest(contract)},
+        inputs={'blocked_shots': blocked_shots},
         reason='No independent shot is eligible; inspect current source/review/upstream blockers.')
 
 
@@ -3038,6 +3143,8 @@ def advance(project_dir, *, max_steps=8):
         try:
             if kind == 'restore_derived_views':
                 preparation.prepare_package(root, action['binding']['package'])
+            elif kind == 'bind_selected_upstream':
+                _bind_selected_upstream(root, action)
             elif kind == 'promote_imported_board':
                 boards.bind_imported_board(root, action['binding']['slot_id'], action['subject'], images=images)
             elif kind == 'prepare_board_image':

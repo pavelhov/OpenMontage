@@ -1129,6 +1129,285 @@ def test_motion_waiting_original_does_not_hold_independent_ready_shot(p, monkeyp
     assert action['kind'] == 'prepare_motion' and action['subject'] == 'interior'
 
 
+def serial_factory_fixture(p, *, independent=False, board_pack=False):
+    """Real offline dispatcher/selection, synthetic four-shot standing authority."""
+    from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES
+    final = copy.deepcopy(p.contract['shots'][-1])
+    final.update(id='coda', upstream=[{'shot_id': 'payoff'}])
+    final['asset_ids'] = ['coda-start', 'coda-end', *final['cast_ids']]
+    p.contract['shots'].append(final)
+    p.add_asset('coda-start', 'start_frame', final['cast_ids'])
+    p.add_asset('coda-end', 'end_frame', final['cast_ids'])
+    p.contract['planning_mode'] = 'shot_local_v1'
+    if independent:
+        next(s for s in p.contract['shots'] if s['id'] == 'payoff')['upstream'] = []
+    for shot in p.contract['shots']:
+        shot['endpoint_completion'] = 'unknown'
+    p.contract['project_review'] = attestation(project_review_subject(p.contract), PROJECT_PREDICATES)
+    for shot in p.contract['shots']:
+        shot['review'] = attestation(shot_review_subject(p.contract, shot['id']), SHOT_PREDICATES)
+        if shot['id'] != 'entry' and not (independent and shot['id'] == 'payoff'):
+            shot['review']['status'] = 'unknown'
+            for predicate in shot['review']['predicates']:
+                predicate['status'] = 'unknown'
+    p.persist_contract()
+    p.plan, p.manifest = p.canonical_boards()
+    for scene in p.plan['scenes']:
+        scene['script_section_id'] = scene['id']
+    p.inputs = {shot['id']: p.request(shot) for shot in p.contract['shots']}
+    p.write_planning_checkpoints()
+    p.scope['approval_plan_sha256'] = execution.approval_plan_digest(p.contract)
+    if board_pack:
+        # Author the real retained reuse pack before any immutable original
+        # exists. Its local entry scope is exact for this source-only fixture.
+        from lib import production_boards as boards
+        p.plan['metadata'].update(project_id=p.contract['project_id'], story_revision=p.contract['story_revision'])
+        p.manifest['metadata'].update(project_id=p.contract['project_id'], story_revision=p.contract['story_revision'])
+        write(p.root, 'artifacts/scene_plan.json', p.plan)
+        write(p.root, 'artifacts/asset_manifest.json', p.manifest)
+        template = copy.deepcopy(p.contract)
+        for asset in template['assets']:
+            for key in ('path', 'sha256', 'review'):
+                asset.pop(key)
+        shared = [{'asset_id': a['id'], 'role': a['role']} for a in p.contract['assets']
+                  if a['role'] in {'identity_reference', 'payoff_board'}]
+        references = [{key: copy.deepcopy(a[key]) for key in ('id', 'role', 'path', 'sha256', 'review')}
+                      | {'applicability': {'story_revision': p.contract['story_revision'], 'roles': [a['role']]}}
+                      for a in p.contract['assets']]
+        p.board_spec = {'version': '1.1', 'reviewer': 'SYNTHETIC current board reviewer',
+            'story': write(p.root, 'notes/serial-board-story.json', p.contract['story']),
+            'approval': write(p.root, 'notes/serial-board-approval.json', {'status': 'approved', 'fixture_only': True}),
+            'references': references, 'image_nodes': [], 'shared_roles': shared,
+            'shots': [{'shot_id': shot['id'], 'roles': [{'asset_id': aid, 'role': next(
+                a['role'] for a in p.contract['assets'] if a['id'] == aid)} for aid in shot['asset_ids']
+                if aid not in {r['asset_id'] for r in shared}],
+                'video_dependencies': [row['shot_id'] for row in shot['upstream']]} for shot in p.contract['shots']],
+            'motion_binding': {'contract_template': template, 'motion_handoffs': p.manifest['metadata']['motion_handoffs']}}
+        write(p.root, 'production_scopes.json', {'version': '1.0', 'scopes': []})
+        boards.prepare_board_pack(p.root, p.board_spec, images=images)
+        p.contract = execution.load_shot_contract(p.root)
+        p.scope['planning_mode'] = 'shot_local_v1'
+        p.scope['approval_plan_sha256'] = execution.approval_plan_digest(p.contract, 'entry')
+    p.scope['requests'] = {sid: execution.planned_request_digest(inputs, project_dir=p.root)
+                           for sid, inputs in p.inputs.items()}
+    p.scope['attempts_per_shot'] = {sid: 1 for sid in p.inputs}
+    p.persist_scope()
+    script = json.loads((p.root / 'artifacts/script.json').read_text())
+    baselines = {}
+    for shot in p.contract['shots']:
+        sid = shot['id']; projection = pa.current_projection(p.root, sid)
+        baselines[sid] = {'projection': projection,
+            'planned_request_template': execution.planned_request_template(p.inputs[sid], project_dir=p.root),
+            'script_snapshot': script, 'dialogue_coverage': pa.dialogue_occurrences(projection),
+            'approval_plan_sha256': execution.approval_plan_digest(p.contract, sid)}
+    policy = make_policy(project_id=p.contract['project_id'], story_revision=p.contract['story_revision'],
+        caps={'max_total_attempts': 4, 'max_attempts_per_shot': 2, 'max_repair_attempts': 1},
+        locked={'cast': {}, 'dialogue': {}, 'sources': [], 'story_predicates': [], 'controls': {}})
+    accounts = {'grok_cli': 'SYNTHETIC-grok', 'openart_cli': 'SYNTHETIC-openart'}
+    setup = {'version': '1.0', 'identity_id': 'fixture-identity', 'enabled': True,
+        'providers': policy['providers'], 'provider_accounts': accounts, 'caps': policy['caps'],
+        'checkpoint_stages': policy['checkpoint_stages'], 'flex': policy['flex'],
+        'approved_source_sha256': [a['sha256'] for a in p.contract['assets']], 'required_permissions': [],
+        'source_transfer': [{'provider': provider, 'account': account,
+            'roles': sorted({a['role'] for a in p.contract['assets']}), 'generated_board_sources': True,
+            'max_files': 20, 'max_file_bytes': 10000, 'max_batch_bytes': 200000, 'max_batches': 8}
+            for provider, account in accounts.items()]}
+    standing = creator_fixture(p.root, 'serial-standing', setup)
+    command = creator_fixture(p.root, 'serial-command', {'version': '1.0', 'identity_id': 'fixture-identity',
+        'project_id': p.contract['project_id'], 'story_revision': p.contract['story_revision'], 'command': 'make_video',
+        'standing_setup_sha256': standing['sha256']})
+    pa.activate_standing_run(p.root, policy=policy, baselines=baselines, standing_setup=standing,
+        run_command=command, identity_id='fixture-identity')
+    result = p.generate('entry')
+    assert result.success, result.error
+    p.select('entry', result)
+    return p
+
+
+def test_selected_upstream_advances_all_four_local_shots_without_creative_pass(p):
+    from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES, review_digest
+    p = serial_factory_fixture(p)
+    authored = copy.deepcopy(p.contract)
+    frozen = {name: (p.root / name).read_bytes() for name in (
+        'production_scopes.json', 'artifacts/autonomy_policy.json', 'notes/serial-standing.json', 'notes/serial-command.json')}
+    for sid, upstream_id in [('interior', 'entry'), ('payoff', 'interior'), ('coda', 'payoff')]:
+        before = file_bytes(p.root)
+        action = execution.next_production_action(p.root)
+        assert (action['kind'], action['subject']) == ('bind_selected_upstream', sid)
+        assert file_bytes(p.root) == before
+        calls = len(p.transport.native_requests)
+        advanced = execution.advance(p.root)
+        assert advanced['steps'] == 1 and advanced['provider_calls'] == 0
+        planning = advanced['action']
+        assert (planning['kind'], planning['subject']) == ('review_planning', sid)
+        current = execution.load_shot_contract(p.root)
+        target = next(s for s in current['shots'] if s['id'] == sid)
+        selected = execution.load_selected_attempts(p.root)[upstream_id]
+        assert target['upstream'] == [{'shot_id': upstream_id, 'attempt_id': selected['attempt_id'],
+            'output_sha256': selected['output']['sha256'], 'outgoing_frame_sha256': selected['outgoing_frame']['sha256'],
+            'review_sha256': review_digest(selected['review'])}]
+        assert target['endpoint_completion'] == 'unknown' and target['review']['status'] == 'unknown'
+        assert execution.approval_plan_digest(current, sid) == execution.approval_plan_digest(authored, sid)
+        before_review = file_bytes(p.root)
+        assert execution.advance(p.root)['action'] == planning and file_bytes(p.root) == before_review
+        reviewed = execution.complete_action(p.root, planning, outcome={
+            'project_review': attestation(project_review_subject(current), PROJECT_PREDICATES),
+            'shot_review': attestation(shot_review_subject(current, sid), SHOT_PREDICATES)})
+        assert (reviewed['action']['kind'], reviewed['action']['subject']) == ('prepare_motion', sid)
+        assert len(p.transport.native_requests) == calls
+        # Only the fixture producer's explicit actual transport call follows its
+        # synthetic verdict; neither next/advance/review dispatches video.
+        p.contract = execution.load_shot_contract(p.root)
+        result = p.generate(sid)
+        assert result.success, result.error
+        p.select(sid, result)
+    assert len(p.transport.native_requests) == 4
+    assert {name: (p.root / name).read_bytes() for name in frozen} == frozen
+    assert execution.next_production_action(p.root)['kind'] == 'compose_cut'
+
+
+@pytest.mark.parametrize('defect,match', [
+    ('missing', 'current accepted selection'), ('output', 'bytes differ'),
+    ('outgoing', 'bytes missing or changed'), ('state', 'failed/uncertain/incomplete'),
+    ('review_subject', 'stale review binding'), ('critical', 'review is fail'),
+    ('dependency', 'changed outside'), ('cycle', 'changed outside'),
+    ('story', 'protected story'), ('revoked', 'revoked')])
+def test_selected_upstream_transition_refuses_stale_or_unauthorized_evidence(p, defect, match):
+    p = serial_factory_fixture(p)
+    contract = execution.load_shot_contract(p.root)
+    selected = execution.load_selected_attempts(p.root)
+    selection = selected['entry']
+    if defect == 'missing':
+        selected.pop('entry')
+    elif defect in {'output', 'outgoing'}:
+        role = 'output' if defect == 'output' else 'outgoing_frame'
+        path = Path(selection[role]['path']); path.chmod(0o644); path.write_bytes(b'SYNTHETIC changed bytes')
+    elif defect == 'state':
+        path = p.root / 'production_attempts' / selection['attempt_id'] / 'result.json'
+        value = json.loads(path.read_text()); value['status'] = 'failed'; path.chmod(0o644)
+        write(p.root, str(path.relative_to(p.root)), value)
+    elif defect == 'review_subject':
+        selection['review']['subject_sha256'] = '0'*64
+    elif defect == 'critical':
+        selection['review']['status'] = 'fail'
+        next(item for item in selection['review']['predicates'] if item['name'] == 'completed_action')['status'] = 'fail'
+    elif defect in {'dependency', 'cycle'}:
+        next(s for s in contract['shots'] if s['id'] == 'interior')['upstream'] = [
+            {'shot_id': 'payoff' if defect == 'dependency' else 'interior'}]
+        write(p.root, 'artifacts/shot_contract.json', contract)
+    elif defect == 'story':
+        contract['story']['payoff'] += ' Unauthorized story change.'
+        write(p.root, 'artifacts/shot_contract.json', contract)
+    else:
+        log = json.loads((p.root / 'artifacts/decision_log.json').read_text())
+        log['decisions'][-1]['user_approved'] = False
+        write(p.root, 'artifacts/decision_log.json', log)
+    before = file_bytes(p.root)
+    with pytest.raises((execution.ProductionGovernanceError, pa.AutonomyError), match=match):
+        execution._selected_upstream_transition(p.root, contract, 'interior', selected)
+    assert file_bytes(p.root) == before
+
+
+def test_upstream_metadata_has_no_generation_cap_or_count_effect(p, monkeypatch):
+    p = serial_factory_fixture(p)
+    policy = pa.require_active_policy(p.root)[0]
+    before = pa.root_attempt_counts(p.root, policy)
+    monkeypatch.setattr(pa, 'check_caps', lambda *a: pytest.fail('metadata binding consumed a generation gate'))
+    assert execution.advance(p.root)['action']['kind'] == 'review_planning'
+    assert pa.root_attempt_counts(p.root, policy) == before
+    assert len(p.transport.native_requests) == 1
+
+
+def test_upstream_binding_stale_action_refuses_writes_under_lock(p):
+    p = serial_factory_fixture(p)
+    action = execution.next_production_action(p.root)
+    selected = execution.load_selected_attempts(p.root)
+    selected['entry']['review']['subject_sha256'] = '0'*64
+    write(p.root, 'artifacts/selected_attempts.json', selected)
+    before = file_bytes(p.root)
+    with pytest.raises(execution.ProductionGovernanceError, match='production action is stale'):
+        execution._bind_selected_upstream(p.root, action)
+    assert file_bytes(p.root) == before
+
+
+def test_stale_upstream_does_not_hold_independent_eligible_work(p):
+    p = serial_factory_fixture(p, independent=True)
+    selected = execution.load_selected_attempts(p.root)
+    selected['entry']['review']['subject_sha256'] = '0'*64
+    write(p.root, 'artifacts/selected_attempts.json', selected)
+    before = file_bytes(p.root)
+    action = execution.next_production_action(p.root)
+    assert (action['kind'], action['subject']) == ('prepare_motion', 'payoff')
+    assert file_bytes(p.root) == before and len(p.transport.native_requests) == 1
+
+
+def test_existing_incomplete_cut_does_not_stop_selected_upstream_continuation(p):
+    from lib import production_draft as draft
+    from tools.base_tool import ToolResult
+    p = serial_factory_fixture(p)
+    def compose(inputs):
+        Path(inputs['output_path']).write_bytes(b'SYNTHETIC partial first cut')
+        return ToolResult(success=True, artifacts=[inputs['output_path']])
+    cut = draft.compose_first_cut(p.root, compose=compose)
+    assert cut['status'] == 'incomplete' and cut['missing'] and Path(cut['path']).is_file()
+    before = file_bytes(p.root)
+    assert execution.next_production_action(p.root)['kind'] == 'bind_selected_upstream'
+    assert file_bytes(p.root) == before
+    assert execution.advance(p.root)['action']['kind'] == 'review_planning'
+    assert len(p.transport.native_requests) == 1 and Path(cut['path']).is_file()
+
+
+def test_partial_cut_retains_precise_unresolvable_upstream_blocker(p):
+    p = serial_factory_fixture(p)
+    contract = execution.load_shot_contract(p.root)
+    target = next(s for s in contract['shots'] if s['id'] == 'interior')
+    target['upstream'][0].update(attempt_id='different-original', output_sha256='0'*64,
+        outgoing_frame_sha256='0'*64, review_sha256='0'*64)
+    write(p.root, 'artifacts/shot_contract.json', contract)
+    before = file_bytes(p.root)
+    action = execution.next_production_action(p.root)
+    assert action['kind'] == 'compose_cut'
+    assert any('selected attempt changed' in error for error in action['inputs']['blocked_shots']['interior'])
+    assert file_bytes(p.root) == before and len(p.transport.native_requests) == 1
+
+
+def test_board_reprojection_preserves_materialized_upstream_and_actual_planning_review(p):
+    from lib import production_boards as boards
+    from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES, contract_digest
+    p = serial_factory_fixture(p, board_pack=True)
+    planning = execution.advance(p.root)['action']
+    assert (planning['kind'], planning['subject']) == ('review_planning', 'interior')
+    contract = execution.load_shot_contract(p.root)
+    execution.complete_action(p.root, planning, outcome={
+        'project_review': attestation(project_review_subject(contract), PROJECT_PREDICATES),
+        'shot_review': attestation(shot_review_subject(contract, 'interior'), SHOT_PREDICATES)})
+    before = execution.load_shot_contract(p.root)
+    immutable = {str(path): path.read_bytes() for path in (p.root / 'production_attempts').rglob('*') if path.is_file()}
+    pack = boards.prepare_board_pack(p.root, p.board_spec, images=images)
+    assert execution.load_shot_contract(p.root) == before
+    assert pack['motion_projection']['contract_digest'] == contract_digest(before)
+    assert execution.next_production_action(p.root)['kind'] == 'prepare_motion'
+    assert {str(path): path.read_bytes() for path in (p.root / 'production_attempts').rglob('*') if path.is_file()} == immutable
+    assert len(p.transport.native_requests) == 1
+
+
+def test_board_reprojection_refuses_changed_accepted_upstream_without_publishing(p):
+    from lib import production_boards as boards
+    from lib.shot_contract import UPSTREAM_PREDICATES, selection_digest
+    p = serial_factory_fixture(p, board_pack=True)
+    execution.advance(p.root)
+    selection = execution.load_selected_attempts(p.root)['entry']
+    frame = p.root / 'assets/images/entry-new-current-outgoing.png'
+    frame.write_bytes(b'SYNTHETIC newly observed accepted outgoing state')
+    selection['outgoing_frame'] = {'path': str(frame), 'sha256': hashlib.sha256(frame.read_bytes()).hexdigest()}
+    selection['review'] = attestation(selection_digest(selection), UPSTREAM_PREDICATES)
+    execution.record_selection(p.root, 'entry', selection)
+    before = file_bytes(p.root)
+    with pytest.raises(ValueError, match='materialized upstream selection is stale'):
+        boards.prepare_board_pack(p.root, p.board_spec, images=images)
+    assert file_bytes(p.root) == before and len(p.transport.native_requests) == 1
+
+
 @pytest.mark.parametrize('cut', [
     {'status': 'incomplete', 'technical': {'has_audio': True}, 'missing': ['payoff']},
     {'status': 'complete', 'technical': None, 'missing': []}])
