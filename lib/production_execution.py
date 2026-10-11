@@ -2707,7 +2707,7 @@ def resume_original_attempt(project_dir, attempt_id, *, request_sha256, dry_run=
     return jobs.resume_original(root, attempt_id, request_sha256=request_sha256)
 
 
-ACTION_KINDS = frozenset({'restore_derived_views', 'prepare_board_image', 'begin_native_image',
+ACTION_KINDS = frozenset({'restore_derived_views', 'prepare_board_image', 'prepare_board_correction', 'begin_native_image',
     'promote_imported_board',
     'receive_native_image', 'review_board', 'review_planning', 'prepare_motion', 'review_selection',
     'collect_grok_original', 'collect_openart_original', 'begin_openart_original',
@@ -2747,6 +2747,49 @@ def _rejected_and_superseded(root, request, observed, selected, current_candidat
     _, findings = _current_findings(root, sid, request['attempt_id'], output['sha256'],
                                     request.get('story_revision'), selected)
     return bool(findings)
+
+
+def _board_review_work(pack, asset_id, roles, *, boards):
+    """Separate missing evidence from a completed failure without judging pixels.
+
+    A named actual failure is retained evidence, not another request for the same
+    review. Missing declared predicates and critical unknowns still need their
+    exact review boundary before correction can be prepared.
+    """
+    from lib.shot_contract import ASSET_PREDICATES
+    node = pack['prompt_pack'].get(asset_id)
+    # Reused references retain their declared observation contract. A new board
+    # slot carries its owning node's requirements (legacy nodes use the floor).
+    required = set(node.get('required_predicates', ASSET_PREDICATES)) if node else set()
+    missing, observations, review_roles = set(), [], []
+    status_required = False
+    blocked = False
+    for role in roles:
+        observation = boards._observation(pack, asset_id, role)
+        if observation is None:
+            missing.update(required or ASSET_PREDICATES)
+            review_roles.append(role)
+            continue
+        if observation not in observations:
+            observations.append(observation)
+        review = observation['review']
+        predicates = {p['name']: p for p in review['predicates']}
+        role_missing = {name for name in required if name not in predicates or predicates[name]['status'] == 'unknown'}
+        role_missing.update(p['name'] for p in predicates.values()
+                            if p.get('severity') == 'critical' and p['status'] == 'unknown')
+        missing.update(role_missing)
+        if role_missing or review['status'] == 'unknown':
+            review_roles.append(role)
+        status_required |= review['status'] == 'unknown'
+        blocked |= bool(boards._review_blockers(pack, asset_id, role))
+    correction_observation = boards._correction_observation(pack, asset_id)
+    failed = ([p['name'] for p in correction_observation['review']['predicates']
+               if p.get('severity') == 'critical' and p['status'] == 'fail']
+              if correction_observation else [])
+    return {'required_predicates': sorted(required), 'missing_predicates': sorted(missing),
+            'failed_predicates': sorted(failed), 'review_status_required': status_required,
+            'observations': observations, 'review_roles': review_roles,
+            'correction_observation': correction_observation, 'blocked': blocked}
 
 
 def next_production_action(project_dir):
@@ -2803,17 +2846,59 @@ def next_production_action(project_dir):
             break
     if pack:
         schedule = boards.board_schedule(root, images=images)
+        correction_action = None
+        completed_blocker = None
+        failed_assets = set()
         for aid, binding in pack['board_bindings'].items():
             roles = boards._roles(pack, aid)
-            if boards._binding_current(root, pack, aid) and any(boards._review_blockers(pack, aid, role) for role in roles):
-                board_action = board_action or action('review_board', aid, {'source': binding, 'roles': roles}, host=True,
-                    inputs={'asset_id': aid, 'roles': roles, 'source': binding,
-                            'required_predicates': sorted(__import__('lib.shot_contract', fromlist=['ASSET_PREDICATES']).ASSET_PREDICATES)})
-                break
-        if schedule['ready_images'] and board_action is None:
-            slot = schedule['ready_images'][0]
+            if not boards._binding_current(root, pack, aid) or not roles:
+                continue
+            work = _board_review_work(pack, aid, roles, boards=boards)
+            if work['blocked']:
+                failed_assets.add(aid)
+            if work['missing_predicates'] or work['review_status_required']:
+                # One successor covers compatible roles: differing retained
+                # same-name findings cannot be combined into a single verdict.
+                preceding = boards._observation(pack, aid, work['review_roles'][0])
+                review_roles = [role for role in work['review_roles']
+                                if boards._observation(pack, aid, role) == preceding]
+                review_work = _board_review_work(pack, aid, review_roles, boards=boards)
+                retained_predicates = ([p for p in preceding['review']['predicates'] if p['status'] != 'unknown']
+                                       if preceding else [])
+                board_action = board_action or action('review_board', aid,
+                    {'source': binding, 'roles': review_roles, 'observations': work['observations']}, host=True,
+                    inputs={'asset_id': aid, 'roles': review_roles, 'source': binding,
+                            'required_predicates': review_work['missing_predicates'],
+                            'review_status_required': review_work['review_status_required'],
+                            'retained_predicates': retained_predicates},
+                    reason='Inspect only the named missing/unknown evidence; return a complete successor verdict carrying retained_predicates unchanged.')
+            elif work['failed_predicates'] and aid in pack['prompt_pack']:
+                correction_action = correction_action or action('prepare_board_correction', aid,
+                    {'source': binding, 'roles': roles, 'observations': work['observations'],
+                     'correction_observation': work['correction_observation'],
+                     'specification_sha256': pack['specification_sha256']}, host=True,
+                    inputs={'slot_id': aid, 'source': binding, 'failed_predicates': work['failed_predicates']},
+                    reason='Producer supplies exact targeted changes and optional complete replacement prompt/references; retained image authority and caps still apply.')
+            elif work['blocked']:
+                completed_blocker = completed_blocker or action('blocked', aid,
+                    {'source': binding, 'roles': roles, 'observations': work['observations']},
+                    reason='The completed board verdict remains blocking and has no named critical failed image slot eligible for targeted correction.')
+        def failed_source(slot, seen=None):
+            seen = set() if seen is None else seen
+            if slot in seen:
+                return False
+            seen.add(slot)
+            if slot in failed_assets:
+                return True
+            node = pack['prompt_pack'].get(slot, {})
+            return any(failed_source(source, seen) for source in
+                       node.get('reference_ids', []) + node.get('image_dependencies', []))
+        ready_images = [slot for slot in schedule['ready_images'] if not failed_source(slot)]
+        if ready_images and board_action is None:
+            slot = ready_images[0]
             board_action = action('prepare_board_image', slot, {'specification_sha256': pack['specification_sha256'],
                 'source_bindings': copy.deepcopy(pack['board_bindings'])}, inputs={'slot_id': slot})
+        board_action = board_action or correction_action or completed_blocker
     selected = load_selected_attempts(root)
     contract_path = _artifact_path(root, 'shot_contract.json')
     candidates = []
@@ -3013,7 +3098,32 @@ def complete_action(project_dir, action, *, outcome):
     elif kind == 'review_board':
         if set(outcome) != {'review'}:
             _fail('board review requires one actual verdict')
-        boards.record_board_review(root, aid, outcome['review'], roles=action['binding']['roles'], images=images)
+        review = outcome['review']
+        if not isinstance(review, dict) or not isinstance(review.get('predicates'), list):
+            _fail('board review requires a complete actual successor verdict')
+        for retained in action['inputs'].get('retained_predicates', []):
+            supplied = [p for p in review['predicates'] if isinstance(p, dict) and p.get('name') == retained['name']]
+            if supplied != [retained]:
+                _fail('board successor must carry retained known predicate unchanged: ' + retained['name'])
+        for name in action['inputs']['required_predicates']:
+            if len([p for p in review['predicates'] if isinstance(p, dict) and p.get('name') == name]) != 1:
+                _fail('board successor must include the named review predicate: ' + name)
+        if (any(isinstance(p, dict) and p.get('severity') == 'critical' and p.get('status') == 'fail'
+                for p in review['predicates']) and review.get('status') != 'fail'):
+            _fail('board successor with a critical failed predicate requires status fail')
+        boards.record_board_review(root, aid, review, roles=action['binding']['roles'], images=images)
+    elif kind == 'prepare_board_correction':
+        if (set(outcome) - {'changes', 'replacement_prompt', 'reference_ids'} or 'changes' not in outcome
+                or not isinstance(outcome['changes'], str) or not outcome['changes'].strip()):
+            _fail('board correction requires exact producer changes and optional replacement prompt/references')
+        correction = boards.board_correction_intent(root, aid, **outcome)
+        prepared = boards.prepare_image_request(root, aid, correction=correction, images=images)
+        if not (root / 'production_scopes.json').exists() or not _read(root / 'production_scopes.json').get('image_envelope'):
+            images.activate_standing_image_envelope(root)
+        scope = images.derive_native_image_scope(root, prepared['packet'], aid, prepared['arguments'],
+            output_path=prepared['output_path'], correction_intent=prepared['correction_intent'])
+        call_id = 'board-' + prepared['request_sha256'][:24]
+        boards.reserve_board_image(root, aid, scope_id=scope, call_id=call_id, correction=correction, images=images)
     elif kind == 'review_planning':
         if set(outcome) != {'project_review', 'shot_review'}:
             _fail('planning review requires actual project and target verdicts')

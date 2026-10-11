@@ -1411,3 +1411,316 @@ def test_late_host_exception_original_respects_successor_lane(neutral_package, s
         assert images.image_call_status(root, 'successor-start')['state'] == 'reserved'
     assert images.image_usage(root)['total'] == 2
     assert images.image_call_status(root, 'original-start')['state'] == 'imported'
+
+
+def correction_factory_fixture(neutral_package, *, image_allowance=8, required_start=(), extra_start_role=False):
+    """Activated synthetic board run; every host return below is fixture bytes."""
+    root, package, bind = neutral_package
+    package = prospective_package(package)
+    next(n for n in package['boards']['image_nodes'] if n['slot_id'] == 'start')['required_predicates'] += list(required_start)
+    if extra_start_role:
+        package['boards']['shots'][0]['roles'].append({'asset_id': 'start', 'role': 'end_frame'})
+    request.prepare_package(root, bind(package))
+    marker = json.loads((root / 'project.json').read_text())
+    marker.update(identity_id='fixture-identity', pipeline_type='cinematic')
+    write(root, 'project.json', marker)
+    contract = execution.load_shot_contract(root)
+    script = json.loads((root / 'artifacts/script.json').read_text())
+    baselines = {}
+    for shot in contract['shots']:
+        projection = pa.current_projection(root, shot['id'])
+        baselines[shot['id']] = {'projection': projection,
+            'planned_request_template': execution.planned_request_template({'duration': shot['duration_seconds']}, project_dir=root),
+            'script_snapshot': script, 'dialogue_coverage': pa.dialogue_occurrences(projection),
+            'approval_plan_sha256': execution.approval_plan_digest(contract, shot['id'])}
+    policy = make_policy(project_id=contract['project_id'], story_revision='r1',
+        locked={'cast': {}, 'dialogue': {}, 'sources': [], 'story_predicates': [], 'controls': {}})
+    accounts = {'grok_cli': 'fixture-grok', 'openart_cli': 'fixture-cli', 'native_imagegen': 'fixture-native'}
+    setup = {'version': '1.0', 'identity_id': 'fixture-identity', 'enabled': True,
+        'providers': policy['providers'], 'provider_accounts': {k: v for k, v in accounts.items() if k != 'native_imagegen'},
+        'caps': policy['caps'], 'checkpoint_stages': policy['checkpoint_stages'], 'flex': policy['flex'],
+        'approved_source_sha256': [r['sha256'] for r in package['boards']['references']], 'required_permissions': [],
+        'native_images': {'account': accounts['native_imagegen'], 'image_allowance': image_allowance,
+                          'allowed_image_routes': ['native_imagegen']},
+        'source_transfer': [{'provider': provider, 'account': account,
+            'roles': ['identity', 'identity_reference', 'start_frame', 'end_frame', 'payoff_board'],
+            'generated_board_sources': True, 'max_files': 8, 'max_file_bytes': 10000,
+            'max_batch_bytes': 80000, 'max_batches': 8} for provider, account in accounts.items()]}
+    standing = creator_fixture(root, 'standing-correction', setup)
+    command = creator_fixture(root, 'command-correction', {'version': '1.0', 'identity_id': 'fixture-identity',
+        'project_id': contract['project_id'], 'story_revision': 'r1', 'command': 'make_video',
+        'standing_setup_sha256': standing['sha256']})
+    pa.activate_standing_run(root, policy=policy, baselines=baselines,
+        standing_setup=standing, run_command=command, identity_id='fixture-identity')
+    images.activate_standing_image_envelope(root)
+    return root
+
+
+def retain_factory_board(root, slot, *, predicates=None, omitted=(), roles=None):
+    from lib import production_boards as boards
+    prepared = boards.prepare_image_request(root, slot, images=images)
+    scope = images.derive_native_image_scope(root, prepared['packet'], slot, prepared['arguments'], output_path=prepared['output_path'])
+    call = boards.reserve_board_image(root, slot, scope_id=scope, call_id='fixture-' + slot, images=images)
+    envelope = images.begin_native_image(root, call['call_id'])
+    images.import_native_image(root, call['call_id'], host_receipt=host_receipt(root, envelope, name='fixture-' + slot))
+    source = boards.bind_imported_board(root, slot, call['call_id'], images=images)
+    names = set(boards.load_board_pack(root)['prompt_pack'][slot]['required_predicates']) | set(predicates or {})
+    review = attestation(source['sha256'], sorted(names - set(omitted)), revision='r1')
+    review.update(review_id='fixture-review-' + slot, reviewer='persistent reviewer')
+    for predicate in review['predicates']:
+        predicate['severity'] = 'critical'
+        predicate['status'] = (predicates or {}).get(predicate['name'], 'pass')
+    review['status'] = ('fail' if any(p['status'] == 'fail' for p in review['predicates']) else
+                        'unknown' if any(p['status'] == 'unknown' for p in review['predicates']) else 'pass')
+    boards.record_board_review(root, slot, review,
+        roles=roles or boards._roles(boards.load_board_pack(root), slot), images=images)
+    return source, review
+
+
+def test_completed_failed_board_prepares_independent_images_then_exact_correction(neutral_package):
+    from lib import production_boards as boards
+    root = correction_factory_fixture(neutral_package, required_start=['prop_body_invariants'])
+    source, review = retain_factory_board(root, 'start', predicates={'prop_body_invariants': 'fail'})
+    before = file_bytes(root)
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('prepare_board_image', 'payoff')
+    assert file_bytes(root) == before and images.image_usage(root)['total'] == 1
+    retain_factory_board(root, 'payoff')
+    assert (execution.next_production_action(root)['kind'], execution.next_production_action(root)['subject']) == ('prepare_board_image', 'other')
+    retain_factory_board(root, 'other')
+    before = file_bytes(root)
+    step = execution.advance(root)
+    assert step['status'] == 'host_action' and 'host_envelope' not in step
+    assert (step['action']['kind'], step['action']['subject']) == ('prepare_board_correction', 'start')
+    assert step['action']['inputs']['failed_predicates'] == ['prop_body_invariants']
+    assert step['action']['binding']['source'] == source
+    assert step['action']['binding']['observations'][0]['review'] == review
+    assert file_bytes(root) == before and images.image_usage(root)['total'] == 3
+    # Imported failed start bytes exist, but its actual dependent ending stays blocked.
+    assert 's1' in boards.board_schedule(root, images=images)['board_blockers']
+    assert 'fixture-end' not in [c['call_id'] for c in images._load(root)['calls']]
+
+
+@pytest.mark.parametrize('gap', ['missing_required', 'unknown_required', 'unknown_extra'])
+def test_failed_board_with_incomplete_evidence_requests_only_named_predicate(neutral_package, gap):
+    root = correction_factory_fixture(neutral_package, required_start=['possession', 'prop_body_invariants'])
+    statuses = {'prop_body_invariants': 'fail'}
+    omitted = ['possession'] if gap == 'missing_required' else []
+    named = 'storyboard_continuity' if gap == 'unknown_extra' else 'possession'
+    if gap != 'missing_required':
+        statuses[named] = 'unknown'
+    _, review = retain_factory_board(root, 'start', predicates=statuses, omitted=omitted)
+    before = file_bytes(root)
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('review_board', 'start')
+    assert action['inputs']['required_predicates'] == [named]
+    assert action['binding']['observations'][0]['review'] == review
+    assert file_bytes(root) == before and images.image_usage(root)['total'] == 1
+
+
+@pytest.mark.parametrize('replacement', [False, True])
+def test_factory_correction_completion_uses_exact_intent_and_original_lifecycle(neutral_package, replacement):
+    import base64
+    from lib import production_boards as boards
+    from tests.lib.test_production_images import PNG
+    root = correction_factory_fixture(neutral_package)
+    for slot in ('payoff', 'start', 'other', 'end'):
+        retain_factory_board(root, slot, predicates={'prop_body_invariants': 'fail'} if slot == 'end' else None)
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('prepare_board_correction', 'end')
+    original = images.image_call_status(root, 'fixture-end')
+    old_scopes = json.loads((root / 'production_scopes.json').read_text())
+    old_pack = boards.load_board_pack(root)
+    outcome = {'changes': 'SYNTHETIC exact creator-preserving targeted correction', 'reference_ids': ['cast', 'start']}
+    if replacement:
+        outcome['replacement_prompt'] = 'SYNTHETIC complete exact corrected prompt'
+    corrected = execution.complete_action(root, action, outcome=outcome)
+    assert corrected['status'] == 'host_action' and corrected['action']['kind'] == 'receive_native_image'
+    envelope = corrected['host_envelope']
+    child = images.image_call_status(root, envelope['call_id'])
+    assert child['slot_id'] == 'end' and child['call_id'] != original['call_id']
+    assert child['output_path'] != original['output_path'] and images.image_usage(root)['total'] == 5
+    prepared = boards.load_board_pack(root)['image_packets']['end']
+    intent = prepared['correction_intent']
+    assert intent['changes'] == outcome['changes'] and intent['source_binding'] == old_pack['board_bindings']['end']
+    assert intent['preceding_request_sha256'] == original['request_sha256']
+    assert envelope['arguments']['prompt'] == (outcome['replacement_prompt'] if replacement else
+        old_pack['image_packets']['end']['arguments']['prompt'] + '\nTargeted correction: ' + outcome['changes'])
+    assert boards.load_board_pack(root)['specification'] == old_pack['specification']
+    scopes = json.loads((root / 'production_scopes.json').read_text())
+    assert scopes['scopes'][:-1] == old_scopes['scopes'] and scopes['image_envelope'] == old_scopes['image_envelope']
+    resumed = execution.advance(root)
+    assert resumed['action'] == corrected['action'] and 'host_envelope' not in resumed
+    assert images.image_call_status(root, 'fixture-end') == original
+    with pytest.raises(execution.ProductionGovernanceError, match='stale'):
+        execution.complete_action(root, action, outcome=outcome)
+    assert images.image_usage(root)['total'] == 5
+    result = {'image_url': 'data:image/png;base64,' + base64.b64encode(PNG + b'SYNTHETIC corrected bytes').decode()}
+    receipt = host_receipt(root, envelope, name='fixture-correction', result=result)
+    received = execution.complete_action(root, resumed['action'], outcome={'host_receipt': receipt})
+    assert (received['action']['kind'], received['action']['subject']) == ('review_board', 'end')
+    assert received['action']['inputs']['required_predicates'] == ['asset_quality', 'cast_identity']
+    assert boards.load_board_pack(root)['board_bindings']['end']['call_id'] == child['call_id']
+    assert old_pack['observations'] == boards.load_board_pack(root)['observations']
+    assert images.image_usage(root)['total'] == 5
+
+
+def test_factory_correction_does_not_expand_exhausted_image_authority(neutral_package):
+    root = correction_factory_fixture(neutral_package, image_allowance=4)
+    for slot in ('payoff', 'start', 'other', 'end'):
+        retain_factory_board(root, slot, predicates={'prop_body_invariants': 'fail'} if slot == 'end' else None)
+    action = execution.next_production_action(root)
+    assert action['kind'] == 'prepare_board_correction'
+    before = images._load(root)
+    scopes = (root / 'production_scopes.json').read_bytes()
+    with pytest.raises(ValueError, match='allowance|exhausted'):
+        execution.complete_action(root, action, outcome={'changes': 'SYNTHETIC exact targeted correction'})
+    assert images._load(root) == before and images.image_usage(root)['total'] == 4
+    assert (root / 'production_scopes.json').read_bytes() == scopes
+
+
+def test_failed_board_preserves_pending_independent_native_original(neutral_package):
+    from lib import production_boards as boards
+    root = correction_factory_fixture(neutral_package, required_start=['prop_body_invariants'])
+    retain_factory_board(root, 'start', predicates={'prop_body_invariants': 'fail'})
+    prepared = boards.prepare_image_request(root, 'payoff', images=images)
+    scope = images.derive_native_image_scope(root, prepared['packet'], 'payoff', prepared['arguments'], output_path=prepared['output_path'])
+    call = boards.reserve_board_image(root, 'payoff', scope_id=scope, call_id='pending-payoff', images=images)
+    images.begin_native_image(root, call['call_id'])
+    before = file_bytes(root)
+    recovered = execution.advance(root)
+    assert (recovered['action']['kind'], recovered['action']['subject']) == ('receive_native_image', 'pending-payoff')
+    assert 'host_envelope' not in recovered and images.image_usage(root)['total'] == 2
+    assert recovered['action'] == execution.advance(root)['action'] and file_bytes(root) == before
+
+
+def test_completed_minor_board_finding_continues_without_correction(neutral_package):
+    from lib import production_boards as boards
+    root = correction_factory_fixture(neutral_package)
+    _, review = retain_factory_board(root, 'start')
+    review = copy.deepcopy(review)
+    review['review_id'] += '-cosmetic'
+    review['predicates'].append({'name': 'background_alignment', 'status': 'fail', 'severity': 'cosmetic',
+        'evidence': 'SYNTHETIC minor finding disclosed without essential failure'})
+    boards.record_board_review(root, 'start', review, roles=['start_frame'], images=images)
+    before = file_bytes(root)
+    action = execution.next_production_action(root)
+    assert action['kind'] == 'prepare_board_image' and action['subject'] == 'payoff'
+    assert file_bytes(root) == before and images.image_usage(root)['total'] == 1
+
+
+def test_factory_correction_uses_current_failed_role_after_other_role_pass(neutral_package):
+    from lib import production_boards as boards
+    root = correction_factory_fixture(neutral_package, required_start=['prop_body_invariants'], extra_start_role=True)
+    _, failed_review = retain_factory_board(root, 'start', predicates={'prop_body_invariants': 'fail'}, roles=['start_frame'])
+    other_role_review = copy.deepcopy(failed_review)
+    other_role_review.update(review_id='same-bytes-end-role-pass', status='pass')
+    for predicate in other_role_review['predicates']:
+        predicate['status'] = 'pass'
+    boards.record_board_review(root, 'start', other_role_review, roles=['end_frame'], images=images)
+    retain_factory_board(root, 'payoff')
+    retain_factory_board(root, 'other')
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('prepare_board_correction', 'start')
+    assert action['binding']['correction_observation']['review'] == failed_review
+    assert boards._observation(boards.load_board_pack(root), 'start')['review'] == other_role_review
+    corrected = execution.complete_action(root, action, outcome={'changes': 'SYNTHETIC exact failed starting-role correction'})
+    assert corrected['action']['kind'] == 'receive_native_image' and corrected['host_envelope']
+    intent = boards.load_board_pack(root)['image_packets']['start']['correction_intent']
+    assert intent['review_id'] == failed_review['review_id']
+    assert intent['review_sha256'] == request.digest(failed_review)
+    assert images.image_usage(root)['total'] == 4
+
+
+def test_named_missing_role_review_preserves_other_current_failed_role(neutral_package):
+    from lib import production_boards as boards
+    root = correction_factory_fixture(neutral_package, required_start=['prop_body_invariants'], extra_start_role=True)
+    _, failed_review = retain_factory_board(root, 'start', predicates={'prop_body_invariants': 'fail'}, roles=['start_frame'])
+    retain_factory_board(root, 'payoff')
+    retain_factory_board(root, 'other')
+    action = execution.next_production_action(root)
+    assert action['kind'] == 'review_board' and action['binding']['roles'] == ['end_frame']
+    actual_end_role = copy.deepcopy(failed_review)
+    actual_end_role.update(review_id='actual-new-end-role-pass', status='pass')
+    for predicate in actual_end_role['predicates']:
+        predicate['status'] = 'pass'
+    completed = execution.complete_action(root, action, outcome={'review': actual_end_role})
+    assert (completed['action']['kind'], completed['action']['subject']) == ('prepare_board_correction', 'start')
+    pack = boards.load_board_pack(root)
+    assert boards._observation(pack, 'start', 'start_frame')['review'] == failed_review
+    assert boards._observation(pack, 'start', 'end_frame')['review'] == actual_end_role
+    assert images.image_usage(root)['total'] == 3 and 'host_envelope' not in completed
+
+
+@pytest.mark.parametrize('invalid', ['partial', 'changed_fail', 'unknown_fail', 'changed_evidence', 'duplicate',
+                                     'overall_pass', 'overall_unknown'])
+def test_named_gap_requires_carried_complete_verdict_without_erasing_current_failure(neutral_package, invalid):
+    from lib import production_boards as boards
+    root = correction_factory_fixture(neutral_package, required_start=['possession', 'prop_body_invariants'])
+    _, original = retain_factory_board(root, 'start', predicates={'prop_body_invariants': 'fail'}, omitted=['possession'])
+    retain_factory_board(root, 'payoff')
+    retain_factory_board(root, 'other')
+    action = execution.next_production_action(root)
+    assert action['inputs']['required_predicates'] == ['possession']
+    assert action['inputs']['retained_predicates'] == original['predicates']
+    complete = copy.deepcopy(original)
+    complete['review_id'] = 'actual-possession-gap-successor'
+    complete['predicates'].append({'name': 'possession', 'status': 'pass', 'severity': 'critical',
+        'evidence': 'SYNTHETIC actual named gap observation'})
+    invalid_review = copy.deepcopy(complete)
+    failed = next(p for p in invalid_review['predicates'] if p['name'] == 'prop_body_invariants')
+    if invalid == 'partial':
+        invalid_review.update(status='pass', predicates=[invalid_review['predicates'][-1]])
+    elif invalid == 'changed_fail':
+        failed['status'] = 'pass'
+    elif invalid == 'unknown_fail':
+        failed['status'] = 'unknown'
+    elif invalid == 'changed_evidence':
+        failed['evidence'] = 'SYNTHETIC changed retained evidence'
+    elif invalid in {'overall_pass', 'overall_unknown'}:
+        invalid_review['status'] = invalid.removeprefix('overall_')
+    else:
+        invalid_review['predicates'].append(copy.deepcopy(failed))
+    before = file_bytes(root)
+    with pytest.raises(execution.ProductionGovernanceError,
+                       match='carry retained known predicate unchanged|critical failed predicate requires status fail'):
+        execution.complete_action(root, action, outcome={'review': invalid_review})
+    assert file_bytes(root) == before
+    assert boards._observation(boards.load_board_pack(root), 'start')['review'] == original
+    completed = execution.complete_action(root, action, outcome={'review': complete})
+    assert (completed['action']['kind'], completed['action']['subject']) == ('prepare_board_correction', 'start')
+    assert boards._observation(boards.load_board_pack(root), 'start')['review'] == complete
+    assert completed['action']['binding']['correction_observation']['review'] == complete
+    assert images.image_usage(root)['total'] == 3 and 'host_envelope' not in completed
+
+
+def test_conflicting_incomplete_role_observations_receive_separate_carried_successors(neutral_package):
+    from lib import production_boards as boards
+    root = correction_factory_fixture(neutral_package, required_start=['possession', 'prop_body_invariants'], extra_start_role=True)
+    _, first = retain_factory_board(root, 'start', predicates={'prop_body_invariants': 'fail'},
+        omitted=['possession'], roles=['start_frame'])
+    second = copy.deepcopy(first)
+    second.update(review_id='same-bytes-other-incomplete-role', status='pass')
+    next(p for p in second['predicates'] if p['name'] == 'prop_body_invariants')['status'] = 'pass'
+    boards.record_board_review(root, 'start', second, roles=['end_frame'], images=images)
+    retain_factory_board(root, 'payoff')
+    retain_factory_board(root, 'other')
+    action = execution.next_production_action(root)
+    assert action['binding']['roles'] == ['start_frame'] and action['inputs']['retained_predicates'] == first['predicates']
+    first_complete = copy.deepcopy(first)
+    first_complete['review_id'] = 'actual-start-role-gap-successor'
+    first_complete['predicates'].append({'name': 'possession', 'status': 'pass', 'severity': 'critical',
+        'evidence': 'SYNTHETIC actual starting-role missing evidence'})
+    completed = execution.complete_action(root, action, outcome={'review': first_complete})
+    next_action = completed['action']
+    assert next_action['kind'] == 'review_board' and next_action['binding']['roles'] == ['end_frame']
+    assert next_action['inputs']['retained_predicates'] == second['predicates']
+    assert boards._observation(boards.load_board_pack(root), 'start', 'start_frame')['review'] == first_complete
+    second_complete = copy.deepcopy(second)
+    second_complete['review_id'] = 'actual-end-role-gap-successor'
+    second_complete['predicates'].append({'name': 'possession', 'status': 'pass', 'severity': 'critical',
+        'evidence': 'SYNTHETIC actual ending-role missing evidence'})
+    recovered = execution.complete_action(root, next_action, outcome={'review': second_complete})
+    assert recovered['action']['kind'] == 'prepare_board_correction'
+    assert recovered['action']['binding']['correction_observation']['review'] == first_complete
+    assert images.image_usage(root)['total'] == 3
