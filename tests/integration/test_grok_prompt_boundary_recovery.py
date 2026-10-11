@@ -92,6 +92,110 @@ def test_resume_revalidates_collected_original_without_collector_replay(rejected
         execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'])
 
 
+@pytest.fixture
+def pending_original(production, monkeypatch):
+    p = production
+    inputs = copy.deepcopy(p.inputs['entry'])
+    inputs.pop('preferred_provider', None); inputs.pop('allowed_providers', None)
+    inputs['cwd'] = str(p.root)
+    p.scope['requests']['entry'] = execution.planned_request_digest(inputs, project_dir=p.root)
+    p.persist_scope()
+    def interrupted(argv, **kwargs):
+        result = p.transport(argv, **kwargs)
+        if '--prompt-file' not in argv: return result
+        events = [json.loads(line) for line in result.stdout.splitlines()]
+        aid = events[-1]['sessionId']
+        folder = p.transport.original_sessions[aid]['artifact'].parent.parent
+        # Actual Grok logs emit this statusless original progress observation.
+        events.insert(1, {'type': 'tool_call_update', 'toolCallId': events[0]['toolCallId']})
+        (folder / 'events.jsonl').write_text('\n'.join(json.dumps(e) for e in events[:2]))
+        p.pending_events = events
+        raise KeyboardInterrupt()
+    monkeypatch.setattr('tools._grok_cli_media._run_process', interrupted)
+    with pytest.raises(KeyboardInterrupt): p.cli.execute(inputs)
+    request = execution._attempts(p.root)[0]
+    aid = request['attempt_id']
+    return p, aid, request, p.transport.original_sessions[aid]['artifact'].parent.parent
+
+
+def original_log(folder, aid, events, shape):
+    if shape == 'events':
+        path = folder / 'events.jsonl'
+        path.write_text('\n'.join(json.dumps(e) for e in events))
+    else:
+        path = folder / 'updates.jsonl'
+        rows = []
+        for event in events:
+            update = ({'sessionUpdate': 'turn_completed', 'stop_reason': event['stopReason']}
+                      if event['type'] == 'end' else
+                      {'sessionUpdate': event['type'], **{k: v for k, v in event.items() if k != 'type'}})
+            rows.append({'method': 'session/update', 'params': {'sessionId': aid, 'update': update}})
+        path.write_text('\n'.join(json.dumps(row) for row in rows))
+    return path
+
+
+@pytest.mark.parametrize('shape', ['events', 'updates'])
+@pytest.mark.parametrize('progress', ['call', 'progress_update', 'completed_before_end'])
+def test_pending_original_resume_observes_then_collects_same_attempt(pending_original, shape, progress, monkeypatch):
+    p, aid, request, folder = pending_original
+    events = p.pending_events[:{'call': 1, 'progress_update': 2, 'completed_before_end': 3}[progress]]
+    original_log(folder, aid, events, shape)
+    frozen = {path: path.read_bytes() for path in p.root.rglob('*.json')}
+    for dry_run in (True, False, False):
+        result = execution.resume_original_attempt(p.root, aid,
+            request_sha256=request['request_sha256'], dry_run=dry_run)
+        assert result['status'] == 'pending' and result['attempt_id'] == aid
+        assert result['provider_calls'] == result['reservations'] == 0
+        assert execution.load_attempt_result(p.root, aid)['status'] == 'uncertain'
+        assert {path: path.read_bytes() for path in p.root.rglob('*.json')} == frozen
+        assert not Path(request['submitted_inputs']['output_path']).exists()
+        assert len(p.transport.native_requests) == len(execution._attempts(p.root)) == 1
+    action = {'kind': 'collect_grok_original', 'action_id': 'same-original',
+              'subject': aid, 'host_required': False,
+              'binding': {'request_sha256': request['request_sha256']}}
+    with monkeypatch.context() as observer:
+        observer.setattr(execution, 'next_production_action', lambda root: action)
+        pending = execution.advance(p.root)
+    assert pending['status'] == 'blocked' and pending['action'] == action
+    assert pending['provider_calls'] == 0 and 'still pending' in pending['reason']
+    assert {path: path.read_bytes() for path in p.root.rglob('*.json')} == frozen
+    original_log(folder, aid, p.pending_events, shape)
+    recovered = execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'])
+    assert recovered.success and recovered.data['production_attempt_id'] == aid
+    assert execution.load_attempt_result(p.root, aid)['status'] == 'generated'
+    replay = execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'])
+    assert replay.success and replay.data['production_attempt_id'] == aid
+    assert len(p.transport.native_requests) == len(execution._attempts(p.root)) == 1
+
+
+@pytest.mark.parametrize('change', ['failed', 'end_without_completed', 'malformed',
+    'wrong_tool', 'missing_call_id', 'foreign_update', 'unknown_status', 'input',
+    'duplicate_completed', 'malformed_completed', 'failed_beside_completed'])
+def test_pending_original_rejects_failed_malformed_or_unbound_records(pending_original, change):
+    p, aid, request, folder = pending_original
+    events = copy.deepcopy(p.pending_events[:2])
+    if change == 'failed': events[1]['status'] = 'failed'
+    elif change == 'end_without_completed': events.append(p.pending_events[-1])
+    elif change == 'wrong_tool': events[0]['toolName'] = 'image_to_video'
+    elif change == 'missing_call_id': events[0].pop('toolCallId')
+    elif change == 'foreign_update': events[1]['toolCallId'] = 'foreign-call'
+    elif change == 'unknown_status': events[1]['status'] = 'unrecognized'
+    elif change == 'duplicate_completed': events.extend([p.pending_events[2], p.pending_events[2]])
+    elif change == 'malformed_completed':
+        events.append(copy.deepcopy(p.pending_events[2])); events[-1]['rawOutput']['type'] = 'Unexpected'
+    elif change == 'failed_beside_completed':
+        events[1]['status'] = 'failed'; events.append(p.pending_events[2])
+    elif change == 'input':
+        path = Path(request['input_assets'][0]['path']); path.chmod(0o644); path.write_bytes(b'changed')
+    log = original_log(folder, aid, events, 'events')
+    if change == 'malformed': log.write_text(log.read_text() + '\n{"type":')
+    with pytest.raises((execution.ProductionGovernanceError, GrokCLIContractError, ValueError)):
+        execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'])
+    assert not Path(request['submitted_inputs']['output_path']).exists()
+    assert not (p.root / 'production_attempts' / aid / 'reconciliation.json').exists()
+    assert len(p.transport.native_requests) == len(execution._attempts(p.root)) == 1
+
+
 @pytest.mark.parametrize('change', ['internal_text','path','duration','session','tool','second_call','failed_completion','no_terminal','source','input','request_digest'])
 def test_original_collection_rejects_nonboundary_or_unbound_evidence_without_calls(rejected, change):
     p, aid, directory, request, _ = rejected
@@ -244,6 +348,13 @@ def test_uncertain_completed_original_collected_from_exact_session(production, m
         else:
             asset=Path(request['input_assets'][0]['path']);asset.chmod(0o644);asset.write_bytes(b'changed')
         path.write_text('\n'.join(json.dumps(row) for row in rows))
+        if tamper == 'no_terminal':
+            pending = execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'])
+            assert pending['status'] == 'pending' and pending['attempt_id'] == aid
+            assert pending['provider_calls'] == pending['reservations'] == 0
+            assert not Path(request['submitted_inputs']['output_path']).exists()
+            assert len(p.transport.native_requests) == len(execution._attempts(p.root)) == 1
+            return
         with pytest.raises((execution.ProductionGovernanceError, GrokCLIContractError)):
             execution.collect_original_grok_prompt_boundary(p.root, aid,
                 request_sha256=request['request_sha256'], dry_run=False)
