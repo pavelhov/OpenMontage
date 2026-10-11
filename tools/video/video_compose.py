@@ -688,15 +688,13 @@ class VideoCompose(BaseTool):
             if audio_path and Path(audio_path).exists():
                 cmd.extend(["-i", audio_path])
 
-            # Determine if profile requires re-encoding (resize/fps change)
+            # Determine if profile requires delivery-safe re-encoding.
             # This must be checked BEFORE choosing copy vs encode, because
             # -s and -r are incompatible with -c:v copy.
             profile_flags: list[str] = []
             if profile_name:
                 try:
-                    from lib.media_profiles import get_profile
-                    p = get_profile(profile_name)
-                    profile_flags = ["-s", f"{p.width}x{p.height}", "-r", str(p.fps)]
+                    profile_flags = self._profile_delivery_args(profile_name, codec=codec, crf=crf, preset=preset)
                 except (ImportError, ValueError):
                     pass
 
@@ -2926,6 +2924,26 @@ class VideoCompose(BaseTool):
             artifacts=[str(output_path)],
         )
 
+    @staticmethod
+    def _profile_delivery_args(profile_name: str, *, codec: str, crf: int, preset: str) -> list[str]:
+        """Profile geometry/timing while leaving codec, quality and audio to the caller."""
+        from lib.media_profiles import get_profile, ffmpeg_delivery_output_args
+
+        profile = get_profile(profile_name)
+        args = ["-s", f"{profile.width}x{profile.height}"]
+        delivery_args = ffmpeg_delivery_output_args(profile, crf=crf, preset=preset)
+        # Compose can copy native audio or replace it with an approved mix;
+        # encode retains its existing AAC bitrate and source channel/rate behavior.
+        caller_owned = {"-c:v", "-crf", "-preset", "-c:a", "-ar", "-ac"}
+        if codec != profile.codec:
+            # The profile's encoder-specific "main" setting is not portable
+            # to explicit overrides such as libvpx-vp9.
+            caller_owned.add("-profile:v")
+        for option, value in zip(delivery_args[::2], delivery_args[1::2]):
+            if option not in caller_owned:
+                args.extend([option, value])
+        return args
+
     def _encode(self, inputs: dict[str, Any]) -> ToolResult:
         """Re-encode video with a specific profile/codec settings."""
         input_path = Path(inputs["input_path"])
@@ -2948,10 +2966,7 @@ class VideoCompose(BaseTool):
         # Apply media profile if specified
         if profile_name:
             try:
-                from lib.media_profiles import get_profile, ffmpeg_output_args
-                profile = get_profile(profile_name)
-                cmd.extend(["-s", f"{profile.width}x{profile.height}"])
-                cmd.extend(["-r", str(profile.fps)])
+                cmd.extend(self._profile_delivery_args(profile_name, codec=codec, crf=crf, preset=preset))
             except (ImportError, ValueError):
                 pass  # proceed without profile
 

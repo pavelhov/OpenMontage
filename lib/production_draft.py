@@ -424,12 +424,101 @@ def latest_first_cut(project_dir):
     return {'path': str(path), 'sha256': file_sha256(path), **record}
 
 
-def compose_first_cut(project_dir, *, audio_path=None, compose=None):
-    """Render a new versioned preview from current candidates and record it immutably."""
+def _profile_issues(path, profile):
+    """Proportionate technical checks for an explicitly requested export profile.
+
+    Playable geometry/timing only; never an audio listening or semantic gate."""
+    from lib.media_profiles import delivery_timing_issues, delivery_first_video_packet_issues
+    process = subprocess.run(['ffprobe', '-v', 'error', '-show_format', '-show_streams', '-of', 'json', str(path)],
+                             capture_output=True, text=True, check=True, timeout=30)
+    data = json.loads(process.stdout)
+    video = next((s for s in data.get('streams', []) if s.get('codec_type') == 'video'), {})
+    issues = []
+    if (video.get('width'), video.get('height')) != (profile.width, profile.height):
+        issues.append(f"geometry {video.get('width')}x{video.get('height')} differs from "
+                      f'{profile.name} {profile.width}x{profile.height}')
+    issues += delivery_timing_issues(data, target_fps=profile.fps)
+    issues += delivery_first_video_packet_issues(path)
+    return issues
+
+
+def _verify_render(output, profile, expected_duration, count):
+    """(technical, error) for an existing local render; error None when usable."""
+    try:
+        technical = _probe(output)
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+        return None, f'render unreadable: {exc}'
+    if abs(technical['duration_seconds'] - expected_duration) > 0.05 + 0.04 * count:
+        return technical, f"render duration {technical['duration_seconds']} differs from {expected_duration}"
+    if profile is not None:
+        try:
+            issues = _profile_issues(output, profile)
+        except (OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+            return technical, f'render profile check unreadable: {exc}'
+        if issues:
+            return technical, '; '.join(issues)
+    return technical, None
+
+
+_INTENT = 'compose-intent.json'
+
+
+def _export_intact(root, record):
+    """Recorded export still exists with its exact bytes (or none was rendered)."""
+    export = record.get('export')
+    if export is None:
+        return not record.get('clips')
+    path = root / export['path']
+    return path.is_file() and file_sha256(path) == export['sha256']
+
+
+def _compose_bindings(root, clips, export_profile, audio_path):
+    """Exact inputs a compose intent binds: current clip bytes, profile and audio."""
+    bindings = {'clips': [{'shot_id': row['shot_id'], 'attempt_id': row['attempt_id'], 'output': row['output']}
+                          for row in clips],
+                'export_profile': export_profile, 'audio': None}
+    for row in clips:
+        source = root / row['output']['path']
+        if not source.is_file() or file_sha256(source) != row['output']['sha256']:
+            raise ValueError('first-cut candidate bytes changed before compose: ' + row['shot_id'])
+    if audio_path:
+        audio = Path(audio_path).resolve()
+        bindings['audio'] = {'path': _rel(root, audio), 'sha256': file_sha256(audio)}
+    return bindings
+
+
+def _find_intent(root, operation_id):
+    """Latest (highest-sequence) compose intent for ``operation_id``."""
+    found = (None, None)
+    for path in sorted((root / 'renders' / 'first_cut').glob('v*/' + _INTENT)):
+        try:
+            intent = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if intent.get('operation_id') == operation_id and (
+                found[1] is None or intent.get('sequence', 0) > found[1].get('sequence', 0)):
+            found = (path, intent)
+    return found
+
+
+def compose_first_cut(project_dir, *, audio_path=None, compose=None, export_profile=None, operation_id=None):
+    """Render a versioned preview from current candidates and record it immutably.
+
+    ``export_profile`` (explicit media profile name) is validated before any
+    render and technically checked after it; without one the first clip's
+    geometry is retained. ``operation_id`` writes a compose intent inside the
+    render directory before rendering, so a crashed operation resumes: an
+    existing record is returned, a complete local render is recorded without
+    re-rendering, and invalid/partial local output is re-rendered in place.
+    Changed clip/profile/audio bindings reject the stale intent."""
     from lib import production_execution as execution
     from lib.shot_contract import contract_digest
     from lib.events import emit_event
+    from lib.media_profiles import get_profile
     root = Path(project_dir).resolve()
+    profile = get_profile(export_profile) if export_profile is not None else None
+    if operation_id is not None and (not isinstance(operation_id, str) or not operation_id.strip()):
+        raise ValueError('compose operation_id must be a nonempty string')
     marker = execution._read(root / 'project.json')
     contract = execution.load_shot_contract(root)
     shots = {shot['id']: shot for shot in contract['shots']}
@@ -439,48 +528,99 @@ def compose_first_cut(project_dir, *, audio_path=None, compose=None):
     dialogue = any(shots[row['shot_id']].get('dialogue') for row in clips)
     if audio_path and dialogue:
         raise ValueError('external audio cannot replace approved native dialogue in a first cut')
-    sequence = 1 + max([record['sequence'] for _, record in _cut_records(root)], default=0)
-    while True:
-        directory = root / 'renders' / 'first_cut' / f'v{sequence:03d}'
-        try:
-            directory.mkdir(parents=True)
-            break
-        except FileExistsError:
-            sequence += 1
+    bindings = _compose_bindings(root, clips, export_profile, audio_path) if operation_id is not None else None
+    bindings_sha256 = execution._digest(bindings) if operation_id is not None else None
+    recorded = set()
+    if operation_id is not None:
+        # Same operation replays only with identical clip/profile/audio bindings.
+        # A retained render failure stays as history; the operation resumes with a
+        # new local render under a higher sequence so the retry is latest.
+        # Newest valid matching record wins, so a restored older export never
+        # shadows a later local recovery.
+        for path, record in sorted(_cut_records(root), key=lambda item: item[1]['sequence'], reverse=True):
+            if record.get('operation_id') != operation_id:
+                continue
+            if record.get('compose_bindings_sha256') != bindings_sha256:
+                raise ValueError('compose operation was recorded with different clips, profile or audio')
+            recorded.add(record['sequence'])
+            if record['status'] != 'render_failed' and _export_intact(root, record):
+                return {'path': str(path), 'sha256': file_sha256(path), **record}
+    intent_path, intent = _find_intent(root, operation_id) if operation_id is not None else (None, None)
+    if intent is not None:
+        if {key: intent.get(key) for key in bindings} != bindings:
+            raise ValueError('compose intent bindings differ from current clips, profile or audio')
+        if intent['sequence'] in recorded:
+            intent = None
+    if intent is not None:
+        sequence, directory = intent['sequence'], intent_path.parent
+    else:
+        sequence = 1 + max([record['sequence'] for _, record in _cut_records(root)], default=0)
+        while True:
+            directory = root / 'renders' / 'first_cut' / f'v{sequence:03d}'
+            try:
+                directory.mkdir(parents=True)
+                break
+            except FileExistsError:
+                sequence += 1
     cursor, placed = 0.0, []
     for row in clips:
         start, cursor = cursor, round(cursor + row['duration_seconds'], 3)
         placed.append({'shot_id': row['shot_id'], 'attempt_id': row['attempt_id'], 'output': row['output'],
                        'master_start': round(start, 3), 'master_end': cursor,
                        'review': row['review'], 'findings': row['findings']})
+    output = directory / 'first_cut.mp4'
+    if operation_id is not None and intent is None:
+        intent = {'version': '1.0', 'kind': 'first_cut_compose_intent', 'operation_id': operation_id,
+                  'sequence': sequence, 'output': _rel(root, output), **bindings}
+        temporary = directory / (_INTENT + '.tmp')
+        temporary.write_text(json.dumps(intent, indent=2))
+        temporary.replace(directory / _INTENT)
     export = technical = error = log = None
+    observation = {'project_id': marker['project_id'], 'story_revision': marker['story_revision'],
+                   'cut_sequence': sequence, 'output_path': _rel(root, output)}
     if placed:
-        first = _probe(root / placed[0]['output']['path'])
-        edit = {'version': '1.0', 'render_runtime': 'ffmpeg',
-                'cuts': [{'id': clip['shot_id'], 'source': str(root / clip['output']['path']), 'in_seconds': 0,
-                          'out_seconds': clip['master_end'] - clip['master_start']} for clip in placed],
-                'metadata': {'preserve_source_audio': not audio_path,
-                             'compose_target': {'width': first['width'], 'height': first['height'], 'fit': 'pad'}}}
-        output = directory / 'first_cut.mp4'
-        inputs = {'operation': 'compose', 'edit_decisions': edit, 'output_path': str(output)}
-        if audio_path:
-            inputs['audio_path'] = str(audio_path)
-        if compose is None:
-            from tools.video.video_compose import VideoCompose
-            compose = VideoCompose().execute
-        observation = {'project_id': marker['project_id'], 'story_revision': marker['story_revision'],
-                       'cut_sequence': sequence, 'output_path': _rel(root, output)}
-        emit_event(root, {'event': 'first-cut-compose-start', **observation})
+        resumed = None
+        if operation_id is not None and output.is_file():
+            technical, problem = _verify_render(output, profile, cursor, len(placed))
+            if problem is None:
+                resumed = technical
+                emit_event(root, {'event': 'first-cut-compose-resumed', **observation, 'operation_id': operation_id})
+            else:
+                output.unlink()
+                technical = None
+        if resumed is None:
+            first = _probe(root / placed[0]['output']['path'])
+            metadata = {'preserve_source_audio': not audio_path}
+            if profile is None:
+                metadata['compose_target'] = {'width': first['width'], 'height': first['height'], 'fit': 'pad'}
+            edit = {'version': '1.0', 'render_runtime': 'ffmpeg',
+                    'cuts': [{'id': clip['shot_id'], 'source': str(root / clip['output']['path']), 'in_seconds': 0,
+                              'out_seconds': clip['master_end'] - clip['master_start']} for clip in placed],
+                    'metadata': metadata}
+            inputs = {'operation': 'compose', 'edit_decisions': edit, 'output_path': str(output)}
+            if profile is not None:
+                inputs['profile'] = profile.name
+            if audio_path:
+                inputs['audio_path'] = str(audio_path)
+            if compose is None:
+                from tools.video.video_compose import VideoCompose
+                compose = VideoCompose().execute
+            emit_event(root, {'event': 'first-cut-compose-start', **observation})
+            try:
+                result = compose(inputs)
+            except BaseException:
+                emit_event(root, {'event': 'first-cut-compose-error', **observation})
+                raise
+            emit_event(root, {'event': 'first-cut-compose-return', **observation, 'success': result.success})
         try:
-            result = compose(inputs)
-        except BaseException:
-            emit_event(root, {'event': 'first-cut-compose-error', **observation})
-            raise
-        emit_event(root, {'event': 'first-cut-compose-return', **observation, 'success': result.success})
-        try:
-            if not result.success:
-                raise RuntimeError(result.error or 'compose failed')
-            technical = _probe(output)
+            if resumed is None:
+                if not result.success:
+                    raise RuntimeError(result.error or 'compose failed')
+                technical = _probe(output)
+                if profile is not None:
+                    issues = _profile_issues(output, profile)
+                    if issues:
+                        raise ValueError('export profile check failed: ' + '; '.join(issues))
             export = {'path': _rel(root, output), 'sha256': file_sha256(output)}
             emit_event(root, {'event': 'first-cut-export-verified', **observation, 'export': export})
         except (RuntimeError, OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
@@ -506,10 +646,16 @@ def compose_first_cut(project_dir, *, audio_path=None, compose=None):
               'audio': 'external_replacement' if audio_path else 'native_source',
               'audio_required': audio_required, 'audio_missing': audio_missing,
               'render_error': error, 'render_log': log}
+    if export_profile is not None:
+        record['export_profile'] = export_profile
+    if operation_id is not None:
+        record['operation_id'] = operation_id
+        record['compose_bindings_sha256'] = bindings_sha256
     (root / _CUTS).mkdir(exist_ok=True)
     import hashlib
     path = root / _CUTS / (hashlib.sha256(json.dumps(record, indent=2).encode()).hexdigest() + '.json')
-    execution._write_new(path, record)
+    if not path.exists():
+        execution._write_new(path, record)
     emit_event(root, {'event': 'first-cut-retained', 'project_id': marker['project_id'],
                      'story_revision': marker['story_revision'], 'cut_sequence': sequence,
                      'first_cut': {'path': _rel(root, path), 'sha256': file_sha256(path)},
@@ -517,7 +663,54 @@ def compose_first_cut(project_dir, *, audio_path=None, compose=None):
     return {'path': str(path), 'sha256': file_sha256(path), **record}
 
 
-def _findings_digest(root, clips, *, current):
+def deliver_standalone(project_dir, *, export_profile=None, operation_id=None, audio_path=None, compose=None):
+    """Engine-only saved draft cut from current candidates; no Studio, Drive or account.
+
+    Idempotent per ``operation_id`` (default derives from the current clip,
+    profile and audio bindings). Reports honest per-clip review/findings and
+    missing shots; never certification, publication or provider work."""
+    from lib import production_execution as execution
+    root = Path(project_dir).resolve()
+    if operation_id is None:
+        if export_profile is not None:
+            from lib.media_profiles import get_profile
+            get_profile(export_profile)
+        clips = [row for row in first_cut_candidates(root) if row['status'] == 'candidate']
+        operation_id = 'deliver-' + execution._digest(_compose_bindings(root, clips, export_profile, audio_path))[:24]
+    cut = compose_first_cut(root, audio_path=audio_path, compose=compose,
+                            export_profile=export_profile, operation_id=operation_id)
+    status = first_cut_status(root, {'path': _rel(root, cut['path']), 'sha256': cut['sha256']})
+    return {'status': cut['status'], 'currency': status,
+            'first_cut': {'path': _rel(root, cut['path']), 'sha256': cut['sha256']},
+            'operation_id': operation_id, 'export': cut['export'],
+            'export_path': str(root / cut['export']['path']) if cut['export'] else None,
+            'export_profile': export_profile, 'technical': cut['technical'],
+            'clips': [{**row, 'review': _current_review_status(root, clip, current['findings']),
+                       'review_at_render': clip['review'], 'findings': current['findings']}
+                      for row, clip, current in zip(disclosure_clip_map(cut), cut['clips'],
+                                                    _clip_findings(root, cut['clips'], current=True))],
+            'missing': cut['missing'], 'audio': cut['audio'], 'render_error': cut['render_error'],
+            'not_certification': True, 'posted': False, 'provider_calls': 0}
+
+
+def _current_review_status(root, clip, findings):
+    """Current review status of a placed clip, resolved like ``_candidate``."""
+    from lib import production_execution as execution
+    revision = execution._read(root / 'project.json')['story_revision']
+    review, _ = _current_findings(root, clip['shot_id'], clip['attempt_id'], clip['output']['sha256'],
+                                  revision, execution.load_selected_attempts(root))
+    try:
+        _, historical = _candidate_provenance(root, clip['shot_id'], clip['attempt_id'], clip['output'],
+                                              revision, allow_historical=True)
+    except (ValueError, OSError, KeyError, TypeError):
+        historical = False
+    if historical:
+        return 'unknown'
+    return review['status'] if review is not None else ('fail' if findings else 'unknown')
+
+
+def _clip_findings(root, clips, *, current):
+    """Per-clip findings: retained at render time, or projected from current notes."""
     from lib import production_execution as execution
     if current:
         revision = execution._read(root / 'project.json')['story_revision']
@@ -536,7 +729,12 @@ def _findings_digest(root, clips, *, current):
             if historical:
                 values = [*values, _continuity_source_warning(proof)]
         findings.append({'shot_id': clip['shot_id'], 'findings': values})
-    return execution._digest(findings)
+    return findings
+
+
+def _findings_digest(root, clips, *, current):
+    from lib import production_execution as execution
+    return execution._digest(_clip_findings(root, clips, current=current))
 
 
 def _cut_reasons(root, cut):
