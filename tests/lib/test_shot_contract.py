@@ -519,3 +519,72 @@ def test_reference_free_rejects_identity_asset_and_missing_story_review(tmp_path
     contract['shots'][0]['review']['predicates'] = [p for p in contract['shots'][0]['review']['predicates'] if p['name'] != 'completed_action']
     result = validate_shot_contract(contract, project_dir=tmp_path, shot_id='entry')
     assert not result['eligible'] and 'completed_action' in ' '.join(result['errors'])
+
+
+def frame_conditioned_fixture(package, *, payoff=False):
+    """Synthetic retained role observations; never production evidence."""
+    from lib import production_boards as boards
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    contract, root = package
+    contract['planning_mode'] = 'shot_local_v1'
+    contract['reference_mode'] = 'frame_conditioned'
+    shot = contract['shots'][0]
+    shot['frame_input'] = {'asset_id': 'payoff' if payoff else 'start', 'role': 'start_frame'}
+    if payoff:
+        contract['payoff_speaker_ids'] = list(shot['cast_ids'])
+        shot['asset_ids'] = ['payoff']
+    else:
+        shot['asset_ids'] = ['start']  # No authored ending board for this consumer.
+    asset = next(a for a in contract['assets'] if a['id'] == shot['frame_input']['asset_id'])
+    asset['cast_ids'] = list(shot['cast_ids'])
+    asset['review']['predicates'].append({'name': 'cast_count', 'status': 'pass',
+        'evidence': 'SYNTHETIC exact declared composition.'})
+    story = root / 'story.txt'; story.write_text('SYNTHETIC retained story')
+    approval = root / 'approval.txt'; approval.write_text('SYNTHETIC authority')
+    spec = {'story': {'path': 'story.txt', 'sha256': file_sha256(story)},
+        'approval': {'path': 'approval.txt', 'sha256': file_sha256(approval)},
+        'image_nodes': [], 'shots': [{'shot_id': shot['id'], 'roles': [
+            {'asset_id': asset['id'], 'role': 'start_frame'},
+            *([{'asset_id': asset['id'], 'role': 'payoff_board'}] if payoff else [])]}]}
+    pack = {'project_id': contract['project_id'], 'story_revision': contract['story_revision'],
+        'specification': spec, 'specification_sha256': boards._digest(spec), 'prompt_pack': {},
+        'board_bindings': {asset['id']: {'path': asset['path'], 'sha256': asset['sha256']}},
+        'observations': [{'asset_id': asset['id'], 'roles': ['start_frame', asset['role']],
+            'review': copy.deepcopy(asset['review'])}]}
+    (root / 'artifacts').mkdir(exist_ok=True)
+    (root / boards.ARTIFACT).write_text(json.dumps(pack))
+    (root / 'project.json').write_text(json.dumps({'project_id': contract['project_id'],
+        'story_revision': contract['story_revision']}))
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    shot['review']['subject_sha256'] = shot_review_subject(contract, shot['id'])
+    return pack
+
+
+@pytest.mark.parametrize('payoff', [False, True])
+def test_frame_conditioned_sparse_start_or_same_payoff_is_eligible(package, payoff):
+    frame_conditioned_fixture(package, payoff=payoff)
+    assert check(package)['eligible'], check(package)
+    if payoff:
+        assert next(a for a in package[0]['assets'] if a['id'] == 'payoff')['role'] == 'payoff_board'
+        assert package[0]['shots'][0]['asset_ids'] == ['payoff']
+
+
+@pytest.mark.parametrize('defect', ['declaration', 'observation', 'cast', 'cast_count', 'bytes', 'legacy'])
+def test_frame_conditioned_requires_exact_declared_observed_composition(package, defect):
+    from lib import production_boards as boards
+    pack = frame_conditioned_fixture(package, payoff=True)
+    if defect == 'declaration':
+        pack['specification']['shots'][0]['roles'].pop(0)
+        pack['specification_sha256'] = boards._digest(pack['specification'])
+    elif defect == 'observation':
+        pack['observations'][0]['roles'] = ['payoff_board']
+    elif defect == 'cast':
+        next(a for a in package[0]['assets'] if a['id'] == 'payoff')['cast_ids'].append('unexpected')
+    elif defect == 'cast_count':
+        pack['observations'][0]['review']['predicates'] = [p for p in pack['observations'][0]['review']['predicates'] if p['name'] != 'cast_count']
+    elif defect == 'bytes':
+        (package[1] / pack['board_bindings']['payoff']['path']).write_text('changed')
+    else:
+        package[0].pop('planning_mode')
+    (package[1] / boards.ARTIFACT).write_text(json.dumps(pack))
+    assert not check(package)['eligible']

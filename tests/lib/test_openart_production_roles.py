@@ -155,3 +155,42 @@ def test_payoff_guide_requires_declared_guided_native_treatment(failure):
         native['provider'] = 'openart_cli'
     with pytest.raises(ValueError, match='omits approved reference|role/source|reference-guided mode'):
         validate_openart_asset_roles(contract, native)
+
+
+@pytest.mark.parametrize('defect', ['wrong_bytes', 'same_bytes_wrong_asset_path', 'duplicate_start', 'hard_reference'])
+def test_explicit_frame_conditioned_start_keeps_exact_asset_and_hard_reference_obligations(defect):
+    contract = packet()
+    contract['binding']['reference_mode'] = 'frame_conditioned'
+    contract['binding']['frame_input'] = {'asset_id':'start', 'role':'start_frame','sha256':'a'*64,
+        'path':'/SYNTHETIC/approved-start.png', 'review_sha256':'c'*64}
+    native = {'provider':'openart_mcp','mode':'image2video','input_assets':[
+        {'role':'first_frame','source_sha256':'a'*64,'source_path':'/SYNTHETIC/approved-start.png'}]}
+    validate_openart_asset_roles(contract, native)
+    if defect == 'wrong_bytes':
+        native['input_assets'][0]['source_sha256'] = 'f'*64
+    elif defect == 'same_bytes_wrong_asset_path':
+        native['input_assets'][0]['source_path'] = '/SYNTHETIC/another-consumer.png'
+    elif defect == 'duplicate_start':
+        native['input_assets'].append(dict(native['input_assets'][0]))
+    else:
+        contract['binding']['references'].append({'id':'hard-reference','role':'reference_image','sha256':'d'*64})
+        contract['shot']['asset_ids'].append('hard-reference')
+    with pytest.raises(ValueError):
+        validate_openart_asset_roles(contract, native)
+
+
+@pytest.mark.parametrize('obligation', ['ending_pin', 'separate_manifest_reference'])
+def test_frame_conditioned_semantics_do_not_waive_required_native_inputs(tmp_path, obligation):
+    from lib.production_request import _check_frame_hard_inputs
+    source = tmp_path / 'start.png'; source.write_bytes(b'SYNTHETIC exact start bytes')
+    contract = packet(); contract['binding']['shot_id'] = 'shot'
+    scene = {'scenes':[{'id':'shot'}], 'metadata':{'visual_development':{'shot_cards':{'shot':{}}}}}
+    manifest = {'assets':[{'id':'start','type':'image','scene_id':'shot','path':'start.png'}], 'metadata':{}}
+    native = {'provider':'openart_mcp','model':'byte-plus-seedance-2-mini','mode':'image2video',
+        'input_assets':[{'role':'first_frame','source_sha256':hashlib.sha256(source.read_bytes()).hexdigest()}]}
+    if obligation == 'ending_pin':
+        scene['metadata']['visual_development']['shot_cards']['shot']['pinned_final_frame'] = {'required':True}
+    else:
+        manifest['metadata']['reference_assets'] = {'hard':{'scene_id':'shot','asset_id':'start','native_role':'reference_image'}}
+    with pytest.raises(ValueError):
+        _check_frame_hard_inputs(contract, native, scene, manifest, tmp_path)

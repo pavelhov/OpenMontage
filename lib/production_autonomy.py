@@ -326,6 +326,7 @@ def activate_standing_run(project_dir, *, policy, baselines, standing_setup, run
                 raise StandingSetupRequired('activation baseline is not actual current authored planning')
         if set(baselines) != {s['id'] for s in execution.load_shot_contract(root)['shots']}:
             raise StandingSetupRequired('standing activation must bind every shot in the actual retained run plan')
+        _validate_standing_route_treatments(candidate, baselines)
         counts = root_attempt_counts(root, candidate)
         if (counts['total'] > candidate['caps']['max_total_attempts']
                 or counts['repair'] > candidate['caps']['max_repair_attempts']
@@ -792,6 +793,8 @@ def load_active_policy(root, *, shot_id=None):
         errors = schema_errors(policy)
         if errors:
             return None, None, None, [f'schema: {e}' for e in errors]
+        from lib.production_frame_amendment import validate_successor
+        validate_successor(root, policy)
         baselines = retained_baselines(root, policy)
         sha = digest(evidence_content(policy, baselines))
         local = policy.get('planning_mode') == 'shot_local_v1'
@@ -1018,6 +1021,58 @@ def policy_conflicts(policy, baselines=None):
 
 
 # ---------------------------------------------------------------- static baseline / retiming
+
+def _validate_standing_route_treatments(policy, baselines):
+    """Prospective guided feasibility only; retained activations keep replay."""
+    from lib import production_request as preparation
+    profiles, errors = {}, []
+    for sid, baseline in baselines.items():
+        projection = baseline['projection']
+        treatment = projection['shot'].get('reference_mode', projection['contract_snapshot'].get('reference_mode'))
+        if treatment not in {'reference_guided', 'frame_conditioned'}:
+            continue
+        rejected, compatible = [], False
+        for spec in policy['providers']:
+            provider = spec['id']
+            routes = spec.get('routes') or [{'model': model, 'mode': None} for model in spec.get('models', [])] or [{'model': None, 'mode': None}]
+            for route in routes:
+                model, mode = route['model'], route['mode']
+                prefix = f"shot {sid}, provider {provider}, model {model or 'unreported'}, mode {mode or 'unreported'}: "
+                lock = policy['locked']['controls'].get('model')
+                if lock is not None and not _model_lock_allows(lock, model):
+                    rejected.append(prefix + 'exact model lock excludes route')
+                    continue
+                if not _intent_allows(policy, sid, provider, model):
+                    rejected.append(prefix + 'per-shot model selection intent excludes route')
+                    continue
+                capabilities = None
+                if provider == 'openart_mcp' and (mode in preparation.REFERENCE_GUIDED_MODES or treatment == 'frame_conditioned' and mode == 'image2video'):
+                    from lib import openart_mcp as mcp
+                    key = (model, mode)
+                    if key not in profiles:
+                        try:
+                            if not mcp._in_current_catalog(model, mode):
+                                raise ValueError('exact guided model/mode is absent from current native catalog')
+                            profiles[key] = mcp.load_profile(model, mode, require='candidate')['native_capabilities']
+                        except (ValueError, KeyError, OSError) as exc:
+                            profiles[key] = str(exc)
+                    capabilities = profiles[key]
+                    if isinstance(capabilities, str):
+                        rejected.append(prefix + 'native capabilities unavailable: ' + capabilities)
+                        continue
+                reason = preparation.route_treatment_error(projection, provider=provider, model=model,
+                    mode=mode, native_capabilities=capabilities)
+                if reason is None:
+                    compatible = True
+                    break
+                rejected.append(reason)
+            if compatible:
+                break
+        if not compatible:
+            errors.extend(rejected)
+    if errors:
+        raise StandingSetupRequired('standing route/treatment incompatibility; no approved compatible guided route: ' + '; '.join(errors))
+
 
 def static_planning_projection(contract, scene_plan, script, shot_id, manifest=None):
     """Static authority including implicit cast/payoff and ordered source declarations."""
