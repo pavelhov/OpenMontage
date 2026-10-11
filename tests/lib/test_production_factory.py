@@ -2233,7 +2233,7 @@ def test_conflicting_incomplete_role_observations_receive_separate_carried_succe
     assert images.image_usage(root)['total'] == 3
 
 
-def frame_amendment_fixture(neutral_package, monkeypatch):
+def frame_amendment_fixture(neutral_package, monkeypatch, *, cast_bearing=False):
     """Legacy incompatible synthetic activation, complete current board evidence."""
     from lib import production_boards as boards
     root, package, bind = neutral_package
@@ -2252,14 +2252,38 @@ def frame_amendment_fixture(neutral_package, monkeypatch):
         ('s3', [{'asset_id': 'third-start', 'role': 'start_frame'}, {'asset_id': 'third-end', 'role': 'end_frame'}]),
         ('s4', [{'asset_id': 'payoff', 'role': 'start_frame'}, {'asset_id': 'payoff', 'role': 'payoff_board'}])]]
     template['assets'] = [{'id': n['slot_id'], 'role': n['role'], 'cast_ids': []} for n in spec['image_nodes']]
+    if cast_bearing:
+        identity = spec['references'][0]
+        identity['role'] = 'identity_reference'
+        identity['applicability']['roles'] = ['identity_reference']
+        identity['review']['predicates'].append({'name': 'cast_count', 'severity': 'critical',
+            'status': 'pass', 'evidence': 'SYNTHETIC current identity observation'})
+        second = copy.deepcopy(identity)
+        path = root / 'assets/images/second-cast.png'; path.write_bytes(b'SYNTHETIC second identity')
+        second.update(id='second-cast', path=str(path.relative_to(root)), sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+        second['review'].update(review_id='second-cast-review', subject_sha256=second['sha256'])
+        spec['references'].append(second)
+        spec['shared_roles'] = [{'asset_id': r['id'], 'role': 'identity_reference'} for r in spec['references']]
+        spec['shared_roles'].append({'asset_id': 'payoff', 'role': 'payoff_board'})
+        for asset in template['assets']:
+            asset['cast_ids'] = ['actor'] + (['second-actor'] if asset['id'] in {'payoff', 'third-start', 'third-end'} else [])
+        template['assets'] += [{'id': aid, 'role': 'identity_reference', 'cast_ids': [cid]}
+            for aid, cid in [('cast', 'actor'), ('second-cast', 'second-actor')]]
+        for node in spec['image_nodes']:
+            if node['shot_id'] in {'s3', 's4'}:
+                node['reference_ids'].append('second-cast')
     original_shot = copy.deepcopy(template['shots'][0])
     template['shots'] = []
     authored_shot = copy.deepcopy(package['shots'][0]); package['shots'] = []
     for mapping in spec['shots']:
         sid = mapping['shot_id']; shot = copy.deepcopy(original_shot)
         shot.update(id=sid, asset_ids=list(dict.fromkeys(r['asset_id'] for r in mapping['roles'])), upstream=[])
+        if cast_bearing:
+            shot['cast_ids'] = ['actor'] + (['second-actor'] if sid in {'s3', 's4'} else [])
         template['shots'].append(shot)
         authored = copy.deepcopy(authored_shot); authored.update(id=sid, duration_seconds=5, script='SYNTHETIC exact ' + sid)
+        if cast_bearing:
+            authored['cast'] = shot['cast_ids']
         package['shots'].append(authored)
     request.prepare_package(root, bind(package))
     kwargs = standing_treatment_fixture(root)
@@ -2457,10 +2481,10 @@ def test_frame_conditioned_prospective_activation_allows_pending_board_observati
     assert all(a.get('preparation_pending') for a in contract['assets'])
 
 
-def refreshed_frame_amendment(neutral_package, monkeypatch):
+def refreshed_frame_amendment(neutral_package, monkeypatch, *, cast_bearing=False):
     from lib import production_frame_amendment as amendment
     from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES
-    root, proposal, authority = frame_amendment_fixture(neutral_package, monkeypatch)
+    root, proposal, authority = frame_amendment_fixture(neutral_package, monkeypatch, cast_bearing=cast_bearing)
     expected = amendment.expected_original(root)
     plan = amendment.plan_frame_input_amendment(root, expected=expected, proposal=proposal, authority=authority)
     amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'], expected=expected, proposal=proposal, authority=authority)
@@ -2472,10 +2496,9 @@ def refreshed_frame_amendment(neutral_package, monkeypatch):
     return root, proposal, authority, expected, plan
 
 
-@pytest.mark.parametrize('provider', ['grok_cli', 'openart_mcp'])
-def test_four_sparse_frame_shapes_prepare_normal_native_and_compiled_evidence_offline(neutral_package, monkeypatch, guided_observations, provider):
+def prepared_frame_shapes(neutral_package, monkeypatch, provider):
     from lib import openart_mcp as mcp, openart_mcp_jobs as mcp_jobs
-    root, _, _, _, _ = refreshed_frame_amendment(neutral_package, monkeypatch)
+    root, _, _, _, _ = refreshed_frame_amendment(neutral_package, monkeypatch, cast_bearing=True)
     contract = execution.load_shot_contract(root)
     assert [s['duration_seconds'] for s in contract['shots']] == [5]*4
     frame_sources = {}
@@ -2502,6 +2525,7 @@ def test_four_sparse_frame_shapes_prepare_normal_native_and_compiled_evidence_of
     else:
         profile = {'source':'fixture'}
     before_usage = images.image_usage(root)
+    prepared = {}
     for index, shot in enumerate(contract['shots']):
         sid = shot['id']; aid = shot['frame_input']['asset_id']
         authored = request.compile_provider_prompt(root, sid, provider=provider)
@@ -2525,15 +2549,183 @@ def test_four_sparse_frame_shapes_prepare_normal_native_and_compiled_evidence_of
         review = {'version':'1.0','review_id':'frame-'+sid,'reviewer':'SYNTHETIC fixture only','status':'pass',
             'subject_sha256':request.digest(compiled),'evidence_kind':'fixture_only',
             'predicates':[{'name':p,'status':'pass','severity':'critical','evidence':'SYNTHETIC software fixture'} for p in sorted(request.PREDICATES)]}
+        frame = next(a for a in contract['assets'] if a['id'] == aid)
+        review['composite_boards'] = [{'sha256': frame['sha256'], 'role': 'start_frame',
+            'members': [{key: a[key] for key in ('sha256', 'role', 'cast_ids')}
+                for a in contract['assets'] if a['role'] == 'identity_reference'
+                and set(a['cast_ids']).intersection(shot['cast_ids'])]}]
         write(root, 'artifacts/compiled_request-frame-'+sid+'.json', compiled)
         write(root, 'artifacts/preparation_review-frame-'+sid+'.json', review)
         assert request.validate_preparation(inputs, native, profile)['compiled_sha256'] == request.digest(compiled)
+        before = file_bytes(root)
+        assert len(pa.lock_proof(root, sid, inputs=inputs, native=native, profile=profile)) == 64
+        assert file_bytes(root) == before
         assert compiled['source_binding']['frame_input']['asset_id'] == aid
         native_assets = native['request']['input_assets'] if provider == 'grok_cli' else native['input_assets']
         assert len([a for a in native_assets if a['role'] == 'first_frame']) == 1
         if sid == 's4':
             assert aid == 'payoff' and next(a for a in contract['assets'] if a['id'] == aid)['role'] == 'payoff_board'
+        prepared[sid] = (inputs, native, profile, compiled, review)
     assert images.image_usage(root) == before_usage and before_usage['total'] == 8
+    return root, prepared
+
+
+@pytest.mark.parametrize('provider', ['grok_cli', 'openart_mcp'])
+def test_four_sparse_frame_shapes_prepare_normal_native_and_compiled_evidence_offline(neutral_package, monkeypatch, guided_observations, provider):
+    root, prepared = prepared_frame_shapes(neutral_package, monkeypatch, provider)
+    policy, sha, _ = pa.require_active_policy(root)
+    for sid, (inputs, native, profile, compiled, review) in prepared.items():
+        current = pa.lock_proof(root, sid, inputs=inputs, native=native, profile=profile)
+        # Newly admitted proofs replay against their exact retained digest too.
+        assert pa._root_lock_proof(root, sid, inputs=inputs, native=native, profile=profile,
+            historical={'policy': policy, 'policy_sha256': sha, 'compiled': compiled, 'review': review},
+            retained_lock_digest=current) == current
+
+
+@pytest.mark.parametrize('defect', ['target_bytes', 'target_review', 'start_role', 'same_bytes_wrong_path',
+    'same_bytes_wrong_id', 'unknown_member', 'later_endpoint_member', 'wrong_cast_member', 'forged_source_binding',
+    'changed_original_snapshot', 'explicit_source', 'explicit_cast', 'explicit_native_pin', 'canonical_suffix'])
+def test_frame_target_and_carrier_admission_remains_exact(neutral_package, monkeypatch, defect):
+    from lib import production_boards as boards
+    root, prepared = prepared_frame_shapes(neutral_package, monkeypatch, 'grok_cli')
+    inputs, native, profile, compiled, review = prepared['s1']
+    contract = execution.load_shot_contract(root)
+    assets = {a['id']: a for a in contract['assets']}
+    policy, sha, _ = pa.require_active_policy(root)
+    baselines = pa.retained_baselines(root, policy)
+    if defect == 'target_bytes':
+        (root / assets['end']['path']).write_bytes(b'SYNTHETIC changed endpoint target')
+    elif defect == 'target_review':
+        assets['end']['review']['subject_sha256'] = '0'*64
+        write(root, 'artifacts/shot_contract.json', contract)
+    elif defect == 'start_role':
+        pack = boards.load_board_pack(root)
+        pack['observations'] = [o for o in pack['observations'] if o['asset_id'] != 'start']
+        write(root, boards.ARTIFACT, pack)
+    elif defect == 'same_bytes_wrong_path':
+        path = root / 'assets/images/SYNTHETIC-wrong-start.png'
+        path.write_bytes((root / assets['start']['path']).read_bytes())
+        inputs['image_path'] = str(path)
+        native = request.prepare_grok_native(inputs, {'cli_version': '1.0.34', 'grok_path': '/SYNTHETIC/offline/grok'})
+    elif defect == 'same_bytes_wrong_id':
+        compiled['source_binding']['frame_input']['asset_id'] = 'other'
+        review['subject_sha256'] = request.digest(compiled)
+    elif defect in {'unknown_member', 'later_endpoint_member', 'wrong_cast_member'}:
+        member = review['composite_boards'][0]['members'][0]
+        if defect == 'unknown_member':
+            member['sha256'] = '0'*64
+        elif defect == 'later_endpoint_member':
+            review['composite_boards'][0]['members'].append({k: assets['end'][k] for k in ('sha256', 'role', 'cast_ids')})
+        else:
+            member['cast_ids'] = ['second-actor']
+    elif defect == 'forged_source_binding':
+        pack = boards.load_board_pack(root)
+        # A locally consistent extra binding cannot make the endpoint an actual
+        # earlier start-image generation input.
+        pack['board_bindings']['start']['source_bindings']['end'] = {k: assets['end'][k] for k in ('path', 'sha256')}
+        write(root, boards.ARTIFACT, pack)
+        review['composite_boards'][0]['members'].append({k: assets['end'][k] for k in ('sha256', 'role', 'cast_ids')})
+    elif defect == 'changed_original_snapshot':
+        pack = boards.load_board_pack(root)
+        call = images._call(images._load(root), pack['board_bindings']['start']['call_id'])
+        snapshot = Path(call['submitted_arguments']['referenced_image_paths'][0]); snapshot.chmod(0o644)
+        snapshot.write_bytes(b'SYNTHETIC tampered frozen identity')
+    elif defect == 'canonical_suffix':
+        inputs['prompt'] += '\nSYNTHETIC additional native direction'
+        native = request.prepare_grok_native(inputs, {'cli_version': '1.0.34', 'grok_path': '/SYNTHETIC/offline/grok'})
+        compiled = request.prepare_compiled_request(inputs, native, profile,
+            coverage=compiled['coverage'], timing=compiled['timing'])
+        review['subject_sha256'] = request.digest(compiled)
+    else:
+        # Isolated exact-policy variants exercise explicit checks after complete
+        # native/preparation validation; they are never production authority.
+        if defect == 'explicit_source':
+            # Composite identity proof cannot satisfy an explicit submitted
+            # source-byte lock. Fixture generated boards share PNG bytes.
+            policy['locked']['sources'] = [assets['cast']['sha256']]
+        elif defect == 'explicit_cast':
+            policy['locked']['cast'] = {'actor': [{k: assets['end'][k] for k in ('sha256', 'role')}]}
+        else:
+            policy['locked']['controls'] = {'last_frame': {'value_sha256': assets['end']['sha256']}}
+        content = pa.evidence_content(policy, baselines)
+        sha = pa.digest(content)
+        policy['evidence'] = write(root, 'approvals/autonomy-policy-' + sha + '.json', content)
+        before = file_bytes(root)
+        with pytest.raises(pa.AutonomyError, match='explicit source|explicit cast|native locked control absent'):
+            pa._root_lock_proof(root, 's1', inputs=inputs, native=native, profile=profile,
+                historical={'policy': policy, 'policy_sha256': sha, 'compiled': compiled, 'review': review})
+        assert file_bytes(root) == before
+        return
+    write(root, 'artifacts/compiled_request-frame-s1.json', compiled)
+    write(root, 'artifacts/preparation_review-frame-s1.json', review)
+    before = file_bytes(root)
+    with pytest.raises((ValueError, KeyError, OSError)):
+        pa.lock_proof(root, 's1', inputs=inputs, native=native, profile=profile)
+    assert file_bytes(root) == before
+
+
+def test_legacy_frame_proof_replays_only_exact_retained_digest(neutral_package, monkeypatch):
+    root, prepared = prepared_frame_shapes(neutral_package, monkeypatch, 'grok_cli')
+    inputs, native, profile, compiled, review = prepared['s1']
+    contract = execution.load_shot_contract(root)
+    end = next(a for a in contract['assets'] if a['id'] == 'end')
+    review['composite_boards'][0]['members'].append({k: end[k] for k in ('sha256', 'role', 'cast_ids')})
+    policy, sha, _ = pa.require_active_policy(root)
+    historical = {'policy': policy, 'policy_sha256': sha, 'compiled': compiled, 'review': review}
+    # Exact legacy digest freezes the formerly accepted declared member. The
+    # same row cannot authorize a new request or an arbitrary replay digest.
+    legacy = pa._root_lock_proof(root, 's1', inputs=inputs, native=native, profile=profile,
+        historical=historical, _legacy_frame=True)
+    before = file_bytes(root)
+    assert pa._root_lock_proof(root, 's1', inputs=inputs, native=native, profile=profile,
+        historical=historical, retained_lock_digest=legacy) == legacy
+    with pytest.raises(pa.AutonomyError, match='actual generated carrier input'):
+        pa._root_lock_proof(root, 's1', inputs=inputs, native=native, profile=profile,
+            historical=historical, retained_lock_digest='0'*64)
+    assert file_bytes(root) == before
+
+
+@pytest.mark.parametrize('variant', ['ordered_original_requests', 'provided_distinct_roles', 'duplicate_exact_member'])
+def test_frame_carrier_supported_provenance_and_member_roles(neutral_package, monkeypatch, variant):
+    from lib import production_boards as boards
+    from lib.shot_contract import frame_conditioned_start
+    root, prepared = prepared_frame_shapes(neutral_package, monkeypatch, 'grok_cli')
+    inputs, native, profile, _, review = prepared['s1']
+    contract = execution.load_shot_contract(root)
+    pack = boards.load_board_pack(root)
+    frame = frame_conditioned_start(contract, contract['shots'][0], root)
+    if variant == 'ordered_original_requests':
+        journal = images._load(root)
+        call = images._call(journal, pack['board_bindings']['start']['call_id'])
+        scopes = json.loads((root / 'production_scopes.json').read_text())
+        scope = next(s for s in scopes['scopes'] if s['id'] == call['scope_id'])
+        scope['requests'][call['slot_id']] = [call['request_sha256']]
+        call['scope_sha256'] = images.digest(scope)
+        before = file_bytes(root)
+        # Isolate the supported ordered-scope representation without rewriting
+        # the immutable original amendment/image authority of this fixture.
+        with monkeypatch.context() as patch:
+            patch.setattr(images, '_load', lambda _: journal)
+            patch.setattr(images, '_scope', lambda _, sid: scope if sid == call['scope_id'] else None)
+            pa._frame_carrier_members(root, frame, pa.current_projection(root, 's1'), review['composite_boards'])
+    else:
+        # Pure conditional-provenance compatibility: provided/reused boards
+        # retain exact named semantic proof without inventing image receipts.
+        pack['board_bindings']['start']['origin'] = 'reuse'
+        write(root, boards.ARTIFACT, pack)
+        projection = pa.current_projection(root, 's1')
+        members = [{k: a[k] for k in ('sha256', 'role', 'cast_ids')}
+            for a in projection['assets'] if a['id'] in {'start', 'end'}]
+        assert members[0]['sha256'] == members[1]['sha256'] and members[0]['role'] != members[1]['role']
+        composites = [{'sha256': frame['sha256'], 'role': 'start_frame', 'members': members}]
+        before = file_bytes(root)
+        if variant == 'duplicate_exact_member':
+            composites[0]['members'].append(copy.deepcopy(members[0]))
+            with pytest.raises(pa.AutonomyError, match='one exact approved source'):
+                pa._frame_carrier_members(root, frame, projection, composites)
+        else:
+            pa._frame_carrier_members(root, frame, projection, composites)
+    assert file_bytes(root) == before
 
 
 def test_frame_amendment_later_output_publication_and_uncertain_original_collection_survive_revocation(neutral_package, monkeypatch):

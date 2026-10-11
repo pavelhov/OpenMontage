@@ -364,8 +364,14 @@ Authoring order, without a digest cycle:
    Preserve every dialogue occurrence, including repeated identical utterances,
    with its speaker, visible/offscreen source and approved interval.
 2. Call `lib.production_request.compile_prompt(project_dir, shot_id)` to build a
-   readable literal prompt and source coverage. Script context is labeled apart
-   from spoken dialogue. Agents remain responsible for story and visual meaning;
+   readable literal prompt and source coverage for the generic workflow. For a
+   governed Auto-continue request, use
+   `lib.production_request.compile_provider_prompt(project_dir, shot_id, provider=...)`
+   with the selected provider and, for OpenArt MCP, the selected `model`. Build the
+   native request from its exact returned `prompt` and use its returned `coverage`
+   unchanged. Provider guidance must fit the supported canonical authoring fields;
+   do not append or rewrite instructions after compilation. Script context is
+   labeled apart from spoken dialogue. Agents remain responsible for story and visual meaning;
    structural span checks do not establish semantic understanding. Review any
    intended paraphrase separately; this compiler currently requires literal source
    fragments and does not silently accept paraphrases.
@@ -401,7 +407,9 @@ Authoring order, without a digest cycle:
 
 Changes to prompt, body, controls, native defaults, CLI version, account tier,
 form, reference bytes/reviews, current upstream selections/reviews or timing
-invalidate preparation. Dispatch rechecks and privately freezes the complete
+invalidate preparation. Rebuild the native request and compiled sidecar and obtain
+a fresh named preparation review bound to the new compiled digest; preserve prior
+sidecars and reviews. Dispatch rechecks and privately freezes the complete
 compiled request, named review, full scope and approval evidence. Public attempt
 records contain opaque IDs, hashes and redacted counterparts. No signed URLs,
 tokens, native argv or private receipt paths belong in public production notes.
