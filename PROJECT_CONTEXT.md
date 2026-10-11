@@ -11,12 +11,16 @@ OpenMontage is an open-source, AI-orchestrated video production platform.
 The agent owns creative direction, semantic review and production coordination through YAML manifests and markdown skills. Python owns tools, persistence and objective governance: exact authority/input checks, cumulative counters, original-job reconciliation/resume, dependency bindings, checkpoint gates and certification eligibility. Python validates declared evidence; it does not infer story meaning or judge pixels.
 
 ```
-Agent reads pipeline manifest (YAML) → reads stage director skill (MD)
-→ uses tools (Python BaseTool) → self-reviews (meta skill)
-→ checkpoints (Python utility) → presents to human for approval
+Agent reads the applicable pipeline or activated production contract
+→ uses canonical tools and state handlers → records real evidence
+→ delivers the cut or reports the concrete blocker
 ```
 
-The agent drives the pipeline's creative decisions. Canonical Python execution and state handlers enforce the recorded contracts and preserve original operations across resume; they do not replace the semantic reviewer.
+The agent drives creative decisions and semantic review. Canonical Python execution
+and state handlers enforce recorded contracts and preserve original operations
+across resume; they do not replace the semantic reviewer. Prospective standing
+runs are described in [docs/production-factory.md](docs/production-factory.md) and
+still use the standalone engine without Studio or Drive.
 
 ## Source of Truth
 

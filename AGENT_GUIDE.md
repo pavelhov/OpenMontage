@@ -17,6 +17,11 @@ Software maintenance follows its approved brief; it is not production consent.
   choices; develop concepts/openers only while that creative decision is open.
 - A resume: inspect the project's next checkpoint, originals, current selections
   and authority before doing the remaining stage. Do not restart completed work.
+- The prospective `shot_local_v1` production factory is a separate, explicit
+  creator-command path. Read [production-factory.md](docs/production-factory.md)
+  when the current identity supplies its standing setup and `make_video` command.
+  That retained authority removes routine plan/shot approvals only for that run;
+  generic pipelines, historical projects and missing rights/scope keep their gates.
 
 ## Rule Zero — All Production Goes Through a Pipeline
 
@@ -27,6 +32,10 @@ preflight, then execute its stages in order. Read the **current stage** director
 Before calling a generation tool, read its registry `agent_skills` in
 `.agents/skills/`: Layer 3 provider prompting and controls are mandatory.
 Use registered tools and their normal `execute`/`dry_run`; no ad-hoc provider runner.
+
+The production factory described in `docs/production-factory.md` uses the same
+canonical engine contracts for an explicitly activated standing run. It is not a
+Studio dependency or a replacement for other pipeline manifests.
 
 The manifest owns stage tools, canonical outputs, review focus, success criteria
 and human gates. Discover pipelines from the manifests, skills from
@@ -296,3 +305,12 @@ route to [3d-world-generation](skills/creative/3d-world-generation.md) and relev
 registry tools; requested production density cannot be replaced by blockout primitives.
 These paths and provider vocabulary remain available through the skill index and
 registry without compulsory reading on unrelated tasks.
+
+## Explicit future visual-only review scope
+
+For future identity projects with validated `governance.audio_review`,
+`lib.shot_contract.audio_review_disabled` is the canonical scope check. Audio and
+listening are not generation/selection/final gates for those projects; generated
+native audio remains untouched. Final-review v3 certifies the complete visual
+review, technical and story scope without an audio claim. All other projects retain
+their strict audiovisual review. Never migrate historical records implicitly.

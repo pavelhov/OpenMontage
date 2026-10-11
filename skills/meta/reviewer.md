@@ -13,7 +13,13 @@ create another reviewer pass by default. The parent checks current bindings,
 required-predicate completeness and contradictory evidence; reopen only the
 missing predicate or named dispute. Re-review changed bytes/bindings and the
 specific defect or uncertainty they affect. Keep critical unknowns blocked;
-complete final-master AV review remains required.
+complete final-master AV review remains required unless the exact future identity
+project has retained `governance.audio_review` accepted by
+`lib.shot_contract.audio_review_disabled`. That explicit policy removes audio/listening
+checks only; full visual review and all current byte/source/authority bindings remain
+required. Use final-review v3 `visual_review` with `mode=visual_only`; never invent
+listened evidence or claim audio certification. Existing projects keep their original
+review scope.
 
 ## Critique Quality (CHAI Rules)
 
