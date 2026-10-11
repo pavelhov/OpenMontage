@@ -105,6 +105,8 @@ def _validate_attempt_provenance(
     require(scope.get('provider') in ({'hyperframes'} if local_render else {'grok_cli','openart_cli'}), 'provider has no qualified strict motion provenance adapter')
     if local_render:
         require(request.get('tool_name') == 'hyperframes_compose', 'local render tool identity differs')
+    elif not openart:
+        require(request.get('tool_name') in {'grok_cli_video', 'video_selector'}, 'Grok tool identity differs')
     evidence = request['approval_evidence']
     if openart:
         from lib.production_request import load_private_approval
@@ -365,7 +367,9 @@ def _validate_attempt_provenance(
         return _validate_local_render_result(root, directory, request, expected_output, bound_file, read, require)
 
     provider_path = directory / 'provider_request.json'
-    if 'preferred_provider' in submitted:
+    # Routing hints may also be retained on a direct adapter call. Only the
+    # actual reserved selector dispatch creates a nested provider sidecar.
+    if request['tool_name'] == 'video_selector':
         require(provider_path.exists(), 'selector actual provider request missing')
     provider_inputs = read(provider_path) if provider_path.exists() else submitted
     require(provider_inputs.get('cli_session_id') == request['cli_session_id'], 'actual provider request session missing/different')

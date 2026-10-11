@@ -161,11 +161,13 @@ def test_serial_observations_do_not_stale_earlier_approval(production):
         assert check(production, selection['attempt_id'], selection['output'], shot_id=sid)['result']['status'] == 'generated'
 
 
-def test_direct_actual_grok_dispatch_has_complete_provenance(production):
+@pytest.mark.parametrize('routing_hints', [False, True])
+def test_direct_actual_grok_dispatch_has_complete_provenance(production, routing_hints):
     from lib.production_execution import planned_request_digest
     inputs = dict(production.inputs['entry'])
-    inputs.pop('preferred_provider')
-    inputs.pop('allowed_providers', None)
+    if not routing_hints:
+        inputs.pop('preferred_provider')
+        inputs.pop('allowed_providers', None)
     production.scope['requests']['entry'] = planned_request_digest(inputs, project_dir=production.root)
     production.persist_scope()
     result = production.cli.execute(inputs)
@@ -173,7 +175,76 @@ def test_direct_actual_grok_dispatch_has_complete_provenance(production):
     aid = result.data['production_attempt_id']
     directory = production.root / 'production_attempts' / aid
     assert not (directory / 'provider_request.json').exists()
+    assert read(directory / 'request.json')['tool_name'] == 'grok_cli_video'
     assert check(production, aid, read(directory / 'result.json')['output'])['result']['status'] == 'generated'
+
+
+@pytest.mark.parametrize('tool_name', [None, '', 'unqualified_video_tool', 'openart_cli_video'])
+def test_grok_missing_or_unknown_dispatch_identity_blocks(production, tool_name):
+    aid, directory, output = attempt(production)
+    request = read(directory / 'request.json')
+    if tool_name is None:
+        request.pop('tool_name')
+    else:
+        request['tool_name'] = tool_name
+    save(directory / 'request.json', request)
+    with pytest.raises(ProductionGovernanceError, match='Grok tool identity differs'):
+        check(production, aid, output)
+
+
+@pytest.mark.parametrize('missing', ['request', 'result'])
+def test_selector_without_routing_hint_still_requires_actual_provider_evidence(production, missing):
+    from lib.production_execution import planned_request_digest
+    from lib.shot_contract import file_sha256
+    aid, directory, output = attempt(production)
+    request = read(directory / 'request.json')
+    assert request['tool_name'] == 'video_selector'
+    # Isolated synthetic retained-envelope variant: bind the hint-free inputs
+    # consistently so the exact-request check reaches the dispatch discriminator.
+    inputs = dict(production.inputs['entry'])
+    inputs.pop('preferred_provider')
+    request['submitted_inputs'].pop('preferred_provider')
+    request['request_sha256'] = planned_request_digest(inputs, project_dir=production.root)
+    request['scope']['requests']['entry'] = request['request_sha256']
+    save(directory / 'request.json', request)
+    launch = read(directory / 'grok_launch.json')
+    launch['request_sha256'] = request['request_sha256']
+    launch['request_record_sha256'] = file_sha256(directory / 'request.json')
+    save(directory / 'grok_launch.json', launch)
+    (directory / f'provider_{missing}.json').unlink()
+    message = 'selector actual provider request missing' if missing == 'request' else 'provider_result.json'
+    with pytest.raises(ProductionGovernanceError, match=message):
+        check(production, aid, output)
+
+
+@pytest.mark.parametrize('change', ['session', 'controls'])
+def test_selector_actual_provider_request_stays_bound(production, change):
+    aid, directory, output = attempt(production)
+    provider_request = read(directory / 'provider_request.json')
+    if change == 'session':
+        provider_request['cli_session_id'] = 'another-session'
+        message = 'actual provider request session missing/different'
+    else:
+        provider_request['prompt'] += ' Unapproved extra direction.'
+        message = 'provider changed approved native controls'
+    save(directory / 'provider_request.json', provider_request)
+    with pytest.raises(ProductionGovernanceError, match=message):
+        check(production, aid, output)
+
+
+def test_selector_dispatch_identity_cannot_be_rewritten_as_direct(production):
+    from lib.shot_contract import file_sha256
+    aid, directory, output = attempt(production)
+    launch = read(directory / 'grok_launch.json')
+    assert launch['request_record_sha256'] == file_sha256(directory / 'request.json')
+    request = read(directory / 'request.json')
+    request['tool_name'] = 'grok_cli_video'
+    save(directory / 'request.json', request)
+    # Removing nested evidence cannot erase the actual immutable launch identity.
+    (directory / 'provider_request.json').unlink()
+    (directory / 'provider_result.json').unlink()
+    with pytest.raises(ProductionGovernanceError, match='original Grok launch evidence differs from frozen request'):
+        check(production, aid, output)
 
 
 def test_historical_binding_uses_preserved_input_not_mutable_original(production):
