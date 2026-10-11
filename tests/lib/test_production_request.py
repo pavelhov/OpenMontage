@@ -125,6 +125,22 @@ def test_supported_pure_path_and_dispatcher_binding(package):
     assert request.compile_prompt(root,'entry')['prompt'].count('Help me.')==4 # two dialogue plus literal script
 
 
+def test_empty_script_context_keeps_contract_coverage_and_script_binding(package):
+    root, *_ = package
+    script = json.loads((root/'artifacts/script.json').read_text())
+    script['sections'][0]['text'] = ''
+    write(root/'artifacts/script.json', script)
+
+    authored = request.compile_prompt(root, 'entry')
+    pointers = {row['source_pointer'] for row in authored['coverage']}
+    assert '/script/sections/0/text' not in pointers
+    assert '/shot_contract/shots/0/dialogue/0/text' in pointers
+    assert '/shot_contract/shots/0/dialogue/1/text' in pointers
+    assert '/shot_contract/shots/0/dominant_action' in pointers
+    assert '/shot_contract/shots/0/completed_end_state' in pointers
+    assert authored['source_binding']['script_sha256'] == request.digest(script)
+
+
 def test_dropped_second_dialogue_fresh_generic_hashes_still_block(package):
     root,inputs,native,profile,compiled,review=package
     second=next(c for c in compiled['coverage'] if c['source_pointer'].endswith('/dialogue/1/text'))

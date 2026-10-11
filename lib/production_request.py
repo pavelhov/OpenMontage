@@ -246,7 +246,10 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
     if len(matches) != 1:
         raise ValueError('mapped script section missing')
     si, section = matches[0]
-    rows.extend(_leaf(section['text'], f'/script/sections/{si}/text'))
+    # An empty context is still bound by script_sha256 below, but cannot have
+    # a non-empty literal span in the compiled native prompt.
+    if section['text'] != '':
+        rows.extend(_leaf(section['text'], f'/script/sections/{si}/text'))
     for n, row in enumerate(rows):
         row['occurrence_id'] = f'occ-{n:04d}'
     upstream = []
