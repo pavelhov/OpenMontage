@@ -313,6 +313,54 @@ is a dispatch boundary, so perform it only within the current run's retained
 route/input/allowance authority. OpenArt uploads and other native prerequisites
 still follow their existing provider contracts.
 
+### Prepare an authorized alternate without changing the retained input layout
+
+A native packet is builder output, not the public request to copy into the next
+route. For an authorized Grok-to-Mini repair whose retained template has
+`image_path: {"$board": {"asset_id": "S04-start"}}`, keep that same public
+`image_path` occurrence resolved to the exact current board. Retain one public
+`duration`, `resolution` and `aspect_ratio`; change only the approved route and
+repair details. For example, the Mini preparation inputs can include:
+
+```python
+# This example is for the retained first-frame-only template above.
+inputs = {
+    "project_dir": previous_public_inputs["project_dir"],
+    "governance": {"shot_id": shot_id},
+    "image_path": previous_public_inputs["image_path"],
+    "duration": previous_public_inputs["duration"],
+    "resolution": previous_public_inputs["resolution"],
+    "aspect_ratio": previous_public_inputs["aspect_ratio"],
+    "model": "byte-plus-seedance-2-mini", "mode": "image2video",
+    "openart_project_id": retained_openart_project_id,
+    "preferred_provider": "openart_mcp", "allowed_providers": ["openart_mcp"],
+    "preferred_tool": "openart_mcp_video", "hosting_provider": "openart_mcp",
+    "compiled_request_id": repair_request_id,
+    "preparation_review_id": repair_review_id,
+    "output_path": distinct_repair_output_path,
+}
+# Compile the alternate's prompt and fresh preparation using the builders above.
+# prep_builder("openart_mcp") resolves the exact retained account/project upload.
+```
+
+Those controls are illustrative; use the actual retained values and supported
+profile. The fresh dict intentionally does not carry the old Grok operation,
+CLI timeout/session/cwd, billing acknowledgement or scope ID. Use distinct safe
+request/review IDs and an output path that preserves the original. Other retained
+templates may require additional semantic fields; their exact delta checks still
+reject missing or changed inputs rather than silently dropping them. Do not replace this template's `image_path` with `input_assets`, or copy
+resolved `native_params` alongside the same public controls. Omit optional
+`videoCount`/`generateAudio` when relying on the selected form's defaults rather
+than adding unapproved controls. An existing retained upload avoids another
+source transfer; a missing upload still follows the normal authorized upload path.
+
+The alternate needs its own current prompt, compiled request, timing and truthful
+preparation review. Name the exact previous failed attempt in the existing repair
+scope; keep its original request, output and failure evidence. A different route
+or unused budget alone grants no repair authority. The normal replacement-evidence,
+route/account/project, source, review and cumulative-cap gates still apply;
+uncertain originals remain collectable rather than eligible for a blind reroll.
+
 ## Retain a native image observation directly
 
 A current `receive_native_image` action accepts either the existing bound pointer
@@ -333,6 +381,60 @@ the frozen submitted arguments before retaining anything, then hashes and stores
 it in the existing original-call directory. Provenance remains agent-recorded,
 not provider-attested. Pointer receipts `{path, sha256}` keep their original bytes
 and hashes; equivalent inline replay preserves them without reformatting.
+
+For a large image return, capture it programmatically in `functions.exec` rather
+than retyping its data URI. On the one authorized invocation, retain the actual
+arguments and full return before displaying the image:
+
+```javascript
+// @exec: {"yield_time_ms":120000}
+const actualArguments = JSON.parse(JSON.stringify(envelope.arguments));
+const result = await tools.image_gen__imagegen(actualArguments);
+store("native-host:" + envelope.call_id, {
+  tool_name: "image_gen.imagegen", arguments: actualArguments, result
+});
+```
+
+Then serialize that stored observation through the existing Node REPL. Set
+`projectNotesReceiptPath` to the exact project receipt filename. Its parent must
+already exist. This cell can be retried after interrupted transport; it never
+invokes image generation. Add `tool_call_id` only when actually supplied by the
+host. The engine's `envelope.call_id` above is only the storage key.
+
+```javascript
+const observedReceipt = load("native-host:" + envelope.call_id);
+if (!observedReceipt) throw new Error("Actual native return is not retained");
+const receiptPath = projectNotesReceiptPath;
+const code = [
+  "await (async () => {",
+  "const fs = await import('node:fs/promises');",
+  "const crypto = await import('node:crypto');",
+  "const receiptPath = " + JSON.stringify(receiptPath) + ";",
+  "const rawReceipt = " + JSON.stringify(JSON.stringify(observedReceipt)) + ";",
+  "try { await fs.writeFile(receiptPath, rawReceipt, {flag:'wx'}); }",
+  "catch (error) { if (error.code !== 'EEXIST') throw error;",
+  "  if (await fs.readFile(receiptPath, 'utf8') !== rawReceipt)",
+  "    throw new Error('Original host receipt collision'); }",
+  "nodeRepl.write({path:receiptPath, bytes:Buffer.byteLength(rawReceipt),",
+  "  sha256:crypto.createHash('sha256').update(rawReceipt).digest('hex')});",
+  "})();"
+].join("\n");
+const saved = await tools.mcp__node_repl__js({
+  code, title: "Retain actual native image return", timeout_ms: 30000
+});
+// The Node result contains binding metadata only; never print observedReceipt.
+text(saved);
+generatedImage(observedReceipt.result);
+```
+
+Use the emitted path and SHA with the unchanged action, for example
+`outcome={"host_receipt": {"path": receipt_path, "sha256": receipt_sha256}}`
+in the existing `complete_action`. Retain the exact result object; never add an
+invented image path from `output_hint` prose. The JSON encoding above crosses an
+RPC boundary, not a shell command, so a multi-megabyte URI needs no shell argument
+or model transcription. Keep later log/status reads metadata-only; large RPC
+arguments may still appear in internal logs. A different existing receipt fails
+closed instead of overwriting the original.
 
 Unknown returns stay counted and collectable. A genuinely additive completed
 return can use `supplemental_to` with the exact original receipt SHA, retaining the
