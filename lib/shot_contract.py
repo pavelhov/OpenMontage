@@ -58,6 +58,50 @@ def shot_local(contract: dict) -> bool:
     return contract.get("planning_mode") == "shot_local_v1"
 
 
+def frame_conditioned_start(contract: dict, shot: dict, project_dir) -> dict:
+    """Resolve one real board in its exact authored/current observed starting role.
+
+    Canonical primary roles stay intact: a payoff board can also be the authored
+    starting composition without making a duplicate asset or an implicit alias.
+    """
+    from lib import production_boards as boards
+    if not shot_local(contract):
+        raise ValueError("frame-conditioned treatment requires shot_local_v1")
+    frame = shot.get("frame_input")
+    if not isinstance(frame, dict) or set(frame) != {"asset_id", "role"} or frame["role"] != "start_frame":
+        raise ValueError("frame-conditioned treatment needs exact starting frame_input")
+    aid = frame["asset_id"]
+    assets = [a for a in contract["assets"] if a["id"] == aid and aid in shot["asset_ids"]]
+    if len(assets) != 1 or assets[0]["role"] not in {"start_frame", "payoff_board"}:
+        raise ValueError("frame_input must name one canonical consumer start/payoff asset")
+    asset = assets[0]
+    if set(asset["cast_ids"]) != set(shot["cast_ids"]):
+        raise ValueError("frame_input composition differs from exact declared shot cast")
+    root = Path(project_dir).resolve()
+    pack = boards.load_board_pack(root)
+    declarations = [r for s in pack["specification"]["shots"] if s["shot_id"] == shot["id"] for r in s["roles"]]
+    if {"asset_id": aid, "role": "start_frame"} not in declarations:
+        raise ValueError("frame_input lacks actual consumer starting-role declaration")
+    binding = pack["board_bindings"].get(aid)
+    if (not binding or not boards._binding_current(root, pack, aid)
+            or binding["sha256"] != asset.get("sha256")
+            or boards._inside(root, binding["path"]) != boards._inside(root, asset.get("path", ""))):
+        raise ValueError("frame_input differs from exact current board bytes")
+    observation = boards._observation(pack, aid, "start_frame")
+    if not observation or boards._review_blockers(pack, aid, "start_frame"):
+        raise ValueError("frame_input lacks passing current starting-role observation")
+    review = observation["review"]
+    predicates = review["predicates"]
+    if (review["story_revision"] != contract["story_revision"]
+            or any(len([p for p in predicates if p["name"] == name]) != 1
+                   or len([p for p in predicates if p["name"] == name and p["status"] == "pass"
+                           and p.get("severity", "critical") == "critical"]) != 1
+                   for name in ("cast_identity", "cast_count"))):
+        raise ValueError("frame_input lacks exact current cast composition proof")
+    return {"asset_id": aid, "role": "start_frame", "sha256": asset["sha256"],
+            "review_sha256": review_digest(review), "path": str(boards._inside(root, asset["path"]))}
+
+
 def protected_planning(contract: dict) -> dict:
     """Story and ordered shot identities remain shared protected planning."""
     return {**{key: copy.deepcopy(value) for key, value in contract.items()
@@ -328,6 +372,14 @@ def _validate_shot_contract(
     project_reference_free = contract.get("reference_mode") == "reference_free"
     reference_free = project_reference_free or shot.get("reference_mode") == "reference_free"
     reference_guided = shot.get("reference_mode", contract.get("reference_mode")) == "reference_guided"
+    frame_conditioned = shot.get("reference_mode", contract.get("reference_mode")) == "frame_conditioned"
+    if frame_conditioned:
+        try:
+            frame_conditioned_start(contract, shot, root)
+        except (ValueError, OSError, KeyError, TypeError) as exc:
+            errors.append(f"shots.{shot_id}.frame_input: {exc}")
+    elif "frame_input" in shot:
+        errors.append(f"shots.{shot_id}.frame_input: requires explicit frame_conditioned treatment")
     # Prospective unknown is frozen authored planning, not a footage verdict.
     # Current bound completed_action reviews below still supply completion proof.
     allowed_endpoints = {"completed", "unknown"} if shot_local(contract) else {"completed"}
@@ -371,7 +423,7 @@ def _validate_shot_contract(
                     errors.append(f"assets.{asset_id}.upstream_source: path/hash differ from current selected outgoing frame")
     local_assets = [assets[i] for i in shot["asset_ids"] if i in assets]
     for role in ("start_frame", "end_frame"):
-        if not reference_free and not (shot_local(contract) and reference_guided) and sum(a["role"] == role for a in local_assets) != 1:
+        if not reference_free and not (shot_local(contract) and (reference_guided or frame_conditioned)) and sum(a["role"] == role for a in local_assets) != 1:
             errors.append(f"shots.{shot_id}.asset_ids: require exactly one {role}")
     for asset in local_assets:
         if asset["role"] == "timed_keyframe" and not (0 < asset.get("time_seconds", -1) < shot["duration_seconds"]):

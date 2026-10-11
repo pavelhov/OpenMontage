@@ -145,8 +145,41 @@
         "reference_mode": {
           "enum": [
             "reference_free",
-            "reference_guided"
+            "reference_guided",
+            "frame_conditioned"
           ]
+        },
+        "frame_input": {
+          "type": "object",
+          "required": [
+            "asset_id",
+            "role",
+            "sha256",
+            "review_sha256",
+            "path"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "asset_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "role": {
+              "const": "start_frame"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "review_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
         }
       }
     },

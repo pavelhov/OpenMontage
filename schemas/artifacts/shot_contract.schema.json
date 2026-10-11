@@ -93,9 +93,10 @@
     "reference_mode": {
       "enum": [
         "reference_free",
-        "reference_guided"
+        "reference_guided",
+        "frame_conditioned"
       ],
-      "description": "Explicit reference_free is text-only; reference_guided uses reviewed boards as targets and separate native references, without temporal frame pins. Absence retains literal boarded prerequisites."
+      "description": "Explicit reference_free is text-only; reference_guided uses reviewed boards as targets and separate native references, without temporal frame pins. Absence retains literal boarded prerequisites. Explicit shot_local_v1 frame_conditioned uses one declared/current observed starting composition; optional end/payoff targets stay semantic evidence."
     },
     "planning_mode": {
       "const": "shot_local_v1",
@@ -537,7 +538,8 @@
         "reference_mode": {
           "enum": [
             "reference_free",
-            "reference_guided"
+            "reference_guided",
+            "frame_conditioned"
           ]
         },
         "id": {
@@ -640,6 +642,23 @@
           },
           "minItems": 0,
           "uniqueItems": true
+        },
+        "frame_input": {
+          "type": "object",
+          "required": [
+            "asset_id",
+            "role"
+          ],
+          "properties": {
+            "asset_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "role": {
+              "const": "start_frame"
+            }
+          },
+          "additionalProperties": false
         }
       },
       "required": [

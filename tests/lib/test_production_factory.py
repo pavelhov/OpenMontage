@@ -14,6 +14,7 @@ from tests.lib.test_production_images import board_package, reserve, host_receip
 from tests.lib.test_production_request import neutral_package  # noqa: F401
 from tests.lib.test_first_cut import p, production  # noqa: F401
 from tests.integration.test_first_pass_workflow import attestation
+from tests.lib.test_openart_mcp_native import observations as guided_observations  # noqa: F401
 
 
 def write(root, name, value):
@@ -107,6 +108,194 @@ def legacy_ungated_standing_activation(root, monkeypatch):
 
 def file_bytes(root):
     return {p.relative_to(root): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+
+
+def standing_treatment_fixture(root, *, guided_routes=(), mode_location='project'):
+    """Exact synthetic route pool over actual authored, possibly pending sources."""
+    from lib import production_boards as boards
+    if not (root / 'artifacts/shot_contract.json').exists():
+        standing_fixture(root)
+    contract = execution.load_shot_contract(root)
+    if mode_location == 'project':
+        contract['reference_mode'] = 'reference_guided'
+    else:
+        contract['shots'][0]['reference_mode'] = 'reference_guided'
+    write(root, 'artifacts/shot_contract.json', contract)
+    marker = json.loads((root / 'project.json').read_text())
+    marker.update(identity_id='fixture-identity', pipeline_type='cinematic')
+    write(root, 'project.json', marker)
+    policy = make_policy(project_id=contract['project_id'], story_revision=contract['story_revision'],
+        locked={'cast': {}, 'dialogue': {}, 'sources': [], 'story_predicates': [], 'controls': {}},
+        flex={'duration_s': [1, 10], 'resolution': [], 'references': {'droppable_roles': [], 'substitutes': []}})
+    policy['providers'] = [copy.deepcopy(policy['providers'][1]), {
+        'id': 'openart_mcp', 'billing': 'unknown_cost_no_ceiling',
+        'exposure_acknowledgement': 'no_enforceable_credit_ceiling', 'uid_sha256': request.digest('fixture-only'),
+        'project_id': 'fixture-mcp-project', 'routes': [
+            {'model': 'byte-plus-seedance-2-mini', 'mode': 'image2video'}, *copy.deepcopy(guided_routes)]}]
+    script = json.loads((root / 'artifacts/script.json').read_text())
+    baselines = {}
+    for shot in contract['shots']:
+        projection = pa.current_projection(root, shot['id'])
+        baselines[shot['id']] = {'projection': projection,
+            'planned_request_template': execution.planned_request_template({'duration': shot['duration_seconds']}, project_dir=root),
+            'script_snapshot': script, 'dialogue_coverage': pa.dialogue_occurrences(projection),
+            'approval_plan_sha256': execution.approval_plan_digest(contract, shot['id'])}
+    accounts = {p['id']: 'fixture-' + p['id'] for p in policy['providers']}
+    pending = (root / boards.ARTIFACT).exists()
+    if pending:
+        accounts['native_imagegen'] = 'fixture-native-account'
+    setup = {'version': '1.0', 'identity_id': 'fixture-identity', 'enabled': True,
+        'providers': policy['providers'], 'provider_accounts': {k: v for k, v in accounts.items() if k != 'native_imagegen'},
+        'caps': policy['caps'], 'checkpoint_stages': policy['checkpoint_stages'], 'flex': policy['flex'],
+        'approved_source_sha256': [a['sha256'] for a in contract['assets'] if a.get('sha256')],
+        'required_permissions': [], 'source_transfer': [{'provider': provider, 'account': account,
+            'roles': ['identity', 'identity_reference', 'start_frame', 'end_frame', 'payoff_board',
+                      'reference_image', 'reference_video', 'reference_audio'],
+            'generated_board_sources': pending, 'max_files': 8, 'max_file_bytes': 10000,
+            'max_batch_bytes': 80000, 'max_batches': 4} for provider, account in accounts.items()]}
+    if pending:
+        setup['approved_source_sha256'].extend(r['sha256'] for r in boards.load_board_pack(root)['specification']['references'])
+        setup['native_images'] = {'account': accounts['native_imagegen'], 'image_allowance': 4,
+                                  'allowed_image_routes': ['native_imagegen']}
+    standing = creator_fixture(root, 'standing', setup)
+    command = creator_fixture(root, 'command', {'version': '1.0', 'identity_id': 'fixture-identity',
+        'project_id': contract['project_id'], 'story_revision': contract['story_revision'], 'command': 'make_video',
+        'standing_setup_sha256': standing['sha256']})
+    return dict(policy=policy, baselines=baselines, standing_setup=standing, run_command=command,
+                identity_id='fixture-identity')
+
+
+@pytest.mark.parametrize('mode_location', ['project', 'shot'])
+def test_standing_guided_treatment_rejects_entire_frame_only_pool_before_authority_writes(tmp_path, mode_location):
+    kwargs = standing_treatment_fixture(tmp_path, mode_location=mode_location)
+    # Activation's existing filesystem lock is mechanical, not media authority.
+    with execution._lock(tmp_path):
+        pass
+    before = file_bytes(tmp_path)
+    with pytest.raises(pa.StandingSetupRequired, match='entry.*openart_mcp.*byte-plus-seedance-2-mini.*image2video'):
+        pa.activate_standing_run(tmp_path, **kwargs)
+    assert file_bytes(tmp_path) == before
+    assert not (tmp_path / pa.POLICY_ARTIFACT).exists()
+    assert not list((tmp_path / 'approvals').glob('*'))
+    assert not (tmp_path / 'artifacts/decision_log.json').exists()
+    assert not (tmp_path / 'production_scopes.json').exists()
+    assert images.image_usage(tmp_path)['total'] == 0
+
+
+@pytest.mark.parametrize('route', [
+    {'model': 'minimax-h3', 'mode': 'element2video'},
+    {'model': 'smart-shot', 'mode': 'generate-shot-video'}])
+def test_standing_guided_treatment_allows_mixed_pool_and_replays_without_new_preflight(tmp_path, guided_observations, monkeypatch, route):
+    kwargs = standing_treatment_fixture(tmp_path, guided_routes=[route])
+    # Sparse guided sources retain identity without a mandatory board pair.
+    contract = execution.load_shot_contract(tmp_path)
+    contract['shots'][0]['asset_ids'] = ['patient']
+    write(tmp_path, 'artifacts/shot_contract.json', contract)
+    kwargs = standing_treatment_fixture(tmp_path, guided_routes=[route])
+    original_pool = copy.deepcopy(kwargs['policy']['providers'])
+    original_sources = file_bytes(tmp_path)
+    result = pa.activate_standing_run(tmp_path, **kwargs)
+    active = pa.require_active_policy(tmp_path, shot_id='entry')[0]
+    assert active['providers'] == original_pool and result['provider_calls'] == 0
+    assert all((tmp_path / path).read_bytes() == raw for path, raw in original_sources.items())
+    monkeypatch.setattr(pa, '_validate_standing_route_treatments', lambda *args: pytest.fail('retained activation rechecked prospective feasibility'))
+    before = file_bytes(tmp_path)
+    assert pa.load_active_policy(tmp_path)[0] is not None
+    assert pa.activate_standing_run(tmp_path, **kwargs) == dict(result, replayed=True)
+    assert file_bytes(tmp_path) == before
+
+
+@pytest.mark.parametrize('restriction', ['intent', 'model_lock'])
+def test_standing_guided_treatment_compatible_route_must_be_allowed_for_this_shot(tmp_path, guided_observations, restriction):
+    kwargs = standing_treatment_fixture(tmp_path, guided_routes=[{'model': 'minimax-h3', 'mode': 'element2video'}])
+    if restriction == 'intent':
+        kwargs['policy']['model_selection_intents'] = {'entry': {'mode': 'exact', 'provider': 'openart_mcp',
+            'model': 'byte-plus-seedance-2-mini', 'approved_pool': [
+                {'provider': 'openart_mcp', 'model': 'byte-plus-seedance-2-mini'},
+                {'provider': 'openart_mcp', 'model': 'minimax-h3'}]}}
+    else:
+        kwargs['policy']['locked']['controls']['model'] = {'value': 'byte-plus-seedance-2-mini'}
+    with execution._lock(tmp_path):
+        pass
+    before = file_bytes(tmp_path)
+    with pytest.raises(pa.StandingSetupRequired, match='entry.*minimax-h3.*excludes route'):
+        pa.activate_standing_run(tmp_path, **kwargs)
+    assert file_bytes(tmp_path) == before
+
+
+@pytest.mark.parametrize('compatible', [False, True])
+def test_standing_guided_treatment_checks_actual_native_reference_roles(tmp_path, guided_observations, compatible):
+    standing_fixture(tmp_path)
+    contract = execution.load_shot_contract(tmp_path)
+    next(asset for asset in contract['assets'] if asset['id'] == 'patient')['role'] = 'reference_video'
+    contract['shots'][0]['asset_ids'] = ['patient']
+    write(tmp_path, 'artifacts/shot_contract.json', contract)
+    model = 'minimax-h3' if compatible else 'veo3-1'
+    kwargs = standing_treatment_fixture(tmp_path, guided_routes=[{'model': model, 'mode': 'element2video'}])
+    if compatible:
+        assert pa.activate_standing_run(tmp_path, **kwargs)['provider_calls'] == 0
+    else:
+        with pytest.raises(pa.StandingSetupRequired, match='entry.*veo3-1.*reference_video.*supported native role'):
+            pa.activate_standing_run(tmp_path, **kwargs)
+        assert not (tmp_path / pa.POLICY_ARTIFACT).exists()
+
+
+def test_standing_guided_treatment_honors_per_shot_reference_free_override(tmp_path):
+    standing_fixture(tmp_path)
+    contract = execution.load_shot_contract(tmp_path)
+    shot = contract['shots'][0]
+    shot.update(reference_mode='reference_free', cast_ids=[], dialogue=[], required_visible_speakers=[], asset_ids=[], upstream=[])
+    write(tmp_path, 'artifacts/shot_contract.json', contract)
+    kwargs = standing_treatment_fixture(tmp_path)
+    assert kwargs['baselines']['entry']['projection']['contract_snapshot']['reference_mode'] == 'reference_guided'
+    assert pa.activate_standing_run(tmp_path, **kwargs)['provider_calls'] == 0
+
+
+@pytest.mark.parametrize('route', [None,
+    {'model': 'minimax-h3', 'mode': 'element2video'},
+    {'model': 'smart-shot', 'mode': 'generate-shot-video'}])
+def test_standing_guided_treatment_preflight_uses_pending_unobserved_authored_boards(neutral_package, guided_observations, monkeypatch, route):
+    root, package, bind = neutral_package
+    package = prospective_package(package)
+    template = package['boards']['motion_binding']['contract_template']
+    template['reference_mode'] = 'reference_guided'
+    # Actual sparse authoring: first shot has a starting composition target only.
+    package['boards']['shots'][0]['roles'] = [{'asset_id': 'start', 'role': 'start_frame'}]
+    template['shots'][0]['asset_ids'] = ['start']
+    template['assets'] = [a for a in template['assets'] if a['id'] != 'end']
+    package['boards']['image_nodes'] = [a for a in package['boards']['image_nodes'] if a['slot_id'] != 'end']
+    request.prepare_package(root, bind(package))
+    kwargs = standing_treatment_fixture(root, guided_routes=[route] if route else [])
+    assert all(a.get('preparation_pending') for a in execution.load_shot_contract(root)['assets'])
+    monkeypatch.setattr(request, 'source_packet', lambda *args, **kw: pytest.fail('prospective route check requires reviewed media'))
+    with execution._lock(root):
+        pass
+    before = file_bytes(root)
+    if route:
+        assert pa.activate_standing_run(root, **kwargs)['provider_calls'] == 0
+        assert all((root / path).read_bytes() == raw for path, raw in before.items())
+    else:
+        with pytest.raises(pa.StandingSetupRequired, match='s1.*image2video.*s2.*image2video.*s3.*image2video'):
+            pa.activate_standing_run(root, **kwargs)
+        assert file_bytes(root) == before
+        assert not (root / pa.POLICY_ARTIFACT).exists()
+        assert not (root / 'artifacts/decision_log.json').exists()
+    assert images.image_usage(root)['total'] == 0
+    assert not (root / 'production_scopes.json').exists()
+
+
+def test_standing_guided_treatment_preflight_preserves_existing_incompatible_activation(tmp_path, monkeypatch):
+    kwargs = standing_treatment_fixture(tmp_path)
+    # Reproduce only the previous activation writer; downstream guards stay real.
+    with monkeypatch.context() as patch:
+        patch.setattr(pa, '_validate_standing_route_treatments', lambda *args: None)
+        result = pa.activate_standing_run(tmp_path, **kwargs)
+    write(tmp_path, 'production_attempts/retained-original/request.json', {
+        'attempt_id': 'retained-original', 'shot_id': 'entry', 'synthetic_original_pending': True})
+    before = file_bytes(tmp_path)
+    assert pa.load_active_policy(tmp_path, shot_id='entry')[0] is not None
+    assert pa.activate_standing_run(tmp_path, **kwargs) == dict(result, replayed=True)
+    assert file_bytes(tmp_path) == before
 
 
 @pytest.mark.parametrize('stages', [['edit'], ['compose'], ['proposal', 'edit', 'compose'], ['research'], ['idea']])
@@ -1456,11 +1645,11 @@ def correction_factory_fixture(neutral_package, *, image_allowance=8, required_s
     return root
 
 
-def retain_factory_board(root, slot, *, predicates=None, omitted=(), roles=None):
+def retain_factory_board(root, slot, *, predicates=None, omitted=(), roles=None, replace_exception_call_id=None):
     from lib import production_boards as boards
-    prepared = boards.prepare_image_request(root, slot, images=images)
-    scope = images.derive_native_image_scope(root, prepared['packet'], slot, prepared['arguments'], output_path=prepared['output_path'])
-    call = boards.reserve_board_image(root, slot, scope_id=scope, call_id='fixture-' + slot, images=images)
+    prepared = boards.prepare_image_request(root, slot, images=images, replace_exception_call_id=replace_exception_call_id)
+    scope = images.derive_native_image_scope(root, prepared['packet'], slot, prepared['arguments'], output_path=prepared['output_path'], replace_exception_call_id=replace_exception_call_id)
+    call = boards.reserve_board_image(root, slot, scope_id=scope, call_id='fixture-' + slot, images=images, replace_exception_call_id=replace_exception_call_id)
     envelope = images.begin_native_image(root, call['call_id'])
     images.import_native_image(root, call['call_id'], host_receipt=host_receipt(root, envelope, name='fixture-' + slot))
     source = boards.bind_imported_board(root, slot, call['call_id'], images=images)
@@ -1855,3 +2044,419 @@ def test_conflicting_incomplete_role_observations_receive_separate_carried_succe
     assert recovered['action']['kind'] == 'prepare_board_correction'
     assert recovered['action']['binding']['correction_observation']['review'] == first_complete
     assert images.image_usage(root)['total'] == 3
+
+
+def frame_amendment_fixture(neutral_package, monkeypatch):
+    """Legacy incompatible synthetic activation, complete current board evidence."""
+    from lib import production_boards as boards
+    root, package, bind = neutral_package
+    package = prospective_package(package)
+    spec = package['boards']; template = spec['motion_binding']['contract_template']
+    template['reference_mode'] = 'reference_guided'
+    node_by_id = {n['slot_id']: n for n in spec['image_nodes']}
+    node_by_id['payoff']['shot_id'] = 's4'
+    node_by_id['other']['shot_id'] = 's2'
+    third_start = copy.deepcopy(node_by_id['start']); third_start.update(slot_id='third-start', shot_id='s3', output_path='assets/images/third-start.png')
+    third_end = copy.deepcopy(node_by_id['end']); third_end.update(slot_id='third-end', shot_id='s3', output_path='assets/images/third-end.png', image_dependencies=['third-start'])
+    spec['image_nodes'] += [third_start, third_end]
+    spec['shots'] = [{'shot_id': sid, 'roles': roles, 'video_dependencies': []} for sid, roles in [
+        ('s1', [{'asset_id': 'start', 'role': 'start_frame'}, {'asset_id': 'end', 'role': 'end_frame'}]),
+        ('s2', [{'asset_id': 'other', 'role': 'start_frame'}]),
+        ('s3', [{'asset_id': 'third-start', 'role': 'start_frame'}, {'asset_id': 'third-end', 'role': 'end_frame'}]),
+        ('s4', [{'asset_id': 'payoff', 'role': 'start_frame'}, {'asset_id': 'payoff', 'role': 'payoff_board'}])]]
+    template['assets'] = [{'id': n['slot_id'], 'role': n['role'], 'cast_ids': []} for n in spec['image_nodes']]
+    original_shot = copy.deepcopy(template['shots'][0])
+    template['shots'] = []
+    authored_shot = copy.deepcopy(package['shots'][0]); package['shots'] = []
+    for mapping in spec['shots']:
+        sid = mapping['shot_id']; shot = copy.deepcopy(original_shot)
+        shot.update(id=sid, asset_ids=list(dict.fromkeys(r['asset_id'] for r in mapping['roles'])), upstream=[])
+        template['shots'].append(shot)
+        authored = copy.deepcopy(authored_shot); authored.update(id=sid, duration_seconds=5, script='SYNTHETIC exact ' + sid)
+        package['shots'].append(authored)
+    request.prepare_package(root, bind(package))
+    kwargs = standing_treatment_fixture(root)
+    setup = json.loads((root / kwargs['standing_setup']['path']).read_text()); setup.pop('authorization')
+    setup['native_images']['image_allowance'] = 8
+    kwargs['policy']['caps'].update(max_total_attempts=8, max_repair_attempts=4)
+    setup['caps'] = copy.deepcopy(kwargs['policy']['caps'])
+    for term in setup['source_transfer']:
+        term['max_batches'] = 8
+    kwargs['standing_setup'] = creator_fixture(root, 'standing', setup)
+    command = json.loads((root / kwargs['run_command']['path']).read_text()); command.pop('authorization')
+    command['standing_setup_sha256'] = kwargs['standing_setup']['sha256']
+    kwargs['run_command'] = creator_fixture(root, 'command', command)
+    for sid, value in kwargs['baselines'].items():
+        mapping = next(s for s in spec['shots'] if s['shot_id'] == sid)
+        aid = next(r['asset_id'] for r in mapping['roles'] if r['role'] == 'start_frame')
+        value['planned_request_template'] = execution.planned_request_template(
+            {'duration': value['projection']['shot']['duration_seconds'], 'image_path': {'$board': {'asset_id': aid}}}, project_dir=root)
+    with monkeypatch.context() as patch:
+        patch.setattr(pa, '_validate_standing_route_treatments', lambda *args: None)
+        pa.activate_standing_run(root, **kwargs)
+    images.activate_standing_image_envelope(root)
+    for slot in ('payoff', 'start', 'end', 'other', 'third-start', 'third-end'):
+        original_id = None
+        if slot in {'start', 'third-start'}:
+            original_id = 'uncertain-' + slot
+            prepared = boards.prepare_image_request(root, slot, images=images)
+            scope = images.derive_native_image_scope(root, prepared['packet'], slot, prepared['arguments'], output_path=prepared['output_path'])
+            boards.reserve_board_image(root, slot, scope_id=scope, call_id=original_id, images=images)
+            envelope = images.begin_native_image(root, original_id)
+            exception = write(root, 'receipts/' + original_id + '.json', {'call_id': original_id,
+                'tool_name': envelope['tool_name'], 'arguments': envelope['arguments'],
+                'exception': {'message': 'SYNTHETIC host exception, original remains collectable.'}})
+            images.record_native_image_host_exception(root, original_id, host_exception=exception)
+        retain_factory_board(root, slot, predicates={'cast_count': 'pass'}, replace_exception_call_id=original_id)
+    contract = execution.load_shot_contract(root)
+    from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES
+    contract['project_review'] = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='r1')
+    for shot in contract['shots']:
+        shot['review'] = attestation(shot_review_subject(contract, shot['id']), SHOT_PREDICATES, revision='r1')
+    write(root, 'artifacts/shot_contract.json', contract)
+    proposal = write(root, 'notes/frame-proposal.json', {'SYNTHETIC': 'exact frame input correction only'})
+    authority = write(root, 'notes/frame-authority.json', {'version': '1.0', 'kind': 'delegated_authorization_source',
+        'project_id': package['project_id'], 'story_revision': 'r1', 'source_thread_id': 'SYNTHETIC',
+        'source_turn_id': 'SYNTHETIC', 'relay_message_id': 'SYNTHETIC',
+        'relay_text': 'SYNTHETIC exact correction approval, never production authority.',
+        'human_delegation': {'message_id': 'SYNTHETIC', 'text': 'SYNTHETIC delegated correction authority.'},
+        'proposal_sha256': proposal['sha256']})
+    return root, proposal, authority
+
+
+def test_frame_amendment_is_pure_linked_preserves_usage_and_stales_planning(neutral_package, monkeypatch):
+    from lib import production_frame_amendment as amendment, production_boards as boards
+    from lib.shot_contract import validate_shot_contract
+    root, proposal, authority = frame_amendment_fixture(neutral_package, monkeypatch)
+    before = file_bytes(root); usage = images.image_usage(root)
+    assert usage['total'] == 8 and len(usage['unresolved_originals']) == 2
+    expected = amendment.expected_original(root)
+    plan = amendment.plan_frame_input_amendment(root, expected=expected, proposal=proposal, authority=authority)
+    assert file_bytes(root) == before
+    assert plan['provider_calls'] == plan['reservations'] == 0
+    result = amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
+        expected=expected, proposal=proposal, authority=authority)
+    assert images.image_usage(root) == usage
+    for path, raw in before.items():
+        if str(path) not in plan['changed_paths']:
+            assert (root / path).read_bytes() == raw
+    assert pa.require_active_policy(root)[1] == result['successor_policy_sha256']
+    contract = execution.load_shot_contract(root)
+    assert contract['reference_mode'] == 'frame_conditioned'
+    assert not validate_shot_contract(contract, project_dir=root, shot_id='s1')['eligible']
+    assert len([a for a in contract['assets'] if a['id'] == 'payoff']) == 1
+    assert next(a for a in contract['assets'] if a['id'] == 'payoff')['role'] == 'payoff_board'
+    assert boards._observation(boards.load_board_pack(root), 'payoff', 'start_frame')
+    scopes = json.loads((root / 'production_scopes.json').read_text())
+    assert images._image_envelope(root, scopes) == scopes['image_envelope']
+    after = file_bytes(root)
+    assert amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
+        expected=expected, proposal=proposal, authority=authority)['replayed']
+    assert file_bytes(root) == after
+
+
+@pytest.mark.parametrize('defect', ['expected', 'authority', 'revocation', 'scope', 'prepared', 'private_pending', 'caps', 'board_bytes', 'unobserved'])
+def test_frame_amendment_refuses_changed_authority_motion_work_or_originals(neutral_package, monkeypatch, defect):
+    from lib import production_frame_amendment as amendment, production_boards as boards
+    root, proposal, authority = frame_amendment_fixture(neutral_package, monkeypatch)
+    expected = amendment.expected_original(root)
+    if defect == 'expected':
+        expected['files']['artifacts/shot_contract.json'] = 'f'*64
+    elif defect == 'authority':
+        write(root, authority['path'], {'revoked': True})
+    elif defect == 'revocation':
+        log = json.loads((root / 'artifacts/decision_log.json').read_text())
+        log['decisions'][-1]['user_approved'] = False
+        write(root, 'artifacts/decision_log.json', log)
+    elif defect == 'scope':
+        value = json.loads((root / 'production_scopes.json').read_text()); value['scopes'].append({'id':'unbegun', 'phase':'first_pass'})
+        write(root, 'production_scopes.json', value)
+    elif defect == 'prepared':
+        write(root, 'openart_mcp/attempts/unbegun/request.json', {'SYNTHETIC': 'prepared but not begun'})
+    elif defect == 'private_pending':
+        from lib import provider_credit_ledger as ledger
+        from dataclasses import asdict
+        snapshot = ledger.read_existing_snapshot()
+        binding = ledger.UnpricedBinding(provider='openart_cli', account_id='SYNTHETIC-account',
+            workspace_id='SYNTHETIC-workspace', project_root=str(root),
+            attempt_id='00000000-0000-4000-8000-000000000099', request_sha256='a'*64,
+            authorization_occurrence='SYNTHETIC-private-only', authorization_sha256='b'*64,
+            native_sha256='c'*64, profile_sha256='d'*64, evidence_sha256='e'*64)
+        snapshot['unpriced_reservations'].append({'attempt_id': binding.attempt_id,
+            'binding_json': json.dumps(asdict(binding))})
+        monkeypatch.setattr(ledger, 'read_existing_snapshot', lambda: snapshot)
+    elif defect == 'caps':
+        policy = json.loads((root / pa.POLICY_ARTIFACT).read_text()); policy['caps']['max_total_attempts'] += 1
+        (root / pa.POLICY_ARTIFACT).chmod(0o644)
+        write(root, pa.POLICY_ARTIFACT, policy)
+    elif defect == 'board_bytes':
+        pack = boards.load_board_pack(root); (root / pack['board_bindings']['payoff']['path']).write_bytes(b'changed')
+    else:
+        pack = boards.load_board_pack(root); pack['observations'] = [o for o in pack['observations'] if o['asset_id'] != 'payoff']
+        write(root, boards.ARTIFACT, pack)
+    before = file_bytes(root)
+    from tools._openart_cli import OpenArtCLIError
+    with pytest.raises((ValueError, KeyError, OpenArtCLIError)):
+        amendment.plan_frame_input_amendment(root, expected=expected, proposal=proposal, authority=authority)
+    assert file_bytes(root) == before
+    assert not (root / amendment.POINTER).exists()
+
+
+@pytest.mark.parametrize('boundary', [1, 2, 3, 4, 5])
+def test_frame_amendment_interruption_is_closed_and_exact_replay_preserves_fresh_reviews(neutral_package, monkeypatch, boundary):
+    from lib import production_frame_amendment as amendment
+    from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES
+    root, proposal, authority = frame_amendment_fixture(neutral_package, monkeypatch)
+    expected = amendment.expected_original(root)
+    plan = amendment.plan_frame_input_amendment(root, expected=expected, proposal=proposal, authority=authority)
+    original_publish = amendment._publish
+    calls = []
+    def interrupted(path, raw):
+        original_publish(path, raw); calls.append(path)
+        if len(calls) == boundary:
+            raise OSError('SYNTHETIC interrupted publication')
+    with monkeypatch.context() as patch:
+        patch.setattr(amendment, '_publish', interrupted)
+        with pytest.raises(OSError, match='interrupted'):
+            amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
+                expected=expected, proposal=proposal, authority=authority)
+    assert pa.load_active_policy(root)[0] is None
+    amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
+        expected=expected, proposal=proposal, authority=authority)
+    contract = execution.load_shot_contract(root)
+    contract['project_review'] = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='r1')
+    for shot in contract['shots']:
+        shot['review'] = attestation(shot_review_subject(contract, shot['id']), SHOT_PREDICATES, revision='r1')
+    write(root, 'artifacts/shot_contract.json', contract)
+    after = file_bytes(root)
+    assert amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
+        expected=expected, proposal=proposal, authority=authority)['replayed']
+    assert file_bytes(root) == after
+    log = json.loads((root / 'artifacts/decision_log.json').read_text()); log['decisions'][-1]['user_approved'] = False
+    write(root, 'artifacts/decision_log.json', log)
+    before = file_bytes(root)
+    with pytest.raises(pa.AutonomyError, match='revoked'):
+        amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
+            expected=expected, proposal=proposal, authority=authority)
+    assert file_bytes(root) == before
+    # Historical original replay remains collectible, never prospective authority.
+    retained = json.loads((root / 'production_scopes.json').read_text())
+    assert images._image_envelope(root, retained) == retained['image_envelope']
+    with pytest.raises(pa.AutonomyError):
+        images.activate_standing_image_envelope(root)
+
+
+def test_frame_conditioned_prospective_activation_allows_pending_board_observations(neutral_package):
+    from lib import production_boards as boards
+    root, package, bind = neutral_package
+    package = prospective_package(package)
+    template = package['boards']['motion_binding']['contract_template']
+    template['reference_mode'] = 'frame_conditioned'
+    # Existing authored role declarations select inputs; no observed bytes yet.
+    package['boards']['shots'][1]['roles'] = [{'asset_id': 'payoff', 'role': 'start_frame'}, {'asset_id': 'payoff', 'role': 'payoff_board'}]
+    template['shots'][1]['asset_ids'] = ['payoff']
+    for shot, mapping in zip(template['shots'], package['boards']['shots']):
+        shot['frame_input'] = next(r for r in mapping['roles'] if r['role'] == 'start_frame')
+    request.prepare_package(root, bind(package))
+    kwargs = standing_treatment_fixture(root)
+    contract = execution.load_shot_contract(root); contract['reference_mode'] = 'frame_conditioned'
+    write(root, 'artifacts/shot_contract.json', contract)
+    for sid, baseline in kwargs['baselines'].items():
+        baseline['projection'] = pa.current_projection(root, sid)
+        baseline['approval_plan_sha256'] = execution.approval_plan_digest(contract, sid)
+    result = pa.activate_standing_run(root, **kwargs)
+    assert result['provider_calls'] == 0 and not boards.load_board_pack(root)['observations'][-1].get('asset_id') == 'start'
+    assert images.image_usage(root)['total'] == 0
+    assert all(a.get('preparation_pending') for a in contract['assets'])
+
+
+def refreshed_frame_amendment(neutral_package, monkeypatch):
+    from lib import production_frame_amendment as amendment
+    from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES
+    root, proposal, authority = frame_amendment_fixture(neutral_package, monkeypatch)
+    expected = amendment.expected_original(root)
+    plan = amendment.plan_frame_input_amendment(root, expected=expected, proposal=proposal, authority=authority)
+    amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'], expected=expected, proposal=proposal, authority=authority)
+    contract = execution.load_shot_contract(root)
+    contract['project_review'] = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='r1')
+    for shot in contract['shots']:
+        shot['review'] = attestation(shot_review_subject(contract, shot['id']), SHOT_PREDICATES, revision='r1')
+    write(root, 'artifacts/shot_contract.json', contract)
+    return root, proposal, authority, expected, plan
+
+
+@pytest.mark.parametrize('provider', ['grok_cli', 'openart_mcp'])
+def test_four_sparse_frame_shapes_prepare_normal_native_and_compiled_evidence_offline(neutral_package, monkeypatch, guided_observations, provider):
+    from lib import openart_mcp as mcp, openart_mcp_jobs as mcp_jobs
+    root, _, _, _, _ = refreshed_frame_amendment(neutral_package, monkeypatch)
+    contract = execution.load_shot_contract(root)
+    assert [s['duration_seconds'] for s in contract['shots']] == [5]*4
+    frame_sources = {}
+    if provider == 'openart_mcp':
+        profile = mcp.load_profile('byte-plus-seedance-2-mini', 'image2video', require='candidate')
+        assets = {a['id']: a for a in contract['assets']}
+        ids = [s['frame_input']['asset_id'] for s in contract['shots']]
+        files = [{'path': str(root / assets[aid]['path']), 'sha256': assets[aid]['sha256'], 'type': 'image'} for aid in ids]
+        evidence = write(root, 'notes/SYNTHETIC-upload-approval.json', {'SYNTHETIC': 'offline upload receipts only'})
+        write(root, 'artifacts/openart_mcp_upload_authorization-frame-fixture.json', {
+            'provider':'openart_mcp','status':'approved','purpose':'source_transfer_only', 'project_id':contract['project_id'],
+            'story_revision':'r1','account_uid_sha256':mcp.account_summary()['uid_sha256'], 'openart_project_id':'fixture-project',
+            'files':files,'no_enforceable_credit_ceiling':True,'delayed_charges_unknown':True,'max_upload_batches':1,
+            'approved_by':'SYNTHETIC software fixture', 'evidence':evidence})
+        upload = mcp_jobs.prepare_upload(root, files=[f['path'] for f in files],
+            billing_declaration={'upload_authorization_id':'frame-fixture'}, openart_project_id='fixture-project')
+        returned = {'projectId':'fixture-project','results':[{'fileId':'fixture-'+str(i), 'status':'SUCCESS',
+            'visualReference':{'id':'frame-ready-'+str(i),'type':'image','url':'https://fixture.example.test/'+str(i),
+                'label':'SYNTHETIC frame '+str(i),'imageUrl':'https://fixture.example.test/'+str(i),
+                'thumbnailUrl':'https://fixture.example.test/'+str(i),'metadata':{'fixture_only':True}}} for i in range(4)]}
+        ready = mcp_jobs.record_upload_receipt(root, upload_id=upload['upload_id'], result=returned)
+        frame_sources = {aid: {'source_path': row['path'], 'upload_id': ref['upload_id']}
+            for aid, row, ref in zip(ids, files, ready['references'])}
+    else:
+        profile = {'source':'fixture'}
+    before_usage = images.image_usage(root)
+    for index, shot in enumerate(contract['shots']):
+        sid = shot['id']; aid = shot['frame_input']['asset_id']
+        authored = request.compile_provider_prompt(root, sid, provider=provider)
+        inputs = {'project_dir':str(root), 'governance':{'shot_id':sid}, 'prompt':authored['prompt'],
+            'duration':5, 'output_path':str(root/'assets/video'/('SYNTHETIC-'+sid+'.mp4')),
+            'compiled_request_id':'frame-'+sid, 'preparation_review_id':'frame-'+sid}
+        if provider == 'grok_cli':
+            asset = next(a for a in contract['assets'] if a['id'] == aid)
+            inputs.update(operation='reference_to_video', image_path=str(root / asset['path']))
+            native = request.prepare_grok_native(inputs, {'cli_version':'1.0.34','grok_path':'/SYNTHETIC/offline/grok'})
+        else:
+            inputs.update(model=profile['model'], mode=profile['mode'], openart_project_id='fixture-project',
+                input_assets=[{'role':'first_frame', **frame_sources[aid]}])
+            native = request.prep_builder(provider)(inputs, profile)
+        timing = {'method':'segmented_estimate','duration_seconds':5,'language':'en','margin_seconds':.5,
+            'rationale':'SYNTHETIC software fixture', 'overlap_policy':'serial','overlap_rationale':'SYNTHETIC serial windows',
+            'segments':[], 'action_windows':[{'source_pointer':f'/shot_contract/shots/{index}/'+key,
+                'value_sha256':request.digest(shot[key]), 'start_seconds':start, 'end_seconds':end,
+                'rationale':'SYNTHETIC action window'} for key,start,end in [('dominant_action',.1,3),('completed_end_state',3.1,4.4)]]}
+        compiled = request.prepare_compiled_request(inputs, native, profile, coverage=authored['coverage'], timing=timing)
+        review = {'version':'1.0','review_id':'frame-'+sid,'reviewer':'SYNTHETIC fixture only','status':'pass',
+            'subject_sha256':request.digest(compiled),'evidence_kind':'fixture_only',
+            'predicates':[{'name':p,'status':'pass','severity':'critical','evidence':'SYNTHETIC software fixture'} for p in sorted(request.PREDICATES)]}
+        write(root, 'artifacts/compiled_request-frame-'+sid+'.json', compiled)
+        write(root, 'artifacts/preparation_review-frame-'+sid+'.json', review)
+        assert request.validate_preparation(inputs, native, profile)['compiled_sha256'] == request.digest(compiled)
+        assert compiled['source_binding']['frame_input']['asset_id'] == aid
+        native_assets = native['request']['input_assets'] if provider == 'grok_cli' else native['input_assets']
+        assert len([a for a in native_assets if a['role'] == 'first_frame']) == 1
+        if sid == 's4':
+            assert aid == 'payoff' and next(a for a in contract['assets'] if a['id'] == aid)['role'] == 'payoff_board'
+    assert images.image_usage(root) == before_usage and before_usage['total'] == 8
+
+
+def test_frame_amendment_later_output_publication_and_uncertain_original_collection_survive_revocation(neutral_package, monkeypatch):
+    from lib import production_frame_amendment as amendment, production_boards as boards
+    root, proposal, authority, expected, plan = refreshed_frame_amendment(neutral_package, monkeypatch)
+    manifest = json.loads((root / 'artifacts/asset_manifest.json').read_text())
+    manifest['assets'].append({'id':'SYNTHETIC-attributed-output','type':'video','path':'assets/video/output.mp4',
+        'scene_id':'s1','source_tool':'grok_cli_video'})
+    write(root, 'artifacts/asset_manifest.json', manifest)
+    assert pa.require_active_policy(root)[1] == plan['successor_policy_sha256']
+    before = file_bytes(root)
+    assert amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
+        expected=expected, proposal=proposal, authority=authority)['replayed']
+    assert file_bytes(root) == before
+    log = json.loads((root / 'artifacts/decision_log.json').read_text()); log['decisions'][-1]['user_approved'] = False
+    write(root, 'artifacts/decision_log.json', log)
+    original = images._call(images._load(root), 'uncertain-start')
+    envelope = {'arguments':original['submitted_arguments']}
+    late = host_receipt(root, envelope, name='SYNTHETIC-late-original')
+    scopes = json.loads((root / 'production_scopes.json').read_text())
+    assert images._scope(root, original['scope_id'])['id'] == original['scope_id']
+    collected = images.import_native_image(root, 'uncertain-start', host_receipt=late)
+    assert collected['state'] == 'imported'
+    assert images.import_native_image(root, 'uncertain-start', host_receipt=late) == collected
+    assert images.image_usage(root)['total'] == 8
+    current_board = boards.load_board_pack(root)['board_bindings']['start']
+    assert boards.bind_imported_board(root, 'start', 'uncertain-start', images=images) == current_board
+    assert boards.load_board_pack(root)['board_bindings']['start']['call_id'] == 'fixture-start'
+    assert images._image_envelope(root, scopes) == scopes['image_envelope']
+    assert pa.load_active_policy(root)[0] is None
+    with pytest.raises(pa.AutonomyError):
+        images.derive_native_image_scope(root, original['packet'], 'start', original['host_arguments'], output_path=original['output_path'])
+
+
+@pytest.mark.parametrize('defect', ['inventory', 'policy_terms', 'package_terms', 'contract_delta', 'original_envelope', 'foreign_original'])
+def test_frame_amendment_mutually_rehashed_forged_links_cannot_expand_authority(neutral_package, monkeypatch, defect):
+    from lib import production_frame_amendment as amendment
+    root, _, _, _, _ = refreshed_frame_amendment(neutral_package, monkeypatch)
+    pointer = json.loads((root / amendment.POINTER).read_text())
+    record_path = root / pointer['record']['path']; record = json.loads(record_path.read_text())
+    plan = record['plan']
+    if defect == 'inventory':
+        record['originals'].pop('artifacts/script.json')
+    elif defect == 'policy_terms':
+        plan['changes'][pa.POLICY_ARTIFACT]['caps']['max_total_attempts'] += 1
+    elif defect == 'package_terms':
+        path = next(p for p in plan['retained_new'] if p.endswith('successor-package.json'))
+        plan['retained_new'][path]['shots'][0]['script'] = 'SYNTHETIC unrelated dialogue change'
+    elif defect == 'contract_delta':
+        plan['changes']['artifacts/shot_contract.json']['shots'][0]['dominant_action'] = 'SYNTHETIC unrelated action'
+    elif defect == 'original_envelope':
+        data = json.loads((root / 'production_scopes.json').read_text()); data['image_envelope']['definition']['image_allowance'] += 1
+        data['image_envelope']['envelope_sha256'] = request.digest(data['image_envelope']['definition'])
+        write(root, 'production_scopes.json', data)
+    else:
+        path = root / record['originals'][pa.POLICY_ARTIFACT]['path']; path.chmod(0o644)
+        value = json.loads(path.read_text()); value['project_id'] = 'SYNTHETIC-foreign-run'
+        write(root, str(path.relative_to(root)), value)
+        record['originals'][pa.POLICY_ARTIFACT]['sha256'] = file_sha256_of(path)
+        plan['expected']['files'][pa.POLICY_ARTIFACT] = file_sha256_of(path)
+    plan['plan_sha256'] = request.digest({k:v for k,v in plan.items() if k != 'plan_sha256'})
+    record_path.chmod(0o644); write(root, pointer['record']['path'], record)
+    pointer['record']['sha256'] = file_sha256_of(record_path); pointer['plan_sha256'] = plan['plan_sha256']
+    write(root, amendment.POINTER, pointer)
+    assert pa.load_active_policy(root)[0] is None
+    with pytest.raises(ValueError):
+        images._image_envelope(root, json.loads((root / 'production_scopes.json').read_text()))
+
+
+def test_frame_amendment_pre_pointer_abandoned_snapshot_temp_does_not_block_retry(neutral_package, monkeypatch):
+    from lib import production_frame_amendment as amendment
+    root, proposal, authority = frame_amendment_fixture(neutral_package, monkeypatch)
+    expected = amendment.expected_original(root)
+    plan = amendment.plan_frame_input_amendment(root, expected=expected, proposal=proposal, authority=authority)
+    def abandoned(path, raw):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.with_name('.' + path.name + '.frame-history-tmp').write_bytes(raw)
+        raise OSError('SYNTHETIC exit before immutable snapshot link')
+    with monkeypatch.context() as patch:
+        patch.setattr(amendment, '_save_raw', abandoned)
+        with pytest.raises(OSError):
+            amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
+                expected=expected, proposal=proposal, authority=authority)
+    assert not (root / amendment.POINTER).exists()
+    assert pa.require_active_policy(root)[1] == expected['policy_sha256']
+    result = amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
+        expected=expected, proposal=proposal, authority=authority)
+    assert result['successor_policy_sha256'] == plan['successor_policy_sha256']
+
+
+def test_frame_amendment_snapshot_is_readonly_at_hardlink_interruption(neutral_package, monkeypatch):
+    from lib import production_frame_amendment as amendment
+    import stat
+    root, proposal, authority = frame_amendment_fixture(neutral_package, monkeypatch)
+    expected = amendment.expected_original(root)
+    plan = amendment.plan_frame_input_amendment(root, expected=expected, proposal=proposal, authority=authority)
+    original_link = amendment.os.link
+    published = []
+    def interrupted(source, destination):
+        original_link(source, destination)
+        published.append(destination)
+        raise OSError('SYNTHETIC exit immediately after snapshot publication')
+    with monkeypatch.context() as patch:
+        patch.setattr(amendment.os, 'link', interrupted)
+        with pytest.raises(OSError, match='snapshot publication'):
+            amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
+                expected=expected, proposal=proposal, authority=authority)
+    assert len(published) == 1 and stat.S_IMODE(published[0].stat().st_mode) == 0o444
+    assert not (root / amendment.POINTER).exists()
+    assert pa.require_active_policy(root)[1] == expected['policy_sha256']
+    result = amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
+        expected=expected, proposal=proposal, authority=authority)
+    assert result['successor_policy_sha256'] == plan['successor_policy_sha256']

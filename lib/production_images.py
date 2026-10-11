@@ -328,6 +328,9 @@ def _image_envelope(root, data):
         raise ValueError('native image envelope approval binding changed')
     evidence_path = _bound_file(root,approval,'image envelope approval')
     if retained.get('activation_basis') is not None:
+        from lib.production_frame_amendment import historical_image_envelope
+        if historical_image_envelope(root, retained):
+            return retained
         from lib.production_autonomy import require_active_policy
         policy, sha, decision_id = require_active_policy(root)
         expected = {'kind': 'standing_run', 'policy_sha256': sha, 'decision_id': decision_id,
@@ -349,11 +352,11 @@ def _image_envelope(root, data):
     return retained
 
 
-def _standing_image_definition(root, policy, *, check_first_pass_capacity=True):
+def _standing_image_definition(root, policy, *, check_first_pass_capacity=True, retained_pack=None):
     """Derive exact board slots under real setup/command media authority."""
     from lib import production_boards as boards
     from lib.production_autonomy import _bound_document, StandingSetupRequired
-    pack = boards.load_board_pack(root)
+    pack = boards.load_board_pack(root) if retained_pack is None else retained_pack
     setup = _bound_document(root, policy['activation_basis']['standing_setup'], 'standing setup')
     terms = setup.get('native_images', {})
     if (set(terms) != {'account', 'image_allowance', 'allowed_image_routes'}

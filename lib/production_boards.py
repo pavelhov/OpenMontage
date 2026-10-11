@@ -286,6 +286,18 @@ def _validate_spec(root, spec):
             if (len(set(upstream)) != len(upstream) or any(s not in shot_ids[:index] for s in upstream)
                     or set(upstream) != set(spec["shots"][index].get("video_dependencies", []))):
                 raise ValueError("motion upstream must match explicit preceding video dependencies")
+            treatment = shot.get("reference_mode", template.get("reference_mode"))
+            if treatment == "frame_conditioned":
+                frame = shot.get("frame_input")
+                starts = [role for role in spec["shots"][index]["roles"] if role["role"] == "start_frame"]
+                if (template.get("planning_mode") != "shot_local_v1" or len(starts) != 1 or frame != starts[0]
+                        or frame["asset_id"] not in shot["asset_ids"]):
+                    raise ValueError("frame-conditioned motion needs one exact existing consumer starting role")
+                starting = next(a for a in assets if a["id"] == frame["asset_id"])
+                if starting["role"] not in {"start_frame", "payoff_board"} or set(starting["cast_ids"]) != set(shot["cast_ids"]):
+                    raise ValueError("frame-conditioned starting composition needs exact declared cast")
+            elif "frame_input" in shot:
+                raise ValueError("frame_input requires explicit frame_conditioned treatment")
             for aid in shot["asset_ids"]:
                 source = next(a for a in assets if a["id"] == aid).get("upstream_source")
                 if source and source["shot_id"] not in upstream:
