@@ -151,7 +151,40 @@ def _effective(data, marker):
 def effective_controls(project_dir):
     """None for legacy projects; otherwise current-story effective controls."""
     root = _root(project_dir)
-    return _effective(_load(root), _marker(root))
+    data = _load(root)
+    effective = _effective(data, _marker(root))
+    if effective is None:
+        return None
+    # A named-shot increase is authority only through the existing authenticated
+    # standing successor chain. Original controls and their chain stay frozen.
+    path = root / 'production_scopes.json'
+    try:
+        scopes = json.loads(path.read_text()) if path.exists() else {}
+    except (OSError, ValueError) as exc:
+        _fail(f'cannot read standing allowance chain: {exc}')
+    if scopes.get('standing_allowance_amendments'):
+        from lib import production_autonomy as autonomy
+        try:
+            policy, _, _ = autonomy.require_active_policy(root)
+            limits = autonomy.effective_standing_caps(root, policy).get('max_attempts_by_shot', {})
+            if limits:
+                original = autonomy._bound_document(root, policy['activation_basis']['standing_setup'],
+                                                    'standing setup').get('episode_controls')
+                current = next(record['controls'] for record in reversed(data['records'])
+                               if record['kind'] == 'controls'
+                               and record['story_revision'] == policy['story_revision'])
+                # A later controls amendment still owns any narrower admission.
+                # Only the exact retained starting controls receive the increase.
+                if original == current:
+                    effective['max_generations_by_shot'] = copy.deepcopy(limits)
+        except (ValueError, KeyError, StopIteration) as exc:
+            _fail(f'standing shot allowance is not current: {exc}')
+    return effective
+
+
+def _shot_limit(effective, shot_id):
+    return (effective or {}).get('max_generations_by_shot', {}).get(
+        shot_id, (effective or {}).get('max_generations_per_shot'))
 
 
 def first_cut_enabled(project_dir):
@@ -417,11 +450,11 @@ def generation_admission(project_dir, *, shot_id, provider, model=None, purpose,
     used = sum(1 for i in usage['occurrences'] if i['counted'] and i['shot_id'] == shot_id
                and i['attempt_id'] != exclude_attempt_id)
     pending = set(usage['pending'])
-    if purpose != 'mcp_begin' and any(
+    if (purpose != 'mcp_begin' or shot_id in effective.get('max_generations_by_shot', {})) and any(
             i['counted'] and i['shot_id'] == shot_id and i['attempt_id'] in pending
             and i['attempt_id'] != exclude_attempt_id for i in usage['occurrences']):
         reasons.append(f'a pending original for {shot_id} blocks a duplicate generation')
-    limit = effective['max_generations_per_shot']
+    limit = _shot_limit(effective, shot_id)
     if limit is not None and used >= limit:
         reasons.append(f'episode generation limit reached for {shot_id} ({used}/{limit})')
     routes = {i['attempt_id']: (i['provider'], i['model']) for i in usage['occurrences']}
@@ -516,16 +549,15 @@ def episode_production_status(project_dir):
     # Reported separately: per-scope allowances are not combined into one cap,
     # and policy-level caps are enforced by their own checks (not shown here).
     caps = {}
-    limit = controls['max_generations_per_shot'] if controls else None
     for scope in _scopes(root):
         if scope.get('status') != 'approved':
             continue
         for shot_id, allowance in (scope.get('attempts_per_shot') or {}).items():
-            cap = caps.setdefault(shot_id, {'controls_limit': limit, 'scope_allowances': {}})
+            cap = caps.setdefault(shot_id, {'controls_limit': _shot_limit(controls, shot_id), 'scope_allowances': {}})
             if isinstance(allowance, int) and not isinstance(allowance, bool):
                 cap['scope_allowances'][scope.get('id')] = allowance
     for shot_id in usage['per_shot']:
-        caps.setdefault(shot_id, {'controls_limit': limit, 'scope_allowances': {}})
+        caps.setdefault(shot_id, {'controls_limit': _shot_limit(controls, shot_id), 'scope_allowances': {}})
     for shot_id, cap in caps.items():
         cap['used'] = usage['per_shot'].get(shot_id, 0)
     # Shot readiness covers every planned shot; a missing, invalid,

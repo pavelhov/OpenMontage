@@ -1,6 +1,9 @@
 """Offline actual-observation shapes and narrowly ordered payoff preparation."""
 import copy
 import json
+from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -12,6 +15,7 @@ from tests.lib.test_production_request import neutral_package  # noqa: F401
 from tests.lib.test_production_package_authoring import packages
 from tests.lib.test_production_factory import correction_factory_fixture, retain_factory_board, file_bytes, write
 from tests.integration.test_first_pass_workflow import attestation
+from tests.integration.test_openart_mcp_autonomy import lifecycle  # noqa: F401
 
 
 def observation(root, envelope, **kwargs):
@@ -87,6 +91,129 @@ def test_inline_crash_after_receipt_retention_restores_original(board_package, m
     assert 'host_envelope' not in resumed and images.image_usage(root)['total'] == 1
     assert len([e for e in images.image_call_status(root, call['call_id'])['events'] if e['kind'] == 'tool_return']) == 1
 
+
+@pytest.mark.parametrize('interrupt_completion', [False, True])
+def test_host_helper_actual_receipt_shape_completes_canonical_original(board_package, interrupt_completion):
+    """Synthetic host only: real JS saver -> Python receipt admission/completion."""
+    root, _, _, target = board_package
+    call = reserve(board_package, call_id='host-context')
+    step = execution.advance(root)
+    assert step['host_envelope']['call_id'] == call['call_id']
+    step_path = root / 'host-step.json'; step_path.write_text(json.dumps(step))
+    image_path = root / '.codex/generated_images/synthetic-host.png'
+    image_path.parent.mkdir(parents=True); image_path.write_bytes(PNG)
+    engine = Path(__file__).resolve().parents[2]
+    script = r"""
+const fs = require('node:fs/promises'), path = require('node:path');
+const {execFileSync} = require('node:child_process');
+const [engine, python, root, stepPath, imagePath, interrupted] = process.argv.slice(1);
+const {consumeNativeHostAction} = require(path.join(engine, 'scripts/native_host_receipt.js'));
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+(async () => {
+  const step = JSON.parse(await fs.readFile(stepPath, 'utf8')), observations = new Map();
+  let nativeCalls = 0, completed = 0;
+  const tools = {mcp__node_repl__js: async request => {
+    let output;
+    await new AsyncFunction('nodeRepl', request.code)({write: value => output = value});
+    return {content: [{type: 'text', text: output}]};
+  }};
+  const options = {
+    nativeTool: {tool_name: 'image_gen.imagegen', invoke: async args => {
+      nativeCalls++;
+      return {image_url: 'data:image/png;base64,' + (await fs.readFile(imagePath)).toString('base64'),
+        output_hint: `Synthetic fixture saved as ${imagePath} by default.`, additive_field: {kept: ['complete', 'return']}};
+    }}, receiptPath: path.join(root, 'actual-host-return.json'),
+    getObservation: key => observations.get(key), retainObservation: (key, value) => observations.set(key, value),
+    completeAction: async (action, outcome) => {
+      const code = "import json,sys; from lib import production_execution as e; p=json.loads(sys.argv[2]); print(json.dumps(e.complete_action(sys.argv[1],p['action'],outcome=p['outcome'])))";
+      const result = JSON.parse(execFileSync(python, ['-c', code, root, JSON.stringify({action, outcome})], {cwd: engine, encoding: 'utf8'}));
+      completed++;
+      if (interrupted === 'true' && completed === 1) throw new Error('Synthetic lost completion response');
+      return result;
+    },
+  };
+  let result;
+  try { result = await consumeNativeHostAction(tools, step, options); }
+  catch (error) {
+    if (error.message !== 'Synthetic lost completion response') throw error;
+    result = await consumeNativeHostAction(tools, step, options);
+  }
+  console.log(JSON.stringify({nativeCalls, completed, result}));
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    observed = json.loads(subprocess.run(['node', '-e', script, str(engine), sys.executable,
+        str(root), str(step_path), str(image_path), str(interrupt_completion).lower()],
+        check=True, capture_output=True, text=True).stdout)
+    assert observed['nativeCalls'] == 1
+    assert observed['result']['provider_calls'] is None
+    assert observed['completed'] == (2 if interrupt_completion else 1)
+    assert 'host_envelope' not in observed['result']
+    if interrupt_completion:
+        assert observed['result']['replayed']
+    imported = images.image_call_status(root, call['call_id'])
+    assert imported['state'] == 'imported' and (root / target).read_bytes() == PNG
+    receipt = json.loads((root / imported['host_receipt']['path']).read_text())
+    assert receipt['arguments'] == step['host_envelope']['arguments']
+    assert receipt['result']['additive_field'] == {'kept': ['complete', 'return']}
+    assert images.image_usage(root)['total'] == 1
+    resumed = execution.advance(root)
+    assert 'host_envelope' not in resumed
+
+
+
+def test_host_helper_openart_structured_return_completes_canonical_original(lifecycle):
+    """Actual connector wrapper shape, synthetic callback, canonical original."""
+    from lib import production_autonomy as autonomy
+    root, policy, _, inputs, _, _, jobs = lifecycle
+    jobs.prepare(root, attempt_id='host-openart', generation_inputs=inputs,
+        authority_fn=execution.prepare_openart_mcp_handoff)
+    step = execution.advance(root)
+    assert step['action']['kind'] == 'receive_openart_original'
+    step_path = root / 'host-step.json'; step_path.write_text(json.dumps(step))
+    engine = Path(__file__).resolve().parents[2]
+    script = r"""
+const fs = require('node:fs/promises'), path = require('node:path');
+const {execFileSync} = require('node:child_process');
+const [engine, python, root, stepPath] = process.argv.slice(1);
+const {consumeNativeHostAction} = require(path.join(engine, 'scripts/native_host_receipt.js'));
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+(async () => {
+  const step = JSON.parse(await fs.readFile(stepPath, 'utf8')), observations = new Map();
+  const raw = {content: [{type: 'text', text: 'Synthetic exact connector return'}],
+    structuredContent: {historyId: 'synthetic-actual-original', status: 'PENDING', additive: {kept: true}},
+    additive_host_field: ['retained', 'losslessly']};
+  let nativeCalls = 0;
+  const tools = {mcp__node_repl__js: async request => {
+    let output; await new AsyncFunction('nodeRepl', request.code)({write: value => output = value});
+    return {content: [{type: 'text', text: output}]};
+  }};
+  const receiptPath = path.join(root, 'actual-openart-return.json');
+  const result = await consumeNativeHostAction(tools, step, {
+    nativeTool: {tool_name: step.host_envelope.tool, invoke: async () => {nativeCalls++; return raw;}},
+    receiptPath, getObservation: key => observations.get(key),
+    retainObservation: (key, value) => observations.set(key, value),
+    completeAction: async (action, outcome) => {
+      const payload = outcome.result.structuredContent ?? outcome.result;
+      if (typeof payload?.historyId !== 'string' || !payload.historyId) throw new Error('No actual original historyId');
+      const code = "import json,sys; from lib import production_execution as e, openart_mcp as m; m._ALLOW_FIXTURE_PRODUCTION=True; p=json.loads(sys.argv[2]); print(json.dumps(e.complete_action(sys.argv[1],p['action'],outcome=p['outcome'])))";
+      return JSON.parse(execFileSync(python, ['-c', code, root,
+        JSON.stringify({action, outcome: {result: payload}})], {cwd: engine, encoding: 'utf8'}));
+    },
+  });
+  const retained = JSON.parse(await fs.readFile(receiptPath, 'utf8'));
+  console.log(JSON.stringify({nativeCalls, result, retained, raw}));
+})().catch(error => {console.error(error); process.exitCode = 1;});
+"""
+    actual = json.loads(subprocess.run(['node', '-e', script, str(engine), sys.executable,
+        str(root), str(step_path)], check=True, capture_output=True, text=True).stdout)
+    assert actual['nativeCalls'] == 1 and actual['result']['provider_calls'] is None
+    assert actual['retained']['result'] == actual['raw']
+    assert actual['retained']['arguments'] == step['host_envelope']['arguments']
+    state = jobs._load(root, 'host-openart')
+    assert state['receipt'] == actual['raw']['structuredContent']
+    assert autonomy.root_attempt_counts(root, policy)['total'] == 1
+    assert jobs.poll_args(root, 'host-openart')['arguments'] == {'historyId': 'synthetic-actual-original'}
+    assert 'host_envelope' not in execution.advance(root)
 
 @pytest.mark.parametrize('original_inline', [False, True])
 def test_inline_unknown_return_and_additive_supplement(board_package, original_inline):
@@ -437,3 +564,165 @@ def test_independent_motion_stays_ahead_of_unrelated_pending_image(neutral_packa
     action = execution.next_production_action(root)
     assert (action['kind'], action['subject']) == ('prepare_motion', 's1')
     assert file_bytes(root) == before and images.image_usage(root) == usage
+
+
+def pending_openart_with_boards(lifecycle, *, accepted=True):
+    """Real canonical MCP admission/journal; every returned job/media is synthetic.
+
+    The independent static pack leaves all original motion inputs unchanged.
+    Its exact image authority is separate from the frozen motion approval.
+    """
+    root, _, _, inputs, _, _, jobs = lifecycle
+    jobs.prepare(root, attempt_id='accepted-original', generation_inputs=inputs,
+        authority_fn=execution.prepare_openart_mcp_handoff)
+    jobs.begin(root, 'accepted-original', authority_fn=execution.prepare_openart_mcp_handoff)
+    if accepted:
+        jobs.receive(root, 'accepted-original', outcome={'historyId': 'actual-synthetic-job', 'status': 'PENDING'})
+    approval = root / 'notes/SYNTHETIC-image-authority.txt'
+    approval.parent.mkdir(exist_ok=True)
+    approval.write_text('SYNTHETIC fixture approval of these exact two independent board requests.')
+    spec = {'version': '1.0', 'reviewer': 'SYNTHETIC persistent reviewer',
+        'story': {'path': 'artifacts/script.json', 'sha256': file_sha256(root / 'artifacts/script.json')},
+        'approval': {'path': str(approval.relative_to(root)), 'sha256': file_sha256(approval), 'approved_by': 'SYNTHETIC fixture'},
+        'references': [], 'shared_roles': [],
+        'image_nodes': [{'slot_id': slot, 'shot_id': sid, 'role': 'start_frame',
+            'prompt': 'SYNTHETIC independent static board ' + slot, 'reference_ids': [], 'image_dependencies': [],
+            'transparent_background': False, 'required_predicates': ['asset_quality', 'cast_identity'],
+            'output_path': 'assets/images/candidates/' + slot + '.png'}
+            for slot, sid in [('future1', 'future'), ('later1', 'later')]],
+        'shots': [{'shot_id': 'entry', 'roles': [], 'video_dependencies': []},
+                  {'shot_id': 'future', 'roles': [{'asset_id': 'future1', 'role': 'start_frame'}], 'video_dependencies': ['entry']},
+                  {'shot_id': 'later', 'roles': [{'asset_id': 'later1', 'role': 'start_frame'}], 'video_dependencies': []}]}
+    boards.prepare_board_pack(root, spec, images=images)
+    return root, jobs
+
+
+def reserve_overlap_board(root, slot):
+    prepared = boards.prepare_image_request(root, slot, images=images)
+    approval = boards.load_board_pack(root)['specification']['approval']
+    scopes = json.loads((root / 'production_scopes.json').read_text())
+    scope = {'id': 'synthetic-image-' + slot, 'status': 'approved', 'approved_by': 'SYNTHETIC fixture',
+        'project_id': json.loads((root / 'project.json').read_text())['project_id'], 'story_revision': 'story-1',
+        'phase': 'image', 'provider': 'native_imagegen', 'evidence': {k: approval[k] for k in ('path', 'sha256')},
+        'image_allowance': 1, 'allowed_image_routes': ['native_imagegen'],
+        'requests': {slot: prepared['request_sha256']}, 'attempts_per_shot': {slot: 1}}
+    scopes['scopes'].append(scope); write(root, 'production_scopes.json', scopes)
+    return boards.reserve_board_image(root, slot, scope_id=scope['id'], call_id='synthetic-' + slot, images=images)
+
+
+def test_accepted_pending_openart_overlaps_one_board_lane_then_refreshes_status(lifecycle):
+    root, jobs = pending_openart_with_boards(lifecycle)
+    original = jobs.frozen_request(root, 'accepted-original')
+    before = file_bytes(root)
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('prepare_board_image', 'future1')
+    assert file_bytes(root) == before
+    call = reserve_overlap_board(root, 'future1')
+    step = execution.advance(root)
+    assert step['host_envelope']['call_id'] == call['call_id']
+    assert step['action']['kind'] == 'receive_native_image'
+    assert 'host_envelope' not in execution.advance(root)  # same original; no re-emission
+    step = execution.complete_action(root, step['action'], outcome={
+        'host_receipt': host_receipt(root, step['host_envelope'], name='overlap-original')})
+    assert (step['action']['kind'], step['action']['subject']) == ('review_board', 'future1')
+    source = step['action']['inputs']['source']
+    verdict = attestation(source['sha256'], step['action']['inputs']['required_predicates'], revision='story-1')
+    verdict.update(review_id='synthetic-overlap-review', reviewer='SYNTHETIC persistent reviewer')
+    step = execution.complete_action(root, step['action'], outcome={'review': verdict})
+    assert step['action']['kind'] == 'poll_openart_original'
+    assert 'later1' in boards.board_schedule(root, images=images)['ready_images']
+    assert execution.next_production_action(root)['kind'] == 'poll_openart_original'
+    assert jobs.frozen_request(root, 'accepted-original') == original
+    # Another actual pending observation opens one more board opportunity.
+    step = execution.complete_action(root, step['action'], outcome={
+        'result': {'historyId': 'actual-synthetic-job', 'status': 'RUNNING'}})
+    assert step.get('host_envelope', {}).get('call_id') is None  # no image standing envelope in this manual-scope fixture
+    assert jobs.resume_original(root, 'accepted-original')['next_action']['action'] == 'poll_original'
+    assert execution.next_production_action(root)['kind'] == 'prepare_board_image'
+
+
+def test_unaccepted_or_completed_original_preempts_ready_independent_board(lifecycle):
+    root, jobs = pending_openart_with_boards(lifecycle, accepted=False)
+    assert execution.next_production_action(root)['kind'] == 'receive_openart_original'
+    jobs.receive(root, 'accepted-original', outcome={'historyId': 'actual-synthetic-job', 'status': 'PENDING'})
+    jobs.record_status(root, 'accepted-original', result={'historyId': 'actual-synthetic-job', 'status': 'COMPLETED',
+        'resources': [{'id': 'actual-synthetic-resource', 'mediaType': 'video', 'status': 'COMPLETED',
+                       'url': 'https://fixture.invalid/original.mp4'}]})
+    assert execution.next_production_action(root)['kind'] == 'download_openart_original'
+
+
+def test_board_overlap_never_makes_unselected_upstream_motion_eligible(lifecycle):
+    from lib.shot_contract import validate_shot_contract
+    root, _ = pending_openart_with_boards(lifecycle)
+    contract = execution.load_shot_contract(root)
+    future = copy.deepcopy(contract['shots'][0]); future['id'] = 'future'
+    future['upstream'] = [{'shot_id': 'entry'}]
+    contract['shots'].append(future)
+    contract['project_review'] = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='story-1')
+    for shot in contract['shots']:
+        shot['review'] = attestation(shot_review_subject(contract, shot['id']), SHOT_PREDICATES, revision='story-1')
+    write(root, 'artifacts/shot_contract.json', contract)
+    before = file_bytes(root)
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('prepare_board_image', 'future1')
+    checked = validate_shot_contract(contract, project_dir=root, shot_id='future',
+        story_revision='story-1', selected_upstream=execution.load_selected_attempts(root))
+    assert not checked['eligible'] and any('upstream' in e for e in checked['errors'])
+    assert execution.load_selected_attempts(root) == {} and file_bytes(root) == before
+
+
+def test_collected_original_selection_review_preempts_independent_board(lifecycle, monkeypatch, tmp_path):
+    from tests.integration.test_openart_mcp_governance import install_fake_download
+    from tests.integration.test_openart_first_pass_workflow import real_av_clip
+    root, jobs = pending_openart_with_boards(lifecycle)
+    jobs.record_status(root, 'accepted-original', result={'historyId': 'actual-synthetic-job', 'status': 'COMPLETED',
+        'resources': [{'id': 'actual-synthetic-resource', 'mediaType': 'video', 'status': 'COMPLETED',
+                       'url': 'https://fixture.invalid/original.mp4'}]})
+    media = real_av_clip(tmp_path / 'SYNTHETIC-original.mp4', seconds=1)
+    install_fake_download(monkeypatch, jobs, media)
+    downloaded = jobs.download_original(root, 'accepted-original')
+    jobs.collect(root, 'accepted-original', downloaded_path=downloaded['downloaded_path'])
+    before = file_bytes(root)
+    assert execution.next_production_action(root)['kind'] == 'review_selection'
+    assert file_bytes(root) == before
+
+
+def test_pending_poll_does_not_hide_a_later_uncertain_original(lifecycle, monkeypatch):
+    root, _ = pending_openart_with_boards(lifecycle)
+    write(root, 'production_attempts/uncertain-original/request.json', {
+        'attempt_id': 'uncertain-original', 'cli_session_id': 'retained-local-original',
+        'shot_id': 'future', 'media_kind': 'motion', 'story_revision': 'story-1',
+        'request_sha256': 'a' * 64, 'scope': {'provider': 'grok_cli'}})
+    originals = execution._attempts(root)
+    # Same exact canonical originals in the order that exposed the old poll-first
+    # choice; changing iteration order grants no new submission or authority.
+    monkeypatch.setattr(execution, '_attempts', lambda root: sorted(originals,
+        key=lambda row: row['provider'] != 'openart_mcp' if 'provider' in row else True))
+    before = file_bytes(root)
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('collect_grok_original', 'uncertain-original')
+    assert action['inputs']['original_id'] == 'retained-local-original'
+    assert file_bytes(root) == before
+
+
+@pytest.mark.parametrize('status', [None, 'COMPLETED', 'unrecognized'])
+def test_no_pending_status_evidence_keeps_original_poll_first(lifecycle, status):
+    root, jobs = pending_openart_with_boards(lifecycle, accepted=False)
+    reply = {'historyId': 'actual-synthetic-job'}
+    if status is not None:
+        reply['status'] = status
+    jobs.receive(root, 'accepted-original', outcome=reply)
+    assert execution.next_production_action(root)['kind'] == 'poll_openart_original'
+
+
+@pytest.mark.parametrize('invalid', [None, 'not-a-local-time', '2026-10-12T01:02:03'])
+def test_missing_or_invalid_local_status_order_keeps_original_poll_first(lifecycle, invalid):
+    root, jobs = pending_openart_with_boards(lifecycle)
+    state = jobs._load(root, 'accepted-original')
+    event = next(e for e in state['events'] if e['kind'] == 'submission_receipt_retained')
+    if invalid is None:
+        del event['observed_at']
+    else:
+        event['observed_at'] = invalid
+    jobs._save(root, 'accepted-original', state)
+    assert execution.next_production_action(root)['kind'] == 'poll_openart_original'

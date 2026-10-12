@@ -162,3 +162,43 @@ def test_compact_explicit_identity_reference_binds_nonempty_cast(neutral_package
     del compact['compact']['references'][0]['cast_ids']
     with pytest.raises(ValueError, match='explicit cast_ids'):
         request.compile_package(root, bind(compact))
+
+
+def test_shootable_opt_in_compact_and_full_paths(neutral_package):
+    root, base, bind = neutral_package
+    compact, full = packages(base)
+    legacy = request.compile_package(root, bind(compact))
+    assert 'prompt_compiler' not in legacy['spec']['motion_binding']['contract_template']
+    for package in (compact, full):
+        package.update(prompt_compiler='shootable_v1', cast_names={})  # castless: explicit empty map, no dummy names
+        package['shots'][0]['camera'] = 'Locked-off wide shot.'
+        package['shots'][0]['sound'] = 'Room tone and footsteps only; no background music.'
+    for package in (compact, full):
+        template = request.compile_package(root, bind(package))['spec']['motion_binding']['contract_template']
+        assert template['prompt_compiler'] == 'shootable_v1' and template['cast_names'] == {}
+        assert template['shots'][0]['camera'] == 'Locked-off wide shot.'
+        assert template['shots'][0]['sound'].endswith('no background music.')
+        assert 'camera' not in template['shots'][1]
+
+
+@pytest.mark.parametrize('damage', ['names_without_marker', 'camera_without_marker', 'missing_name',
+                                    'missing_cast_names', 'unknown_compiler', 'blank_name'])
+def test_shootable_opt_in_fails_closed(neutral_package, damage):
+    root, base, bind = neutral_package
+    compact, _ = packages(base)
+    compact.update(prompt_compiler='shootable_v1', cast_names={'person': 'Mira, the red-coated courier'})
+    for shot in compact['shots']:
+        shot['cast'] = ['person']
+    if damage == 'names_without_marker': del compact['prompt_compiler']
+    elif damage == 'camera_without_marker':
+        del compact['prompt_compiler'], compact['cast_names']; compact['shots'][0]['camera'] = 'Wide.'
+    elif damage == 'missing_name': compact['cast_names'] = {}
+    elif damage == 'missing_cast_names': del compact['cast_names']
+    elif damage == 'unknown_compiler': compact['prompt_compiler'] = 'shootable_v2'
+    elif damage == 'blank_name': compact['cast_names']['person'] = '  '
+    binding = bind(compact); before = file_bytes(root)
+    with pytest.raises(ValueError):
+        request.compile_package(root, binding)
+    with pytest.raises(ValueError):
+        request.prepare_package(root, binding)
+    assert file_bytes(root) == before

@@ -17,7 +17,7 @@ from tests.lib.test_production_request import neutral_package  # noqa: F401
 
 
 def late_board_run(neutral_package, monkeypatch, *, image_allowance=8, native_batches=8,
-                   preprepare_target=False, dependent_board=False):
+                   preprepare_target=False, dependent_board=False, reuse=False):
     root, package, bind = neutral_package
     package = prospective_package(package)
     package['shots'] = [s for s in package['shots'] if s['id'] != 's2']
@@ -39,6 +39,13 @@ def late_board_run(neutral_package, monkeypatch, *, image_allowance=8, native_ba
     template['reference_mode'] = 'frame_conditioned'
     for shot in template['shots']:
         shot['frame_input'] = {'asset_id': 'start' if shot['id'] == 's1' else 'other', 'role': 'start_frame'}
+    if reuse:
+        # s3 starts from s1's actual selected outgoing frame: no image source.
+        source = {'shot_id': 's1', 'role': 'outgoing_frame'}
+        next(n for n in spec['image_nodes'] if n['slot_id'] == 'other').update(
+            upstream_source=source, reference_ids=[], image_dependencies=[], transparent_background=False,
+            prompt='Review only: s1 completed end state continues into s3.')
+        next(a for a in template['assets'] if a['id'] == 'other')['upstream_source'] = source
     request.prepare_package(root, bind(package))
     kwargs = standing_treatment_fixture(root)
     contract = execution.load_shot_contract(root)
@@ -60,7 +67,7 @@ def late_board_run(neutral_package, monkeypatch, *, image_allowance=8, native_ba
             'duration': 5, 'image_path': {'$board': {'asset_id': 'start' if sid == 's1' else 'other'}}}, project_dir=root)
     pa.activate_standing_run(root, **kwargs)
     images.activate_standing_image_envelope(root)
-    for slot in ('payoff', 'start', 'end', 'other'):
+    for slot in ('payoff', 'start', 'end') + (() if reuse else ('other',)):
         retain_factory_board(root, slot, predicates={'cast_count': 'pass', 'prop_body_invariants': 'fail'}
             if slot == 'other' and not preprepare_target and not dependent_board else {'cast_count': 'pass'})
     if dependent_board:
@@ -282,3 +289,112 @@ def test_authorized_source_batch_successor_resumes_late_correction_without_reset
     assert execution.load_selected_attempts(root) == selected
     assert file_bytes(root / 'production_attempts' / aid) == frozen_attempt
     assert images.image_usage(root)['total'] == 5 and len(transport.native_requests) == 1
+
+
+def reuse_review(root, slot='other', status='pass'):
+    pack = boards.load_board_pack(root)
+    names = sorted(pack['prompt_pack'][slot]['required_predicates'] + ['cast_count'])
+    review = attestation(pack['board_bindings'][slot]['sha256'], names, revision='r1')
+    review.update(review_id='SYNTHETIC-reuse-review', reviewer='persistent reviewer', status=status)
+    boards.record_board_review(root, slot, review, roles=['start_frame'], images=images)
+
+
+def test_upstream_reuse_board_binds_actual_selected_outgoing_without_image_call(neutral_package, monkeypatch):
+    root, transport, aid, _ = late_board_run(neutral_package, monkeypatch, reuse=True)
+    selected = execution.load_selected_attempts(root)['s1']
+    usage = images.image_usage(root)['total']
+    assert 'other' not in boards.board_schedule(root, images=images)['ready_images']
+    for call in (lambda: boards.prepare_image_request(root, 'other', images=images),
+                 lambda: boards.reserve_board_image(root, 'other', scope_id='x', call_id='x', images=images)):
+        with pytest.raises(ValueError, match='no image call'):
+            call()
+    with pytest.raises(execution.ProductionGovernanceError):
+        execution.resolve_board_input(root, {'asset_id': 'other'})
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('bind_selected_upstream', 's3')
+    advanced = execution.advance(root)
+    assert advanced['provider_calls'] == 0 and advanced['action']['kind'] == 'review_board'
+    binding = boards.load_board_pack(root)['board_bindings']['other']
+    assert binding['origin'] == 'reuse' and binding['sha256'] == selected['outgoing_frame']['sha256']
+    assert binding['upstream_source']['attempt_id'] == aid
+    # No inherited semantic pass: the consumer role stays unreviewed.
+    assert boards._review_blockers(boards.load_board_pack(root), 'other', 'start_frame')
+    with pytest.raises(execution.ProductionGovernanceError, match='role review'):
+        execution.resolve_board_input(root, {'asset_id': 'other'})
+    before = file_bytes(root)
+    assert execution.advance(root)['action']['kind'] == 'review_board' and file_bytes(root) == before
+    reuse_review(root)
+    resolved = execution.resolve_board_input(root, {'asset_id': 'other'})
+    assert resolved['sha256'] == file_sha256(selected['outgoing_frame']['path'])
+    asset = next(a for a in execution.load_shot_contract(root)['assets'] if a['id'] == 'other')
+    assert asset['sha256'] == resolved['sha256'] and not asset.get('preparation_pending')
+    for call in (lambda: boards.prepare_image_request(root, 'other', images=images),
+                 lambda: boards.reserve_board_image(root, 'other', scope_id='x', call_id='x', images=images)):
+        with pytest.raises(ValueError, match='no image call'):
+            call()
+    assert images.image_usage(root)['total'] == usage and len(transport.native_requests) == 1
+
+
+def test_upstream_reuse_replays_after_contract_publish_before_board_binding(neutral_package, monkeypatch):
+    root, transport, _, _ = late_board_run(neutral_package, monkeypatch, reuse=True)
+    real = boards.bind_upstream_board_locked
+    monkeypatch.setattr(boards, 'bind_upstream_board_locked',
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError('SYNTHETIC interruption')))
+    with pytest.raises(RuntimeError):
+        execution.advance(root)
+    assert next(s for s in execution.load_shot_contract(root)['shots'] if s['id'] == 's3')['upstream'][0].get('attempt_id')
+    assert 'other' not in boards.load_board_pack(root)['board_bindings']
+    monkeypatch.setattr(boards, 'bind_upstream_board_locked', real)
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('bind_selected_upstream', 's3')
+    assert execution.advance(root)['action']['kind'] == 'review_board'
+    bound = boards.load_board_pack(root)['board_bindings']['other']
+    before = file_bytes(root)
+    pack = boards.load_board_pack(root)
+    selection = {**bound['upstream_source'], 'path': bound['path']}
+    assert boards.bind_upstream_board_locked(root, pack, 'other', selection) is False
+    assert file_bytes(root) == before and len(transport.native_requests) == 1
+
+
+def test_upstream_reuse_changed_selection_fails_closed_without_substitution(neutral_package, monkeypatch):
+    from lib.shot_contract import selection_digest
+    root, transport, _, _ = late_board_run(neutral_package, monkeypatch, reuse=True)
+    execution.advance(root); reuse_review(root)
+    bound = boards.load_board_pack(root)['board_bindings']['other']
+    selection = execution.load_selected_attempts(root)['s1']
+    frame = root / 'assets/images/SYNTHETIC-new-outgoing.png'; frame.write_bytes(PNG + b'changed')
+    selection['outgoing_frame'] = {'path': str(frame), 'sha256': file_sha256(frame)}
+    selection['review'] = attestation(selection_digest(selection), UPSTREAM_PREDICATES, revision='r1')
+    execution.record_selection(root, 's1', selection)
+    with pytest.raises(execution.ProductionGovernanceError, match='current selected outgoing frame'):
+        execution.resolve_board_input(root, {'asset_id': 'other'})
+    pack = boards.load_board_pack(root)
+    with pytest.raises(ValueError, match='another selection'):
+        boards.bind_upstream_board_locked(root, pack, 'other', {**bound['upstream_source'],
+            'outgoing_frame_sha256': selection['outgoing_frame']['sha256'], 'path': 'assets/images/SYNTHETIC-new-outgoing.png'})
+    assert boards.load_board_pack(root)['board_bindings']['other'] == bound
+    assert len(transport.native_requests) == 1
+
+
+@pytest.mark.parametrize('damage', ['undeclared_dependency', 'reference', 'wrong_role', 'not_frame_input', 'template_mismatch'])
+def test_upstream_reuse_declaration_validation_fails_without_writes(neutral_package, damage):
+    from tests.lib.test_production_package_authoring import packages
+    root, base, bind = neutral_package
+    compact, _ = packages(base)
+    payoff = compact['shots'][1]['boards'][0]
+    reuse = copy.deepcopy(payoff); payoff['slot_id'] = 's2-payoff'
+    reuse.update(role='start_frame', prompt='Review: s1 end state.', upstream_source={'shot_id': 's1', 'role': 'outgoing_frame'})
+    compact['shots'][1]['boards'].insert(0, reuse)
+    compact['compact']['payoff_asset_id'] = 's2-payoff'
+    projection = request.compile_package(root, bind(compact))
+    assert next(a for a in projection['spec']['motion_binding']['contract_template']['assets']
+                if a['id'] == 's2-start')['upstream_source'] == reuse['upstream_source']
+    if damage == 'undeclared_dependency': compact['shots'][1]['video_dependencies'] = []
+    elif damage == 'reference': reuse['image_dependencies'] = ['s1-start']
+    elif damage == 'wrong_role': reuse['upstream_source']['role'] = 'output'
+    elif damage == 'not_frame_input': compact['shots'][1]['motion']['frame_input']['asset_id'] = 's2-payoff'
+    elif damage == 'template_mismatch': reuse['transparent_background'] = True
+    binding = bind(compact); before = file_bytes(root)
+    with pytest.raises(ValueError):
+        request.compile_package(root, binding)
+    assert file_bytes(root) == before

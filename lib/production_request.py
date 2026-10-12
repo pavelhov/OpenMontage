@@ -126,6 +126,103 @@ def _manifest_requirement_binding(manifest, shot_id):
             'motion_handoffs': handoffs, 'reference_assets': references}
 
 
+SHOOTABLE_COMPILER = 'shootable_v1'
+
+
+def _literal(value):
+    return str(value) if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+
+def _row(value, pointer, before, after='\n'):
+    row = next(_leaf(value, pointer))
+    row.update(before=before, after=after)
+    return row
+
+
+def _seconds(value):
+    return ('%.3f' % value).rstrip('0').rstrip('.') + 's'
+
+
+def _shootable_rows(contract, shot, index, reference_free):
+    """Prospective shootable projection: each authored direction stays a literal
+    span; IDs, completion flags, roles, hashes and reviews stay in bindings."""
+    names = contract['cast_names']
+    base = f'/shot_contract/shots/{index}'
+
+    def name(cast_id, before, after):
+        if cast_id not in names:
+            raise ValueError('shootable prompt needs an authored cast_names entry for ' + cast_id)
+        return _row(names[cast_id], '/shot_contract/cast_names/' + cast_id.replace('~', '~0').replace('/', '~1'), before, after)
+
+    rows = []
+    if reference_free:
+        for key in ('desire', 'action', 'consequence', 'payoff'):
+            rows.append(_row(contract['story'][key], '/shot_contract/story/' + key, 'Story ' + key + ': '))
+    rows.append(_row(shot['initial_state'], base + '/initial_state', 'Opening frame: '))
+    rows.append(_row(shot['dominant_action'], base + '/dominant_action', 'Main action (one continuous beat): '))
+    rows.append(_row(shot['completed_end_state'], base + '/completed_end_state',
+                     'Ending frame (the action is finished on screen): '))
+    cast = shot['cast_ids']
+    for n, cast_id in enumerate(cast):
+        rows.append(name(cast_id, 'Characters in this shot: ' if n == 0 else ' and ',
+                         '.\n' if n == len(cast) - 1 else ''))
+    for cast_id in shot['required_visible_speakers']:
+        rows.append(name(cast_id, '', ' must be clearly visible on screen while speaking.\n'))
+    for n, invariant in enumerate(shot['prop_body_invariants']):
+        rows.append(_row(invariant, f'{base}/prop_body_invariants/{n}', 'Keep consistent: '))
+    for n, change in enumerate(shot['allowed_transformations']):
+        rows.append(_row(change['description'], f'{base}/allowed_transformations/{n}/description',
+                         'Allowed change: ', '\n'))
+        for m, keep in enumerate(change['preserved_invariants']):
+            rows.append(_row(keep, f'{base}/allowed_transformations/{n}/preserved_invariants/{m}',
+                             '  During this change keep: '))
+    if 'camera' in shot:
+        rows.append(_row(shot['camera'], base + '/camera', 'Camera: '))
+    rows.append(_row(shot['transition']['rationale'], base + '/transition/rationale',
+                     'Continuity from the previous shot: ' if shot['transition']['type'] == 'continuous'
+                     else 'Shot opening after the cut: '))
+    for n, line in enumerate(shot['dialogue']):
+        where = {'visible': 'on screen', 'offscreen': 'off screen, voice only'}.get(line['source'])
+        if where is None:
+            raise ValueError('shootable prompt cannot render dialogue source ' + repr(line['source']))
+        rows.append(name(line['speaker_id'], 'Spoken line %d: ' % (n + 1),
+            ' (%s), from %s to %s, says exactly: "' % (where, _seconds(line['start_seconds']),
+                                                       _seconds(line['end_seconds']))))
+        rows.append(_row(line['text'], f'{base}/dialogue/{n}/text', '', '"\n'))
+    if not shot['dialogue']:
+        rows[-1]['after'] += 'No spoken lines in this shot.\n'
+    if 'sound' in shot:
+        rows.append(_row(shot['sound'], base + '/sound', 'Sound: '))
+    return rows
+
+
+def _shootable_scene_rows(scene, si, rows):
+    """Authored scene-plan camera language, already bound by scene_plan_sha256."""
+    out = []
+    for key, label in (('framing', 'Framing: '), ('movement', 'Camera movement: ')):
+        if isinstance(scene.get(key), str) and scene[key].strip():
+            out.append(_row(scene[key], f'/scene_plan/scenes/{si}/{key}', label))
+    language = scene.get('shot_language') or {}
+    words = [str(language[k]).replace('_', ' ') + suffix for k, suffix in
+             (('shot_size', ' shot'), ('camera_movement', ' camera'), ('lens_mm', 'mm lens')) if k in language]
+    if words and (out or rows):
+        (out or rows)[-1]['after'] += 'Shot style: ' + ', '.join(words) + '.\n'
+    return out
+
+
+def _compile_shootable(packet, native_pointer):
+    prompt, coverage = '', []
+    for row in packet['occurrences']:
+        fragment = _literal(row['value'])
+        prompt += row['before']
+        start = len(prompt)
+        prompt += fragment + row['after']
+        coverage.append({'occurrence_id': row['occurrence_id'], 'source_pointer': row['source_pointer'],
+                         'value_sha256': row['value_sha256'], 'native_pointer': native_pointer,
+                         'start': start, 'end': start + len(fragment), 'fragment_sha256': digest(fragment)})
+    return {'prompt': prompt, 'coverage': coverage, 'source_binding': packet['binding']}
+
+
 def source_packet(project_dir, shot_id, *, provider="openart_cli", native=None, check_native_controls=True):
     """Resolve authoritative closed contract, explicit scene→script mapping and bytes."""
     return _source_packet(project_dir, shot_id, provider=provider, native=native,
@@ -190,10 +287,13 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
                       or shot.get('reference_mode') == 'reference_free')
     if reference_free and provider not in {'openart_cli', 'openart_mcp'}:
         raise ValueError('reference-free contract requires OpenArt text2video')
+    shootable = contract.get('prompt_compiler') == SHOOTABLE_COMPILER
     rows = []
-    if reference_free:
+    if shootable:
+        rows.extend(_shootable_rows(contract, shot, index, reference_free))
+    elif reference_free:
         rows.extend(_leaf(contract['story'], '/shot_contract/story'))
-    for key in ('initial_state', 'dominant_action', 'completed_end_state', 'endpoint_completion',
+    for key in () if shootable else ('initial_state', 'dominant_action', 'completed_end_state', 'endpoint_completion',
                 'cast_ids', 'required_visible_speakers', 'dialogue', 'prop_body_invariants',
                 'allowed_transformations', 'transition'):
         rows.extend(_leaf(shot[key], f'/shot_contract/shots/{index}/{key}'))
@@ -219,7 +319,7 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
             raise ValueError('reference bytes changed')
         refs.append({'id': asset['id'], 'role': asset['role'], 'cast_ids': asset['cast_ids'],
                      'sha256': asset['sha256'], 'review_sha256': review_digest(asset['review'])})
-        if asset['id'] in shot['asset_ids'] or asset['id'] == payoff_id or asset['role'] == 'identity_reference':
+        if not shootable and (asset['id'] in shot['asset_ids'] or asset['id'] == payoff_id or asset['role'] == 'identity_reference'):
             for key in ('id', 'role', 'cast_ids'):
                 pointer = ('/shot_contract/assets/by_id/' + asset['id'].replace('~', '~0').replace('/', '~1')
                            if shot_local(contract) else f'/shot_contract/assets/{ai}')
@@ -262,8 +362,12 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
     si, section = matches[0]
     # An empty context is still bound by script_sha256 below, but cannot have
     # a non-empty literal span in the compiled native prompt.
+    if shootable:
+        rows.extend(_shootable_scene_rows(scenes[0], scene_plan['scenes'].index(scenes[0]), rows))
     if section['text'] != '':
         rows.extend(_leaf(section['text'], f'/script/sections/{si}/text'))
+        if shootable:
+            rows[-1].update(before='Story context (do not speak or print): ', after='\n')
     for n, row in enumerate(rows):
         row['occurrence_id'] = f'occ-{n:04d}'
     upstream = []
@@ -284,6 +388,8 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
             script_sha256=digest({'order': ids, 'section': local_timing(section)}),
             scene_plan_sha256=digest({'order': [s['id'] for s in scene_plan['scenes']],
                 'scene': local_timing(scenes[0]), 'shot_card': cards.get(shot_id) if isinstance(cards, dict) else cards}))
+    if shootable:
+        binding['prompt_compiler'] = SHOOTABLE_COMPILER
     if reference_free:
         binding['reference_mode'] = 'reference_free'
     elif reference_guided:
@@ -301,10 +407,12 @@ def compile_prompt(project_dir, shot_id, *, native=None):
 
 
 def _compile_packet(packet, *, native_pointer='/params/prompt'):
+    if packet['binding'].get('prompt_compiler') == SHOOTABLE_COMPILER:
+        return _compile_shootable(packet, native_pointer)
     prompt, coverage = '', []
     for row in packet['occurrences']:
         # Strings stay literal (including speech). Repeated lines remain distinct spans.
-        fragment = str(row['value']) if isinstance(row['value'], str) else json.dumps(row['value'], ensure_ascii=False)
+        fragment = _literal(row['value'])
         parts = row['source_pointer'].split('/')
         if parts[1] == 'script':
             label = 'Script context'
@@ -550,7 +658,7 @@ def prep_builder(provider):
     raise ValueError('provider outside Auto-continue')
 
 
-def prepare_compiled_request(inputs, native, profile, *, coverage, timing, review=None):
+def prepare_compiled_request(inputs, native, profile, *, coverage, timing, review=None, creator_repair=None):
     """Build the compiled sidecar after a retained preview; never judge semantics.
 
     With no ``review``, return the compiled request as before. With a supplied
@@ -566,6 +674,8 @@ def prepare_compiled_request(inputs, native, profile, *, coverage, timing, revie
     value = {'version': '1.0', 'request_sha256': planned_request_digest(inputs, project_dir=root),
              'source_binding': packet['binding'], 'native_binding': _native_binding(native),
              'coverage': copy.deepcopy(coverage), 'timing': copy.deepcopy(timing)}
+    if creator_repair is not None:
+        value['creator_prompt_override'] = _creator_prompt_override(creator_repair, inputs, native, packet)
     _validate_compiled(value, inputs, native, profile, packet)
     if review is None:
         return value
@@ -620,7 +730,90 @@ def _schema(name, value):
         raise ValueError(f'{name}: invalid {path} ({exc.validator})') from None
 
 
-def _validate_compiled(compiled, inputs, native, profile, packet):
+def _dialogue_rows(packet):
+    """Only declared speech text has a literal coverage obligation in an exact
+    creator prompt override; paraphrased visual directions are never trace spans.
+    Full source facts and semantic review remain independently bound."""
+    return [row for row in packet['occurrences']
+            if '/dialogue/' in row['source_pointer'] and row['source_pointer'].endswith('/text')]
+
+
+def creator_prompt_coverage(packet, prompt, *, native_pointer='/params/prompt'):
+    """Trace ordered, nonoverlapping literal dialogue in a creator-authored prompt.
+    This proves text presence only, never speaker identity or semantic coverage."""
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ValueError('creator prompt override requires exact nonempty prompt')
+    coverage, cursor = [], 0
+    for row in _dialogue_rows(packet):
+        fragment = _literal(row['value'])
+        start = prompt.find(fragment, cursor)
+        if start < 0:
+            raise ValueError('creator prompt override drops or changes ordered dialogue text')
+        end = start + len(fragment)
+        coverage.append({key: row[key] for key in ('occurrence_id', 'source_pointer', 'value_sha256')})
+        coverage[-1].update(native_pointer=native_pointer, start=start, end=end,
+                            fragment_sha256=digest(fragment))
+        cursor = end
+    return coverage
+
+
+def _creator_prompt_override(binding, inputs, native, packet):
+    body = _body(native)
+    field = 'sceneDescription' if native.get('provider') == 'openart_mcp' and native.get('model') == 'smart-shot' else 'prompt'
+    return {'kind': 'creator_exact_prompt', 'creator_repair': copy.deepcopy(binding),
+            'prompt_sha256': digest(body['params'][field]),
+            'source_occurrences_sha256': digest(packet['occurrences'])}
+
+
+def validate_creator_prompt_override(compiled, inputs, native, packet, *, historical=False):
+    """Reprove the exact existing creator item, never a caller-only prompt waiver.
+
+    Full source/current planning/native/reference/timing checks remain owned by
+    the normal preparation path. This helper only authenticates the alternate
+    prompt and its honest literal dialogue trace; it grants no dispatch or pass.
+    Historical source-only consumers explicitly opt into retained intent replay.
+    """
+    from lib import production_repair_batches as batches
+    marker = compiled.get('creator_prompt_override')
+    if not isinstance(marker, dict):
+        raise ValueError('creator prompt override requires its retained exact binding')
+    provider = native.get('provider', 'openart_cli')
+    root = Path(inputs['project_dir']).resolve()
+    shot_id = inputs['governance']['shot_id']
+    binding = marker.get('creator_repair')
+    item = batches.validate_creator_repair_intent(root, binding, shot_id=shot_id, provider=provider,
+        model=inputs.get('model'), replaces_attempt_ids=batches._prompt_override_sources(root, binding),
+        inputs=inputs, historical=historical)
+    if not historical:
+        from lib import production_draft as draft
+        batch = batches._load(root, binding['batch_id'])
+        if draft.first_cut_status(root, batch['cut'])['status'] != 'current':
+            raise ValueError('creator prompt override requires its unchanged current source cut')
+    if not isinstance(item['inputs'].get('prompt'), str) or inputs.get('prompt') != item['inputs']['prompt']:
+        raise ValueError('creator prompt override differs from exact retained prompt')
+    scope_id = inputs['governance'].get('scope_id')
+    if scope_id is not None:
+        scope = batches._scope(root, scope_id)
+        if (scope.get('repair_basis') != 'creator_batch' or scope.get('creator_repair') != binding
+                or scope.get('phase') != 'repair' or scope.get('provider') != provider
+                or scope.get('replaces_attempt_ids') != [item['source_attempt_id']]):
+            raise ValueError('creator prompt override lacks its exact retained repair scope')
+    expected = _creator_prompt_override(binding, inputs, native, packet)
+    if marker != expected:
+        raise ValueError('creator prompt override binding or full source occurrences changed')
+    body = _body(native)
+    field = 'sceneDescription' if provider == 'openart_mcp' and native.get('model') == 'smart-shot' else 'prompt'
+    prompt = body['params'][field]
+    if prompt != item['inputs']['prompt']:
+        raise ValueError('creator prompt override native prompt differs from retained intent')
+    pointer = '/arguments/prompt' if provider == 'grok_cli' else '/params/' + field
+    expected_coverage = creator_prompt_coverage(packet, prompt, native_pointer=pointer)
+    if compiled['coverage'] != expected_coverage:
+        raise ValueError('creator prompt override coverage must trace only exact ordered dialogue text')
+    return item
+
+
+def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=False):
     from lib.production_execution import planned_request_digest
     _schema('compiled_request', compiled)
     grok = native.get('provider') == 'grok_cli'
@@ -651,7 +844,12 @@ def _validate_compiled(compiled, inputs, native, profile, packet):
     body = _body(native)
     prompt_field = 'sceneDescription' if mcp and native['model'] == 'smart-shot' else 'prompt'
     prompt = body['params'][prompt_field]
-    rows, coverage = packet['occurrences'], compiled['coverage']
+    override = compiled.get('creator_prompt_override')
+    if override is not None:
+        validate_creator_prompt_override(compiled, inputs, native, packet,
+                                         historical=historical)
+    rows = _dialogue_rows(packet) if override is not None else packet['occurrences']
+    coverage = compiled['coverage']
     if len(rows) != len(coverage):
         raise ValueError('coverage omits required occurrence')
     spans = []
@@ -861,14 +1059,14 @@ def validate_preparation(inputs, native, profile):
     return validate_preparation_evidence(compiled, review, inputs, native, profile, packet)
 
 
-def validate_preparation_evidence(compiled, review, inputs, native, profile, packet):
+def validate_preparation_evidence(compiled, review, inputs, native, profile, packet, *, historical=False):
     """Validate supplied preparation evidence; callers own loading and authority.
 
     Current and retained historical callers share these exact compiled/native,
     semantic-review and live-evidence requirements. This does not choose a source
     packet, relax current planning checks, or grant dispatch authority.
     """
-    _validate_compiled(compiled, inputs, native, profile, packet)
+    _validate_compiled(compiled, inputs, native, profile, packet, historical=historical)
     _schema('preparation_review', review)
     if review['review_id'] != inputs['preparation_review_id']:
         raise ValueError('named review ID differs from selected preparation ID')
@@ -1076,8 +1274,8 @@ def _expand_compact_package(package):
     """Expand administrative repetition only; retain the bound source unchanged."""
     from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES
     top = {'version', 'authoring_form', 'planning_mode', 'project_id', 'story_revision',
-           'title', 'shots', 'compact', 'approval_preview'}
-    if (not top - {'approval_preview'} <= set(package) or set(package) - top or 'boards' in package
+           'title', 'shots', 'compact', 'approval_preview', 'prompt_compiler', 'cast_names'}
+    if (not top - {'approval_preview', 'prompt_compiler', 'cast_names'} <= set(package) or set(package) - top or 'boards' in package
             or package.get('authoring_form') != COMPACT_AUTHORING_FORM
             or package.get('planning_mode') != 'shot_local_v1'):
         raise ValueError('compact package requires exact opt-in form without full boards')
@@ -1106,7 +1304,7 @@ def _expand_compact_package(package):
                     'required_predicates', 'transparent_background', 'cast_ids'}
     for shot in authored:
         if (not isinstance(shot, dict) or not required_shot <= set(shot)
-                or set(shot) - required_shot - {'pinned_initial_frame', 'pinned_final_frame'}):
+                or set(shot) - required_shot - {'pinned_initial_frame', 'pinned_final_frame', 'camera', 'sound'}):
             raise ValueError('compact shot needs explicit content, motion, boards and dependencies')
         sid = shot['id']
         if (not isinstance(sid, str) or not sid.strip() or Path(sid).name != sid
@@ -1124,8 +1322,19 @@ def _expand_compact_package(package):
             raise ValueError('compact video dependencies need unique explicit shot IDs')
         roles = []
         for board in shot['boards']:
-            if not isinstance(board, dict) or set(board) != board_fields:
+            if (not isinstance(board, dict) or not board_fields <= set(board)
+                    or set(board) - board_fields - {'upstream_source'}):
                 raise ValueError('compact board requires exact authored prompt, role and source declarations')
+            if 'upstream_source' in board:
+                source = board['upstream_source']
+                if (not isinstance(source, dict) or set(source) != {'shot_id', 'role'}
+                        or source['role'] != 'outgoing_frame' or source['shot_id'] not in deps
+                        or motion['frame_input'] != {'asset_id': board['slot_id'], 'role': 'start_frame'}
+                        or board['role'] != 'start_frame' or board['reference_ids'] or board['image_dependencies']
+                        or board['transparent_background'] is not False
+                        or any('upstream_source' in b for b in shot['boards'] if b is not board)):
+                    raise ValueError('compact upstream_source needs one start_frame board reusing a declared '
+                                     'video dependency outgoing_frame with no image sources')
             for key in ('reference_ids', 'image_dependencies', 'required_predicates', 'cast_ids'):
                 values = board[key]
                 if (not isinstance(values, list) or any(not isinstance(v, str) or not v.strip() for v in values)
@@ -1140,6 +1349,8 @@ def _expand_compact_package(package):
             roles.append({'asset_id': slot, 'role': ('start_frame'
                 if motion['frame_input'] == {'asset_id': slot, 'role': 'start_frame'} else board['role'])})
             assets.append({'id': slot, 'role': board['role'], 'cast_ids': copy.deepcopy(board['cast_ids'])})
+            if 'upstream_source' in board:
+                assets[-1]['upstream_source'] = copy.deepcopy(board['upstream_source'])
         mappings.append({'shot_id': sid, 'roles': roles,
                          'video_dependencies': copy.deepcopy(shot['video_dependencies'])})
         contracts.append({'id': sid, **copy.deepcopy(motion),
@@ -1187,6 +1398,30 @@ def _expand_compact_package(package):
     return result
 
 
+def _apply_prompt_compiler(package, template):
+    """Explicit prospective opt-in; packages without it keep legacy prompt bytes."""
+    if 'prompt_compiler' not in package:
+        if 'cast_names' in package or 'prompt_compiler' in template or 'cast_names' in template:
+            raise ValueError('cast_names require explicit package prompt_compiler shootable_v1')
+        return
+    if package['prompt_compiler'] != SHOOTABLE_COMPILER:
+        raise ValueError('unsupported prompt compiler')
+    names = package.get('cast_names')
+    cast = set()
+    for shot in package['shots']:
+        motion = shot.get('motion', {}) if isinstance(shot.get('motion', {}), dict) else {}
+        cast |= set(shot.get('cast', [])) | set(motion.get('required_visible_speakers', []))
+        cast |= {line.get('speaker_id') for line in motion.get('dialogue', []) if isinstance(line, dict)}
+    if (not isinstance(names, dict)
+            or any(not isinstance(v, str) or not v.strip() for v in names.values())
+            or not cast <= set(names)):
+        raise ValueError('shootable prompts need a readable authored cast_names entry for every cast member and speaker')
+    for key, value in (('prompt_compiler', SHOOTABLE_COMPILER), ('cast_names', names)):
+        if key in template and template[key] != value:
+            raise ValueError('duplicated prompt compiler fact contradicts package ' + key)
+        template[key] = copy.deepcopy(value)
+
+
 def _compile_package_targets(root, package_binding):
     """Validate the bound package and return (spec, records, targets) without writing."""
     from lib import production_boards as boards, production_images as images
@@ -1196,7 +1431,8 @@ def _compile_package_targets(root, package_binding):
     if 'authoring_form' in package or 'compact' in package:
         package = _expand_compact_package(package)
     marker = json.loads((root / 'project.json').read_text())
-    if (set(package) - {'version', 'project_id', 'story_revision', 'title', 'shots', 'boards', 'approval_preview', 'planning_mode'}
+    if (set(package) - {'version', 'project_id', 'story_revision', 'title', 'shots', 'boards', 'approval_preview', 'planning_mode',
+                        'prompt_compiler', 'cast_names'}
             or not {'version', 'project_id', 'story_revision', 'title', 'shots', 'boards'} <= set(package)
             or package['version'] != '1.0'
             or any(package[k] != marker[k] for k in ('project_id', 'story_revision'))
@@ -1210,6 +1446,7 @@ def _compile_package_targets(root, package_binding):
             raise ValueError('unsupported prospective planning mode')
         template = spec['motion_binding']['contract_template']
         template['planning_mode'] = 'shot_local_v1'
+        _apply_prompt_compiler(package, template)
         authored = package['shots']
         originals = {shot['id']: shot for shot in template.get('shots', [])}
         derived = []
@@ -1228,6 +1465,7 @@ def _compile_package_targets(root, package_binding):
                 **({'completed_end_state': shot['end_state']} if 'end_state' in shot else {}),
                 **({'cast_ids': shot['cast']} if 'cast' in shot else {}),
                 **({'prop_body_invariants': shot['preserve']} if 'preserve' in shot else {}),
+                **{k: shot[k] for k in ('camera', 'sound') if k in shot},
                 **motion}
             original = copy.deepcopy(originals.get(sid, {}))
             for key, value in values.items():
@@ -1265,8 +1503,10 @@ def _compile_package_targets(root, package_binding):
     clock = 0
     for shot in shots:
         if set(shot) - {'id', 'script', 'action', 'duration_seconds', 'end_state', 'preserve',
-                'pinned_initial_frame', 'pinned_final_frame', 'cast', 'motion'}:
+                'pinned_initial_frame', 'pinned_final_frame', 'cast', 'motion', 'camera', 'sound'}:
             raise ValueError('unsupported authored shot field')
+        if ({'camera', 'sound'} & set(shot)) and package.get('prompt_compiler') != SHOOTABLE_COMPILER:
+            raise ValueError('authored camera/sound directions require prompt_compiler shootable_v1')
         if 'motion' in shot and package.get('planning_mode') != 'shot_local_v1':
             raise ValueError('authored motion fields require prospective planning mode')
         sid = shot['id']

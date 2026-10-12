@@ -1029,3 +1029,129 @@ def test_neutral_package_conflicts_and_frozen_scopes_reject_before_writes(neutra
     with pytest.raises(ValueError, match='conflict'):
         request.prepare_package(root, binding)
     assert before == _tree(root)
+
+
+LEGACY_PACKAGE_PROMPT_DIGEST = '6a22108d59352d232b0d14436affd1930366ce1082c4e458118103c17376629b'
+
+
+def test_legacy_prompt_bytes_frozen_without_compiler_marker(package):
+    compiled = request.compile_prompt(package[0], 'entry')
+    assert 'prompt_compiler' not in compiled['source_binding']
+    assert hashlib.sha256(json.dumps([compiled['prompt'], compiled['coverage']], sort_keys=True).encode()).hexdigest() \
+        == LEGACY_PACKAGE_PROMPT_DIGEST
+
+
+def shootable_project(tmp_path, *, cast=True, dialogue_source='offscreen'):
+    """C87-shaped prospective shot: named cast, offscreen reply, camera and no-music sound intent."""
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    root = tmp_path / 'shootable'
+    contract = json.loads((FIXTURES / 'valid_shot_contract.json').read_text())
+    for asset in contract['assets']:
+        path = root / asset['path']; path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes((FIXTURES / 'synthetic-board.svg').read_bytes())
+        asset['sha256'] = file_sha256(path); asset['review']['subject_sha256'] = asset['sha256']
+    shot = contract['shots'][0]
+    contract.update(planning_mode='shot_local_v1', prompt_compiler='shootable_v1', cast_names={
+        'patient': 'Tung, the honey-brown cylindrical wooden figure', 'doctor': 'Sahur, the tall pale nurse'})
+    if cast:
+        shot['cast_ids'] = ['patient', 'doctor']; shot['asset_ids'] = shot['asset_ids'] + ['doctor']
+        shot['required_visible_speakers'] = ['patient']
+        shot['dialogue'] = [dict(speaker_id='patient', source='visible', text='Help me.', start_seconds=1, end_seconds=2),
+                            dict(speaker_id='doctor', source=dialogue_source, text='Bro, let go of the fork.',
+                                 start_seconds=3, end_seconds=4.5)]
+        shot['allowed_transformations'] = [{'id': 'bend', 'description': 'The fork bends in his grip.',
+                                            'preserved_invariants': ['Patient identity and body count remain fixed.']}]
+    else:
+        contract['cast_names'] = {}
+        for key in ('late_cast_ids', 'payoff_speaker_ids'):
+            contract[key] = []
+        contract['assets'] = [a for a in contract['assets'] if a['role'] != 'identity_reference']
+        shot.update(cast_ids=[], asset_ids=['start', 'end'], initial_state='An empty diner booth at dawn.',
+                    dominant_action='A plate slides to the table edge.', completed_end_state='The plate rests on the edge.',
+                    prop_body_invariants=['One white plate.'])
+    shot['camera'] = 'Slow push-in from waist height to a close-up on the hands.'
+    shot['sound'] = 'Dialogue and cutlery clatter SFX only; no background music.'
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    for s in contract['shots']: s['review']['subject_sha256'] = shot_review_subject(contract, s['id'])
+    write(root / 'artifacts/shot_contract.json', contract)
+    write(root / 'project.json', {'project_id': contract['project_id'], 'story_revision': contract['story_revision'],
+                                  'governance': {'version': '1.0', 'mode': 'strict'}})
+    write(root / 'artifacts/scene_plan.json', {'version': '1.0', 'scenes': [{
+        'id': 'entry', 'type': 'generated', 'description': 'Fixture entry', 'start_seconds': 0, 'end_seconds': 8,
+        'script_section_id': 's1', 'framing': 'Medium two-shot across the diner table.',
+        'shot_language': {'shot_size': 'medium', 'camera_movement': 'dolly_in', 'lens_mm': 35}}]})
+    write(root / 'artifacts/script.json', {'version': '1.0', 'title': 'F', 'total_duration_seconds': 8,
+        'sections': [{'id': 's1', 'text': 'Help me. Bro, let go of the fork.', 'start_seconds': 0, 'end_seconds': 8}]})
+    return root, contract
+
+
+def test_shootable_prompt_is_clean_named_and_fully_covered(tmp_path):
+    root, contract = shootable_project(tmp_path)
+    compiled = request.compile_prompt(root, 'entry')
+    prompt = compiled['prompt']
+    assert compiled['source_binding']['prompt_compiler'] == 'shootable_v1'
+    assert compiled['source_binding']['references']  # canonical refs stay bound, outside the text
+    # 'patient' remains authored prose in the fixture's action text; the ID-only cast member must not appear.
+    for leak in ('Endpoint completion', 'unknown', 'Cast ids', 'doctor', 'identity_reference',
+                 'start_frame', 'Reference', 'sha256', '_'):
+        assert leak not in prompt
+    assert ('Spoken line 1: Tung, the honey-brown cylindrical wooden figure (on screen), from 1s to 2s, '
+            'says exactly: "Help me."') in prompt
+    assert ('Spoken line 2: Sahur, the tall pale nurse (off screen, voice only), from 3s to 4.5s, '
+            'says exactly: "Bro, let go of the fork."') in prompt
+    assert 'Tung, the honey-brown cylindrical wooden figure must be clearly visible on screen while speaking.' in prompt
+    for line in ('Camera: Slow push-in from waist height to a close-up on the hands.',
+                 'Sound: Dialogue and cutlery clatter SFX only; no background music.',
+                 'Framing: Medium two-shot across the diner table.', 'Shot style: medium shot, dolly in camera, 35mm lens.',
+                 'Allowed change: The fork bends in his grip.',
+                 'During this change keep: Patient identity and body count remain fixed.',
+                 'Story context (do not speak or print): '):
+        assert line in prompt
+    # Every authored leaf is a literal, ordered, non-overlapping span whose bytes hash to the source.
+    end = 0
+    for span in compiled['coverage']:
+        assert span['start'] >= end and prompt[span['start']:span['end']]
+        assert request.digest(prompt[span['start']:span['end']]) == span['fragment_sha256'] == span['value_sha256']
+        end = span['end']
+    pointers = {span['source_pointer'] for span in compiled['coverage']}
+    assert {'/shot_contract/shots/0/camera', '/shot_contract/shots/0/sound', '/shot_contract/cast_names/doctor',
+            '/shot_contract/shots/0/dialogue/1/text', '/shot_contract/shots/0/allowed_transformations/0/description',
+            '/scene_plan/scenes/0/framing'} <= pointers
+    assert request.compile_prompt(root, 'entry') == compiled  # deterministic replay
+
+
+def test_shootable_castless_shot_needs_no_dummy_names(tmp_path):
+    root, _ = shootable_project(tmp_path, cast=False)
+    prompt = request.compile_prompt(root, 'entry')['prompt']
+    assert 'Characters in this shot' not in prompt and 'Spoken line' not in prompt
+    assert 'No spoken lines in this shot.' in prompt
+    assert 'Sound: Dialogue and cutlery clatter SFX only; no background music.' in prompt
+
+
+def test_shootable_missing_name_fails_closed(tmp_path):
+    root, contract = shootable_project(tmp_path)
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    del contract['cast_names']['doctor']
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    for s in contract['shots']: s['review']['subject_sha256'] = shot_review_subject(contract, s['id'])
+    write(root / 'artifacts/shot_contract.json', contract)
+    with pytest.raises(ValueError, match='cast_names'):
+        request.compile_prompt(root, 'entry')
+
+
+@pytest.mark.parametrize('field', ['camera', 'sound', 'cast_name'])
+def test_shootable_tamper_is_detected(tmp_path, field):
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    root, contract = shootable_project(tmp_path)
+    original = request.compile_prompt(root, 'entry')
+    if field == 'cast_name': contract['cast_names']['doctor'] = 'Someone else'
+    else: contract['shots'][0][field] = 'Changed direction.'
+    write(root / 'artifacts/shot_contract.json', contract)
+    with pytest.raises(ValueError, match='stale review'):  # unreviewed edit cannot compile
+        request.compile_prompt(root, 'entry')
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    for s in contract['shots']: s['review']['subject_sha256'] = shot_review_subject(contract, s['id'])
+    write(root / 'artifacts/shot_contract.json', contract)
+    rereviewed = request.compile_prompt(root, 'entry')  # re-reviewed edit binds a new contract digest
+    assert rereviewed['source_binding']['contract_sha256'] != original['source_binding']['contract_sha256']
+    assert rereviewed['prompt'] != original['prompt']

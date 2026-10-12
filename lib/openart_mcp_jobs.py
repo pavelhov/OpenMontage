@@ -82,7 +82,10 @@ def _lock(root):
     fd = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     try:
         if stat.S_IMODE(os.fstat(fd).st_mode) != 0o600: _fail('state_invalid', 'connector lock requires private permissions')
-        fcntl.flock(fd, fcntl.LOCK_EX); yield
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        from lib import production_autonomy as _autonomy
+        with _autonomy.no_status_reuse():   # fresh rechecks under the lock
+            yield
     finally: os.close(fd)
 
 def _path(root, aid):

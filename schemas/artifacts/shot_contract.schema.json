@@ -101,6 +101,19 @@
     "planning_mode": {
       "const": "shot_local_v1",
       "description": "Prospective shot-local eligibility. Absence retains immutable legacy whole-plan bindings."
+    },
+    "prompt_compiler": {
+      "const": "shootable_v1",
+      "description": "Prospective opt-in: provider prompts render only shootable directions; canonical bookkeeping stays in bindings. Absence keeps the original literal compiler byte-for-byte."
+    },
+    "cast_names": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "\\S"
+      },
+      "description": "shootable_v1 only: human-readable name/description per cast ID, rendered instead of IDs. Required with the marker; empty only when no shot has cast or speakers."
     }
   },
   "required": [
@@ -659,6 +672,18 @@
             }
           },
           "additionalProperties": false
+        },
+        "camera": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "shootable_v1 only: authored framing/camera movement direction."
+        },
+        "sound": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "shootable_v1 only: authored sound intent, e.g. dialogue and effects with no background music. Never implies native audio controls."
         }
       },
       "required": [
@@ -798,6 +823,53 @@
         "required": [
           "planning_mode"
         ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "prompt_compiler"
+        ]
+      },
+      "then": {
+        "required": [
+          "planning_mode",
+          "cast_names"
+        ]
+      },
+      "else": {
+        "not": {
+          "anyOf": [
+            {
+              "required": [
+                "cast_names"
+              ]
+            },
+            {
+              "required": [
+                "shots"
+              ],
+              "properties": {
+                "shots": {
+                  "contains": {
+                    "anyOf": [
+                      {
+                        "required": [
+                          "camera"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "sound"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        }
       }
     }
   ]

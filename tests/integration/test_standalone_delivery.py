@@ -29,11 +29,24 @@ def clips(p, monkeypatch):
     shots = [shot['id'] for shot in execution.load_shot_contract(p.root)['shots']]
     paths = {sid: lavfi(p.root / f'assets/video/{sid}-real.mp4', color, 440 + 110 * i, 1.0)
              for i, (sid, color) in enumerate(zip(shots, ['red', 'green', 'blue', 'white']))}
-    monkeypatch.setattr(draft, 'first_cut_candidates', lambda root: [
-        {'shot_id': sid, 'status': 'candidate', 'attempt_id': 'att-' + sid,
-         'output': {'path': str(path.relative_to(p.root)), 'sha256': file_sha256(path)},
-         'duration_seconds': 1.0, 'strict_selected': False, 'review': 'unknown', 'findings': []}
-        for sid, path in paths.items()])
+
+    def candidates(root):
+        # Mirror real _candidate: findings/review re-derived from current retained
+        # evidence on every call (synthetic rows carry no historical source warning).
+        root = Path(root).resolve()
+        revision = read(root / 'project.json')['story_revision']
+        selected = execution.load_selected_attempts(root)
+        rows = []
+        for sid, path in paths.items():
+            sha = file_sha256(path)
+            review, findings = draft._current_findings(root, sid, 'att-' + sid, sha, revision, selected)
+            rows.append({'shot_id': sid, 'status': 'candidate', 'attempt_id': 'att-' + sid,
+                         'output': {'path': str(path.relative_to(p.root)), 'sha256': sha},
+                         'duration_seconds': 1.0, 'strict_selected': False,
+                         'review': review['status'] if review is not None else ('fail' if findings else 'unknown'),
+                         'findings': findings})
+        return rows
+    monkeypatch.setattr(draft, 'first_cut_candidates', candidates)
     return paths
 
 

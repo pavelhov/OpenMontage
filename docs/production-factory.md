@@ -94,7 +94,7 @@ requests or bypass failed reviews. Missing image/source-transfer allowance remai
 a separate authority blocker, even when unrelated motion already completed.
 
 For a creator-authorized increase of an existing standing source-transfer batch
-limit or cumulative video-attempt limit, retain the complete successor setup with its actual creator-message
+limit, cumulative video-attempt limit or named-shot limit, retain the complete successor setup with its actual creator-message
 authorization, then use the existing autonomy owner:
 
 ```python
@@ -109,11 +109,11 @@ receipt = autonomy.amend_standing_allowance(
 )
 ```
 
-This operation changes only declared `source_transfer.max_batches` and/or
-`caps.max_total_attempts` limits, and only increases them. It
+This operation changes only declared `source_transfer.max_batches`,
+`caps.max_total_attempts` and/or `caps.max_attempts_by_shot` limits, and only increases them. A named-shot map such as `{"S04": 3}` extends S04 alone; the global per-shot setting and every unlisted shot retain their existing limits. It
 preserves the original activation, policy, image envelope, request scopes and
 cumulative usage. It cannot change sources, routes, accounts, billing, file/byte
-limits, per-shot or repair allowances, or episode controls. Resume the same action loop after the validated
+limits, global per-shot or repair allowances, or the original episode-control records. The effective controls report the authenticated named-shot override without resetting usage. Resume the same action loop after the validated
 successor; do not overwrite the original setup or reactivate the episode.
 Proposed setup values do not take effect before this authenticated transition.
 For a terminal access failure, any already-authorized fallback is enabled through
@@ -312,6 +312,77 @@ that a payoff is visible. Compile output exposes the full expanded spec
 and projections before activation. Existing providers, scopes and creator-command
 requirements still apply.
 
+A continuous dependent shot can start from the actual selected outgoing frame of
+a shot it depends on. Author its starting board as a normal compact board with
+every mandatory field, plus one optional key:
+
+```json
+{"slot_id": "s02-start", "role": "start_frame",
+ "prompt": "Review guidance: S01's completed end state, Tung on the sofa.",
+ "reference_ids": [], "image_dependencies": [], "transparent_background": false,
+ "required_predicates": ["asset_quality", "cast_identity"], "cast_ids": ["patient"],
+ "upstream_source": {"shot_id": "s01", "role": "outgoing_frame"}}
+```
+
+The source shot must be in the shot's `video_dependencies`, and the board must be
+that shot's `motion.frame_input` and its only `start_frame`. A shot can have at most
+one reuse board, and no other board may reference or depend on it. Its `prompt` is
+review guidance only and is never sent to image generation. No image attempt is
+reserved for this slot, and direct `prepare_image_request`/`reserve_board_image`
+calls refuse it.
+
+After the source shot's original is selected, the existing `bind_selected_upstream`
+action binds the consumer contract and the board together. The binding records
+the selected attempt ID, output, outgoing frame and review hashes with origin
+`reuse`. An interrupted bind is rediscovered and completed on the next pass, and an
+identical replay writes nothing. The consumer's start-role review starts missing and
+goes through the normal `review_board` action. It never inherits the source
+selection's review. If the source selection later changes, the bound board fails
+closed at native input resolution and is never silently substituted.
+
+### Shootable prompt compiler (explicit prospective opt-in)
+
+New compact or full packages can opt into clean provider prompts by adding two
+top-level fields beside `planning_mode: "shot_local_v1"`:
+
+```json
+"prompt_compiler": "shootable_v1",
+"cast_names": {"patient": "Tung", "doctor": "Sahur"}
+```
+
+`cast_names` maps every cast, required-visible-speaker and dialogue-speaker ID to
+an authored short readable name. Keep full identity descriptions in references
+and body invariants, where they need not repeat for every spoken line.
+`{}` is valid only when no shot has cast or
+speakers. Never add placeholder names. Each shot can also carry optional `camera` and
+`sound` strings, which are authored direction. Without the marker, `cast_names`,
+`camera` and `sound` are rejected, and legacy prompt and coverage bytes stay unchanged.
+
+The compiled prompt contains only shootable direction:
+
+- opening frame, the single main action and the finished ending frame
+- characters in the shot by authored name
+- which speakers must be visible while speaking
+- keep-consistent invariants, allowed changes with the invariants they preserve,
+  camera, scene framing/movement/shot style, and the continuity or cut line
+- each exact spoken line with its speaker name, on-screen or off-screen source and timing
+- the sound intent
+
+Every authored value is a literal span with ordered coverage, so a dropped or
+changed directive still blocks preparation. Cast IDs, `endpoint_completion`,
+reference roles/IDs, hashes and reviews stay in `source_binding` and canonical
+records and never appear in the text. `source_binding.prompt_compiler` records the
+compiler, and the contract digest binds names, camera and sound. Editing any of them
+requires re-review.
+
+Frame and reference routing are unchanged. First-frame routes use the actual
+reviewed board, and guided references use only supported native forms. A dependent
+shot starts from its upstream's actual outgoing frame only when its start board
+declares `upstream_source` (see above); otherwise `video_dependencies` binds
+provenance and the shot starts from its own reviewed board. `sound` is a prompt
+direction only. It never sets or defaults `generateAudio`, and "no background
+music" with dialogue/SFX is distinct from silence.
+
 ## Reuse the existing motion-preparation builders
 
 For the current `prepare_motion` action, use these existing functions instead of
@@ -342,6 +413,32 @@ if provider_observation is not None:
     outcome["observation"] = provider_observation
 result = execution.complete_action(project_dir, action, outcome=outcome)
 ```
+
+To avoid retyping the retained request, start from the pure draft helper. It
+accepts only the exact current `prepare_motion` action and projects the active
+policy's retained `planned_request_template` inputs unchanged, including native
+audio and route controls. It also resolves each declared `$board`/`$upstream`
+frame to its current reviewed bytes and attaches the existing
+`compile_provider_prompt` prompt and coverage. It writes, reserves, uploads,
+reviews and times nothing, and it never calls a provider:
+
+```python
+draft = execution.draft_motion_preparation(
+    project_dir, action, provider=provider,  # provider only when the template names no route
+    output_path="assets/video/<unique>.mp4",
+    compiled_request_id="<unique>", preparation_review_id="<unique>",
+)
+assert not draft["missing"]        # producer-owned fields still absent
+inputs = draft["inputs"]           # add any producer-owned route control the template lacks
+authored = {"coverage": draft["coverage"]}  # draft["frames"] lists resolved frame SHA-256s
+```
+
+Continue with `prep_builder`, `prepare_compiled_request` and `complete_action`
+as above. The producer still supplies the actual profile or observation, the
+measured timing and the actual preparation review. Admission revalidates every
+field against retained authority, so the draft grants nothing. A stale or
+modified action, a foreign route or changed frame bytes are refused without
+writes.
 
 `compile_provider_prompt(project_dir, shot_id, *, provider, model=None)` returns
 `prompt`, `coverage` and `source_binding`. `prep_builder(provider)` returns the
@@ -487,6 +584,13 @@ For a large image return, retain the actual observation in `functions.exec` and
 save it with `scripts/native_host_receipt.js`. Load that small helper once in the
 producer context, before generation (use the actual configured engine path):
 
+Keep encoded media and full raw receipts in saved files or host memory; never cat,
+dump or base64-print them into the conversation transcript. Report only the original
+ID, action ID, status, local path and hash. On resume, load the compact current action
+and receipt pointers from canonical records, preserve unknown originals, and keep the
+exact next envelope in host storage so its consumer sees only the current envelope,
+not the full producer history.
+
 ```javascript
 const helper = await tools.exec_command({
   cmd: "cat /ABS/OPENMONTAGE/scripts/native_host_receipt.js",
@@ -496,50 +600,104 @@ if (helper.exit_code !== 0) throw new Error("Native receipt helper unavailable")
 store("native-receipt-helper", helper.output);
 ```
 
-On the one authorized invocation, preserve the actual arguments and complete
-return before saving. `projectNotesReceiptPath` is the exact absolute project
-receipt filename; its parent must exist. Do not populate observed fields from a
-later expected envelope or use the engine call ID as a host `tool_call_id`:
+Use `consumeNativeHostAction` with the exact `advance` or `complete_action`
+step and an explicit actual host callback. Keep one absolute `receiptPath` per
+original subject across retries and restarts; its parent must already exist.
+Changing the path changes the ownership guard. The helper retains an attempted
+sentinel and atomically claims `<receiptPath>.invoked` before entering the native
+callback. Existing claims or receipts fail closed when the host observation is
+lost. Never remove that marker or choose a fresh path to retry a paid job.
+
+This minimal `functions.exec` recipe uses the existing helper and engine CLI;
+configure the three absolute paths and retain the exact returned step in
+`factory-step` before entering it. The initial helper load above happens before
+any provider call. `functions.exec` has the actual `tools` namespace; the helper
+uses the existing Node REPL only for durable files, never to invoke providers:
 
 ```javascript
 // @exec: {"yield_time_ms":120000}
-const actualArguments = JSON.parse(JSON.stringify(envelope.arguments));
-const result = await tools.image_gen__imagegen(actualArguments);
-const observed = {tool_name: "image_gen.imagegen", arguments: actualArguments, result};
-store("native-host:" + envelope.call_id, observed);
-const saveReceipt = new Function(load("native-receipt-helper") +
-  "; return saveNativeHostReceipt;")();
-text(await saveReceipt(tools, observed, projectNotesReceiptPath));
+const engine = "/ABS/OPENMONTAGE", project = "/ABS/PROJECT";
+const receiptPath = "/ABS/PROJECT/notes/ORIGINAL-SUBJECT-host-return.json";
+const step = load("factory-step");
+const api = new Function(load("native-receipt-helper") +
+  "; return {consumeNativeHostAction, consumeSavedNativeCompletion, saveNativeHostReceipt, nativeHostReceiptBinding};")();
+const quote = value => "'" + String(value).replaceAll("'", "'\"'\"'") + "'";
+const next = await api.consumeNativeHostAction(tools, step, {
+  receiptPath,
+  nativeTool: {tool_name: "image_gen.imagegen", invoke: args => tools.image_gen__imagegen(args)},
+  getObservation: key => load(key), retainObservation: (key, value) => store(key, value),
+  completeAction: async (action, outcome) => {
+    // For OpenArt only: canonical admission consumes the actual structured payload.
+    // The helper already durably saved the full raw connector return unchanged.
+    if (action.kind === "receive_openart_original") {
+      const payload = outcome.result.structuredContent ?? outcome.result;
+      if (typeof payload?.historyId !== "string" || !payload.historyId)
+        throw new Error("Actual original historyId unavailable; collect original");
+      outcome = {result: payload};
+    }
+    const packet = api.nativeHostReceiptBinding(await api.saveNativeHostReceipt(
+      tools, {action, outcome}, receiptPath + ".complete-action.json"));
+    const code = [
+      "import json,sys; from pathlib import Path; from lib import production_execution as e",
+      "root,packet,saved=sys.argv[1:]; path=Path(saved)",
+      "if path.exists(): result=json.loads(path.read_text())",
+      "else:",
+      " p=json.loads(Path(packet).read_text()); result=e.complete_action(root,p['action'],outcome=p['outcome'])",
+      " temp=path.with_suffix('.tmp'); temp.write_text(json.dumps(result)); temp.replace(path)",
+      "print(json.dumps(result))"
+    ].join("\n");
+    let completed = await tools.exec_command({workdir: engine, max_output_tokens: 6000, yield_time_ms: 30000,
+      cmd: [engine + "/.venv/bin/python", "-c", code, project, packet.path,
+        receiptPath + ".completed-step.json"].map(quote).join(" ")});
+    if (completed.session_id) store("original-completion-session", completed.session_id);
+    return await api.consumeSavedNativeCompletion(tools, {
+      completion: completed, completionPath: receiptPath + ".completed-step.json"});
+  }
+});
+store("factory-step", next); // Carry this exact action and any next host_envelope.
+text(next);
 ```
 
-The helper sends only small metadata and a SHA-256 fingerprint of the actual
-returned data URL to the existing Node REPL. It reads the local generated file
-named in the actual host `output_hint`, reconstructs its data URL and requires
-exact length and SHA-256 equality before saving. The hint alone is not evidence;
-missing or changed cached bytes fail closed. Every result field and the observed
-invocation survive losslessly in the receipt. The result is only `{path, bytes,
-sha256}` metadata; no base64 travels through the tool RPC or model transcript.
-The original cached image stays in place. Receipt creation is atomic and an
-existing different receipt is never overwritten.
+For an emitted OpenArt generation envelope use its exact tool name and the real
+callback `args => tools.mcp__codex_apps__openart_openart_generate_video(args)`
+instead of the image callback. The completion callback above explicitly selects
+`structuredContent` for the existing engine's `historyId` contract, while the
+receipt retains every field of the actual connector wrapper. A direct actual
+payload is accepted only when it already contains that original ID. A raised
+OpenArt transport exception is saved and leaves the original uncertain; no paid
+retry or automatic status loop follows.
 
-After interrupted saving, retry only the retained observation, without another
-image invocation:
+The helper returns the exact completion step, including any once-only next
+`host_envelope`. Consume that envelope directly; another `advance` would lose its
+emitted handoff. `provider_calls: null` preserves unknown actual host exposure.
+After an interrupted save or completion, the retained actual observation permits
+only saving/completing the same original. If completion already saved its returned
+step, read that file rather than overwriting it or advancing again. If the
+completion CLI remains running, use `tools.write_stdin` on the retained session
+until it finishes; do not start a competing completion process. After lost
+host storage or a process restart without the exact completion step, call canonical
+`advance` to recover the current receive/collect action; never replay a saved
+emitted generation envelope. A claim without a retained return stays unresolved
+and collectable; it is not evidence of zero provider calls or authority to retry.
 
-```javascript
-const observed = load("native-host:" + envelope.call_id);
-if (!observed) throw new Error("Actual native return is not retained");
-const saveReceipt = new Function(load("native-receipt-helper") +
-  "; return saveNativeHostReceipt;")();
-text(await saveReceipt(tools, observed, projectNotesReceiptPath));
-```
+For large image returns the saver sends only small metadata and a SHA-256
+fingerprint of the actual returned data URL to the existing Node REPL. It reads
+the local generated file named in the actual host `output_hint`, reconstructs its
+data URL and requires exact length and SHA-256 equality before saving. Every field
+survives losslessly; missing or changed cached bytes fail closed. The original
+cached image stays in place. Receipt creation is atomic and a different existing
+receipt is never overwritten. Use the saved `{path, sha256}` as `host_receipt`;
+do not retype data URIs or split them by hand. These mechanics still require actual
+semantic review and do not certify unattended creative decisions.
 
-Use the returned path and SHA in the unchanged action:
-`outcome={"host_receipt": {"path": receipt_path, "sha256": receipt_sha256}}`.
-Do not retype data URIs, embed the full receipt in a Node tool argument, or split
-it by hand. A return without the verified local image remains an unresolved
-original to collect; it does not authorize regeneration. Preserve the observation
-and report that concrete saving blocker. Later status and log reads stay
-metadata-only.
+An accepted OpenArt original with an actual `PENDING` or `RUNNING` observation can
+allow one independent board lane through begin, receive and review before its
+next status refresh. Existing local journal timestamps bound that lane; missing
+or invalid ordering keeps status first. Original receive, uncertain collection,
+terminal download and ready selection review keep priority. Independently eligible
+motion remains eligible earlier; preparing a dependent board never supplies its
+missing selected upstream media. There is one current action and no added timer,
+parallel completion driver or scheduling ledger.
 
 Unknown returns stay counted and collectable. A genuinely additive completed
 return can use `supplemental_to` with the exact original receipt SHA, retaining the

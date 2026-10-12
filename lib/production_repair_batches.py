@@ -277,6 +277,50 @@ def validate_creator_repair_intent(project_dir, binding, *, shot_id, provider, m
     return copy.deepcopy(item)
 
 
+def _prompt_override_sources(root, binding):
+    """Source identity comes from retained intent, never caller replacement IDs."""
+    if not isinstance(binding, dict) or set(binding) != {'batch_id', 'item_id', 'intent_sha256'}:
+        raise ValueError('creator prompt override requires exact retained batch/item binding')
+    batch = _load(root, _id(binding['batch_id']))
+    matches = [item for item in batch['items'] if item['item_id'] == binding['item_id']]
+    if len(matches) != 1 or batch['intent_sha256'] != binding['intent_sha256']:
+        raise ValueError('creator prompt override differs from retained intent')
+    return [matches[0]['source_attempt_id']]
+
+
+def prepare_creator_repair_prompt(project_dir, batch_id, item_id):
+    """Pure exact prompt/trace handoff for existing creator repair preparation.
+
+    Retains the original contract and native settings. A trace covers unchanged
+    dialogue only; authored visual paraphrases need the actual preparation review.
+    Nothing is written, derived, reserved, submitted or certified here.
+    Pass returned creator_repair to prepare_compiled_request with actual native,
+    timing and reviewer-authored preparation evidence, then prepare_repair_item.
+    """
+    from lib import production_autonomy as autonomy, production_request as preparation
+    root, _ = _root(project_dir)
+    binding = creator_repair_binding(root, batch_id, item_id)
+    item = next(i for i in _load(root, batch_id)['items'] if i['item_id'] == item_id)
+    inputs = _item_inputs(root, item)
+    route = item['selected_route']
+    validate_creator_repair_intent(root, binding, shot_id=item['shot_id'], provider=route['provider'],
+        model=route['model'], replaces_attempt_ids=[item['source_attempt_id']], inputs=inputs)
+    retained = _scope_binding(root, batch_id, item_id)
+    if retained is not None:
+        inputs['governance']['scope_id'] = retained['scope_id']
+    if (root / autonomy.POLICY_ARTIFACT).exists():
+        policy, _, _ = autonomy.require_active_policy(root, shot_id=item['shot_id'])
+        autonomy.check_caps(policy, item['shot_id'], autonomy.root_attempt_counts(root, policy,
+            exclude_scope_id=retained['scope_id'] if retained else None), 'repair', root=root)
+    packet = preparation.source_packet(root, item['shot_id'], provider=route['provider'],
+                                       check_native_controls=False)
+    pointer = '/arguments/prompt' if route['provider'] == 'grok_cli' else (
+        '/params/sceneDescription' if route['model'] == 'smart-shot' else '/params/prompt')
+    coverage = preparation.creator_prompt_coverage(packet, inputs['prompt'], native_pointer=pointer)
+    return {'inputs': inputs, 'provider': route['provider'], 'creator_repair': binding,
+            'coverage': coverage, 'source_binding': packet['binding'], 'provider_calls': 0}
+
+
 def _scope_binding(root, batch_id, item_id):
     path = _directory(root, batch_id) / (_id(item_id) + '.scope.json')
     return execution._read(path) if path.exists() else None
@@ -355,6 +399,37 @@ def prepare_repair_item(project_dir, batch_id, item_id, *, scope_id=None, observ
             raise ValueError('creator repair scope binding changed')
         if not path.exists(): execution._write_new(path, value)
     return next(i for i in repair_batch_status(root, batch_id)['items'] if i['item_id'] == item_id)
+
+
+def prepared_creator_repair_items(project_dir):
+    """Existing prepared singleton scopes for the canonical producer scheduler.
+    Read only; originals are resumed by their existing owner before this work.
+    A broken retained prepared item fails closed instead of silently rerolling
+    the old critical request. Latest exact creator intent owns a shot's prompt.
+    """
+    root, marker = _root(project_dir)
+    prepared = {}
+    rows = [_load(root, path.parent.name) for path in (root / DIRECTORY).glob('*/intent.json')]
+    for batch in sorted(rows, key=lambda value: value['created_at']):
+        if batch['story_revision'] != marker['story_revision']:
+            continue
+        status = repair_batch_status(root, batch['batch_id'])
+        for row in status['items']:
+            if row['state'] != 'planned' or row['closed'] or row['blocked_by'] or row['scope_id'] is None:
+                continue
+            item = next(i for i in batch['items'] if i['item_id'] == row['item_id'])
+            binding = creator_repair_binding(root, batch['batch_id'], row['item_id'])
+            inputs = _item_inputs(root, item)
+            inputs['governance']['scope_id'] = row['scope_id']
+            validate_creator_repair_intent(root, binding, shot_id=item['shot_id'],
+                provider=item['selected_route']['provider'], model=item['selected_route']['model'],
+                replaces_attempt_ids=[item['source_attempt_id']], inputs=inputs)
+            scope = _scope(root, row['scope_id'])
+            if scope.get('creator_repair') != binding or scope.get('repair_basis') != 'creator_batch':
+                raise ValueError('prepared creator scope differs from exact batch intent')
+            prepared[item['shot_id']] = {'inputs': inputs, 'scope': scope, 'creator_repair': binding,
+                                        'selected_route': item['selected_route']}
+    return prepared
 
 
 def repair_batch_status(project_dir, batch_id):

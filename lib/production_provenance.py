@@ -969,7 +969,7 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
     require(preparation._read(root, 'compiled_request-' + inputs['compiled_request_id'] + '.json') == compiled
             and preparation._read(root, 'preparation_review-' + inputs['preparation_review_id'] + '.json') == review,
             'original preparation sidecars changed')
-    proof = preparation.validate_preparation_evidence(compiled, review, inputs, native, profile, reconstructed)
+    proof = preparation.validate_preparation_evidence(compiled, review, inputs, native, profile, reconstructed, historical=True)
     source_billing = None
     if 'derived_from_policy' in scope:
         from lib.production_autonomy import _validate_retained_packet_policy_mcp_attempt

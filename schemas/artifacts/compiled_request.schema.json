@@ -180,6 +180,9 @@
               "minLength": 1
             }
           }
+        },
+        "prompt_compiler": {
+          "const": "shootable_v1"
         }
       }
     },
@@ -1017,6 +1020,52 @@
           }
         }
       ]
+    },
+    "creator_prompt_override": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "creator_repair",
+        "prompt_sha256",
+        "source_occurrences_sha256"
+      ],
+      "properties": {
+        "kind": {
+          "const": "creator_exact_prompt"
+        },
+        "creator_repair": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "batch_id",
+            "item_id",
+            "intent_sha256"
+          ],
+          "properties": {
+            "batch_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "item_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "intent_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        "prompt_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "source_occurrences_sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",

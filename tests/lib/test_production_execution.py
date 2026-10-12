@@ -842,6 +842,56 @@ def test_strict_dry_run_without_hook_is_unchanged(tmp_path):
     assert tool.calls == 0 and not (tmp_path/'production_attempts').exists()
 
 
+@pytest.mark.parametrize('overridden', [False, True])
+def test_dry_run_reuses_only_its_operation_check_and_dispatch_rechecks(tmp_path, monkeypatch, overridden):
+    import contextlib
+    from lib import production_execution as execution
+    inputs, _, _ = project(tmp_path, motion=True)
+    if overridden:
+        class Tool(MotionTool):
+            def dry_run(self, inputs):
+                raise AssertionError('governed wrapper must skip provider dry-run')
+        tool = Tool()
+    else:
+        tool = MotionTool()
+    checks, locked = [], []
+    original_preflight, original_lock = execution.preflight, execution._lock
+    def checked(*args, **kwargs):
+        checks.append(bool(locked))
+        return original_preflight(*args, **kwargs)
+    @contextlib.contextmanager
+    def lock(root):
+        with original_lock(root):
+            locked.append(True)
+            try:
+                yield
+            finally:
+                locked.pop()
+    monkeypatch.setattr(execution, 'preflight', checked)
+    monkeypatch.setattr(execution, '_lock', lock)
+    first = tool.dry_run(inputs)
+    assert checks == [False] and first['governed']
+    assert tool.dry_run(inputs) == first
+    assert checks == [False, False]  # no cross-operation cache
+    assert tool.execute(inputs).success
+    assert checks == [False, False, False, True]
+    assert tool.calls == 1
+    Path(inputs['output_path']).unlink()  # original attempt still consumes its cap
+    with pytest.raises(ProductionGovernanceError, match='first-pass ceiling'):
+        tool.dry_run(inputs)
+    assert len(checks) == 5 and tool.calls == 1
+
+
+def test_dry_run_rechecks_changed_sources_before_dispatch(tmp_path):
+    inputs, _, _ = project(tmp_path)
+    tool = ImageTool()
+    assert tool.dry_run(inputs)['governed']
+    Path(inputs['image_path']).write_bytes(b'changed after dry-run')
+    with pytest.raises(ProductionGovernanceError):
+        tool.execute(inputs)
+    assert tool.calls == 0 and not (tmp_path/'production_attempts').exists()
+
+
 def test_strict_dry_run_offline_hook_is_pure_and_cannot_override_gate(tmp_path):
     from tools.base_tool import in_offline_preparation
     inputs,_,_ = project(tmp_path)

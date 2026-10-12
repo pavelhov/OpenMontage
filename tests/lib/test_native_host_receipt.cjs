@@ -5,7 +5,9 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
-const {saveNativeHostReceipt, nativeImageURLSha256} = require('../../scripts/native_host_receipt.js');
+const repl = require('node:repl');
+const {PassThrough} = require('node:stream');
+const {saveNativeHostReceipt, nativeImageURLSha256, consumeNativeHostAction, consumeSavedNativeCompletion} = require('../../scripts/native_host_receipt.js');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
 function chunk(type, data) {
@@ -42,7 +44,7 @@ async function fixture(t) {
     calls.push(request);
     let output;
     await new AsyncFunction('nodeRepl', request.code)({write: item => output = item});
-    return {content: [{type: 'text', text: JSON.stringify(output)}]};
+    return {content: [{type: 'text', text: typeof output === 'string' ? output : JSON.stringify(output)}]};
   }};
   return {root, imagePath, image, observation, receiptPath, tools, calls};
 }
@@ -92,4 +94,240 @@ test('missing local output and host transport errors retain an unresolved observ
   await assert.rejects(saveNativeHostReceipt(f.tools, f.observation, f.receiptPath), {code: 'ENOENT'});
   await assert.rejects(saveNativeHostReceipt(f.tools, {...f.observation, result: {...f.observation.result, output_hint: 'No actual path'}}, f.receiptPath), /no usable local image/);
   await assert.rejects(saveNativeHostReceipt({mcp__node_repl__js: async () => ({isError: true})}, f.observation, f.receiptPath), /Receipt saving failed/);
+});
+
+function hostOptions(f, invoke, completeAction) {
+  const originals = new Map();
+  return {
+    nativeTool: {tool_name: 'image_gen.imagegen', invoke}, receiptPath: f.receiptPath,
+    getObservation: key => originals.get(key),
+    retainObservation: (key, value) => originals.set(key, value), completeAction,
+  };
+}
+function imageStep(f) {
+  return {status: 'host_action', action: {kind: 'receive_native_image', subject: 'original-call', action_id: 'unchanged'},
+    host_envelope: {tool_name: 'image_gen.imagegen', call_id: 'original-call', arguments: f.observation.arguments}};
+}
+test('actual image callback, durable lossless original and completion share one operation', async t => {
+  const f = await fixture(t), step = imageStep(f);
+  let nativeCalls = 0, completionCalls = 0;
+  const next = {status: 'host_action', action: {kind: 'receive_native_image', subject: 'next-original'},
+    host_envelope: {call_id: 'next-original', tool_name: 'image_gen.imagegen', arguments: {prompt: 'next'}}};
+  const options = hostOptions(f, async args => {
+    nativeCalls++;
+    assert.deepEqual(args, f.observation.arguments);
+    assert.ok(Object.isFrozen(args));
+    return {...f.observation.result, additive_host_field: {kept: ['all', 'fields']}};
+  }, async (action, outcome) => {
+    completionCalls++;
+    assert.strictEqual(action, step.action);
+    assert.deepEqual(Object.keys(outcome), ['host_receipt']);
+    const raw = await fs.readFile(outcome.host_receipt.path);
+    assert.equal(outcome.host_receipt.sha256, crypto.createHash('sha256').update(raw).digest('hex'));
+    const retained = JSON.parse(raw);
+    assert.deepEqual(retained.result.additive_host_field, {kept: ['all', 'fields']});
+    assert.equal(retained.result.image_url, f.observation.result.image_url);
+    return next;
+  });
+  const carried = await consumeNativeHostAction(f.tools, step, options);
+  assert.strictEqual(carried.action, next.action); assert.strictEqual(carried.host_envelope, next.host_envelope);
+  assert.equal(carried.provider_calls, null);
+  assert.equal(nativeCalls, 1); assert.equal(completionCalls, 1);
+  assert.equal(f.calls.length, 2); assert.ok(f.calls.every(request => request.code.length < 5000));
+  await assert.rejects(consumeNativeHostAction(f.tools, {...next, host_envelope: undefined}, options), /exact emitted/);
+  assert.equal(nativeCalls, 1);  // restart's receive-only action cannot resubmit
+});
+test('saving and completion interruptions recover retained original without paid resubmission', async t => {
+  const f = await fixture(t), step = imageStep(f);
+  let nativeCalls = 0, completionCalls = 0;
+  const options = hostOptions(f, async () => { nativeCalls++; return f.observation.result; }, async () => {
+    completionCalls++;
+    if (completionCalls === 1) throw new Error('interrupted completion');
+    return {status: 'review_board'};
+  });
+  const rpc = f.tools.mcp__node_repl__js;
+  f.tools.mcp__node_repl__js = async request => {
+    const result = await rpc(request);
+    if (request.title === 'Save actual native host receipt') throw new Error('interrupted save response');
+    return result;
+  };
+  await assert.rejects(consumeNativeHostAction(f.tools, step, options), /interrupted save/);
+  const original = await fs.readFile(f.receiptPath);
+  f.tools.mcp__node_repl__js = rpc;
+  await assert.rejects(consumeNativeHostAction(f.tools, step, options), /interrupted completion/);
+  assert.deepEqual(await consumeNativeHostAction(f.tools, step, options), {status: 'review_board', provider_calls: null});
+  assert.deepEqual(await fs.readFile(f.receiptPath), original);
+  assert.equal(nativeCalls, 1); assert.equal(completionCalls, 2);
+});
+test('raised image exception is durable, exact and never triggers another invocation', async t => {
+  const f = await fixture(t), step = imageStep(f);
+  let calls = 0;
+  const options = hostOptions(f, async () => { calls++; throw new TypeError('Actual transport café failure'); }, async (action, outcome) => {
+    assert.strictEqual(action, step.action);
+    const retained = JSON.parse(await fs.readFile(outcome.host_exception.path));
+    assert.deepEqual(retained, {tool_name: 'image_gen.imagegen', arguments: f.observation.arguments,
+      call_id: 'original-call', exception: {message: 'Actual transport café failure', type: 'TypeError'}});
+    return {status: 'host_action', action};
+  });
+  await consumeNativeHostAction(f.tools, step, options);
+  await consumeNativeHostAction(f.tools, step, options);
+  assert.equal(calls, 1);
+});
+test('OpenArt return is durably retained before completing, and polling stays a separate boundary', async t => {
+  const f = await fixture(t);
+  const step = {action: {kind: 'receive_openart_original', subject: 'motion-original'},
+    host_envelope: {tool: 'mcp__codex_apps__openart_openart_generate_video', arguments: {prompt: 'actual', model: 'native-model'}}};
+  const result = {content: [{type: 'text', text: JSON.stringify({historyId: 'actual-job', status: 'pending'})}],
+    structuredContent: {future_field: ['retained', 1]}};
+  let calls = 0;
+  const options = hostOptions(f, async args => { calls++; assert.deepEqual(args, step.host_envelope.arguments); return result; }, async (action, outcome) => {
+    assert.strictEqual(action, step.action); assert.strictEqual(outcome.result, result);
+    assert.deepEqual(JSON.parse(await fs.readFile(f.receiptPath)).result, result);
+    return {action: {kind: 'poll_openart_original', subject: 'motion-original'}, status: 'host_action'};
+  });
+  options.nativeTool.tool_name = step.host_envelope.tool;
+  const pending = await consumeNativeHostAction(f.tools, step, options);
+  await assert.rejects(consumeNativeHostAction(f.tools, pending, options), /exact emitted/);
+  assert.equal(calls, 1);
+});
+test('raised OpenArt exception saves evidence and leaves original uncertain without fabricated result', async t => {
+  const f = await fixture(t);
+  const step = {action: {kind: 'receive_openart_original', subject: 'motion-original'},
+    host_envelope: {tool: 'mcp__codex_apps__openart_openart_generate_video', arguments: {prompt: 'actual'}}};
+  let calls = 0;
+  const options = hostOptions(f, async () => { calls++; throw new Error('Original transport exception'); }, () => assert.fail('no supported exception completion'));
+  options.nativeTool.tool_name = step.host_envelope.tool;
+  const stopped = await consumeNativeHostAction(f.tools, step, options);
+  assert.equal(stopped.status, 'host_exception'); assert.equal(stopped.provider_calls, null);
+  assert.strictEqual(stopped.action, step.action);
+  const original = JSON.parse(await fs.readFile(stopped.host_exception.path));
+  assert.equal(original.exception.message, 'Original transport exception');
+  assert.ok(!('result' in original)); assert.equal(calls, 1);
+});
+test('helper is executable in fresh functions.exec style without Node imports or CommonJS', async t => {
+  const f = await fixture(t);
+  const source = await fs.readFile(path.join(__dirname, '../../scripts/native_host_receipt.js'), 'utf8');
+  const helper = new Function(source + '; return consumeNativeHostAction;')();
+  const options = hostOptions(f, async () => f.observation.result, async () => ({status: 'review_board'}));
+  assert.deepEqual(await helper(f.tools, imageStep(f), options), {status: 'review_board', provider_calls: null});
+});
+test('failed result retention and host-store loss never replay the emitted invocation', async t => {
+  const f = await fixture(t), step = imageStep(f);
+  let calls = 0;
+  const options = hostOptions(f, async () => { calls++; return f.observation.result; }, () => assert.fail('result was not retained'));
+  const retain = options.retainObservation;
+  options.retainObservation = (key, value) => {
+    if ('result' in value) throw new Error('Actual host store failed after return');
+    retain(key, value);
+  };
+  await assert.rejects(consumeNativeHostAction(f.tools, step, options), /host store failed/);
+  await assert.rejects(consumeNativeHostAction(f.tools, step, options), /already attempted/);
+  const restarted = hostOptions(f, options.nativeTool.invoke, options.completeAction);
+  await assert.rejects(consumeNativeHostAction(f.tools, step, restarted), /EEXIST/);
+  assert.equal(calls, 1);
+  const marker = JSON.parse(await fs.readFile(f.receiptPath + '.invoked'));
+  assert.equal(marker.subject, step.action.subject);
+  assert.deepEqual(marker.arguments, step.host_envelope.arguments);
+  assert.ok(!('result' in marker));
+});
+test('pre-invocation store failure calls no host tool', async t => {
+  const f = await fixture(t);
+  let calls = 0;
+  const options = hostOptions(f, async () => { calls++; return f.observation.result; }, () => assert.fail());
+  options.retainObservation = () => { throw new Error('Host store unavailable'); };
+  await assert.rejects(consumeNativeHostAction(f.tools, imageStep(f), options), /store unavailable/);
+  assert.equal(calls, 0); assert.equal(f.calls.length, 0);
+});
+test('saved completion is canonical with empty, truncated or chunked stdout and drains only its original session', async t => {
+  const f = await fixture(t), completionPath = path.join(f.root, 'completed-step.json');
+  const exactStep = {status: 'host_action', action: {kind: 'receive_native_image', subject: 'next'},
+    host_envelope: {tool_name: 'image_gen.imagegen', call_id: 'next', arguments: {prompt: 'retained'}}};
+  await fs.writeFile(completionPath, JSON.stringify(exactStep));
+  let drains = 0, completionRuns = 1, providerRuns = 1;
+  f.tools.write_stdin = async request => {
+    drains++;
+    assert.equal(request.session_id, 'original-session');
+    if (drains === 1) return {session_id: 'original-session', output: '{"status":"host_'};
+    return {exit_code: 0, output: 'action"'};
+  };
+  const rpc = f.tools.mcp__node_repl__js;
+  f.tools.mcp__node_repl__js = async request => {
+    if (request.title !== 'Recover saved native completion') return rpc(request);
+    const match = request.code.match(/readFile\(("(?:[^"\\]|\\.)*")/);
+    assert.ok(match, 'recovery reads the durable completion path');
+    try {
+      const value = JSON.parse(await fs.readFile(JSON.parse(match[1]), 'utf8'));
+      return {content: [{type: 'text', text: JSON.stringify({ok: true, value})}]};
+    } catch (error) {
+      return {content: [{type: 'text', text: JSON.stringify({ok: false, error: error.message})}]};
+    }
+  };
+  for (const output of ['', '{"status":"host_action"', '{"status":"host_action","action":']) {
+    const completion = {exit_code: 0, output};
+    if (!drains) completion.session_id = 'original-session';
+    const recovered = await consumeSavedNativeCompletion(f.tools, {completion, completionPath});
+    assert.deepEqual(recovered, exactStep);
+    assert.deepEqual(recovered.host_envelope, exactStep.host_envelope);
+  }
+  assert.equal(drains, 2);
+  assert.equal(completionRuns, 1); assert.equal(providerRuns, 1);
+});
+test('saved completion recovery without a session reads the exact saved step after empty stdout', async t => {
+  const f = await fixture(t), completionPath = path.join(f.root, 'completed-step.json');
+  const exactStep = {status: 'review_board', action: {kind: 'review_board', subject: 'same'}};
+  await fs.writeFile(completionPath, JSON.stringify(exactStep));
+  const rpc = f.tools.mcp__node_repl__js;
+  f.tools.mcp__node_repl__js = async request => {
+    if (request.title !== 'Recover saved native completion') return rpc(request);
+    const match = request.code.match(/readFile\(("(?:[^"\\]|\\.)*")/);
+    return {content: [{type: 'text', text: JSON.stringify({ok: true, value: JSON.parse(await fs.readFile(JSON.parse(match[1]), 'utf8'))})}]};
+  };
+  assert.deepEqual(await consumeSavedNativeCompletion(f.tools, {completionPath}), exactStep);
+  assert.equal(f.tools.write_stdin, undefined);
+});
+test('emitted recovery code runs repeatedly in one persistent Node REPL context', async t => {
+  const f = await fixture(t), completionPath = path.join(f.root, 'completed-step.json');
+  const exactStep = {status: 'review_board', action: {kind: 'review_board', subject: 'same'}};
+  await fs.writeFile(completionPath, JSON.stringify(exactStep));
+  let captured;
+  const server = repl.start({input: new PassThrough(), output: new PassThrough(), terminal: false, prompt: ''});
+  t.after(() => server.close());
+  server.context.nodeRepl = {write: value => { captured = value; }};
+  f.tools.mcp__node_repl__js = async request => {
+    if (request.title !== 'Recover saved native completion') throw new Error('unexpected RPC');
+    await new Promise((resolve, reject) => server.eval(request.code, server.context, 'completion-recovery', error => error ? reject(error) : resolve()));
+    return {content: [{type: 'text', text: captured}]};
+  };
+  assert.deepEqual(await consumeSavedNativeCompletion(f.tools, {completionPath}), exactStep);
+  assert.deepEqual(await consumeSavedNativeCompletion(f.tools, {completionPath}), exactStep);
+});
+test('missing or corrupt saved completion remains explicitly unresolved without resubmission', async t => {
+  const f = await fixture(t), completionPath = path.join(f.root, 'completed-step.json');
+  let completionRuns = 1, providerRuns = 1;
+  const rpc = f.tools.mcp__node_repl__js;
+  f.tools.mcp__node_repl__js = async request => {
+    if (request.title !== 'Recover saved native completion') return rpc(request);
+    const match = request.code.match(/readFile\(("(?:[^"\\]|\\.)*")/);
+    try {
+      const value = JSON.parse(await fs.readFile(JSON.parse(match[1]), 'utf8'));
+      return {content: [{type: 'text', text: JSON.stringify({ok: true, value})}]};
+    } catch (error) {
+      return {content: [{type: 'text', text: JSON.stringify({ok: false, error: error.message})}]};
+    }
+  };
+  for (const contents of [null, '{truncated']) {
+    if (contents === null) await fs.rm(completionPath, {force: true});
+    else await fs.writeFile(completionPath, contents);
+    await assert.rejects(consumeSavedNativeCompletion(f.tools, {completionPath}), /Original completion unresolved.*without rerunning completion or its provider/);
+  }
+  assert.equal(completionRuns, 1); assert.equal(providerRuns, 1);
+});
+test('existing saved original prevents stale-envelope invocation after process restart', async t => {
+  const f = await fixture(t), step = imageStep(f);
+  await saveNativeHostReceipt(f.tools, f.observation, f.receiptPath);
+  let calls = 0;
+  const options = hostOptions(f, async () => { calls++; return f.observation.result; }, () => assert.fail());
+  await assert.rejects(consumeNativeHostAction(f.tools, step, options), /already exists/);
+  assert.equal(calls, 0);
+  assert.deepEqual(JSON.parse(await fs.readFile(f.receiptPath)), f.observation);
 });

@@ -17,7 +17,7 @@ from pathlib import Path
 ARTIFACT = "artifacts/board_preparation.json"
 _NO_REPLACEMENT = object()
 NODE_FIELDS = {"slot_id", "shot_id", "role", "prompt", "reference_ids", "image_dependencies",
-               "output_path", "required_predicates", "transparent_background", "cast"}
+               "output_path", "required_predicates", "transparent_background", "cast", "upstream_source"}
 
 
 def _now():
@@ -48,7 +48,15 @@ def _inside(root, path):
 
 def _current(root, binding):
     path = _inside(root, binding["path"])
-    return path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == binding["sha256"]
+    if not path.is_file():
+        return False
+    # Inside one read-only status operation only, an identical resolved file
+    # (same inode, size, mtime/ctime ns before and after hashing) is not rehashed;
+    # writers, locks and dispatch always hash the actual bytes.
+    from lib.production_autonomy import status_reused
+    expected = binding["sha256"]
+    return status_reused(("boards._current", str(path), expected), (path,),
+                         lambda: hashlib.sha256(path.read_bytes()).hexdigest() == expected)
 
 
 def _binding_current(root, pack, asset_id, visiting=None):
@@ -101,8 +109,10 @@ def _board_transaction(operation):
         lock.parent.mkdir(parents=True, exist_ok=True)
         with lock.open("a") as stream:
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            from lib.production_autonomy import no_status_reuse
             try:
-                return operation(root, *args, **kwargs)
+                with no_status_reuse():   # board mutators always rehash actual bytes
+                    return operation(root, *args, **kwargs)
             finally:
                 fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
     return transaction
@@ -184,6 +194,13 @@ def _validate_spec(root, spec):
             _inside(root, node["output_path"])
         except (ValueError, KeyError) as exc:
             errors.append(label + ": " + (str(exc) if isinstance(exc, ValueError) else "missing output_path"))
+        if "upstream_source" in node:
+            source = node["upstream_source"]
+            if (not isinstance(source, dict) or set(source) != {"shot_id", "role"}
+                    or source.get("role") != "outgoing_frame" or not isinstance(source.get("shot_id"), str)
+                    or node.get("role") != "start_frame" or node.get("reference_ids")
+                    or node.get("image_dependencies") or node.get("transparent_background") is not False):
+                errors.append(label + ": upstream_source needs a source-free start_frame reusing one outgoing_frame")
         if slot and slot not in nodes and slot not in references:
             nodes[slot] = node
     if errors:
@@ -217,6 +234,19 @@ def _validate_spec(root, spec):
     for shot in spec["shots"]:
         if any(dep not in shot_ids or dep == shot["shot_id"] for dep in shot.get("video_dependencies", [])):
             raise ValueError("unknown/self actual outgoing-video dependency")
+    reused = {slot: node for slot, node in nodes.items() if "upstream_source" in node}
+    for slot, node in reused.items():
+        owner = next(s for s in spec["shots"] if s["shot_id"] == node["shot_id"])
+        users = [s for s in spec["shots"] if any(r["asset_id"] == slot for r in s["roles"])]
+        if (node["upstream_source"]["shot_id"] not in owner.get("video_dependencies", [])
+                or users != [owner] or [r["role"] for r in owner["roles"] if r["asset_id"] == slot] != ["start_frame"]
+                or any(r["asset_id"] == slot for r in spec.get("shared_roles", []))
+                or any(slot in n.get("image_dependencies", []) + n.get("reference_ids", []) for n in nodes.values())
+                or sum(n["shot_id"] == owner["shot_id"] for n in reused.values()) != 1):
+            raise ValueError(slot + ": upstream reuse board must be its owning shot's sole start_frame "
+                             "from a declared video dependency and no image source")
+    if reused and spec.get("motion_binding") is None:
+        raise ValueError("upstream reuse boards require the shot-local motion binding")
     bridge = spec.get("motion_binding")
     if bridge is not None:
         if not isinstance(bridge, dict) or set(bridge) != {"contract_template", "motion_handoffs"}:
@@ -302,6 +332,11 @@ def _validate_spec(root, spec):
                 source = next(a for a in assets if a["id"] == aid).get("upstream_source")
                 if source and source["shot_id"] not in upstream:
                     raise ValueError("motion asset upstream source lacks its shot dependency")
+                declared = nodes.get(aid, {}).get("upstream_source")
+                if declared and source != declared:
+                    raise ValueError("motion asset upstream source must match its authored board")
+                if declared and shot.get("frame_input") != {"asset_id": aid, "role": "start_frame"}:
+                    raise ValueError("upstream reuse asset must be the consumer starting frame")
         for aid, handoff in bridge["motion_handoffs"].items():
             endpoint = handoff["pinned_final_frame"]["asset_id"]
             sid = handoff["scene_id"]
@@ -385,7 +420,10 @@ def prepare_board_pack(project_dir, specification, *, images):
             raise ValueError("current board pack already binds another specification")
         _promote_motion_bindings(root, pack)
         return deepcopy(pack)
-    slots = [{"id": n["slot_id"], "shot_id": n["shot_id"], "role": n["role"], "status": "unresolved"} for n in nodes.values()]
+    # Upstream reuse slots never become image work; their bytes arrive only by
+    # binding the actual selected outgoing frame after selection.
+    slots = [{"id": n["slot_id"], "shot_id": n["shot_id"], "role": n["role"], "status": "unresolved"}
+             for n in nodes.values() if "upstream_source" not in n]
     # No unresolved outputs means pure reuse: U1's pre-board packet deliberately
     # requires at least one unresolved slot, and no image call needs a packet.
     packet = images.build_preboard_packet(root, story=spec["story"], approval=spec["approval"],
@@ -508,7 +546,7 @@ def board_schedule(project_dir, *, images):
     ready, blocked = [], {}
     nodes = pack["prompt_pack"]
     for slot, node in nodes.items():
-        if slot in pending:
+        if slot in pending or "upstream_source" in node:
             continue
         if slot in pack["board_bindings"] and slot not in stale:
             continue
@@ -529,7 +567,7 @@ def board_schedule(project_dir, *, images):
         shared = {r["asset_id"] for r in pack["specification"].get("shared_roles", [])}
         return [s["shot_id"] for s in pack["specification"]["shots"] if shared & descendants
             or {r["asset_id"] for r in s["roles"]} & descendants]
-    counts = {slot: len(uses(slot)) for slot in nodes}
+    counts = {slot: len(uses(slot)) for slot, node in nodes.items() if "upstream_source" not in node}
     ready.sort(key=lambda slot: -counts[slot])
     shot_blockers, candidates = {}, []
     from lib.shot_contract import shot_local, required_asset_ids
@@ -560,12 +598,46 @@ def board_schedule(project_dir, *, images):
         "motion_projection": deepcopy(pack.get("motion_projection"))}
 
 
+def _reject_upstream_slot(node):
+    if "upstream_source" in node:
+        raise ValueError("upstream reuse board takes the actual selected outgoing frame; no image call")
+
+
+def bind_upstream_board_locked(root, pack, slot_id, selection):
+    """Bind one declared reuse slot to the exact selected outgoing frame.
+
+    `selection` is the validated upstream binding plus its project-relative
+    outgoing frame path. No review is written: the consumer start role stays
+    missing until an actual review. Identical replay is a no-op; a different
+    existing binding fails closed rather than substituting.
+    """
+    node = pack["prompt_pack"].get(slot_id)
+    source = (node or {}).get("upstream_source")
+    keys = ("shot_id", "attempt_id", "output_sha256", "outgoing_frame_sha256", "review_sha256")
+    if not source or set(selection) != set(keys) | {"path"} or selection["shot_id"] != source["shot_id"]:
+        raise ValueError("upstream reuse binding needs the declared selected outgoing frame")
+    path = str(_inside(root, selection["path"]).relative_to(root))
+    binding = {"path": path, "sha256": selection["outgoing_frame_sha256"], "origin": "reuse",
+               "upstream_source": {k: selection[k] for k in keys}}
+    if not _current(root, binding):
+        raise ValueError("selected outgoing frame bytes are not current")
+    existing = pack["board_bindings"].get(slot_id)
+    if existing == binding:
+        return False
+    if existing is not None:
+        raise ValueError("upstream reuse board already binds another selection; explicit rebinding is required")
+    pack["board_bindings"][slot_id] = binding
+    _event(pack, "upstream_board_bound", slot_id=slot_id, upstream_source=deepcopy(binding["upstream_source"]))
+    return True
+
+
 @_board_transaction
 def prepare_image_request(project_dir, slot_id, *, correction=None, replace_exception_call_id=None, images):
     """Materialize only current references; no dependency waits enter text prompts."""
     root = Path(project_dir).resolve()
     pack = load_board_pack(root)
     node = pack["prompt_pack"][slot_id]
+    _reject_upstream_slot(node)
     if correction is not None and replace_exception_call_id is not None:
         raise ValueError("targeted correction cannot also replace an unresolved host exception")
     if correction is not None:
@@ -659,6 +731,7 @@ def reserve_board_image(project_dir, slot_id, *, scope_id, call_id=None, correct
                         replace_exception_call_id=None, images):
     root = Path(project_dir).resolve()
     pack = load_board_pack(root)
+    _reject_upstream_slot(pack["prompt_pack"][slot_id])
     binding = pack["board_bindings"].get(slot_id)
     if binding and correction is None and replace_exception_call_id is None and _binding_current(root, pack, slot_id):
         if call_id and call_id == binding.get("call_id"):

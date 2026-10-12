@@ -368,18 +368,20 @@ def _standing_image_definition(root, policy, *, check_first_pass_capacity=True, 
         raise StandingSetupRequired('standing image run needs exact retained authored package')
     usage = image_usage(root)
     counted_slots = {row['slot_id'] for row in usage['occurrences'] if row['counted']}
-    missing = [node for node in pack['specification']['image_nodes']
+    # Upstream reuse slots bind actual selected outgoing frames; never image work.
+    image_nodes = [node for node in pack['specification']['image_nodes'] if 'upstream_source' not in node]
+    missing = [node for node in image_nodes
         if not boards._binding_current(root, pack, node['slot_id']) and node['slot_id'] not in counted_slots]
     if check_first_pass_capacity and usage['total'] + len(missing) > terms['image_allowance']:
         raise StandingSetupRequired('fixed native image allowance cannot cover retained usage plus missing first-pass boards')
     spec = pack['specification']
     inventory = copy.deepcopy(spec['references'])
-    for node in spec['image_nodes']:
+    for node in image_nodes:
         inventory.append({'id': node['slot_id'], 'role': node['role'], 'path': node['output_path'],
             'source_slot_id': node['slot_id'], 'applicability': {'story_revision': pack['story_revision'], 'roles': [node['role']]}})
     templates = {node['slot_id']: {'prompt': boards._prompt(node),
         'transparent_background': node.get('transparent_background', False), 'output_path': node['output_path'],
-        'reference_ids': node.get('reference_ids', []) + node.get('image_dependencies', [])} for node in spec['image_nodes']}
+        'reference_ids': node.get('reference_ids', []) + node.get('image_dependencies', [])} for node in image_nodes}
     transfers = [term for term in setup['source_transfer'] if term.get('provider') == NATIVE_ROUTE
         and term.get('account') == terms['account']]
     if len(transfers) != 1:

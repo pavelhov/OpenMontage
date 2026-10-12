@@ -20,6 +20,31 @@ _KEYS = {'version', 'mode', 'project_id', 'story_revision', 'shot_id', 'attempt_
          'defect', 'accepted_by', 'acceptance_evidence', 'outgoing_review'}
 
 
+def _status_read(function):
+    """Read-only status entry: bounded per-call validation reuse (see
+    ``production_autonomy.status_reuse``); writers opt out via ``_write``."""
+    import functools
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        from lib import production_autonomy as autonomy
+        with autonomy.status_reuse():
+            return function(*args, **kwargs)
+    return wrapper
+
+
+def _write(function):
+    """Mutation entry: always fresh validation, even under an outer status scope."""
+    import functools
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        from lib import production_autonomy as autonomy
+        with autonomy.no_status_reuse():
+            return function(*args, **kwargs)
+    return wrapper
+
+
 def _bound(root, binding):
     if not isinstance(binding, dict) or set(binding) != {'path', 'sha256'}:
         raise ValueError('draft exception requires exact hashed file binding')
@@ -141,6 +166,7 @@ def accepted_draft_predicate(selection, project_dir, *, shot_id=None):
         return None
 
 
+@_write
 def append_creator_draft_exception(project_dir, record):
     """Append reviewed existing-footage exception; never reserve or dispatch."""
     from lib import production_execution as execution
@@ -574,6 +600,7 @@ def _find_intent(root, operation_id):
     return found
 
 
+@_write
 def compose_first_cut(project_dir, *, audio_path=None, compose=None, export_profile=None, operation_id=None):
     """Render a versioned preview from current candidates and record it immutably.
 
@@ -748,6 +775,7 @@ def compose_first_cut(project_dir, *, audio_path=None, compose=None, export_prof
     return {'path': str(path), 'sha256': file_sha256(path), **record}
 
 
+@_write
 def deliver_standalone(project_dir, *, export_profile=None, operation_id=None, audio_path=None, compose=None):
     """Engine-only saved draft cut from current candidates; no Studio, Drive or account.
 
@@ -772,51 +800,56 @@ def deliver_standalone(project_dir, *, export_profile=None, operation_id=None, a
             'operation_id': operation_id, 'export': cut['export'],
             'export_path': str(root / cut['export']['path']) if cut['export'] else None,
             'export_profile': export_profile, 'technical': cut['technical'],
-            'clips': [{**row, 'review': _current_review_status(root, clip, current['findings']),
-                       'review_at_render': clip['review'], 'findings': current['findings']}
-                      for row, clip, current in zip(disclosure_clip_map(cut), cut['clips'],
-                                                    _clip_findings(root, cut['clips'], current=True))],
+            'clips': [{**row, 'review': review, 'review_at_render': clip['review'], 'findings': findings}
+                      for row, clip, (findings, review) in zip(disclosure_clip_map(cut), cut['clips'],
+                                                               _current_clip_rows(root, cut['clips']))],
             'missing': cut['missing'], 'audio': cut['audio'], 'render_error': cut['render_error'],
             'not_certification': True, 'posted': False, 'provider_calls': 0}
 
 
-def _current_review_status(root, clip, findings):
-    """Current review status of a placed clip, resolved like ``_candidate``."""
-    from lib import production_execution as execution
-    revision = execution._read(root / 'project.json')['story_revision']
-    review, _ = _current_findings(root, clip['shot_id'], clip['attempt_id'], clip['output']['sha256'],
-                                  revision, execution.load_selected_attempts(root))
+def _current_clip_projection(root, clip, revision, selected):
+    """One current resolution of a placed clip: (findings, review status).
+
+    Resolves findings and provenance once, exactly like ``_candidate``, for both
+    annotation currency and the delivered per-clip review."""
+    review, values = _current_findings(root, clip['shot_id'], clip['attempt_id'], clip['output']['sha256'],
+                                       revision, selected)
     try:
-        _, historical = _candidate_provenance(root, clip['shot_id'], clip['attempt_id'], clip['output'],
-                                              revision, allow_historical=True)
+        proof, historical = _candidate_provenance(root, clip['shot_id'], clip['attempt_id'],
+            clip['output'], revision, allow_historical=True)
     except (ValueError, OSError, KeyError, TypeError):
         historical = False
     if historical:
-        return 'unknown'
-    return review['status'] if review is not None else ('fail' if findings else 'unknown')
+        return [*values, _continuity_source_warning(proof)], 'unknown'
+    return values, review['status'] if review is not None else ('fail' if values else 'unknown')
 
 
+def _current_inputs(root):
+    from lib import production_execution as execution
+    return execution._read(root / 'project.json')['story_revision'], execution.load_selected_attempts(root)
+
+
+@_status_read
+def _current_review_status(root, clip, findings):
+    """Current review status of a placed clip, resolved like ``_candidate``."""
+    return _current_clip_projection(root, clip, *_current_inputs(root))[1]
+
+
+@_status_read
 def _clip_findings(root, clips, *, current):
     """Per-clip findings: retained at render time, or projected from current notes."""
-    from lib import production_execution as execution
     if current:
-        revision = execution._read(root / 'project.json')['story_revision']
-        selected = execution.load_selected_attempts(root)
-    findings = []
-    for clip in clips:
-        values = clip['findings']
-        if current:
-            values = _current_findings(root, clip['shot_id'], clip['attempt_id'], clip['output']['sha256'],
-                                       revision, selected)[1]
-            try:
-                proof, historical = _candidate_provenance(root, clip['shot_id'], clip['attempt_id'],
-                    clip['output'], revision, allow_historical=True)
-            except (ValueError, OSError, KeyError, TypeError):
-                historical = False
-            if historical:
-                values = [*values, _continuity_source_warning(proof)]
-        findings.append({'shot_id': clip['shot_id'], 'findings': values})
-    return findings
+        inputs = _current_inputs(root)
+    return [{'shot_id': clip['shot_id'],
+             'findings': _current_clip_projection(root, clip, *inputs)[0] if current else clip['findings']}
+            for clip in clips]
+
+
+@_status_read
+def _current_clip_rows(root, clips):
+    """Delivered per-clip (findings, review status) from one resolution each."""
+    inputs = _current_inputs(root)
+    return [_current_clip_projection(root, clip, *inputs) for clip in clips]
 
 
 def _findings_digest(root, clips, *, current):
@@ -845,24 +878,33 @@ def _cut_reasons(root, cut, *, include_findings=True):
         reasons.append('story_revision_changed')
     if contract_digest(execution.load_shot_contract(root)) != record['contract_sha256']:
         reasons.append('contract_changed')
+    current_findings = None
     if not reasons:
         current_clips = [row for row in first_cut_candidates(root) if row['status'] == 'candidate']
         if _clip_media_bindings(current_clips) != _clip_media_bindings(record['clips'], placed=True):
             reasons.append('candidate_bindings_changed')
-    if (include_findings and _findings_digest(root, record['clips'], current=True)
-            != _findings_digest(root, record['clips'], current=False)):
-        reasons.append('findings_changed')
+        else:
+            # Identical placed clips: each candidate row already resolved these
+            # exact bytes' current findings and provenance like _clip_findings.
+            current_findings = [{'shot_id': row['shot_id'], 'findings': row['findings']} for row in current_clips]
+    if include_findings:
+        if current_findings is None:
+            current_findings = _clip_findings(root, record['clips'], current=True)
+        if execution._digest(current_findings) != _findings_digest(root, record['clips'], current=False):
+            reasons.append('findings_changed')
     if max(r['sequence'] for _, r in _cut_records(root)) > record['sequence']:
         reasons.append('superseded')
     return reasons
 
 
+@_status_read
 def first_cut_status(project_dir, cut):
     """Currency of the rendered record and its retained creator annotations."""
     reasons = _cut_reasons(Path(project_dir).resolve(), cut)
     return {'status': 'stale' if reasons else 'current', 'reasons': reasons}
 
 
+@_status_read
 def first_cut_media_status(project_dir, cut):
     """Media currency for producer completion; new notes do not change bytes.
 
@@ -891,6 +933,7 @@ def _check_disclosure(root, cut, record, disclosure):
         raise ValueError('disclosure clip map differs from the complete first-cut record')
 
 
+@_write
 def record_first_cut_acceptance(project_dir, cut, *, accepted_by, evidence, disclosure=None):
     """Creator accepts this exact export and disclosed findings; never certification.
 
@@ -935,6 +978,7 @@ def record_first_cut_acceptance(project_dir, cut, *, accepted_by, evidence, disc
         return {'path': str(path), 'sha256': file_sha256(path)}
 
 
+@_status_read
 def first_cut_acceptance_status(project_dir, acceptance):
     """current only while acceptance, cut record, export, sources and findings are unchanged."""
     from lib import production_execution as execution

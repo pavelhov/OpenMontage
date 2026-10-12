@@ -450,6 +450,16 @@ def resolve_board_input(project_dir, binding):
             _fail('declared board input differs from same-project original call')
     elif current.get('origin') != 'reuse':
         _fail('declared board input lacks qualified canonical attribution')
+    elif 'upstream_source' in current or 'upstream_source' in pack['prompt_pack'].get(aid, {}):
+        # Reused outgoing frame stays tied to the exact current selection.
+        node = pack['prompt_pack'].get(aid, {})
+        source = current.get('upstream_source') or {}
+        selection = load_selected_attempts(root).get(source.get('shot_id'))
+        contract = load_shot_contract(root)
+        if (not isinstance(selection, dict) or source.get('shot_id') != node.get('upstream_source', {}).get('shot_id')
+                or _validated_upstream_binding(root, contract, node['shot_id'], source['shot_id'], selection) != source
+                or _inside(selection['outgoing_frame']['path'], root) != _inside(current['path'], root)):
+            _fail('reused upstream board differs from the current selected outgoing frame')
     return {'path': str(_inside(current['path'], root)), 'sha256': current['sha256']}
 
 
@@ -1066,8 +1076,10 @@ def _lock(root):
         else:
             import fcntl
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        from lib import production_autonomy as _autonomy
         try:
-            yield
+            with _autonomy.no_status_reuse():   # fresh rechecks under the lock
+                yield
         finally:
             if os.name == 'nt':
                 stream.seek(0)
@@ -1744,16 +1756,29 @@ def _execute_governed(tool, inputs, invoke):
         _ACTIVE.reset(token)
 
 
-def governed_dry_run(tool, inputs):
+def _dry_run_preflight(tool, inputs):
+    """One operation-local check, including fresh route compatibility evidence.
+
+    Only the dry-run formatter consumes this result. Dispatch always performs
+    its own fresh preflights, including the check under the project lock.
+    """
     observation = _fresh_policy_grok_observation(tool, inputs)
     token = _GROK_COMPATIBILITY.set(observation or _GROK_COMPATIBILITY.get())
     try:
-        result = preflight(tool, inputs)
+        return preflight(tool, inputs)
     finally:
         _GROK_COMPATIBILITY.reset(token)
+
+
+def _dry_run_from_preflight(tool, result):
+    """Project immutable dry-run metadata; never admit or dispatch a request."""
     return {'tool':tool.name,'governed':result['governed'], 'would_execute':True,
             'paid_submission':False,'provider_calls':0,'reservations':0,
             'request_sha256':result.get('request_sha256'), 'label':result.get('label', 'governed_preflight')}
+
+
+def governed_dry_run(tool, inputs):
+    return _dry_run_from_preflight(tool, _dry_run_preflight(tool, inputs))
 
 
 def _grok_native_operation(inputs, media_kind='motion'):
@@ -2811,7 +2836,8 @@ def _selected_upstream_transition(root, contract, shot_id, selected):
     if not shot_local(contract):
         return None
     shot = next(s for s in contract['shots'] if s['id'] == shot_id)
-    if not any(set(item) == {'shot_id'} for item in shot['upstream']):
+    reuse = _upstream_reuse_slots(root, shot_id)
+    if not any(set(item) == {'shot_id'} for item in shot['upstream']) and not reuse:
         return None
     policy, policy_sha, decision_id = autonomy.require_active_policy(root, shot_id=shot_id)
     autonomy.contract_delta(root, shot_id, autonomy.current_projection(root, shot_id), policy=policy)
@@ -2822,9 +2848,29 @@ def _selected_upstream_transition(root, contract, shot_id, selected):
         if set(item) != {'shot_id'} and item != current:
             _fail('materialized upstream selection is stale; explicit rebinding is required')
         target['upstream'][index] = current
-    return {'contract': candidate, 'binding': {'contract_sha256': contract_digest(contract),
+    binding = {'contract_sha256': contract_digest(contract),
         'selected_sha256': _digest(selected), 'policy_sha256': policy_sha, 'decision_id': decision_id,
-        'upstream': copy.deepcopy(target['upstream'])}}
+        'upstream': copy.deepcopy(target['upstream'])}
+    boards_bound = {}
+    for slot, source_shot in reuse.items():
+        item = next((u for u in target['upstream'] if u['shot_id'] == source_shot), None)
+        if item is None:
+            _fail('upstream reuse board lacks its declared dependency')
+        boards_bound[slot] = {**item, 'path': selected[source_shot]['outgoing_frame']['path']}
+    if boards_bound:
+        # Present only for declared reuse boards; ordinary action bytes unchanged.
+        binding['reuse_boards'] = boards_bound
+    return {'contract': candidate, 'binding': binding}
+
+
+def _upstream_reuse_slots(root, shot_id):
+    """Declared reuse slots of a shot still lacking their selected-frame binding."""
+    from lib import production_boards as boards
+    if not (root / boards.ARTIFACT).exists():
+        return {}
+    pack = boards.load_board_pack(root)
+    return {slot: node['upstream_source']['shot_id'] for slot, node in pack['prompt_pack'].items()
+            if node['shot_id'] == shot_id and 'upstream_source' in node and slot not in pack['board_bindings']}
 
 
 def _bind_selected_upstream(root, action):
@@ -2843,20 +2889,113 @@ def _bind_selected_upstream(root, action):
         legacy = root / 'shot_contract.json'
         if path != legacy and legacy.exists() and _read(legacy) != planned['contract']:
             _fail('legacy canonical upstream artifact conflict')
-        temporary = path.with_name('.upstream-contract-' + str(uuid.uuid4()) + '.tmp')
-        try:
-            with temporary.open('x') as stream:
-                json.dump(planned['contract'], stream, indent=2, allow_nan=False)
-                stream.flush()
-                os.fsync(stream.fileno())
-            temporary.replace(path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        if _read(path) != planned['contract']:
+            temporary = path.with_name('.upstream-contract-' + str(uuid.uuid4()) + '.tmp')
+            try:
+                with temporary.open('x') as stream:
+                    json.dump(planned['contract'], stream, indent=2, allow_nan=False)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                temporary.replace(path)
+            finally:
+                temporary.unlink(missing_ok=True)
+        reuse = planned['binding'].get('reuse_boards')
+        if reuse:
+            # Same board transaction; replay after the contract write rediscovers
+            # the missing binding. No review is written or inherited.
+            pack = boards.load_board_pack(root)
+            if any(boards.bind_upstream_board_locked(root, pack, slot, selection)
+                   for slot, selection in reuse.items()):
+                boards._save(root, pack)
+                boards._promote_motion_bindings(root, pack)
     with _lock(root):
         if (root / boards.ARTIFACT).exists():
             boards._board_transaction(publish)(root)
         else:
             publish(root)
+
+
+def _critical_repair(root, row):
+    """Read-only: the one bounded same-route repair the existing owners admit now.
+
+    Returns repair metadata for a candidate whose current retained review names a
+    failed critical predicate, or None. Eligibility reuses the existing repair
+    evidence, policy caps, cross-provider and episode-control admission checks;
+    cosmetic/unknown-only findings, exhausted caps or no active policy keep None.
+    """
+    from lib import production_autonomy as autonomy
+    from lib import episode_production_controls as episode_controls
+    if row.get('review') != 'fail' or not row.get('attempt_id'):
+        return None
+    if not any(isinstance(f, dict) and f.get('status') == 'fail' and f.get('severity', 'critical') == 'critical'
+               for f in row.get('findings') or []):
+        return None
+    sid, aid = row['shot_id'], row['attempt_id']
+    try:
+        attempts = _attempts(root)
+        request = next(a for a in attempts if a['attempt_id'] == aid)
+        # Already replaced by a dispatched repair: the repair owns the shot now.
+        if any(aid in (_attempt_scope(a).get('replaces_attempt_ids') or []) for a in attempts):
+            return None
+        policy, _, _ = autonomy.require_active_policy(root, shot_id=sid)
+        autonomy._validate_repair_evidence(root, sid, [aid])
+        if autonomy.cross_provider_block(root, sid):
+            return None
+        # A retained, unused exact repair scope (interrupted before reservation)
+        # is reused by derive_scope(reuse_undispatched=True); it is that same
+        # slot, never a further one, so it does not count against itself here.
+        retained = _undispatched_repair_scope(root, sid, aid)
+        autonomy.check_caps(policy, sid, autonomy.root_attempt_counts(root, policy,
+            exclude_scope_id=retained['id'] if retained else None), 'repair', root=root)
+        provider = (request.get('scope') or {}).get('provider') or request.get('provider')
+        model = (request.get('submitted_inputs') or {}).get('model')
+        if retained is not None and retained.get('provider') != provider:
+            return None
+        decision = episode_controls.generation_admission(root, shot_id=sid, provider=provider, model=model,
+            purpose='repair', replaces_attempt_ids=(aid,))
+    except (StopIteration, ValueError, KeyError, TypeError, OSError, ProductionGovernanceError,
+            episode_controls.EpisodeControlsError):
+        return None
+    if not decision['admitted']:
+        return None
+    return {'replaces_attempt_ids': [aid], 'output_sha256': row['output']['sha256'],
+            'provider': provider, 'model': model}
+
+
+def _attempt_scope(attempt):
+    """Embedded scope of a journal row or an OpenArt MCP row's scope snapshot."""
+    scope = attempt.get('scope')
+    if not isinstance(scope, dict):
+        scope = attempt.get('scope_snapshot')
+    return scope if isinstance(scope, dict) else {}
+
+
+def _undispatched_repair_scope(root, shot_id, original):
+    """The single retained, unused derived repair scope replacing ``original``."""
+    from lib.production_repair_batches import closed_unsubmitted_creator_scope
+    path = root / 'production_scopes.json'
+    if not path.exists():
+        return None
+    used = {a['scope_id'] for a in _attempts(root)}
+    pending = [s for s in _read(path).get('scopes', []) if s['id'] not in used
+               and shot_id in s.get('requests', {}) and 'derived_from_policy' in s
+               and not closed_unsubmitted_creator_scope(root, s)]
+    if (len(pending) == 1 and pending[0].get('phase') == 'repair'
+            and pending[0].get('replaces_attempt_ids') == [original]):
+        return pending[0]
+    return None
+
+
+def _retained_replaced_failure(root, request, observed, selected, replaced_by_repair):
+    """An original named by an admitted repair whose exact current bytes carry a
+    retained rejection is already reviewed; it is never re-reviewed or reselected."""
+    from lib.production_draft import _current_findings
+    output = observed.get('output') or {}
+    if request['attempt_id'] not in replaced_by_repair or not output.get('sha256'):
+        return False
+    _, findings = _current_findings(root, request['shot_id'], request['attempt_id'], output['sha256'],
+                                    request.get('story_revision'), selected)
+    return bool(findings)
 
 
 def _rejected_and_superseded(root, request, observed, selected, current_candidates):
@@ -2959,6 +3098,61 @@ def _board_review_work(pack, asset_id, roles, *, boards, motion_roles=()):
             'correction_observation': correction_observation, 'blocked': blocked}
 
 
+def _board_between_pending_polls(root, poll_action, pack, board_actions, ready_images,
+                                 pending_motion_shots, image_calls):
+    """One independent board lane per actual original-status boundary.
+
+    Existing local receipt/status and image reservation events bound the overlap;
+    these are operation ordering, never inferred backend duration. Finish that
+    lane's original/import/review before choosing another board, then refresh
+    the accepted job's status. Unknown/missing ordering keeps polling first.
+    """
+    from datetime import datetime
+    from lib import openart_mcp_jobs as jobs
+    if not pack or poll_action['kind'] != 'poll_openart_original':
+        return None
+    original = jobs._load(root, poll_action['subject'])
+    last_status = (original['status_observations'][-1] if original['status_observations']
+                   else original.get('receipt') or {})
+    if last_status.get('status') not in {'PENDING', 'RUNNING'}:
+        return None
+    def event_time(event):
+        value = datetime.fromisoformat(event['observed_at'])
+        if value.tzinfo is None:
+            raise ValueError('local event timezone missing')
+        return value
+    try:
+        boundary = max(event_time(event) for event in original['events']
+            if event['kind'] in {'submission_receipt_retained', 'status_observed'})
+        recent = []
+        for call in image_calls:
+            reserved = [event_time(event) for event in call['events'] if event['kind'] == 'reserved']
+            if not reserved:
+                return None
+            if max(reserved) >= boundary:
+                recent.append((max(reserved), call['slot_id']))
+    except (ValueError, KeyError, TypeError):
+        return None
+    if recent:
+        # Even an unrelated manually admitted image consumes the opportunity;
+        # only complete the earliest current lane, never start all boards first.
+        slot = min(recent)[1]
+        current = board_actions.get(slot)
+        if current and current['kind'] in {'begin_native_image', 'receive_native_image',
+                                          'promote_imported_board', 'review_board'}:
+            return current
+        return None
+    for slot, current in board_actions.items():
+        if (current['kind'] == 'review_board' and slot in pack['prompt_pack']
+                and pack['prompt_pack'][slot]['shot_id'] not in pending_motion_shots):
+            return current
+    for slot in ready_images:
+        node = pack['prompt_pack'][slot]
+        if node['shot_id'] not in pending_motion_shots:
+            return board_actions[slot]
+    return None
+
+
 def next_production_action(project_dir):
     """One typed projection of existing canonical state; zero writes or host calls."""
     from lib import production_images as images, production_boards as boards
@@ -2975,6 +3169,15 @@ def next_production_action(project_dir):
     pending_image_action = None
     motion_action = None
     pending_motion_shots = set()
+    image_calls = []
+    ready_images = []
+    def remember_motion(candidate):
+        nonlocal motion_action
+        # A known pending poll never hides another original's receive/download
+        # or uncertain collection work, regardless of attempt iteration order.
+        if (motion_action is None or motion_action['kind'] == 'poll_openart_original'
+                and candidate['kind'] != 'poll_openart_original'):
+            motion_action = candidate
     derived_names = ['script', 'scene_plan', 'asset_manifest']
     if pack and (pack.get('motion_projection', {}).get('contract_digest')
             or pack['specification'].get('motion_binding', {}).get('contract_template', {}).get('planning_mode') == 'shot_local_v1'):
@@ -3000,8 +3203,8 @@ def next_production_action(project_dir):
         motion_roles = {asset['id']: [asset['role']] for asset in motion_contract['assets']
                         if asset['id'] in required_assets}
     if (root / images.ARTIFACT).exists():
-        calls = images._load(root)['calls']
-        for call in calls:
+        image_calls = images._load(root)['calls']
+        for call in image_calls:
             if (pack and call['state'] == 'imported' and call['slot_id'] in pack['prompt_pack']
                     and pack['board_bindings'].get(call['slot_id'], {}).get('call_id') != call['call_id']
                     # Superseded originals and late originals whose successor owns
@@ -3129,7 +3332,20 @@ def next_production_action(project_dir):
         candidates = first_cut_candidates(root)
     reviewed_candidates = {row['shot_id']: row for row in candidates
         if row.get('status') == 'candidate' and (row.get('review') == 'pass' or row.get('findings'))}
+    # A critically failed candidate is not finished footage while the existing
+    # same-route repair evidence/caps/controls still admit one bounded repair.
+    # Its failed bytes stay reviewed (never re-reviewed); exhausted or
+    # ineligible failures keep the previous compose-with-gaps behavior.
+    repairable = {}
+    for sid, row in reviewed_candidates.items():
+        if sid not in selected:
+            repair = _critical_repair(root, row)
+            if repair is not None:
+                repairable[sid] = repair
     current_candidates = {row['shot_id']: row for row in candidates if row.get('status') == 'candidate'}
+    # Originals named by an admitted repair keep their retained rejection;
+    # their unchanged failed bytes never return to review.
+    replaced_by_repair = {x for a in _attempts(root) for x in (_attempt_scope(a).get('replaces_attempt_ids') or [])}
     for request in _attempts(root):
         if request.get('media_kind') != 'motion':
             continue
@@ -3144,13 +3360,13 @@ def next_production_action(project_dir):
                        'state_sha256': _digest(state)}
             if kind:
                 pending_motion_shots.add(sid)
-                motion_action = motion_action or action(kind, aid, binding, inputs=operation,
-                    host=kind in {'poll_openart_original'})
+                remember_motion(action(kind, aid, binding, inputs=operation,
+                    host=kind in {'poll_openart_original'}))
                 continue
             if operation['action'] == 'blocked_original_host_reply_unavailable':
                 pending_motion_shots.add(sid)
-                motion_action = motion_action or action('receive_openart_original', aid, binding, inputs=operation, host=True,
-                              reason=operation['reason'])
+                remember_motion(action('receive_openart_original', aid, binding, inputs=operation, host=True,
+                              reason=operation['reason']))
                 continue
             observed = _state(root, request)
         else:
@@ -3161,12 +3377,13 @@ def next_production_action(project_dir):
             provider = request.get('scope', {}).get('provider')
             kind = {'grok_cli': 'collect_grok_original', 'openart_cli': 'collect_openart_original'}.get(provider, 'blocked')
             pending_motion_shots.add(sid)
-            motion_action = motion_action or action(kind, aid, binding, inputs={'attempt_id': aid,
+            remember_motion(action(kind, aid, binding, inputs={'attempt_id': aid,
                 'request_sha256': request['request_sha256'], 'original_id': request.get('cli_session_id', aid),
-                'provider': provider}, reason=('Unsupported strict original collection; preserve original ID/count and never replace.' if kind == 'blocked' else None))
+                'provider': provider}, reason=('Unsupported strict original collection; preserve original ID/count and never replace.' if kind == 'blocked' else None)))
             continue
         if (observed.get('status') == 'generated' and selected.get(sid, {}).get('attempt_id') != aid
                 and reviewed_candidates.get(sid, {}).get('attempt_id') != aid
+                and not _retained_replaced_failure(root, request, observed, selected, replaced_by_repair)
                 and not _rejected_and_superseded(root, request, observed, selected, current_candidates)):
             return action('review_selection', aid, binding, host=True,
                 inputs={'shot_id': sid, 'attempt_id': aid, 'output': observed.get('output'),
@@ -3177,8 +3394,31 @@ def next_production_action(project_dir):
         if board_action is not None:
             return board_action
         return action('blocked', 'planning', {}, reason='Canonical authored planning is missing; no trusted derived source is available.')
+    from lib import production_repair_batches as repairs
+    try:
+        creator_prepared = repairs.prepared_creator_repair_items(root)
+    except (ValueError, OSError, KeyError, TypeError) as exc:
+        if motion_action is not None:
+            return motion_action
+        return action('blocked', 'creator_repair', {}, reason='Retained creator repair is invalid: ' + str(exc))
+    if creator_prepared:
+        # Original receipts/status/collection stay ahead of any new creator call.
+        if motion_action is not None:
+            return motion_action
+        for shot in contract['shots']:
+            sid = shot['id']
+            if sid not in creator_prepared:
+                continue
+            prepared = creator_prepared[sid]
+            return action('prepare_motion', sid,
+                {'shot_subject': shot_review_subject(contract, sid),
+                 'creator_repair': prepared['creator_repair'],
+                 'scope_id': prepared['scope']['id'], 'scope_sha256': _digest(prepared['scope'])},
+                host=True, inputs={'shot_id': sid, 'phase': 'repair',
+                    'replaces_attempt_ids': prepared['scope']['replaces_attempt_ids']},
+                reason='Prepare the exact retained creator repair; its approved prompt and scope take precedence over the older critical request.')
     shots = contract['shots']
-    if all(s['id'] in reviewed_candidates for s in shots) and motion_action is None:
+    if all(s['id'] in reviewed_candidates and s['id'] not in repairable for s in shots) and motion_action is None:
         from lib.production_draft import first_cut_media_status, latest_first_cut
         cut = latest_first_cut(root)
         if cut:
@@ -3190,7 +3430,14 @@ def next_production_action(project_dir):
     blocked_shots = {}
     for shot in shots:
         sid = shot['id']
-        if sid in selected or sid in reviewed_candidates or sid in pending_motion_shots:
+        if sid in selected or sid in pending_motion_shots:
+            continue
+        if sid in repairable:
+            repair = repairable[sid]
+            return action('prepare_motion', sid, {'shot_subject': shot_review_subject(contract, sid), 'repair': repair},
+                host=True, inputs={'shot_id': sid, 'phase': 'repair', 'replaces_attempt_ids': repair['replaces_attempt_ids']},
+                reason='Critical review failed; producer prepares one bounded same-route repair under existing caps. The failed original stays retained and counted.')
+        if sid in reviewed_candidates:
             continue
         try:
             transition = _selected_upstream_transition(root, contract, sid, selected)
@@ -3227,6 +3474,13 @@ def next_production_action(project_dir):
             return action('prepare_motion', sid, {'shot_subject': shot_review_subject(contract, sid)}, host=True,
                 inputs={'shot_id': sid}, reason='Producer prepares exact registered-route request and actual named preparation review; engine admits and dispatches it.')
     if motion_action is not None:
+        if motion_action['kind'] == 'poll_openart_original':
+            if pending_image_action is not None:
+                return pending_image_action
+            overlap = _board_between_pending_polls(root, motion_action, pack, board_actions,
+                ready_images, pending_motion_shots, image_calls)
+            if overlap is not None:
+                return overlap
         return motion_action
     if deferred_payoff_action is not None:
         if pending_image_action is not None:
@@ -3234,7 +3488,7 @@ def next_production_action(project_dir):
         return deferred_payoff_action
     if board_action is not None:
         return board_action
-    if reviewed_candidates:
+    if any(sid not in repairable for sid in reviewed_candidates):
         return action('compose_cut', 'cut', {'selections_sha256': _digest(selected),
             'contract_sha256': contract_digest(contract), 'candidates_sha256': _digest(candidates)},
             inputs={'candidates': candidates, 'blocked_shots': blocked_shots}, reason='Compose attributable usable footage with retained findings and gaps disclosed.')
@@ -3306,6 +3560,98 @@ def advance(project_dir, *, max_steps=8):
                     'reason': 'Original operation is still pending; no replacement or duplicate collection was issued.'}
     action = next_production_action(root)
     return {'status': _action_status(action), 'action': action, 'steps': max_steps, 'provider_calls': 0}
+
+
+def draft_motion_preparation(project_dir, action, *, output_path=None, compiled_request_id=None,
+                             preparation_review_id=None, provider=None):
+    """Pure draft of the CURRENT ``prepare_motion`` request from retained inputs.
+
+    Projects the active policy's retained ``planned_request_template`` inputs,
+    resolves declared ``$board``/``$upstream`` frame occurrences to their actual
+    current bytes, and attaches the existing ``compile_provider_prompt`` preview.
+    It writes nothing, reserves/uploads nothing and makes no review, timing or
+    provider judgment. The returned ``inputs``/``provider`` are an ordinary
+    draft for ``prep_builder``/``prepare_compiled_request``/``complete_action``;
+    admission still validates every field against the retained authority.
+    """
+    from lib import production_autonomy as autonomy
+    from lib.production_request import compile_provider_prompt, _id
+    root = Path(project_dir).resolve()
+    current = next_production_action(root)
+    if not isinstance(action, dict) or action != current or current['kind'] != 'prepare_motion':
+        _fail('motion draft requires the exact current prepare_motion action')
+    sid = current['inputs'].get('shot_id')
+    if sid != current['subject']:
+        _fail('motion draft action subject differs from its shot')
+    creator = current['binding'].get('creator_repair')
+    if creator is not None:
+        from lib import production_repair_batches as repairs
+        prepared = repairs.prepare_creator_repair_prompt(root, creator['batch_id'], creator['item_id'])
+        if (prepared['creator_repair'] != creator
+                or prepared['inputs']['governance'].get('scope_id') != current['binding']['scope_id']
+                or _digest(repairs._scope(root, current['binding']['scope_id'])) != current['binding']['scope_sha256']):
+            _fail('creator repair draft differs from exact current scope')
+        if provider is not None and provider != prepared['provider']:
+            _fail('creator repair draft differs from approved provider')
+        for key, value in (('output_path', output_path), ('compiled_request_id', compiled_request_id),
+                           ('preparation_review_id', preparation_review_id)):
+            if value is not None and str(value) != prepared['inputs'].get(key):
+                _fail('creator repair draft cannot alter retained ' + key)
+        return dict(prepared, action_id=current['action_id'], shot_id=sid, frames=[], missing=[])
+    policy, _, _ = autonomy.require_active_policy(root, shot_id=sid)
+    retained = autonomy.retained_baselines(root, policy).get(sid)
+    if not isinstance(retained, dict):
+        _fail('motion draft lacks retained request template for current shot')
+    template = retained['planned_request_template']['inputs']
+    routes = template.get('allowed_providers') or ([template['preferred_provider']] if template.get('preferred_provider') else [])
+    named = template.get('preferred_provider', routes[0] if len(routes) == 1 else None)
+    repair = current['binding'].get('repair')
+    if repair is not None:
+        # A critical repair keeps its failed original's exact route/model.
+        if (provider is not None and provider != repair['provider']) or (routes and repair['provider'] not in routes):
+            _fail('critical repair draft must keep its original provider')
+        named, routes = repair['provider'], [repair['provider']] if routes else routes
+    if routes and (provider is not None and provider != named):
+        _fail('motion draft provider differs from retained request template route')
+    provider = named if routes else provider
+    if (provider not in autonomy.ROUTE_TOOLS or (routes and routes != [provider])
+            or template.get('preferred_tool', autonomy.ROUTE_TOOLS[provider]) != autonomy.ROUTE_TOOLS[provider]
+            or autonomy._provider_spec(policy, provider) is None
+            or not autonomy._intent_allows(policy, sid, provider, template.get('model'))):
+        _fail('retained request template lacks one supported singleton route')
+    selected = load_selected_attempts(root)
+    frames = []
+    def resolve(value, key=None, pointer=''):
+        if isinstance(value, dict) and '$board' in value:
+            record = resolve_board_input(root, _board_binding(value))
+            frames.append({'pointer': pointer, 'binding': copy.deepcopy(value), **record})
+            return record['path']
+        if isinstance(value, dict) and '$upstream' in value:
+            binding = _upstream_binding(value)
+            record = selected.get(binding['shot_id'], {}).get(binding['role'], {})
+            if not record.get('path') or file_sha256(_inside(record['path'], root)) != record.get('sha256'):
+                _fail('dynamic upstream request lacks matching selected bytes')
+            frames.append({'pointer': pointer, 'binding': copy.deepcopy(value),
+                           'path': str(_inside(record['path'], root)), 'sha256': record['sha256']})
+            return str(_inside(record['path'], root))
+        if isinstance(value, dict):
+            return {k: resolve(v, k, pointer + '/' + k) for k, v in value.items()}
+        if isinstance(value, list):
+            return [resolve(v, key, pointer + '/' + str(i)) for i, v in enumerate(value)]
+        return copy.deepcopy(value)
+    inputs = resolve(template)
+    authored = compile_provider_prompt(root, sid, provider=provider,
+        **({'model': inputs.get('model')} if provider == 'openart_mcp' else {}))
+    inputs.update(project_dir=str(root), governance={'shot_id': sid}, prompt=authored['prompt'])
+    if output_path is not None:
+        inputs['output_path'] = str(_inside(output_path, root))
+    for name, value in (('compiled_request_id', compiled_request_id), ('preparation_review_id', preparation_review_id)):
+        if value is not None:
+            inputs[name] = _id(value)
+    missing = [k for k in ('output_path', 'compiled_request_id', 'preparation_review_id') if k not in inputs]
+    return {'action_id': current['action_id'], 'shot_id': sid, 'provider': provider, 'inputs': inputs,
+            'frames': frames, 'coverage': authored['coverage'], 'source_binding': authored['source_binding'],
+            'missing': missing, 'provider_calls': 0}
 
 
 def complete_action(project_dir, action, *, outcome):
@@ -3422,7 +3768,23 @@ def complete_action(project_dir, action, *, outcome):
         provider = outcome['provider']; inputs = copy.deepcopy(outcome['inputs'])
         if provider not in autonomy.ROUTE_TOOLS or inputs.get('governance', {}).get('shot_id') != aid:
             _fail('prepared motion lies outside exact current action')
-        scope = autonomy.derive_scope(root, inputs, provider=provider, observation=outcome.get('observation'), reuse_undispatched=True)
+        repair = action['binding'].get('repair')
+        if repair is not None and (provider != repair['provider']
+                or (repair.get('model') is not None and inputs.get('model') != repair['model'])):
+            _fail('critical repair must keep its original provider and media model')
+        creator = action['binding'].get('creator_repair')
+        if creator is not None:
+            from lib import production_repair_batches as repairs
+            scope = repairs._scope(root, action['binding']['scope_id'])
+            if (_digest(scope) != action['binding']['scope_sha256']
+                    or scope.get('creator_repair') != creator or scope.get('repair_basis') != 'creator_batch'):
+                _fail('prepared creator repair scope changed')
+            repairs.validate_creator_repair_intent(root, creator, shot_id=aid, provider=provider,
+                model=inputs.get('model'), replaces_attempt_ids=scope['replaces_attempt_ids'], inputs=inputs)
+        else:
+            scope = autonomy.derive_scope(root, inputs, provider=provider, observation=outcome.get('observation'),
+                reuse_undispatched=True, **({'phase': 'repair', 'replaces_attempt_ids': list(repair['replaces_attempt_ids'])}
+                                            if repair is not None else {}))
         inputs['governance'].update(shot_id=aid, scope_id=scope['id'])
         from tools.tool_registry import registry
         registry.ensure_discovered('tools.video')

@@ -12,10 +12,14 @@ decision-log activation) every time. The R18 duplicate-video guard lives in
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import copy
 import hashlib
 import json
 import math
+import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -238,7 +242,16 @@ def _validate_generated_board_source(root, asset, *, expected):
         raise AutonomyError('generated source differs from exact retained board declaration')
     record = execution.resolve_board_input(root, {'asset_id': aid})
     binding = pack['board_bindings'][aid]
-    if (binding.get('origin') != 'canonical_image_import'
+    # Declared endpoint reuse: resolve_board_input above re-validated the exact
+    # current selected attempt/output/review/outgoing frame and path. Plain reuse
+    # (no declared upstream_source on node, template and binding) stays refused.
+    source = pack['prompt_pack'][aid].get('upstream_source')
+    declared_reuse = (binding.get('origin') == 'reuse' and isinstance(source, dict)
+        and source.get('role') == 'outgoing_frame'
+        and declaration.get('upstream_source') == source == expected.get('upstream_source')
+        and isinstance(binding.get('upstream_source'), dict)
+        and binding['upstream_source'].get('shot_id') == source.get('shot_id'))
+    if ((binding.get('origin') != 'canonical_image_import' and not declared_reuse)
             or record['sha256'] != asset.get('sha256')
             or _inside(root, record['path']) != _inside(root, asset.get('path', ''))
             or boards._review_blockers(pack, aid, asset['role'])):
@@ -781,8 +794,8 @@ def reconcile_standing_checkpoint_stages(project_dir, *, expected_policy_sha256)
         raise StandingSetupRequired('checkpoint reconciliation cannot be validated: ' + str(exc)) from exc
 
 
-def _standing_allowance_changes(previous, candidate, *, source_only=False):
-    """Only source batch/total attempt increases; every other term stays exact."""
+def _standing_allowance_changes(previous, candidate, *, source_only=False, shot_ids=()):
+    """Only authenticated allowance increases; every other term stays exact."""
     if not isinstance(previous, dict) or not isinstance(candidate, dict):
         raise StandingSetupRequired('source batch amendment requires complete standing setups')
     before = copy.deepcopy(previous); after = copy.deepcopy(candidate)
@@ -811,8 +824,29 @@ def _standing_allowance_changes(previous, candidate, *, source_only=False):
         if new_limit != old_limit:
             changes.append({'field': 'caps.max_total_attempts', 'before': old_limit, 'after': new_limit})
         new_caps['max_total_attempts'] = old_limit
+        old_shots = old_caps.get('max_attempts_by_shot', {})
+        new_shots = new_caps.get('max_attempts_by_shot', {})
+        if (not isinstance(old_shots, dict) or not isinstance(new_shots, dict)
+                or not set(old_shots).issubset(new_shots)
+                or not set(new_shots).issubset(shot_ids)):
+            raise StandingSetupRequired('standing allowance requires retained named policy shots')
+        for shot_id, new_value in sorted(new_shots.items()):
+            old_value = old_shots.get(shot_id, old_caps['max_attempts_per_shot'])
+            if (type(old_value) is not int or type(new_value) is not int
+                    or new_value < old_value or new_value < 1
+                    or new_value > new_limit
+                    or shot_id not in old_shots and new_value == old_value):
+                raise StandingSetupRequired('standing shot allowance requires positive increasing integer limits within total cap')
+            if new_value != old_value:
+                changes.append({'field': 'caps.max_attempts_by_shot', 'shot_id': shot_id,
+                                'before': old_value, 'after': new_value})
+        # Keep absent optional keys absent, preserving legacy source-only deltas.
+        if 'max_attempts_by_shot' in old_caps:
+            new_caps['max_attempts_by_shot'] = copy.deepcopy(old_shots)
+        else:
+            new_caps.pop('max_attempts_by_shot', None)
     if before != after or not changes:
-        allowed = 'max_batches' if source_only else 'max_batches and max_total_attempts'
+        allowed = 'max_batches' if source_only else 'max_batches and max_total_attempts or exact shot limits'
         raise StandingSetupRequired('standing allowance changes only ' + allowed + '; no other caps, sources, rights or protections')
     return changes
 
@@ -849,7 +883,7 @@ def _standing_setup_state(root, policy):
             raise StandingSetupRequired('standing allowance predecessor differs from current activation/setup')
         candidate = _bound_document(root, record['standing_setup'], 'standing allowance successor setup')
         _bound_authorization(root, candidate, basis['identity_id'])
-        if _standing_allowance_changes(setup, candidate, source_only=source_only) != record['changes']:
+        if _standing_allowance_changes(setup, candidate, source_only=source_only, shot_ids=policy['shots']) != record['changes']:
             raise StandingSetupRequired('standing allowance differs from exact creator setup')
         retained_records.append((retained, record))
         setup, binding = candidate, record['standing_setup']
@@ -862,13 +896,15 @@ def effective_standing_setup(root, policy):
 
 
 def effective_standing_caps(root, policy):
-    """Only an activated total-cap successor expands the policy's motion ceiling."""
+    """Authenticated successors expand only their exact total or named-shot caps."""
     caps = copy.deepcopy(policy['caps'])
     if policy.get('activation_basis'):
         for _, record in _standing_setup_state(root, policy)[2]:
             for change in record['changes']:
                 if change.get('field') == 'caps.max_total_attempts':
                     caps['max_total_attempts'] = change['after']
+                elif change.get('field') == 'caps.max_attempts_by_shot':
+                    caps.setdefault('max_attempts_by_shot', {})[change['shot_id']] = change['after']
     return caps
 
 
@@ -881,8 +917,9 @@ def amend_standing_source_max_batches(project_dir, *, expected_policy_sha256,
 
 def amend_standing_allowance(project_dir, *, expected_policy_sha256,
                              expected_setup_sha256, standing_setup):
-    """Append exact creator-approved source batch and/or total-attempt increases.
+    """Append exact creator-approved source batch, total or named-shot increases.
 
+    Named-shot limits use caps.max_attempts_by_shot in the authenticated successor.
     No other caps, account/route/rights/source/plan/control changes are admitted.
     Original activation, scopes, envelopes, jobs, selections and counts remain
     frozen. Merely preparing approval never activates an allowance. Exact replay
@@ -896,7 +933,7 @@ def _amend_standing_allowance(project_dir, *, expected_policy_sha256,
                               expected_setup_sha256, standing_setup, source_only):
     from lib import production_execution as execution, production_images as images
     root = Path(project_dir).resolve()
-    with execution._lock(root):
+    with no_status_reuse(), execution._lock(root):
         policy, sha, _ = require_active_policy(root)
         if sha != expected_policy_sha256 or not policy.get('activation_basis'):
             raise StandingSetupRequired('standing allowance requires exact active predecessor policy SHA')
@@ -909,7 +946,8 @@ def _amend_standing_allowance(project_dir, *, expected_policy_sha256,
             latest_binding, latest = records[-1]
             if (latest['standing_setup'] == standing_setup
                     and latest['predecessor_setup']['sha256'] == expected_setup_sha256):
-                if source_only and any(c.get('field') == 'caps.max_total_attempts' for c in latest['changes']):
+                if source_only and any(c.get('field') in {'caps.max_total_attempts', 'caps.max_attempts_by_shot'}
+                                       for c in latest['changes']):
                     raise StandingSetupRequired('source batch amendment changes only max_batches')
                 return {'amendment': copy.deepcopy(latest_binding), 'policy_sha256': sha,
                     'standing_setup': copy.deepcopy(standing_setup), 'changes': latest['changes'],
@@ -918,7 +956,7 @@ def _amend_standing_allowance(project_dir, *, expected_policy_sha256,
             raise StandingSetupRequired('standing allowance predecessor setup SHA is stale')
         candidate = _bound_document(root, standing_setup, 'standing allowance successor setup')
         _bound_authorization(root, candidate, policy['activation_basis']['identity_id'])
-        changes = _standing_allowance_changes(setup, candidate, source_only=source_only)
+        changes = _standing_allowance_changes(setup, candidate, source_only=source_only, shot_ids=policy['shots'])
         record = {'version': '1.0', 'kind': ('standing_source_max_batches_amendment' if source_only else 'standing_allowance_amendment'),
             'policy_sha256': sha, 'predecessor_setup': copy.deepcopy(predecessor),
             'standing_setup': copy.deepcopy(standing_setup), 'changes': changes}
@@ -1089,6 +1127,22 @@ def policy_sha256(policy, baselines):
 
 
 def retained_baselines(root, policy):
+    """Pure retained-evidence baselines for the exact supplied ``policy``.
+
+    Inside one read-only :func:`status_reuse` operation a repeat call with the
+    identical full policy value (digest) and an unchanged project stamp returns
+    a deep copy; ``no_status_reuse``/writers and outside a scope always recompute.
+    The body reads only in-project evidence bytes and pure descriptor helpers."""
+    try:
+        policy_digest = digest(policy)
+    except (TypeError, ValueError):
+        return _retained_baselines(root, policy)
+    resolved = Path(root).resolve()
+    return status_reused(('retained_baselines', str(resolved), policy_digest), (resolved,),
+                         lambda: _retained_baselines(root, policy))
+
+
+def _retained_baselines(root, policy):
     raw = _inside(root, policy['evidence']['path']).read_bytes()
     if hashlib.sha256(raw).hexdigest() != policy['evidence']['sha256']:
         raise AutonomyError('evidence bytes changed')
@@ -1156,7 +1210,142 @@ def is_benchmark(root, marker):
         or (root / 'artifacts' / 'provider_benchmark.json').exists()
 
 
+_STATUS_REUSE = contextvars.ContextVar('production_status_reuse', default=None)
+# Monotonic writer/lock/dispatch opt-out depth; no nested status scope re-enables reuse.
+_STATUS_REUSE_DISABLED = contextvars.ContextVar('production_status_reuse_disabled', default=0)
+_SCHEMAS = Path(__file__).resolve().parents[1] / 'schemas'
+# Reuse needs POSIX inode-change ctime semantics (Windows st_ctime is creation
+# time); elsewhere every call recomputes.
+_REUSE_PLATFORM = os.name == 'posix'
+
+
+def _reuse_owner():
+    """(thread, asyncio task) owning a scope; copied contexts never inherit it."""
+    try:
+        import asyncio
+        task = asyncio.current_task()
+    except RuntimeError:
+        task = None
+    return threading.get_ident(), task
+
+
+@contextlib.contextmanager
+def status_reuse():
+    """Bound one read-only status operation; nested same-owner scopes join it.
+
+    The memo lives only for this ``with`` block, is never shared with another
+    thread or asyncio task (even through a copied context) and is discarded on
+    exit or exception. Every hit re-proves an unchanged stamp of its inputs."""
+    if _STATUS_REUSE_DISABLED.get() > 0:
+        yield
+        return
+    active = _STATUS_REUSE.get()
+    owner = _reuse_owner()
+    if active is not None and active['owner'][0] == owner[0] and active['owner'][1] is owner[1]:
+        yield
+        return
+    token = _STATUS_REUSE.set({'owner': owner, 'entries': {}})
+    try:
+        yield
+    finally:
+        _STATUS_REUSE.reset(token)
+
+
+@contextlib.contextmanager
+def no_status_reuse():
+    """Writers, locks and dispatch: always recompute, including any status scope
+    opened (or joined) anywhere beneath this block."""
+    token = _STATUS_REUSE_DISABLED.set(_STATUS_REUSE_DISABLED.get() + 1)
+    try:
+        yield
+    finally:
+        _STATUS_REUSE_DISABLED.reset(token)
+
+
+def _active_reuse():
+    if _STATUS_REUSE_DISABLED.get() > 0:
+        return None
+    active = _STATUS_REUSE.get()
+    if active is None or not _REUSE_PLATFORM:
+        return None
+    owner = _reuse_owner()
+    if active['owner'][0] != owner[0] or active['owner'][1] is not owner[1]:
+        return None
+    return active['entries']
+
+
+def _reuse_stamp(*bases):
+    """Every entry's device/inode, size, mode, mtime and ctime (ns), or ``None``.
+
+    ``None`` (never reusable) on any unreadable entry or when any entry has only
+    whole-second mtime and ctime (a coarse filesystem could hide a same-second
+    rewrite of that entry; one fine filesystem never vouches for another)."""
+    rows = []
+    def coarse(s):
+        return not (s.st_mtime_ns % 1_000_000_000 or s.st_ctime_ns % 1_000_000_000)
+    try:
+        for base in bases:
+            top = os.stat(base)
+            if coarse(top):
+                return None
+            rows.append((base, top.st_dev, top.st_ino, top.st_size, top.st_mode, top.st_mtime_ns, top.st_ctime_ns))
+            stack = [base] if os.path.isdir(base) else []
+            while stack:
+                directory = stack.pop()
+                with os.scandir(directory) as found:
+                    entries = sorted(found, key=lambda e: e.name)
+                for entry in entries:
+                    s = entry.stat(follow_symlinks=False)
+                    row = (entry.path, s.st_dev, s.st_ino, s.st_size, s.st_mode, s.st_mtime_ns, s.st_ctime_ns)
+                    if coarse(s):
+                        return None
+                    if entry.is_symlink():
+                        t = os.stat(entry.path)
+                        if coarse(t):
+                            return None
+                        row += (t.st_dev, t.st_ino, t.st_size, t.st_mode, t.st_mtime_ns, t.st_ctime_ns)
+                    rows.append(row)
+                    if entry.is_dir(follow_symlinks=False):
+                        stack.append(entry.path)
+    except OSError:
+        return None
+    return tuple(rows)
+
+
+def status_reused(key, bases, compute):
+    """Inside the owning :func:`status_reuse` scope, return a deep copy of a prior
+    successful ``compute()`` for the exact ``key`` only while every file under
+    ``bases`` keeps the identical stamp. Outside a scope, under
+    :func:`no_status_reuse`, on another thread/task or an unsupported platform or
+    filesystem this always recomputes. Exceptions are never retained."""
+    memo = _active_reuse()
+    if memo is None:
+        return compute()
+    bases = tuple(str(Path(b).expanduser().resolve()) for b in bases)
+    key = (key, bases)
+    stamp = _reuse_stamp(*bases)
+    hit = memo.pop(key, None)
+    if stamp is not None and hit is not None and hit[0] == stamp:
+        memo[key] = hit
+        return copy.deepcopy(hit[1])
+    result = compute()
+    # Retain only a result computed entirely against one unchanged stamp.
+    if stamp is not None and _reuse_stamp(*bases) == stamp:
+        memo[key] = (stamp, copy.deepcopy(result))
+    return result
+
+
 def load_active_policy(root, *, shot_id=None):
+    """Return ``(policy, sha, decision_id, reasons)``; policy ``None`` means Strict. Zero writes."""
+    # Always fresh, global and per shot: both can reach upstream board provenance
+    # (``_validate_delta``/``_validate_standing_basis_impl`` ->
+    # ``_validate_generated_board_source``) and thereby MCP discovery, account
+    # and environment state outside any project stamp. Only the pure
+    # ``retained_baselines`` step beneath it is reused per operation.
+    return _load_active_policy(root, shot_id=shot_id)
+
+
+def _load_active_policy(root, *, shot_id=None):
     """Return ``(policy, sha, decision_id, reasons)``; policy ``None`` means Strict. Zero writes."""
     root = Path(root)
     reasons = []
@@ -1928,11 +2117,13 @@ def lock_proof(root, shot_id, *, inputs, native, profile, policy_context=None):
                             policy_context=policy_context)
 
 
-def _historical_current_preparation(root, inputs, native, profile):
+def _historical_current_preparation(root, inputs, native, profile, historical_replay=False):
     """Validate current named preparation for retained-authority replay only.
 
     Uses the original-review historical source packet and the shared evidence
     validator; prospective admission keeps ``preparation.validate_preparation``.
+    ``historical_replay`` is set only by genuine retained collection; a bare
+    frozen policy context keeps the current-cut creator override check.
     """
     from lib import production_request as preparation
     try:
@@ -1940,7 +2131,8 @@ def _historical_current_preparation(root, inputs, native, profile):
         review = preparation._read(Path(root), 'preparation_review-' + preparation._id(inputs['preparation_review_id']) + '.json')
         packet = preparation._historical_source_packet(root, inputs['governance']['shot_id'],
                                                        provider=native.get('provider', 'openart_cli'), native=native)
-        return preparation.validate_preparation_evidence(compiled, review, inputs, native, profile, packet)
+        return preparation.validate_preparation_evidence(compiled, review, inputs, native, profile, packet,
+                                                         historical=historical_replay)
     except (ValueError, KeyError) as exc:
         raise AutonomyError(f'historical named preparation is incomplete: {exc}') from exc
 
@@ -1990,8 +2182,11 @@ def _frame_carrier_members(root, frame, projection, composites):
         if composite['sha256'] != frame['sha256'] or composite['role'] != 'start_frame':
             raise AutonomyError('frame composite does not name the actual declared starting carrier')
         for member in composite['members']:
+            # Pending (not yet materialized) assets legitimately lack sha256;
+            # they can never match an exact approved member, so skip them
+            # instead of crashing. Missing/ambiguous members still fail closed.
             matches = [a for a in projection['assets']
-                if all(a[key] == member[key] for key in ('sha256', 'role', 'cast_ids'))]
+                if all(key in a and a[key] == member[key] for key in ('sha256', 'role', 'cast_ids'))]
             key = (member['sha256'], member['role'], tuple(member['cast_ids']))
             if len(matches) != 1 or key in seen:
                 raise AutonomyError('frame composite member is not one exact approved source')
@@ -2012,10 +2207,13 @@ def _frame_carrier_members(root, frame, projection, composites):
 
 
 def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None, policy_context=None,
-                     retained_lock_digest=None, _legacy_frame=False):
+                     retained_lock_digest=None, historical_replay=False, _legacy_frame=False):
     """Derive locks from rooted actual submitted bytes and named preparation evidence."""
     from lib import production_request as preparation
     from lib.production_execution import _paths, _clean, _artifact_path
+    # A retained historical payload is always genuine replay; otherwise only an
+    # explicit retained-collection caller opts in (never policy_context alone).
+    historical_replay = historical is not None or bool(historical_replay)
     if historical is None and policy_context is None:
         policy, sha, _ = require_active_policy(root, shot_id=shot_id)
     elif historical is None:
@@ -2032,7 +2230,7 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
         if policy_context is None:
             preparation.validate_preparation(inputs, native, profile)
         else:
-            _historical_current_preparation(root, inputs, native, profile)
+            _historical_current_preparation(root, inputs, native, profile, historical_replay)
         compiled = _json(_artifact_path(Path(root), 'compiled_request-' + preparation._id(inputs['compiled_request_id']) + '.json'))
         review = _json(_artifact_path(Path(root), 'preparation_review-' + preparation._id(inputs['preparation_review_id']) + '.json'))
     else:
@@ -2042,7 +2240,8 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
             raise AutonomyError('legacy lock replay requires retained historical authority')
         try:
             legacy = _root_lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile,
-                historical=historical, policy_context=policy_context, _legacy_frame=True)
+                historical=historical, policy_context=policy_context, historical_replay=historical_replay,
+                _legacy_frame=True)
         except (ValueError, KeyError):
             legacy = None
         if legacy == retained_lock_digest:
@@ -2125,7 +2324,19 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
         canonical = preparation.compile_provider_prompt(root, shot_id, provider=provider, **({'model': native['model']} if provider == 'openart_mcp' else {}))
     body = preparation._body(native)
     prompt = body['params'].get('sceneDescription' if provider == 'openart_mcp' and native.get('prompt_param_path') == '/params/sceneDescription' else 'prompt')
-    if prompt != canonical['prompt'] or compiled['coverage'] != canonical['coverage']:
+    if compiled.get('creator_prompt_override') is not None:
+        # Exact retained creator batch prompt: the full canonical compilation above
+        # still ran; the shared validator reproves the batch item, native prompt,
+        # full source occurrences and dialogue-only coverage against the same packet.
+        packet_source = (preparation._historical_source_packet if historical is not None or policy_context is not None
+                         else preparation.source_packet)
+        packet = packet_source(root, shot_id, provider=provider, native=native)
+        try:
+            preparation.validate_creator_prompt_override(compiled, inputs, native, packet,
+                                                         historical=historical_replay)
+        except (ValueError, KeyError) as exc:
+            raise AutonomyError(f'submitted creator prompt override is not exact retained authority: {exc}') from exc
+    elif prompt != canonical['prompt'] or compiled['coverage'] != canonical['coverage']:
         raise AutonomyError('submitted native prompt/coverage is not canonical root compilation')
     if provider == 'grok_cli':
         actual_controls = dict(native['request']['arguments'])
@@ -2188,7 +2399,7 @@ def check_caps(policy, shot_id, counts, phase, *, root=None):
         raise AutonomyError('caps: unmapped outbox attempt (fail closed)')
     if counts['total'] + 1 > caps['max_total_attempts']:
         raise AutonomyError('caps: total attempts exhausted; deliver draft')
-    if counts['per_shot'].get(shot_id, 0) + 1 > caps['max_attempts_per_shot']:
+    if counts['per_shot'].get(shot_id, 0) + 1 > caps.get('max_attempts_by_shot', {}).get(shot_id, caps['max_attempts_per_shot']):
         raise AutonomyError(f'caps: attempts for {shot_id} exhausted; deliver draft')
     if phase == 'repair' and counts['repair'] + 1 > caps['max_repair_attempts']:
         raise AutonomyError('caps: repair attempts exhausted; deliver draft')
@@ -2498,9 +2709,10 @@ def _scope_material(root, inputs, provider, observation=None, *, derived_unknown
         proof = preparation.validate_preparation(inputs, native, profile)
         locks = lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile)
     else:
-        proof = _historical_current_preparation(root, inputs, native, profile)
+        proof = _historical_current_preparation(root, inputs, native, profile, True)
         locks = _root_lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile,
-            policy_context=(policy, sha), retained_lock_digest=historical_scope['derived_from_policy']['lock_digest'])
+            policy_context=(policy, sha), retained_lock_digest=historical_scope['derived_from_policy']['lock_digest'],
+            historical_replay=True)
     contract = execution.load_shot_contract(root)
     own_shot = next(s for s in contract['shots'] if s['id'] == shot_id)
     selected = execution.load_selected_attempts(root)
@@ -3120,7 +3332,7 @@ def validate_policy_attempt(root, request, scope, frozen_contract, *, frozen_ope
     restored['preparation_review_id'] = derived['preparation_review_id']
     try:
         preparation.validate_preparation_evidence(payload['compiled'], payload['review'], restored, native, profile,
-                                                  payload['source_packet'])
+                                                  payload['source_packet'], historical=True)
     except ValueError as exc:
         raise AutonomyError(f'historical named preparation is incomplete: {exc}') from exc
     review = payload['review']
@@ -3322,7 +3534,7 @@ def _append_route_decisions_locked(root, policy, sha, decision_id, shot_id, prov
         counts = root_attempt_counts(root, policy)
         caps = effective_standing_caps(root, policy)
         remaining = {'total': caps['max_total_attempts'] - counts['total'] - 1,
-                     'per_shot': caps['max_attempts_per_shot'] - counts['per_shot'].get(shot_id, 0) - 1,
+                     'per_shot': caps.get('max_attempts_by_shot', {}).get(shot_id, caps['max_attempts_per_shot']) - counts['per_shot'].get(shot_id, 0) - 1,
                      'repair': caps['max_repair_attempts'] - counts['repair'] - int(phase == 'repair')}
         reason = ('Exact production-ready MCP route ' + inputs['model'] + '/' + inputs['mode']
                   + '; phase ' + phase + '; replaces ' + json.dumps(replaces_attempt_ids or [])

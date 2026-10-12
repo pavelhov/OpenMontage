@@ -274,14 +274,14 @@ def in_offline_preparation() -> bool:
     return _OFFLINE_PREPARATION.get()
 
 
-def _governed_dry_run_with_hook(tool, inputs):
+def _governed_dry_run_with_hook(tool, inputs, checked):
     """Strict governed dry-run plus an optional pure ``prepare_offline`` hook.
 
     Tools without the hook get the governed result unchanged. Hook evidence is
     nested under ``offline_preparation`` and cannot alter the governance keys.
     """
-    from lib.production_execution import governed_dry_run
-    result = governed_dry_run(tool, inputs)
+    from lib.production_execution import _dry_run_from_preflight
+    result = _dry_run_from_preflight(tool, checked)
     hook = getattr(tool, "prepare_offline", None)
     if not callable(hook):
         return result
@@ -293,10 +293,10 @@ def _governed_dry_run_with_hook(tool, inputs):
 def _govern_dry_run(fn: Callable) -> Callable:
     @functools.wraps(fn)
     def wrapper(self, inputs, *args, **kwargs):
-        from lib.production_execution import preflight
-        checked = preflight(self, inputs)
+        from lib.production_execution import _dry_run_preflight
+        checked = _dry_run_preflight(self, inputs)
         if checked["governed"]:
-            return _governed_dry_run_with_hook(self, inputs)
+            return _governed_dry_run_with_hook(self, inputs, checked)
         return fn(self, inputs, *args, **kwargs)
     return wrapper
 
@@ -479,9 +479,10 @@ class BaseTool(ABC):
 
     def dry_run(self, inputs: dict[str, Any]) -> dict[str, Any]:
         """Preflight check without side effects. Override for paid/publishing tools."""
-        from lib.production_execution import preflight
-        if preflight(self, inputs)["governed"]:
-            return _governed_dry_run_with_hook(self, inputs)
+        from lib.production_execution import _dry_run_preflight
+        checked = _dry_run_preflight(self, inputs)
+        if checked["governed"]:
+            return _governed_dry_run_with_hook(self, inputs, checked)
         from tools.provider_pricing import PriceQuoteRequired
 
         quote_error = None
