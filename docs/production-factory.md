@@ -384,7 +384,9 @@ still follow their existing provider contracts.
 A native packet is builder output, not the public request to copy into the next
 route. For an authorized Grok-to-Mini repair whose retained template has
 `image_path: {"$board": {"asset_id": "S04-start"}}`, keep that same public
-`image_path` occurrence resolved to the exact current board. Retain one public
+frame occurrence resolved to the exact current board. The existing root aliases
+`image_path` and MCP's schema-supported `first_frame` name the same occurrence;
+nested layout, order and exact source hashes still bind. Retain one public
 `duration`, `resolution` and `aspect_ratio`; change only the approved route and
 repair details. For example, the Mini preparation inputs can include:
 
@@ -393,7 +395,7 @@ repair details. For example, the Mini preparation inputs can include:
 inputs = {
     "project_dir": previous_public_inputs["project_dir"],
     "governance": {"shot_id": shot_id},
-    "image_path": previous_public_inputs["image_path"],
+    "first_frame": previous_public_inputs["image_path"],
     "duration": previous_public_inputs["duration"],
     "resolution": previous_public_inputs["resolution"],
     "aspect_ratio": previous_public_inputs["aspect_ratio"],
@@ -415,10 +417,43 @@ CLI timeout/session/cwd, billing acknowledgement or scope ID. Use distinct safe
 request/review IDs and an output path that preserves the original. Other retained
 templates may require additional semantic fields; their exact delta checks still
 reject missing or changed inputs rather than silently dropping them. Do not replace this template's `image_path` with `input_assets`, or copy
-resolved `native_params` alongside the same public controls. Omit optional
-`videoCount`/`generateAudio` when relying on the selected form's defaults rather
-than adding unapproved controls. An existing retained upload avoids another
+resolved `native_params` alongside the same public controls. Omit optional native
+count/seed controls only when the exact retained form's defaults match the approved
+request. Audio follows that same rule: omitting `generateAudio` does not mean off
+when its native default is on. An existing retained upload avoids another
 source transfer; a missing upload still follows the normal authorized upload path.
+
+An explicit creator-approved MCP audio-off packet can be adopted through
+`pa.adopt_native_audio_off_approval`. Retain an approval JSON with exactly:
+
+```python
+record = {
+    "version": "1.0", "kind": "native_audio_off_approval",
+    "project_id": policy["project_id"], "story_revision": policy["story_revision"],
+    "policy_sha256": policy_sha, "shots": approved_shot_ids,
+    "route": {"provider": "openart_mcp", "model": profile["model"], "mode": profile["mode"]},
+    "controls": {"generateAudio": False}, "form_sha256": profile["form_sha256"],
+    "approved_packet": {"path": approved_packet_path, "sha256": approved_packet_sha},
+    "authorization": {"path": retained_creator_message_path, "sha256": retained_creator_message_sha},
+}
+pa.adopt_native_audio_off_approval(
+    project_dir, expected_policy_sha256=policy_sha,
+    approval={"path": retained_approval_path, "sha256": retained_approval_sha},
+)
+inputs["native_params"] = {"generateAudio": False}
+```
+
+Use the existing `creator_authorization` shape: `version: "1.0"`,
+`origin: "user_message"`, the standing run's `identity_id`, the actual `message_id`
+and exact `text`, and `subject_sha256 = digest(record without authorization)`.
+The subject binds the exact approved packet and named project/policy/shots/route;
+an audio-review setting or silent export intention grants no native control authority.
+The API validates the current form switch and existing locks, then appends only
+the approval binding to `production_scopes.json`. It grants only boolean False
+when the original audio control was omitted. Other native controls still compare
+exactly; it grants no routes or counters. Derivation and begin revalidate live
+authority. Emitted originals retain their exact proof for collection after
+authority changes. Repeating the same adoption is read-only and makes no calls.
 
 The alternate needs its own current prompt, compiled request, timing and truthful
 preparation review. Name the exact previous failed attempt in the existing repair

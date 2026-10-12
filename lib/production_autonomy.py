@@ -71,6 +71,11 @@ def _bound_authorization(root, record, identity_id):
     if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != binding['sha256']:
         raise StandingSetupRequired('creator authorization missing or changed')
     evidence = _json(path)
+    _authorization_evidence(record, identity_id, evidence)
+
+
+def _authorization_evidence(record, identity_id, evidence):
+    """Same exact creator subject check for live bindings and frozen originals."""
     subject = digest({key: value for key, value in record.items() if key != 'authorization'})
     if (not isinstance(evidence, dict) or evidence.get('version') != '1.0'
             or evidence.get('kind') != 'creator_authorization' or evidence.get('origin') != 'user_message'
@@ -87,6 +92,137 @@ def _bound_document(root, binding, label):
     if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != binding['sha256']:
         raise StandingSetupRequired(label + ' missing or changed')
     return _json(path)
+
+
+def _native_audio_off_record(root, policy, sha, record):
+    """Only exact creator-approved MCP audio-off; no other control authority."""
+    if not isinstance(record, dict):
+        raise AutonomyError('native audio-off approval must be an exact authority object')
+    keys = {'version', 'kind', 'project_id', 'story_revision', 'policy_sha256',
+            'shots', 'route', 'controls', 'approved_packet', 'form_sha256', 'authorization'}
+    route = record.get('route', {})
+    shots = record.get('shots')
+    if (set(record) != keys or record['version'] != '1.0'
+            or record['kind'] != 'native_audio_off_approval'
+            or record['project_id'] != policy['project_id']
+            or record['story_revision'] != policy['story_revision']
+            or record['policy_sha256'] != sha
+            or not isinstance(shots, list) or not shots or any(not isinstance(s, str) for s in shots)
+            or len(set(shots)) != len(shots) or not set(shots) <= set(policy['shots'])
+            or not isinstance(route, dict) or set(route) != {'provider', 'model', 'mode'}
+            or route['provider'] != 'openart_mcp'
+            or record['controls'] != {'generateAudio': False}
+            or record['controls'].get('generateAudio') is not False
+            or not policy.get('activation_basis')):
+        raise AutonomyError('native audio-off approval differs from exact project/policy/shots/route/false control')
+    spec = _provider_spec(policy, route['provider'])
+    if not _openart_route_approved(spec, route['model'], route['mode']):
+        raise AutonomyError('native audio-off route is outside approved policy')
+    baselines = retained_baselines(root, policy)
+    for shot in shots:
+        baseline = baselines[shot]['planned_request_template']['inputs']
+        if (not _intent_allows(policy, shot, route['provider'], route['model'])
+                or any(key in baseline or key in baseline.get('native_params', {})
+                       for key in ('audio', 'generateAudio', 'generateSound', 'native_audio'))):
+            raise AutonomyError('native audio-off cannot change retained audio controls or route intent')
+    for name in ('audio', 'generateAudio', 'generateSound', 'native_audio'):
+        lock = policy['locked']['controls'].get(name)
+        if lock is not None and (('value' in lock and lock['value'] is not False)
+                or 'value_sha256' in lock and lock['value_sha256'] != hashlib.sha256(str(False).encode()).hexdigest()):
+            raise AutonomyError('native audio-off conflicts with retained control lock')
+    from lib import openart_mcp as mcp
+    profile = mcp.load_profile(route['model'], route['mode'], require='supported')
+    schema = profile['form']['jsonSchema'].get('properties', {}).get('generateAudio')
+    if record['form_sha256'] != profile['form_sha256'] or not isinstance(schema, dict):
+        raise AutonomyError('native audio-off requires exact supported form switch')
+    try:
+        Draft202012Validator(schema).validate(False)
+    except ValidationError as exc:
+        raise AutonomyError('native audio-off is outside exact native schema') from exc
+
+
+def adopt_native_audio_off_approval(project_dir, *, expected_policy_sha256, approval):
+    """Retain an already-approved exact false-only MCP setting, without calls.
+
+    The creator subject binds the packet, current project/policy, named shots,
+    route and form. Original policies, scopes, requests and counters stay frozen.
+    """
+    from lib import production_execution as execution, production_images as images
+    root = Path(project_dir).resolve()
+    with execution._lock(root):
+        policy, sha, _ = require_active_policy(root)
+        if sha != expected_policy_sha256:
+            raise AutonomyError('native audio-off requires exact active policy SHA')
+        record = _bound_document(root, approval, 'native audio-off approval')
+        _native_audio_off_record(root, policy, sha, record)
+        _bound_document(root, record['approved_packet'], 'approved native audio-off packet')
+        _bound_authorization(root, record, policy['activation_basis']['identity_id'])
+        path = root / 'production_scopes.json'
+        data = _json(path)
+        approvals = data.setdefault('native_audio_off_approvals', [])
+        if data.get('version') != '1.0' or not isinstance(approvals, list):
+            raise AutonomyError('invalid production scopes native audio-off approvals')
+        if approval in approvals:
+            return {'approval': copy.deepcopy(approval), 'replayed': True, 'provider_calls': 0}
+        for binding in approvals:
+            other = _bound_document(root, binding, 'native audio-off approval')
+            if other['route'] == record['route'] and set(other['shots']).intersection(record['shots']):
+                raise AutonomyError('native audio-off approval already retained for exact shot/route')
+        approvals.append(copy.deepcopy(approval))
+        images._write_image_scopes(root, data)
+        return {'approval': copy.deepcopy(approval), 'replayed': False, 'provider_calls': 0}
+
+
+def _native_audio_off_proof(root, policy, sha, shot_id, inputs, provider, *, proof=None, historical=False):
+    """New admission reads authority; originals replay their exact frozen proof."""
+    params = inputs.get('native_params', {})
+    if (provider != 'openart_mcp' or not isinstance(params, dict)
+            or params.get('generateAudio') is not False):
+        if proof is not None:
+            raise AutonomyError('native audio-off proof differs from original request control')
+        return None
+    baseline = retained_baselines(root, policy)[shot_id]['planned_request_template']['inputs']
+    if 'generateAudio' in baseline.get('native_params', {}):
+        if proof is not None:
+            raise AutonomyError('native audio-off proof cannot change retained audio control')
+        return None
+    if not historical:
+        data = _json(Path(root) / 'production_scopes.json')
+        bindings = data.get('native_audio_off_approvals', [])
+        if not isinstance(bindings, list):
+            raise AutonomyError('invalid production scopes native audio-off approvals')
+        matches = []
+        for binding in bindings:
+            record = _bound_document(root, binding, 'native audio-off approval')
+            if shot_id in record.get('shots', []) and record.get('route') == {
+                    'provider': provider, 'model': inputs.get('model'), 'mode': inputs.get('mode')}:
+                _native_audio_off_record(root, policy, sha, record)
+                _bound_document(root, record['approved_packet'], 'approved native audio-off packet')
+                _bound_authorization(root, record, policy['activation_basis']['identity_id'])
+                def capture(item):
+                    return {**item, 'content': _inside(root, item['path']).read_text()}
+                matches.append({'approval': capture(binding), 'authorization': capture(record['authorization'])})
+        if len(matches) != 1 or proof is not None and proof != matches[0]:
+            raise AutonomyError('exact retained creator native audio-off approval required')
+        return matches[0]
+    if not isinstance(proof, dict) or set(proof) != {'approval', 'authorization'}:
+        raise AutonomyError('original native audio-off requires frozen scope authority')
+    records = {}
+    for key, item in proof.items():
+        if (not isinstance(item, dict) or set(item) != {'path', 'sha256', 'content'}
+                or not isinstance(item['content'], str)
+                or hashlib.sha256(item['content'].encode()).hexdigest() != item['sha256']):
+            raise AutonomyError('frozen native audio-off authority bytes differ')
+        _inside(root, item['path'])
+        records[key] = json.loads(item['content'])
+    record = records['approval']
+    _native_audio_off_record(root, policy, sha, record)
+    if (shot_id not in record['shots'] or record['route'] != {
+            'provider': provider, 'model': inputs.get('model'), 'mode': inputs.get('mode')}
+            or record['authorization'] != {key: proof['authorization'][key] for key in ('path', 'sha256')}):
+        raise AutonomyError('original native audio-off scope/request authority differs')
+    _authorization_evidence(record, policy['activation_basis']['identity_id'], records['authorization'])
+    return copy.deepcopy(proof)
 
 
 def _validate_generated_board_source(root, asset, *, expected):
@@ -2068,7 +2204,7 @@ def _scope_record(policy, sha, decision_id, *, shot_id, provider, request_digest
                  derivation_index, lock_digest, compiled_request_sha256=None, preparation_review_id=None,
                  resolved_upstream=None, phase='first_pass', replaces_attempt_ids=None, credit_authorization_sha256=None,
                  unknown_cost_authorization_sha256=None, repair_basis='critical_review', creator_repair=None,
-                 delivery_approval=None):
+                 delivery_approval=None, native_audio_off_approval=None):
     """Normal v1.0 production scope for one attempt; exact single-shot scope."""
     if shot_id not in policy['shots']:
         raise AutonomyError(f'{shot_id} has no approved baseline')
@@ -2095,6 +2231,8 @@ def _scope_record(policy, sha, decision_id, *, shot_id, provider, request_digest
         scope['id'] += '-delivery-' + proof_sha[:12]
         scope['derived_from_policy'].update(delivery_approval=copy.deepcopy(delivery_approval),
             delivery_approval_sha256=proof_sha)
+    if native_audio_off_approval is not None:
+        scope['derived_from_policy']['native_audio_off_approval'] = copy.deepcopy(native_audio_off_approval)
     if policy.get('planning_mode') == 'shot_local_v1':
         scope['planning_mode'] = 'shot_local_v1'
     if phase == 'repair':
@@ -2251,6 +2389,10 @@ def _validate_retained_packet_policy_mcp_attempt(root, scope, *, inputs, native,
     delivery = _retained_scope_delivery(root, policy, sha, decision_id, scope, inputs)
     if delivery is not None:
         material['delivery_approval'] = delivery
+    audio_off = _native_audio_off_proof(root, policy, sha, shot_id, inputs, 'openart_mcp',
+        proof=scope['derived_from_policy'].get('native_audio_off_approval'), historical=True)
+    if audio_off is not None:
+        material['native_audio_off_approval'] = audio_off
     material['unknown_cost_authorization_sha256'] = scope.get('unknown_cost_authorization_sha256')
     expected = _scope_record(policy, sha, decision_id,
         derivation_index=scope['derived_from_policy']['derivation_index'], phase=scope['phase'],
@@ -2321,9 +2463,12 @@ def _scope_material(root, inputs, provider, observation=None, *, derived_unknown
         origin = matches[0]
     if origin is not None:
         _retained_scope_delivery(root, policy, sha, decision_id, origin, inputs)
+    audio_off = _native_audio_off_proof(root, policy, sha, shot_id, inputs, provider,
+        proof=(origin or {}).get('derived_from_policy', {}).get('native_audio_off_approval'),
+        historical=historical_scope is not None)
     delivery = _validate_request_delta(root, policy, shot_id, inputs, provider,
         policy_context=(sha, decision_id), delivery_approval=(origin or {}).get('derived_from_policy', {}).get('delivery_approval'),
-        historical=historical_scope is not None)
+        native_audio_off_approval=audio_off, historical=historical_scope is not None)
     if historical_scope is None:
         _validate_standing_transfer(root, policy, inputs, provider, exclude_scope_id=replay_scope_id)
     if provider == 'openart_cli':
@@ -2370,6 +2515,8 @@ def _scope_material(root, inputs, provider, observation=None, *, derived_unknown
         'resolved_upstream': resolved}
     if delivery is not None:
         material['delivery_approval'] = delivery
+    if audio_off is not None:
+        material['native_audio_off_approval'] = audio_off
     if provider == 'openart_mcp' and derived_unknown_id is not None:
         fake_scope = {'id': derived_unknown_id, 'requests': {shot_id: material['request_digest']}, 'derived_from_policy': {'compiled_request_sha256': material['compiled_request_sha256'], 'lock_digest': material['lock_digest']}}
         material['unknown_cost_authorization_sha256'] = digest(_mcp_policy_terms(root, policy, sha, decision_id, fake_scope, inputs, native))
@@ -3395,7 +3542,7 @@ def _retained_delivery_aspect_ratio(root, policy, retained, *, policy_context=No
 
 
 def _validate_request_delta(root, policy, shot_id, inputs, provider, *, policy_context=None,
-                            delivery_approval=None, historical=False):
+                            delivery_approval=None, native_audio_off_approval=None, historical=False):
     """Compare rooted actual inputs with exact retained layout and approved flex."""
     from lib import production_execution as execution
     if not _intent_allows(policy, shot_id, provider, inputs.get('model') if provider in {'openart_cli', 'openart_mcp'} else None):
@@ -3404,6 +3551,9 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider, *, policy_c
     template = retained['planned_request_template']
     baseline = execution._clean(template['inputs'])
     actual = execution._clean(inputs)
+    sha = policy_context[0] if policy_context is not None else policy_sha256(policy, retained_baselines(root, policy))
+    audio_off = _native_audio_off_proof(root, policy, sha, shot_id, inputs, provider,
+        proof=native_audio_off_approval, historical=historical)
     if ('preferred_provider' in actual and actual['preferred_provider'] != provider) or ('allowed_providers' in actual and actual['allowed_providers'] != [provider]):
         raise AutonomyError('policy dispatch requires exact singleton route')
     # Planner route plumbing: the tool/host names must be the canonical ones for
@@ -3473,12 +3623,6 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider, *, policy_c
         raise AutonomyError('unused retained static template occurrence')
     bound_actual = execution._paths(actual, Path(root).resolve(),
                                     lambda key, path: {'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
-    for pointer, binding, expected_sha in dynamic:
-        value = bound_actual
-        for part in pointer.lstrip('/').split('/'):
-            value = value[int(part)] if isinstance(value, list) else value.get(part)
-        if value != {'sha256': expected_sha}:
-            raise AutonomyError('exact upstream pointer/layout/order changed')
     aliases = {'image_path': 'start_frame', 'reference_image_path': 'start_frame', 'first_frame': 'start_frame',
                'last_image_path': 'end_frame', 'last_frame': 'end_frame', 'reference_image_paths': 'references', 'image_paths': 'references', 'images': 'references'}
     def normalize(value):
@@ -3490,6 +3634,17 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider, *, policy_c
             result[target] = item
         return result
     expected, bound_actual = normalize(expected), normalize(bound_actual)
+    # Dynamic sources keep their exact nested layout/order and current bytes.
+    # Only the same established root aliases used by the semantic comparison
+    # may rename their public input occurrence across an approved route switch.
+    for pointer, binding, expected_sha in dynamic:
+        parts = pointer.lstrip('/').split('/')
+        parts[0] = aliases.get(parts[0], parts[0])
+        value = bound_actual
+        for part in parts:
+            value = value[int(part)] if isinstance(value, list) else value.get(part)
+        if value != {'sha256': expected_sha}:
+            raise AutonomyError('exact upstream pointer/layout/order changed')
     for key in routing | plumbing | {'prompt', 'duration', 'resolution'}:
         expected.pop(key, None)
         bound_actual.pop(key, None)
@@ -3531,6 +3686,8 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider, *, policy_c
     # Normalize only established flex and the exact retained/projected ratio.
     # Native preparation independently checks the selected model's actual form;
     # unrelated controls remain in the retained-template equality below.
+    if audio_off is not None:
+        bound_actual['native_params'].pop('generateAudio')
     for value in (expected, bound_actual):
         value.pop('aspect_ratio', None)
         if isinstance(value.get('native_params'), dict):

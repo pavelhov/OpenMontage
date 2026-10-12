@@ -3984,8 +3984,9 @@ def test_submitted_delivery_original_replays_after_revocation_without_new_admiss
     assert file_bytes(root) == before and len(calls) == 1
 
 
+@pytest.mark.parametrize('frame_field,audio_off', [('image_path', False), ('first_frame', False), ('first_frame', True)])
 def test_frame_conditioned_grok_to_mini_repair_retains_public_layout_and_original(
-        neutral_package, monkeypatch, guided_observations):
+        neutral_package, monkeypatch, guided_observations, frame_field, audio_off):
     """Offline semantic failure and authorized alternate; no live provider evidence."""
     import shutil
     import socket
@@ -4084,6 +4085,12 @@ def test_frame_conditioned_grok_to_mini_repair_retains_public_layout_and_origina
         allowed_providers=['openart_mcp'], preferred_tool='openart_mcp_video', hosting_provider='openart_mcp',
         compiled_request_id='mini-frame-repair', preparation_review_id='mini-frame-repair',
         output_path=str(root / 'assets/video/SYNTHETIC-mini-repair.mp4'))
+    if frame_field == 'first_frame':
+        candidate['first_frame'] = candidate.pop('image_path')
+        from tools.video.openart_mcp_video import OpenArtMCPVideo
+        assert 'first_frame' in OpenArtMCPVideo.input_schema['properties']
+    if audio_off:
+        candidate['native_params'] = {'generateAudio': False}
     # A route change has its own prompt, current compiled packet and actual judgment.
     mini_authored = request.compile_provider_prompt(root, 's1', provider='openart_mcp', model=candidate['model'])
     candidate['prompt'] = mini_authored['prompt']
@@ -4099,6 +4106,11 @@ def test_frame_conditioned_grok_to_mini_repair_retains_public_layout_and_origina
     with pytest.raises(ValueError, match='profile_not_ready'):
         mcp.load_profile(candidate['model'], candidate['mode'], require='supported')
     monkeypatch.setattr(mcp, '_ALLOW_FIXTURE_PRODUCTION', True)
+    if audio_off:
+        from tests.lib.test_factory_audio_off import retain_audio_off
+        _, policy_sha, _ = pa.require_active_policy(root)
+        audio_approval = retain_audio_off(root, policy, policy_sha, profile)
+        pa.adopt_native_audio_off_approval(root, expected_policy_sha256=policy_sha, approval=audio_approval)
     pa._validate_request_delta(root, policy, 's1', candidate, 'openart_mcp')
     repair = pa.derive_scope(root, candidate, provider='openart_mcp', phase='repair', replaces_attempt_ids=[aid])
     assert repair['replaces_attempt_ids'] == [aid] and repair['phase'] == 'repair'
@@ -4107,11 +4119,18 @@ def test_frame_conditioned_grok_to_mini_repair_retains_public_layout_and_origina
         authority_fn=execution.prepare_openart_mcp_handoff)
     envelope = jobs.begin(root, 'SYNTHETIC-mini-repair', authority_fn=execution.prepare_openart_mcp_handoff)
     assert envelope['arguments'] == native['body']
-    assert set(native['body']['params']) == {'prompt', 'duration', 'resolution', 'aspectRatio', 'startFrame'}
+    assert set(native['body']['params']) == {'prompt', 'duration', 'resolution', 'aspectRatio', 'startFrame'} | ({'generateAudio'} if audio_off else set())
+    if audio_off:
+        assert native['body']['params']['generateAudio'] is False
+        assert repair['derived_from_policy']['native_audio_off_approval']['approval']['sha256'] == audio_approval['sha256']
+        audio_record = json.loads((root / audio_approval['path']).read_text())
+        (root / audio_record['authorization']['path']).write_text('SYNTHETIC authority revoked after emission')
+        with pytest.raises(pa.AutonomyError):
+            pa.validate_derived_scope(root, repair, inputs=candidate)
     assert native['input_assets'][0]['source_sha256'] == hashlib.sha256(board_bytes).hexdigest()
     assert file_bytes(root / 'production_attempts' / aid) == retained_original
     assert Path(output['path']).read_bytes() == output_bytes
-    assert Path(candidate['image_path']).read_bytes() == board_bytes
+    assert Path(candidate[frame_field]).read_bytes() == board_bytes
     # The new job does not upload again or alter the original source-transfer receipts.
     assert all(file_bytes(root / 'openart_mcp').get(path) == raw for path, raw in upload_files.items())
     assert pa.root_attempt_counts(root, policy)['total'] == 2
@@ -4165,7 +4184,7 @@ def test_frame_conditioned_grok_to_mini_repair_retains_public_layout_and_origina
     assert file_bytes(root) == stable
     assert file_bytes(root / 'production_attempts' / aid) == retained_original
     assert Path(output['path']).read_bytes() == output_bytes
-    assert Path(candidate['image_path']).read_bytes() == board_bytes
+    assert Path(candidate[frame_field]).read_bytes() == board_bytes
     assert pa.root_attempt_counts(root, policy)['total'] == 2
     assert pa.root_attempt_counts(root, policy)['repair'] == 1
     assert len(calls) == 1 and len(jobs.list_attempts(root)) == 1
