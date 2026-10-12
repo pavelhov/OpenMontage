@@ -1,4 +1,4 @@
-"""Shared route chooser, split audio capability and repair decision validation (offline)."""
+"""Shared route chooser, split audio capability and retired repair API absence (offline)."""
 import json
 from copy import deepcopy
 from pathlib import Path
@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from lib import video_model_selection as vms
-from lib.video_model_selection import choose_video_route, request_delta, validate_repair_decision
+from lib.video_model_selection import choose_video_route, request_delta
 from lib.video_route_evidence import audio_capability, scene_model_guidance
 from tests.lib.test_openart_mcp_native import observations, source_project, minimum  # noqa: F401
 
@@ -234,97 +234,16 @@ def test_existing_planner_uses_the_shared_chooser(monkeypatch):
     assert plan["status"] == "planned" and calls
 
 
-# AE4: explicit producer repair decisions.
-REVIEW = {"status": "fail", "predicates": [{"name": "whole-object-completed", "status": "fail"},
-                                          {"name": "grain", "status": "fail", "severity": "cosmetic"}]}
-ORIG = {"provider": "openart_mcp", "tool": "openart_mcp_video", "model": "h3", "mode": "image2video"}
-POOL_INTENT = {"mode": "prefer", "provider": "openart_mcp", "model": "h3",
-               "approved_pool": [{"provider": "openart_mcp", "model": "h3"}, {"provider": "openart_mcp", "model": "wan"}]}
-EXACT_INTENT = {**POOL_INTENT, "mode": "exact", "approved_pool": POOL_INTENT["approved_pool"][:1]}
-PRIOR = {"prompt": "a", "model": "h3", "mode": "image2video"}
+@pytest.mark.parametrize("name", ["validate_repair_decision", "validate_creator_repair_decision"])
+def test_retired_repair_decision_validators_are_absent(name):
+    assert not hasattr(vms, name)
 
 
-def decision(remedy="prompt_staging", route=ORIG, proposed=None):
-    proposed = proposed if proposed is not None else {**PRIOR, "prompt": "b"}
-    return {"decision_id": "d1", "producer": "ep", "remedy": remedy, "rationale": "object cut off",
-            "addresses_predicates": ["whole-object-completed"], "defect_evidence": ["frame 40"],
-            "request_delta": request_delta(PRIOR, proposed), "selected_route": route}, proposed
-
-
-def check(d, proposed, intent=POOL_INTENT, review=REVIEW):
-    return validate_repair_decision(d, review=review, original_route=ORIG, intent=intent,
-                                    original_request=PRIOR, proposed_request=proposed)
-
-
-def test_valid_prompt_staging_and_model_change():
-    d, p = decision()
-    res = check(d, p)
-    assert res["status"] == "valid_generation_decision" and res["grants_authority"] is False
-    assert res["failed_predicates"] == ["whole-object-completed"]  # cosmetic excluded
-    assert check(d, p, intent=EXACT_INTENT)["status"] == "valid_generation_decision"
-    wan = {**ORIG, "model": "wan"}
-    d, p = decision("model_change", wan, {**PRIOR, "model": "wan"})
-    assert check(d, p)["selected_route"] == wan  # producer route honored, never substituted
-
-
-@pytest.mark.parametrize("case,code", [
-    ("none", "missing_producer_decision"), ("not_failed", "predicates_not_failed"),
-    ("cosmetic", "predicates_not_failed"), ("identical", "identical_reroll"),
-    ("delta", "request_delta_mismatch"), ("staging_route", "route_changed"),
-    ("exact_model", "exact_intent"), ("same_model_mode", "same_model_reroll"),
-    ("managed", "managed_reroll_not_model_change"), ("outside", "outside_approved_pool"),
-    ("passed_review", "no_failed_critical_predicates")])
-def test_invalid_repair_decisions(case, code):
-    d, p = decision()
-    intent, review = POOL_INTENT, REVIEW
-    if case == "none":
-        d = None
-    elif case == "not_failed":
-        d["addresses_predicates"] = ["identity-stable"]
-    elif case == "cosmetic":
-        d["addresses_predicates"] = ["grain"]
-    elif case == "identical":
-        d, p = decision(proposed=dict(PRIOR))
-    elif case == "delta":
-        d["request_delta"] = {"prompt": {"before": "a", "after": "c"}}
-    elif case == "staging_route":
-        d["selected_route"] = {**ORIG, "mode": "element2video"}
-    elif case == "exact_model":
-        d, p = decision("model_change", {**ORIG, "model": "wan"}, {**PRIOR, "model": "wan"})
-        intent = EXACT_INTENT
-    elif case == "same_model_mode":
-        d, p = decision("model_change", {**ORIG, "mode": "element2video"}, {**PRIOR, "mode": "element2video"})
-    elif case == "managed":
-        d, p = decision("model_change", {**ORIG, "model": None}, {**PRIOR, "model": None})
-    elif case == "outside":
-        d, p = decision("model_change", {**ORIG, "model": "kling"}, {**PRIOR, "model": "kling"})
-    elif case == "passed_review":
-        review = {"status": "pass", "predicates": []}
-    with pytest.raises(ValueError, match=code):
-        check(d, p, intent=intent, review=review)
-
-
-def test_edit_returns_engine_handoff_and_keeps_failure():
-    d, _ = decision("edit")
-    d["request_delta"] = {"trim": "remove frames 40-48"}
-    with pytest.raises(ValueError, match="invalid_edit_handoff"):
-        validate_repair_decision(d, review=REVIEW, original_route=ORIG, intent=POOL_INTENT)
-    d["edit_handoff"] = {"tool": "video_trimmer", "inputs": {"cut": [40, 48]}}
-    res = validate_repair_decision(d, review=REVIEW, original_route=ORIG, intent=EXACT_INTENT)
-    assert res["status"] == "needs_engine_handoff"
-    assert res["predicates_remain_failed"] == ["whole-object-completed"]
-    assert res["grants_authority"] is False
-
-
-def test_plumbing_only_change_is_identical_reroll_but_creative_delta_kept():
-    plumbed = {**PRIOR, "output_path": "attempt2.mp4", "timeout_seconds": 900, "cli_session_id": "s2"}
-    assert request_delta(PRIOR, plumbed) == {}
-    d, p = decision(proposed=plumbed)
-    with pytest.raises(ValueError, match="identical_reroll"):
-        check(d, p)
-    d, p = decision(proposed={**plumbed, "prompt": "b"})
-    res = check(d, p)
-    assert res["request_delta"] == {"prompt": {"before": "a", "after": "b"}}
+def test_request_delta_ignores_plumbing_and_retains_authored_change():
+    prior = {"prompt": "a", "model": "h3", "mode": "image2video"}
+    plumbed = {**prior, "output_path": "attempt2.mp4", "timeout_seconds": 900, "cli_session_id": "s2"}
+    assert request_delta(prior, plumbed) == {}
+    assert request_delta(prior, {**plumbed, "prompt": "b"}) == {"prompt": {"before": "a", "after": "b"}}
 
 
 GROK = {"provider": "grok_cli", "tool": "grok_cli_video", "model": None, "mode": "image2video"}
@@ -354,19 +273,6 @@ def test_managed_provider_prefer_without_model():
     assert res["selected"]["route"] == GROK
 
 
-@pytest.mark.parametrize("remedy,route,proposed_key", [
-    ("prompt_staging", ORIG, "prompt"), ("model_change", {**ORIG, "model": "wan"}, "model")])
-@pytest.mark.parametrize("missing", [None, {}])
-def test_generation_repair_needs_actual_original_request(remedy, route, proposed_key, missing):
-    proposed = {**PRIOR, proposed_key: "wan" if proposed_key == "model" else "b"}
-    d = decision(remedy, route, proposed)[0]
-    d["request_delta"] = request_delta(missing, proposed)  # producer claims all fields added
-    with pytest.raises(ValueError, match="missing_original_request"):
-        validate_repair_decision(d, review=REVIEW, original_route=ORIG, intent=POOL_INTENT,
-                                 original_request=missing, proposed_request=proposed)
-    with pytest.raises(ValueError, match="missing_proposed_request"):
-        validate_repair_decision(d, review=REVIEW, original_route=ORIG, intent=POOL_INTENT,
-                                 original_request=PRIOR, proposed_request=missing)
 
 
 # Required audio output never silently becomes an explicitly silent request.
@@ -419,31 +325,8 @@ def test_chooser_rejects_precompiled_audio_off_row_for_required_output():
     assert choose_video_route([off], auto("seed"))["status"] == "planned"
 
 
-@pytest.mark.parametrize("remedy,route", [("prompt_staging", ORIG), ("model_change", {**ORIG, "model": "wan"})])
-@pytest.mark.parametrize("extra", [
-    {"model": "kling"}, {"mode": "element2video"}, {"provider": "openart_cli"},
-    {"preferred_provider": "openart_cli"}, {"hosting_provider": "fal.ai"}, {"tool": "openart_cli_video"}, {"preferred_tool": "openart_cli_video"},
-    {"allowed_providers": ["openart_mcp", "openart_cli"]}, {"allowed_providers": ["openart_cli"]}])
-def test_proposed_request_must_target_selected_route(remedy, route, extra):
-    proposed = {**PRIOR, "model": route["model"], "prompt": "b", **extra}
-    d = decision(remedy, route, proposed)[0]
-    with pytest.raises(ValueError, match="request_route_mismatch"):
-        check(d, proposed)
-    ok = {**PRIOR, "model": route["model"], "prompt": "b", "preferred_provider": "openart_mcp",
-          "allowed_providers": ["openart_mcp"], "preferred_tool": "openart_mcp_video",
-          "hosting_provider": "openart_mcp"}
-    d = decision(remedy, route, ok)[0]
-    assert check(d, ok)["status"] == "valid_generation_decision"
 
 
-def test_managed_and_operation_only_prompt_staging_requests_stay_valid():
-    route = {**ORIG, "provider": "grok_cli", "tool": "grok_cli_video", "model": None}
-    prior = {"prompt": "a", "operation": "image_to_video", "preferred_provider": "grok_cli"}
-    proposed = {**prior, "prompt": "b"}
-    d = {**decision()[0], "selected_route": route, "request_delta": request_delta(prior, proposed)}
-    res = validate_repair_decision(d, review=REVIEW, original_route=route, intent=POOL_INTENT,
-                                   original_request=prior, proposed_request=proposed)
-    assert res["status"] == "valid_generation_decision" and "model" not in proposed
 
 
 def test_unknown_scene_profile_blocks_chooser_but_direct_guidance_raises():

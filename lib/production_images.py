@@ -328,9 +328,6 @@ def _image_envelope(root, data):
         raise ValueError('native image envelope approval binding changed')
     evidence_path = _bound_file(root,approval,'image envelope approval')
     if retained.get('activation_basis') is not None:
-        from lib.production_frame_amendment import historical_image_envelope
-        if historical_image_envelope(root, retained):
-            return retained
         from lib.production_autonomy import require_active_policy
         policy, sha, decision_id = require_active_policy(root)
         expected = {'kind': 'standing_run', 'policy_sha256': sha, 'decision_id': decision_id,
@@ -477,77 +474,7 @@ def record_native_image_envelope(project_dir, definition, *, approval):
         return copy.deepcopy(retained)
 
 
-def _imported_envelope_producer(root, retained, call):
-    """Check frozen attribution without reopening historical correction evidence."""
-    scope = _scope(root, call['scope_id'])
-    if (call['state'] != 'imported' or call['route'] != NATIVE_ROUTE or call['tool_name'] != NATIVE_TOOL
-            or digest(scope) != call['scope_sha256']
-            or scope.get('derived_from_image_envelope', {}).get('envelope_sha256') != retained['envelope_sha256']
-            or scope.get('requests', {}).get(call['slot_id']) != call['request_sha256']
-            or image_request_digest(call['packet'], call['slot_id'], call['host_arguments'],
-                output_path=call['output_path']) != call['request_sha256']
-            or call['packet']['packet_sha256'] != digest({k: v for k, v in call['packet'].items() if k != 'packet_sha256'})):
-        raise ValueError('correction source needs attributable imported same-envelope output')
-    _bound_file(root, call['output'], 'correction source image')
-    _bound_file(root, {'path': call['output']['preserved_path'], 'sha256': call['output']['sha256']}, 'preserved correction source')
-    receipt = _read(_bound_file(root, call['host_receipt'], 'correction original host return'))
-    provenance = call['provenance']
-    if (receipt.get('tool_name') != NATIVE_TOOL or receipt.get('arguments') != call['submitted_arguments']
-            or provenance.get('kind') != 'agent_recorded_host_return' or provenance.get('tool_name') != NATIVE_TOOL
-            or provenance.get('receipt_sha256') != call['host_receipt']['sha256']
-            or provenance.get('arguments_sha256') != digest(call['submitted_arguments'])):
-        raise ValueError('correction original host provenance changed')
-    if call.get('supplemental_host_receipt'):
-        _bound_file(root, call['supplemental_host_receipt'], 'correction supplemental host return')
-
-
-def _validate_board_correction(root, retained, packet, slot_id, arguments, output_path, intent):
-    from lib import production_boards as boards
-    if not retained.get('activation_basis') or not isinstance(intent, dict):
-        raise ValueError('targeted envelope correction requires actual standing authority and canonical intent')
-    pack = boards.load_board_pack(root)
-    expected = boards.board_correction_intent(root, slot_id, changes=intent.get('changes'),
-        **({'replacement_prompt': intent['replacement_prompt']} if 'replacement_prompt' in intent else {}),
-        **({'reference_ids': intent['reference_ids']} if 'reference_ids' in intent else {}))
-    if expected != intent:
-        raise ValueError('targeted native correction proof is stale or changed')
-    required = {'original_prompt', 'original_prompt_sha256', 'specification_sha256', 'source_binding',
-        'review_sha256', 'preceding_request_sha256', 'preceding_request', 'preceding_correction_intent'}
-    observation = boards._correction_observation(pack, slot_id)
-    if not required.issubset(intent) or not observation or observation['review']['status'] != 'fail':
-        raise ValueError('standing correction requires complete attributable native request and actual failed review proof')
-    schema = load_schema('shot_contract')
-    Draft202012Validator({'$defs': schema['$defs'], '$ref': '#/$defs/review'}).validate(observation['review'])
-    if (observation['review']['story_revision'] != packet['story_revision']
-            or observation['review']['reviewer'] != pack['specification']['reviewer']):
-        raise ValueError('standing correction requires actual current applicable reviewer evidence')
-    prepared = pack['image_packets'].get(slot_id)
-    if (not prepared or prepared.get('correction_intent') != intent or prepared['packet'] != packet
-            or prepared['source_bindings'] != {ref['id']: {key: ref[key] for key in ('path', 'sha256')}
-                for ref in packet['references']}
-            or _native_arguments(packet, prepared['arguments']) != _native_arguments(packet, arguments)
-            or _ex()._inside(prepared['output_path'], root) != _ex()._inside(output_path, root)
-            or prepared['request_sha256'] != image_request_digest(packet, slot_id, arguments, output_path=output_path)):
-        raise ValueError('native correction differs from current canonical prepared request')
-    original = _call(_load(root), intent['source_binding'].get('call_id'))
-    _imported_envelope_producer(root, retained, original)
-    preceding = boards._preceding_image_request(root, pack, slot_id)
-    if (original['project_id'] != packet['project_id'] or original['story_revision'] != packet['story_revision']
-            or original['slot_id'] != slot_id or intent['source_binding'].get('route') != NATIVE_ROUTE
-            or intent['source_binding'].get('origin') != 'canonical_image_import'
-            or original['packet'] != preceding['packet']
-            or original['host_arguments'] != _native_arguments(original['packet'], preceding['arguments'])
-            or original['request_sha256'] != intent['preceding_request_sha256']
-            or original['output']['sha256'] != intent['source_sha256']
-            or _ex()._inside(original['output']['path'], root) != _ex()._inside(intent['source_binding']['path'], root)
-            or original['output_path'] != preceding['output_path']
-            or intent['source_binding'].get('source_bindings') != preceding['source_bindings']):
-        raise ValueError('native correction preceding request or imported source binding changed')
-    return intent
-
-
-def _derived_image_scope(root, retained, packet, slot_id, arguments, output_path, original_id,
-                         correction_intent=None):
+def _derived_image_scope(root, retained, packet, slot_id, arguments, output_path):
     definition = retained['definition']; templates = definition['templates']
     _validate_packet(root,packet)
     if {k:packet[k] for k in definition['packet_binding']} != definition['packet_binding']:
@@ -556,21 +483,10 @@ def _derived_image_scope(root, retained, packet, slot_id, arguments, output_path
         raise ValueError('native image slot is outside approved envelope')
     template = templates[slot_id]; native = _native_arguments(packet,arguments)
     prompt = template['prompt']; reference_ids = template['reference_ids']
-    if correction_intent is not None:
-        if original_id is not None:
-            raise ValueError('targeted native correction cannot replace an unresolved host exception')
-        intent = _validate_board_correction(root, retained, packet, slot_id, arguments, output_path, correction_intent)
-        prompt = intent.get('replacement_prompt', prompt + '\nTargeted correction: ' + intent['changes'])
-        reference_ids = intent.get('reference_ids', reference_ids)
     if {k:v for k,v in native.items() if k != 'referenced_image_paths'} != {
             'prompt':prompt,'transparent_background':template['transparent_background']}:
         raise ValueError('native image arguments differ from frozen template')
     expected_output = _ex()._inside(template['output_path'],root)
-    if correction_intent is not None:
-        expected_output = _ex()._inside(correction_intent['output_path'], root)
-    if original_id:
-        expected_output = expected_output.with_name(expected_output.stem+'-recovery-'+
-            hashlib.sha256(original_id.encode()).hexdigest()[:12]+expected_output.suffix)
     if _ex()._inside(output_path,root) != expected_output:
         raise ValueError('native image output differs from frozen template')
     inventory = {source['id']:source for source in definition['source_inventory']}
@@ -597,69 +513,42 @@ def _derived_image_scope(root, retained, packet, slot_id, arguments, output_path
                     and s.get('requests',{}).get(call['slot_id'])==call['request_sha256']
                     for s in scopes) for call in producers):
                 raise ValueError('dynamic source needs attributable imported approved producer output')
-            if correction_intent is not None:
-                from lib import production_boards as boards
-                pack = boards.load_board_pack(root)
-                binding = pack['board_bindings'].get(ref['id'])
-                if (not boards._binding_current(root, pack, ref['id'])
-                        or boards._review_blockers(pack, ref['id'], ref['role'])
-                        or not binding or binding.get('call_id') not in {call['call_id'] for call in producers}
-                        or any(binding.get(key) != ref[key] for key in ('path', 'sha256'))):
-                    raise ValueError('correction dynamic source requires actual current applicable reviewed output')
-                _imported_envelope_producer(root, retained, _call({'calls': calls}, binding['call_id']))
     paths = [str(_ex()._inside(ref['path'],root)) for ref in packet['references']]
     if native.get('referenced_image_paths',[]) != paths:
         raise ValueError('native image source arguments differ from frozen inventory')
     binding = {'envelope_sha256':retained['envelope_sha256'],'slot_id':slot_id,
-               'replace_exception_call_id':original_id}
-    if correction_intent is not None:
-        binding['board_correction_intent_sha256'] = digest(correction_intent)
+               'replace_exception_call_id':None}
     return {'id':'native-envelope-'+digest(binding)[:32], 'phase':'image','status':'approved',
         'project_id':definition['project_id'],'story_revision':definition['story_revision'],
         'approved_by':retained['approval']['approved_by'],'evidence':copy.deepcopy(retained['approval']),
         'provider':NATIVE_ROUTE,'allowed_image_routes':copy.deepcopy(definition['allowed_image_routes']),
         'image_allowance':definition['image_allowance'],'attempts_per_shot':{slot_id:1},
         'requests':{slot_id:image_request_digest(packet,slot_id,arguments,output_path=output_path)},
-        'derived_from_image_envelope':binding,
-        **({'board_correction_intent': copy.deepcopy(correction_intent)} if correction_intent is not None else {})}
+        'derived_from_image_envelope':binding}
 
 
-def _validate_derived_image_scope(root, scope, packet, slot_id, arguments, output_path, original_id):
+def _validate_derived_image_scope(root, scope, packet, slot_id, arguments, output_path):
+    """Admit only first-generation envelope scopes. Retained historical
+    exception-successor or correction scopes stay readable through _scope but
+    never authorize another request."""
     if 'derived_from_image_envelope' not in scope: return
     retained = _image_envelope(root,_read(root/'production_scopes.json'))
-    if scope != _derived_image_scope(root,retained,packet,slot_id,arguments,output_path,original_id,
-                                    scope.get('board_correction_intent')):
+    if scope != _derived_image_scope(root,retained,packet,slot_id,arguments,output_path):
         raise ValueError('derived native image scope differs from verified envelope')
 
 
-def derive_native_image_scope(project_dir, packet, slot_id, arguments, *, output_path,
-                              replace_exception_call_id=None, correction_intent=None):
-    """Retain exact first-pass, exception, or standing critical-correction scope."""
+def derive_native_image_scope(project_dir, packet, slot_id, arguments, *, output_path):
+    """Retain the exact one-generation scope for a declared envelope image."""
     root, _ = _root(project_dir)
     with _ex()._lock(root):
         data = _read(root/'production_scopes.json'); retained = _image_envelope(root,data)
         _standing_native_transfer(root, retained, packet)
-        scope = _derived_image_scope(root,retained,packet,slot_id,arguments,output_path,replace_exception_call_id,
-                                     correction_intent)
+        scope = _derived_image_scope(root,retained,packet,slot_id,arguments,output_path)
         matches = [s for s in data['scopes'] if s['id']==scope['id']]
         if matches:
             if matches != [scope]: raise ValueError('derived native image scope changed or duplicated')
             return scope['id']
-        if replace_exception_call_id:
-            original = _call(_load(root),replace_exception_call_id)
-            _validate_derived_image_scope(root,_scope(root,original['scope_id']),original['packet'],slot_id,
-                original['host_arguments'],original['output_path'],None)
-            if original['scope_id'] != 'native-envelope-'+digest({**scope['derived_from_image_envelope'],
-                    'replace_exception_call_id':None})[:32]:
-                raise ValueError('host exception original is outside this image envelope')
-            if (original['packet']['references'] != packet['references']
-                    or original['host_arguments'] != _native_arguments(packet,arguments)):
-                raise ValueError('native exception successor changes original frozen inputs')
-            _exception_recovery_original(root,_load(root),replace_exception_call_id,slot_id)
-            _unique_recovery_output(root,_load(root),_ex()._inside(output_path,root))
-        if correction_intent is not None:
-            _unique_recovery_output(root, _load(root), _ex()._inside(output_path, root))
-        _admission(root,scope,slot_id,NATIVE_ROUTE,ignore_pending_call_id=replace_exception_call_id)
+        _admission(root,scope,slot_id,NATIVE_ROUTE)
         data['scopes'].append(scope); _write_image_scopes(root,data)
         return scope['id']
 
@@ -757,7 +646,7 @@ def image_call_status(project_dir, call_id):
     return status
 
 
-def _admission(root, scope, slot_id, route, *, exclude_call_id=None, ignore_pending_call_id=None):
+def _admission(root, scope, slot_id, route, *, exclude_call_id=None):
     limit = scope.get('image_allowance')
     if type(limit) is not int or limit < 1:
         raise ValueError('approved image scope lacks a positive image allowance')
@@ -767,11 +656,9 @@ def _admission(root, scope, slot_id, route, *, exclude_call_id=None, ignore_pend
         raise ValueError('image route is outside the approved supported routes')
     rows = [r for r in image_usage(root)['occurrences'] if r['counted'] and r['call_id'] != exclude_call_id]
     binding = scope.get('derived_from_image_envelope')
-    if (binding and route == NATIVE_ROUTE and 'board_correction_intent_sha256' not in binding
-            and any(r['slot_id']==slot_id and r['call_id'] != binding['replace_exception_call_id'] for r in rows)):
+    if binding and route == NATIVE_ROUTE and any(r['slot_id']==slot_id for r in rows):
         raise ValueError('native image envelope slot allowance exhausted')
-    if any(r['slot_id'] == slot_id and r['state'] in PENDING
-            and r['call_id'] != ignore_pending_call_id for r in rows):
+    if any(r['slot_id'] == slot_id and r['state'] in PENDING for r in rows):
         raise ValueError('an uncertain or pending original image blocks replacement')
     # The ceiling is episode-wide. Historic supported image journals count too;
     # moving a request to another exact scope cannot reset cumulative usage.
@@ -804,57 +691,11 @@ def check_grok_image_admission(project_dir, *, scope, shot_id, request_sha256):
     return _admission(root,_scope(root,shared_id),shot_id,'grok_cli')
 
 
-def _unique_recovery_output(root, value, target, *, exclude_call_id=None):
-    paths = [call['output_path'] for call in value['calls'] if call['call_id'] != exclude_call_id]
-    for request_path in (root/'production_attempts').glob('*/request.json'):
-        output = _read(request_path).get('submitted_inputs',{}).get('output_path')
-        if output: paths.append(output)
-    if target.exists() or any(_ex()._inside(path,root)==target for path in paths):
-        raise ValueError('native exception recovery requires a unique new output path')
+def reserve_native_image(project_dir, packet, slot_id, arguments, *, output_path, scope_id, call_id=None):
+    """Reserve the one exact approved native call for a declared image slot.
 
-
-def _exception_recovery_original(root, value, original_id, slot_id, *, successor_id=None):
-    """Qualify one native exception; this never closes or discounts its original."""
-    original = _call(value,original_id)
-    marker = _root(root)[1]
-    if original.get('replaces_host_exception'):
-        raise ValueError('native exception recovery cannot chain from a successor')
-    if any(call.get('replaces_host_exception',{}).get('call_id') == original_id
-            and call['call_id'] != successor_id for call in value['calls']):
-        raise ValueError('native host exception already has an admitted successor')
-    if (original['route'] != NATIVE_ROUTE or original['tool_name'] != NATIVE_TOOL
-            or original['project_id'] != marker['project_id'] or original['story_revision'] != marker['story_revision']
-            or original['slot_id'] != slot_id):
-        raise ValueError('native exception recovery has incompatible project/story/slot/route binding')
-    if (original['state'] != 'uncertain' or 'submitted_arguments' not in original
-            or not original.get('host_exception') or original.get('host_receipt') or original.get('output')):
-        raise ValueError('recovery needs an unresolved emitted native exception without actual return or output')
-    evidence = original['host_exception']
-    receipt = _read(_bound_file(root,evidence,'original host exception'))
-    exception = receipt.get('exception') if isinstance(receipt,dict) else None
-    if (not isinstance(receipt,dict) or set(receipt)-{'call_id','tool_name','arguments','exception','tool_call_id'}
-            or receipt.get('call_id') != original_id or receipt.get('tool_name') != NATIVE_TOOL
-            or receipt.get('arguments') != original['submitted_arguments']
-            or evidence['arguments_sha256'] != digest(original['submitted_arguments'])
-            or not isinstance(exception,dict) or set(exception)-{'message','type'}
-            or not isinstance(exception.get('message'),str) or not exception['message'].strip()
-            or not any(event['kind']=='host_exception' and event['details'].get('receipt_sha256')==evidence['sha256']
-                       for event in original['events'])):
-        raise ValueError('original native exception evidence differs from emitted call')
-    link = {'call_id':original_id,'receipt_sha256':evidence['sha256'],'request_sha256':original['request_sha256']}
-    if successor_id:
-        successor = _call(value,successor_id)
-        if successor.get('replaces_host_exception') != link:
-            raise ValueError('native exception recovery link changed')
-    return link
-
-
-def reserve_native_image(project_dir, packet, slot_id, arguments, *, output_path, scope_id, call_id=None, replace_exception_call_id=None):
-    """Reserve an exact approved native call, optionally one linked exception recovery.
-
-    Explicit recovery preserves the counted uncertain original and admits only
-    one separate native successor with unique output; no exception is terminal.
-    Omitted replace_exception_call_id keeps ordinary pending-original blocking.
+    A retained uncertain original stays counted and collectable; nothing here
+    admits a linked successor or replacement request.
     """
     root, marker = _root(project_dir)
     call_id = call_id or 'image-' + uuid.uuid4().hex
@@ -868,46 +709,28 @@ def reserve_native_image(project_dir, packet, slot_id, arguments, *, output_path
         value = _load(root)
         existing = next((c for c in value['calls'] if c['call_id'] == call_id),None)
         if existing:
-            if (existing['request_sha256'] != sha or existing['scope_id'] != scope_id
-                    or existing.get('replaces_host_exception',{}).get('call_id') != replace_exception_call_id):
-                raise ValueError('local call ID already binds another exact request or linked exception recovery')
-            if replace_exception_call_id is not None:
-                original = _call(value,replace_exception_call_id)
-                _bound_file(root,original.get('host_exception'),'original host exception')
-                expected = {'call_id':replace_exception_call_id,
-                    'receipt_sha256':original['host_exception']['sha256'],'request_sha256':original['request_sha256']}
-                if existing['replaces_host_exception'] != expected:
-                    raise ValueError('native exception recovery link changed')
+            if existing['request_sha256'] != sha or existing['scope_id'] != scope_id:
+                raise ValueError('local call ID already binds another exact request')
             if existing['state'] == 'reserved':
+                if existing.get('replaces_host_exception'):
+                    raise ValueError('historical native exception successor is retained only; it is never dispatched')
                 scope = _scope(root, scope_id)
                 if digest(scope) != existing['scope_sha256']:
                     raise ValueError('native image approval changed after reservation')
-                _validate_derived_image_scope(root,scope,packet,slot_id,arguments,output_path,replace_exception_call_id)
+                _validate_derived_image_scope(root,scope,packet,slot_id,arguments,output_path)
                 if scope.get('derived_from_image_envelope'):
                     _standing_native_transfer(root, _image_envelope(root, _read(root / 'production_scopes.json')),
                         packet, exclude_call_id=call_id)
-                _admission(root, scope, slot_id, NATIVE_ROUTE, exclude_call_id=call_id,
-                    ignore_pending_call_id=replace_exception_call_id)
-                if scope.get('board_correction_intent') is not None:
-                    _unique_recovery_output(root, value, _ex()._inside(output_path, root), exclude_call_id=call_id)
+                _admission(root, scope, slot_id, NATIVE_ROUTE, exclude_call_id=call_id)
             return {k:copy.deepcopy(v) for k,v in existing.items() if k not in {'host_arguments','packet'}}
         if (root/'production_attempts'/call_id/'request.json').exists():
             raise ValueError('local image call ID collides with provider session')
         scope = _scope(root,scope_id)
-        _validate_derived_image_scope(root,scope,packet,slot_id,arguments,output_path,replace_exception_call_id)
+        _validate_derived_image_scope(root,scope,packet,slot_id,arguments,output_path)
         if scope.get('derived_from_image_envelope'):
             _standing_native_transfer(root, _image_envelope(root, _read(root / 'production_scopes.json')), packet)
         if scope.get('provider') != NATIVE_ROUTE: raise ValueError('native scope locks a different provider route')
-        recovery = None
-        if replace_exception_call_id is not None:
-            if not isinstance(replace_exception_call_id,str) or not replace_exception_call_id.strip():
-                raise ValueError('native exception recovery requires the original call ID')
-            recovery = _exception_recovery_original(root,value,replace_exception_call_id,slot_id)
-            target = _ex()._inside(output_path,root)
-            _unique_recovery_output(root,value,target)
-        if scope.get('board_correction_intent') is not None:
-            _unique_recovery_output(root, value, _ex()._inside(output_path, root))
-        admission = _admission(root,scope,slot_id,NATIVE_ROUTE,ignore_pending_call_id=replace_exception_call_id)
+        admission = _admission(root,scope,slot_id,NATIVE_ROUTE)
         peers = [r for r in image_usage(root)['occurrences'] if r['counted'] and r['scope_id'] == scope_id and r['slot_id'] == slot_id]
         allowance = scope.get('attempts_per_shot',{}).get(slot_id)
         if type(allowance) is not int or allowance < 1 or len(peers) >= allowance:
@@ -921,7 +744,6 @@ def reserve_native_image(project_dir, packet, slot_id, arguments, *, output_path
             'request_sha256':sha,'packet':copy.deepcopy(packet),
             'host_arguments':_native_arguments(packet,arguments),
             'output_path':str(_ex()._inside(output_path,root).relative_to(root)), 'events':[]}
-        if recovery is not None: call['replaces_host_exception'] = recovery
         call['events'].append({'kind':'packet_ready','observed_at':packet['prepared_at'],'details':{'packet_sha256':packet['packet_sha256']}})
         _event(call,'reserved',used=admission['used'],limit=admission['limit'])
         value['calls'].append(call); _write(root,value)
@@ -943,16 +765,10 @@ def begin_native_image(project_dir, call_id):
         if scope.get('derived_from_image_envelope'):
             retained = _image_envelope(root, _read(root / 'production_scopes.json'))
             _standing_native_transfer(root, retained, call['packet'], exclude_call_id=call_id)
-        original_id = call.get('replaces_host_exception',{}).get('call_id')
-        _validate_derived_image_scope(root,scope,call['packet'],call['slot_id'],call['host_arguments'],call['output_path'],original_id)
-        if original_id:
-            _exception_recovery_original(root,value,original_id,call['slot_id'],successor_id=call_id)
-            target = _ex()._inside(call['output_path'],root)
-            _unique_recovery_output(root,value,target,exclude_call_id=call_id)
-        if scope.get('board_correction_intent') is not None:
-            _unique_recovery_output(root, value, _ex()._inside(call['output_path'], root), exclude_call_id=call_id)
-        _admission(root,scope,call['slot_id'],NATIVE_ROUTE,exclude_call_id=call_id,
-                   ignore_pending_call_id=original_id)
+        if call.get('replaces_host_exception'):
+            raise ValueError('historical native exception successor is retained only; it is never dispatched')
+        _validate_derived_image_scope(root,scope,call['packet'],call['slot_id'],call['host_arguments'],call['output_path'])
+        _admission(root,scope,call['slot_id'],NATIVE_ROUTE,exclude_call_id=call_id)
         arguments = copy.deepcopy(call['host_arguments'])
         snapshots = root/'production_images'/call_id/'inputs'
         if arguments.get('referenced_image_paths'):

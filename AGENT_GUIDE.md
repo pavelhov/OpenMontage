@@ -17,11 +17,10 @@ Software maintenance follows its approved brief; it is not production consent.
   choices; develop concepts/openers only while that creative decision is open.
 - A resume: inspect the project's next checkpoint, originals, current selections
   and authority before doing the remaining stage. Do not restart completed work.
-- The prospective `shot_local_v1` production factory is a separate, explicit
-  creator-command path. Read [production-factory.md](docs/production-factory.md)
-  when the current identity supplies its standing setup and `make_video` command.
-  That retained authority removes routine plan/shot approvals only for that run;
-  generic pipelines, historical projects and missing rights/scope keep their gates.
+- The one-shot creator-command factory is a separate path. Read
+  [production-factory.md](docs/production-factory.md) when the current identity
+  supplies its standing setup and `make_video` command. Generic pipelines and
+  historical project authority remain governed by their existing owners.
 
 ## Rule Zero — All Production Goes Through a Pipeline
 
@@ -52,7 +51,7 @@ as current policy. Preserve useful cast/style/provider knowledge and history.
 | Semantic evidence and final certification | [reviewer](skills/meta/reviewer.md), current director/manifest |
 | Board image lifecycle and overlapping preparation | [shot-preparation-overlap](skills/meta/shot-preparation-overlap.md) |
 | Cast, start/end/identity roles and native frame pins | [visual-development](skills/creative/visual-development.md) |
-| Route intent, primary/alternate planning and legacy repair diagnosis | [VIDEO_MODEL_SELECTION](docs/VIDEO_MODEL_SELECTION.md) |
+| Route capabilities and intent for generic pipelines | [VIDEO_MODEL_SELECTION](docs/VIDEO_MODEL_SELECTION.md) |
 | Grok/OpenArt CLI authority, billing, original jobs and Auto-continue | [OPENART_CLI](docs/OPENART_CLI.md), selected tool's Layer 3 skill |
 | OpenArt connector forms, uploads, account/project and host handoff | [OPENART_MCP](docs/OPENART_MCP.md), selected tool's Layer 3 skill |
 | Retaining an approved trim and its new review | [PRODUCTION_DERIVED_EDITS](docs/PRODUCTION_DERIVED_EDITS.md) |
@@ -67,6 +66,11 @@ delivery defaults own export/handoff. An identity policy cannot bypass engine ga
 or apply its voice/defaults to another identity.
 
 ## Mandatory Preflight
+
+This preflight applies to generic manifest pipelines. For the one-shot factory,
+the creator-authorized standing setup and exact plan select the route; use
+`validate_standing_setup` to validate current bindings without opening a new route
+selection or approval step.
 
 Discover the registry and call `registry.provider_menu_summary()` first. Present
 its human-ready capability ratios, configured routes, setup offers, runtime warnings,
@@ -85,9 +89,10 @@ Unknown cost/quota is unknown, never free, zero or a fabricated USD ceiling.
 
 ## Decision Communication Contract
 
-Announce before each paid/consequential generation: shot, exact tool/provider/model
-(or CLI-managed unreported media), sample/batch/repair phase, reason, approved changes,
-billing exposure, remaining caps and exact authority. Retain the route and compromises.
+For generic pipelines, announce before each paid/consequential generation: shot,
+exact tool/provider/model (or CLI-managed unreported media), phase, reason, approved
+changes, billing exposure, remaining caps and exact authority. For the one-shot
+factory, follow its standing-run dispatch contract. Retain the route and compromises.
 Grok's agent model is never its media model; subscription quota remains unknown.
 Auto-continue announcements bind current policy SHA and activation decision; it
 never buys plans/credits/top-ups or invokes paid Grok API calls.
@@ -129,8 +134,10 @@ stock catalog/registry is mechanics knowledge, not an atelier creative menu.
 State what was attempted, what failed (auth/access/tool/design), concrete options
 and the recommendation. Unsupported controls, exhausted authority and uncertainty
 are honest blockers. Prepare alternatives but execute only those already approved
-and eligible; otherwise obtain the missing exact approval. A terminal missing
-result's bounded alternate rules below do not permit substituting usable footage.
+and eligible; otherwise obtain the missing exact approval. In generic pipelines, a
+terminal missing result permits an alternate only when the current manifest and
+retained authority explicitly allow it; never substitute for usable footage. The
+one-shot factory has no route fallback and recovers only the same original job.
 
 ## Orchestrator
 
@@ -144,8 +151,9 @@ Initialize `projects/<kebab-case-id>/` with `lib.checkpoint.init_project`, then
 `python -m backlot open <id>`. Board failure is nonfatal: it is an observer.
 All outputs, including atelier/HyperFrames artifacts and explicit `output_path`,
 belong under that project's `artifacts/`, `assets/` and `renders/`; root/temp media
-is invisible to its board. New Studio generation uses strict governance and a
-story revision; enrollment of existing projects is deliberate, never automatic.
+is invisible to its board. New generation in strict manifest pipelines uses
+governance and a story revision; the one-shot factory follows its own standing-run
+contract. Enrollment of existing projects is deliberate, never automatic.
 
 ## Stage Agents
 
@@ -155,7 +163,7 @@ edit/edit_decisions, compose/render_report. Keep noncanonical media in its proje
 asset/render directories and retain actual provider/version/seed provenance.
 Read only the active director and relevant tool guidance; do not preload every stage.
 
-## Strict generative production
+## Strict generative production in manifest pipelines
 
 Before translating a shootable package, read
 [shot_contract.schema.json](schemas/artifacts/shot_contract.schema.json) and
@@ -169,13 +177,11 @@ request `governance: {scope_id, shot_id}`. Fixed requests use
 and canonical `$upstream`. Freeze approved static hashes, duration and unique
 attempt output paths. Constructing a scope/template does not authorize it.
 
-Reuse canonical `lib.production_execution` attempts, original-session reconciliation
-and reviewed selections. A fresh exact governed dry-run immediately precedes
-execution. Unknown originals are collected/reconciled, never resubmitted. The preparation
-owner permits one explicitly linked native-to-native successor for a retained
-emitted host exception, within exact scope and remaining allowance; the unknown
-original remains counted and independently collectable. Preserve
-original/rejected bytes and cumulative allowances. Prepared independent frame
+This strict workflow belongs to manifest pipelines. Reuse canonical
+`lib.production_execution` attempts, original-session reconciliation and reviewed
+selections. Follow the selected manifest's dry-run and review requirements. Unknown
+originals are collected/reconciled, never resubmitted. Preserve original bytes,
+records and cumulative allowances. Prepared independent frame
 pairs do not wait on unrelated videos; actual upstream footage/outgoing-frame
 needs remain serial and require current eligible selections. The preparation owner
 covers immutable prompt packs, source rehashing, one real host image envelope per
@@ -188,61 +194,26 @@ raw filesystem paths in native fields and undeclared final-frame pins reject bef
 provider POST. No unsupported control is silently dropped. Inspect the actual tool
 and visual-development owner for exact supported native bindings.
 
-### Episode controls and first cut
+### One-shot factory
 
-`lib.episode_production_controls.record_episode_controls` retains creator-approved
-`max_generations_per_shot`, `alternate_repair`, `access_fallback` and optional
-`first_cut: {enabled: bool}` against exact approval evidence. Engine `first_cut`
-absent means disabled; existing episodes retain their behavior. Two is a configurable
-future Studio default, never a permanent engine ceiling. `generation_usage`,
-`effective_controls` and `episode_production_status` report canonical state.
-Submitted/accepted/terminal/uncertain original jobs count once across scopes;
-proven never-submitted work, review, status, download and collection use no generation
-slots. Amendments never reset usage. Prospective `restrict_episode_provider` stops
-new submissions while preserving original collection, footage and history.
+The one-shot factory writes one plan and dispatches each declared image and video
+once through the existing producer. Its `make_video`, `advance` and
+`complete_action` path owns work. Use `validate_standing_setup` before fresh
+dispatch, recover only the same original job after interruption, then use the
+existing `deliver_standalone` delivery path. Preserve account, source, route, transfer and
+attempt limits. Assemble every playable original, report defects, and keep evidence
+and certification distinct. The factory has no correction, replacement, route
+fallback or review-approval loop, and adds no timer or orchestration service.
 
-Opted-in first-cut mode assembles attributable playable candidates before elective
-creative replacement. Usable cosmetic/story defects remain disclosed draft findings;
-missing footage produces an honestly incomplete preview, not invented coverage.
-Candidate inclusion is separate from strict selection/upstream eligibility. No
-automatic `critical_review` creative reroll of existing footage is allowed in this
-mode. Confirmed terminal no-output access fallback may use only an already-approved
-compatible alternate within cumulative allowance and existing exact/account/billing
-locks; uncertain originals require collection except the preparation owner's
-explicit bounded native host-exception successor. Cosmetic or unknown AV findings never
-create automatic repair authority.
-
-`lib.production_draft` owns composition, current-cut bindings and first-cut acceptance;
-acceptance preserves the disclosed export and does not certify or publish it.
-`lib.production_repair_batches.record_creator_repair_batch`, `prepare_repair_item`,
-`resume_repair_batch` and `repair_batch_status` own exact creator-selected batch items
-bound to the current cut, original attempt, route, changes and retained evidence.
-The creator may name multiple repairs, including an exact same-model item, without
-fabricated critical severity. Existing route/model intent, scope, account/billing,
-input and cumulative allowance gates still apply; dependencies do not auto-expand
-the batch. MCP resume returns the exact original host handoff once; Python never
-calls the connector. Studio's delivery owner documents its creator-facing commands.
-
-### Retained reviews and planning changes
-
-Explicit `audio_unavailable_draft` authority can permit provisional selection with
-only required `speaker_source: unknown`; actual critical visual evidence must pass.
-Final certification rejects provisional selections. Actual synchronized same-media
-listening can append a monotonic successor through
-`lib.production_review_successors.record_review_successor`; preserve frozen selection,
-source/request/media hashes and unresolved visual defects. A master pass cannot waive
-unknown selected-clip evidence.
-
-Approved static-board repairs use `lib.production_continuity` shot digests and linked
-`derive_carried_scope`/`append_carried_scope`; they do not reset quotas or hand-edit
-approved digests. Existing-footage planning revisions can change only
-`dominant_action`/`completed_end_state`, bound to immutable contracts, exact consent,
-activation, retained footage/scopes and a named protected-story proof. Changed shots
-need fresh revision-bound selection review. Other story/dialogue/cast/board/shot-order
-changes remain outside that narrow bridge. Consult canonical continuity functions
-and their focused integration tests for the actual record shapes.
+Generic manifest pipelines retain their own review and approval requirements.
+Historical projects keep their recorded authority; source-only readers may collect
+saved bytes, but cleanup does not migrate them or authorize new generation.
 
 ## Reviewer Protocol
+
+This protocol applies to manifest pipeline review and certification. The one-shot
+factory saves and reports its cut without a review or approval gate; a certification
+claim remains separate and must follow its own actual evidence contract.
 
 [reviewer](skills/meta/reviewer.md) owns semantic evidence and certification. Follow
 current manifest focus/playbook constraints with one substantive current-byte verdict

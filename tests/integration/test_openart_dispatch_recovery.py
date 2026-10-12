@@ -508,7 +508,7 @@ def test_billing_axis_can_settle_while_original_generation_slot_remains_active(g
     assert len((tmp/'paid').read_text().splitlines())==1
 
 
-def _authorize_exact_same_project_repair(root,inputs,profile,attempt):
+def _propose_retired_repair_scope(root,inputs,profile,attempt):
     other=copy.deepcopy(inputs);other['governance']['scope_id']='repair';other['output_path']=str(root/'repair.mp4')
     other.update(compiled_request_id='c2',preparation_review_id='r2',credit_authorization_id='repair')
     old=json.loads((root/'artifacts/compiled_request-c1.json').read_text())
@@ -528,9 +528,9 @@ def _authorize_exact_same_project_repair(root,inputs,profile,attempt):
     return other
 
 
-def test_same_project_qualified_terminal_is_unselected_exact_repair_can_dispatch_and_collect_original(governed,monkeypatch):
+def test_same_project_terminal_stays_consumed_and_original_collection_survives(governed,monkeypatch):
     root,inputs,profile,tmp,attempt,b,contract=_qualified_billing_origin(governed,monkeypatch)
-    other=_authorize_exact_same_project_repair(root,inputs,profile,attempt)
+    other=_propose_retired_repair_scope(root,inputs,profile,attempt)
     with pytest.raises(Exception,match='uncertain'):execution.preflight(OpenArtCLIVideo(),other)
     dispatch.resolve_attempt(root,attempt,b.request_sha256)
     state=execution._state(root,{'attempt_id':attempt})
@@ -538,20 +538,24 @@ def test_same_project_qualified_terminal_is_unselected_exact_repair_can_dispatch
     assert dispatch.ledger().inspect(attempt)['debit_state']=='unresolved'
     with pytest.raises(Exception):execution.record_selection(root,'entry',{'attempt_id':attempt,'output':None})
     assert not (root/'production_attempts'/attempt/'reconciliation.json').exists()
-    # The new exact repair can dispatch using terminal_unselected, before collection.
-    OpenArtCLIVideo().execute(other)
-    assert len((tmp/'paid').read_text().splitlines())==2
+    # Terminal settlement never releases another generation for this clip.
+    retained = {path: path.read_bytes() for path in (root/'production_attempts'/attempt).rglob('*') if path.is_file()}
+    with pytest.raises(execution.ProductionGovernanceError, match='approval phase'):
+        OpenArtCLIVideo().execute(other)
+    assert not Path(other['output_path']).exists()
+    assert all(path.read_bytes() == data for path, data in retained.items())
+    assert len((tmp/'paid').read_text().splitlines()) == 1
     # Original failure collection remains legal and never submits generation.
     collected=execution.collect_openart_attempt(root,attempt,request_sha256=b.request_sha256)
     assert collected['status']=='failed'
-    assert len((tmp/'paid').read_text().splitlines())==2
+    assert len((tmp/'paid').read_text().splitlines())==1
 
 
 @pytest.mark.parametrize('tamper',['raw_format','request','release_proof','unknown_process'])
 def test_terminal_fallback_requires_immutable_ready_journal_and_qualified_original_slot(governed,monkeypatch,tamper):
     import sqlite3
     root,inputs,profile,tmp,attempt,b,contract=_qualified_billing_origin(governed,monkeypatch)
-    other=_authorize_exact_same_project_repair(root,inputs,profile,attempt)
+    other=_propose_retired_repair_scope(root,inputs,profile,attempt)
     if tamper=='unknown_process':monkeypatch.setattr(jobs,'original_process_state',lambda aid:{'attempt_id':aid,'state':'unknown','pid':123,'returncode':None})
     dispatch.resolve_attempt(root,attempt,b.request_sha256)
     path=root/'production_attempts'/attempt/'request.json'

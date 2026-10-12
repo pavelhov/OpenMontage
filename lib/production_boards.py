@@ -15,7 +15,6 @@ from pathlib import Path
 
 
 ARTIFACT = "artifacts/board_preparation.json"
-_NO_REPLACEMENT = object()
 NODE_FIELDS = {"slot_id", "shot_id", "role", "prompt", "reference_ids", "image_dependencies",
                "output_path", "required_predicates", "transparent_background", "cast", "upstream_source"}
 
@@ -457,14 +456,6 @@ def _observation(pack, asset_id, role=None):
         and (role is None or role in o["roles"])), None)
 
 
-def _correction_observation(pack, asset_id):
-    """Newest actual failure still current for at least one declared asset role."""
-    current = [_observation(pack, asset_id, role) for role in _roles(pack, asset_id)]
-    return next((observation for observation in reversed(pack['observations'])
-        if observation in current and any(predicate.get('severity') == 'critical'
-            and predicate['status'] == 'fail' for predicate in observation['review']['predicates'])), None)
-
-
 def _source_depends_on_slot(pack, asset_id, slot_id, visiting=None):
     """Include actual retained sources and authored dependencies in cycle checks."""
     if asset_id == slot_id:
@@ -480,9 +471,19 @@ def _source_depends_on_slot(pack, asset_id, slot_id, visiting=None):
 
 
 def _review_blockers(pack, asset_id, role):
+    """Mechanical readiness only: a retained observation of the exact current
+    bytes in this declared role. Its verdict (pass, fail or unknown) is
+    report-only evidence and never gates one-shot preparation or dispatch."""
+    if not _observation(pack, asset_id, role):
+        return ["missing current role observation"]
+    return []
+
+
+def review_findings(pack, asset_id, role):
+    """Report-only semantic findings for disclosure; never a dispatch gate."""
     observation = _observation(pack, asset_id, role)
     if not observation:
-        return ["missing current role review"]
+        return []
     review = observation["review"]
     predicates = {p["name"]: p for p in review["predicates"]}
     required = pack["prompt_pack"].get(asset_id, {}).get("required_predicates", [])
@@ -499,16 +500,6 @@ def _packet_sources_current(root, pack, record):
         if not current or any(current.get(key) != expected[key] for key in ("path", "sha256")) or not _current(root, current):
             return False
     return True
-
-
-def _preceding_image_request(root, pack, slot_id):
-    source = pack["board_bindings"][slot_id]
-    records = pack["image_packet_history"] + list(pack["image_packets"].values())
-    preceding = next((record for record in reversed(records) if record["slot_id"] == slot_id
-        and _inside(root, record["output_path"]) == _inside(root, source["path"])), None)
-    if preceding is None:
-        raise ValueError("replacement correction needs the preceding bound image request")
-    return preceding
 
 
 def board_schedule(project_dir, *, images):
@@ -632,25 +623,15 @@ def bind_upstream_board_locked(root, pack, slot_id, selection):
 
 
 @_board_transaction
-def prepare_image_request(project_dir, slot_id, *, correction=None, replace_exception_call_id=None, images):
+def prepare_image_request(project_dir, slot_id, *, images):
     """Materialize only current references; no dependency waits enter text prompts."""
     root = Path(project_dir).resolve()
     pack = load_board_pack(root)
     node = pack["prompt_pack"][slot_id]
     _reject_upstream_slot(node)
-    if correction is not None and replace_exception_call_id is not None:
-        raise ValueError("targeted correction cannot also replace an unresolved host exception")
-    if correction is not None:
-        expected = board_correction_intent(root, slot_id, changes=correction["changes"],
-            **({"replacement_prompt": correction["replacement_prompt"]} if "replacement_prompt" in correction else {}),
-            **({"reference_ids": correction["reference_ids"]} if "reference_ids" in correction else {}))
-        if expected != correction:
-            raise ValueError("targeted image correction is stale or changed")
     bindings = {}
     refs = []
-    reference_ids = correction.get("reference_ids") if correction is not None else None
-    if reference_ids is None:
-        reference_ids = node.get("reference_ids", []) + node.get("image_dependencies", [])
+    reference_ids = node.get("reference_ids", []) + node.get("image_dependencies", [])
     for asset_id in reference_ids:
         binding = pack["board_bindings"].get(asset_id)
         if not binding or not _binding_current(root, pack, asset_id):
@@ -663,51 +644,11 @@ def prepare_image_request(project_dir, slot_id, *, correction=None, replace_exce
                 "applicability": {"story_revision": pack["story_revision"], "roles": [source["role"]]}}
         refs.append(deepcopy(reference))
     prompt, output = _prompt(node), node["output_path"]
-    recovery_status = None
-    if replace_exception_call_id is not None:
-        recovery_status = images.image_call_status(root, replace_exception_call_id)
-        exception = recovery_status.get("host_exception")
-        if (recovery_status.get("slot_id") != slot_id or recovery_status.get("state") != "uncertain"
-                or not isinstance(exception, dict)
-                or exception.get("kind") != "agent_recorded_host_exception"
-                or recovery_status.get("replaces_host_exception")
-                or recovery_status.get("host_receipt") or recovery_status.get("output")):
-            raise ValueError("bounded replacement needs the exact recorded native host exception for this slot")
-        usage = images.image_usage(root)
-        for occurrence in usage["occurrences"]:
-            if occurrence["route"] != "native_imagegen" or occurrence["call_id"] == replace_exception_call_id:
-                continue
-            candidate = images.image_call_status(root, occurrence["call_id"])
-            if ((candidate.get("replaces_host_exception") or {}).get("call_id") == replace_exception_call_id):
-                # Reuse the exact packet on replay; engine admission only treats
-                # the same child call ID as idempotent and rejects another one.
-                if not pack["image_packets"].get(slot_id) or pack["image_packets"][slot_id]["request_sha256"] != candidate["request_sha256"]:
-                    raise ValueError("recorded host exception already has its one bounded replacement")
-        # Keep the replacement request digest and immutable prompt pack distinct
-        # from the original envelope. The original output may still arrive late.
-        prior = Path(output)
-        suffix = hashlib.sha256(replace_exception_call_id.encode()).hexdigest()[:12]
-        output = str(prior.with_name(prior.stem + "-recovery-" + suffix + prior.suffix))
     if slot_id in pack["board_bindings"] and not _binding_current(root, pack, slot_id):
         prior = Path(output)
         output = str(prior.with_name(prior.stem + "-sources-" + _digest(bindings)[:16] + prior.suffix))
-    if correction is not None:
-        if "source_binding" in correction:
-            preceding = _preceding_image_request(root, pack, slot_id)
-            original = images.image_call_status(root, correction["source_binding"].get("call_id"))
-            preceding_digest = images.image_request_digest(preceding["packet"], slot_id,
-                preceding["arguments"], output_path=preceding["output_path"])
-            if (preceding_digest != correction["preceding_request_sha256"]
-                    or original["request_sha256"] != preceding_digest
-                    or original["state"] != "imported" or original["slot_id"] != slot_id
-                    or original["output"]["sha256"] != correction["source_sha256"]):
-                raise ValueError("preceding request differs from the retained original image call")
-        prompt = correction["replacement_prompt"] if "replacement_prompt" in correction else prompt + "\nTargeted correction: " + correction["changes"]
-        output = correction["output_path"]
     previous = pack["image_packets"].get(slot_id)
     if previous and previous["source_bindings"] == bindings and previous["arguments"]["prompt"] == prompt and previous["output_path"] == output:
-        if correction is not None and previous.get("correction_intent") != correction:
-            raise ValueError("retained targeted image correction is stale or changed")
         return deepcopy(previous)
     packet = images.build_preboard_packet(root, story=pack["specification"]["story"], approval=pack["specification"]["approval"],
         references=refs, board_slots=pack["preboard_packet"]["board_slots"])
@@ -716,35 +657,29 @@ def prepare_image_request(project_dir, slot_id, *, correction=None, replace_exce
         arguments["referenced_image_paths"] = [str(_inside(root, r["path"])) for r in refs]
     record = {"slot_id": slot_id, "packet": packet, "arguments": arguments, "output_path": output,
         "source_bindings": bindings, "request_sha256": images.image_request_digest(packet, slot_id, arguments, output_path=output)}
-    if correction is not None:
-        record["correction_intent"] = deepcopy(correction)
     if previous:
         pack["image_packet_history"].append(previous)
     pack["image_packets"][slot_id] = record
-    _event(pack, "image_packet_ready", slot_id=slot_id, request_sha256=record["request_sha256"],
-        **({"correction_intent": deepcopy(correction)} if correction is not None else {}))
+    _event(pack, "image_packet_ready", slot_id=slot_id, request_sha256=record["request_sha256"])
     _save(root, pack)
     return deepcopy(record)
 
 
-def reserve_board_image(project_dir, slot_id, *, scope_id, call_id=None, correction=None,
-                        replace_exception_call_id=None, images):
+def reserve_board_image(project_dir, slot_id, *, scope_id, call_id=None, images):
     root = Path(project_dir).resolve()
     pack = load_board_pack(root)
     _reject_upstream_slot(pack["prompt_pack"][slot_id])
     binding = pack["board_bindings"].get(slot_id)
-    if binding and correction is None and replace_exception_call_id is None and _binding_current(root, pack, slot_id):
+    if binding and _binding_current(root, pack, slot_id):
         if call_id and call_id == binding.get("call_id"):
             original = images.image_call_status(root, call_id)
             if original["scope_id"] != scope_id:
                 raise ValueError("existing image call binds another exact scope")
             return original
-        raise ValueError("current board bytes are reused; a new call needs an essential targeted correction")
-    request = prepare_image_request(project_dir, slot_id, correction=correction,
-        replace_exception_call_id=replace_exception_call_id, images=images)
+        raise ValueError("current board bytes are reused; one-shot production makes no second image request")
+    request = prepare_image_request(project_dir, slot_id, images=images)
     return images.reserve_native_image(project_dir, request["packet"], slot_id, request["arguments"],
-        output_path=request["output_path"], scope_id=scope_id, call_id=call_id,
-        replace_exception_call_id=replace_exception_call_id)
+        output_path=request["output_path"], scope_id=scope_id, call_id=call_id)
 
 
 def motion_reference_alias(spec, aid, shot_id):
@@ -855,9 +790,24 @@ def bind_imported_board(project_dir, slot_id, call_id, *, images):
     if pack["board_bindings"].get(slot_id) != binding:
         pack["board_bindings"][slot_id] = binding
         _event(pack, "board_promoted", slot_id=slot_id, call_id=call_id, sha256=binding["sha256"])
+        _record_mechanical_observation(pack, slot_id, binding)
         _save(root, pack)
     _promote_motion_bindings(root, pack)
     return deepcopy(binding)
+
+
+def _record_mechanical_observation(pack, slot_id, binding):
+    """One-shot readiness is mechanical: retain an explicit ``unknown`` record
+    of the exact imported bytes in every declared role. It never claims a
+    semantic pass; a later designated review supersedes it for disclosure."""
+    roles = _roles(pack, slot_id)
+    if not roles or any(_observation(pack, slot_id, role) for role in roles):
+        return
+    pack["observations"].append({"asset_id": slot_id, "roles": roles, "origin": "mechanical_image_import",
+        "review": {"review_id": "mechanical-import-" + binding["sha256"][:16], "reviewer": "mechanical_image_import",
+            "story_revision": pack["story_revision"], "subject_sha256": binding["sha256"], "status": "unknown",
+            "predicates": [{"name": "semantic_review", "status": "unknown", "severity": "cosmetic",
+                "evidence": "not reviewed; exact imported bytes from canonical call " + binding["call_id"]}]}})
 
 
 @_board_transaction
@@ -894,60 +844,6 @@ def record_board_review(project_dir, asset_id, review, *, roles, started_at=None
     _save(root, pack)
     _promote_motion_bindings(root, pack)
     return deepcopy(observation)
-
-
-def board_correction_intent(project_dir, slot_id, *, changes, replacement_prompt=_NO_REPLACEMENT,
-                            reference_ids=None):
-    """Describe an essential correction; a supplied complete prompt replaces verbatim.
-
-    Omitted replacement_prompt retains the original append-only intent contract.
-    Both forms bind the authored prompt, current review/source and preceding
-    request. Optional ordered sources preserve the base sources; standing scope
-    admission separately checks their immutable inventory and transfer authority.
-    """
-    pack = load_board_pack(project_dir)
-    if slot_id not in pack["prompt_pack"]:
-        raise ValueError("a reused reference needs an explicit missing/changed image slot")
-    observation = _correction_observation(pack, slot_id)
-    failed = [p["name"] for p in observation["review"]["predicates"] if p.get("severity") == "critical" and p["status"] == "fail"] if observation else []
-    if not failed or not isinstance(changes, str) or not changes.strip():
-        raise ValueError("targeted correction needs a named critical failed predicate and exact changes")
-    source = pack["board_bindings"][slot_id]
-    if not _binding_current(Path(project_dir).resolve(), pack, slot_id):
-        raise ValueError("targeted correction needs current source bytes and bindings")
-    node = pack["prompt_pack"][slot_id]
-    provenance = {}
-    # Legacy exact-scope append corrections can target manually bound/CLI boards.
-    # Standing admission requires the complete native proof below separately.
-    if replacement_prompt is not _NO_REPLACEMENT or (source.get("origin") == "canonical_image_import"
-            and source.get("route") == "native_imagegen" and source.get("call_id")):
-        preceding = _preceding_image_request(Path(project_dir).resolve(), pack, slot_id)
-        provenance = {"original_prompt": node["prompt"],
-            "original_prompt_sha256": _digest(node["prompt"]), "specification_sha256": pack["specification_sha256"],
-            "source_binding": deepcopy(source), "review_sha256": _digest(observation["review"]),
-            "preceding_request_sha256": preceding["request_sha256"],
-            "preceding_request": {key: deepcopy(preceding[key]) for key in ("arguments", "output_path", "source_bindings", "request_sha256")},
-            "preceding_correction_intent": deepcopy(preceding.get("correction_intent"))}
-    if replacement_prompt is not _NO_REPLACEMENT:
-        if not isinstance(replacement_prompt, str) or not replacement_prompt.strip():
-            raise ValueError("replacement_prompt must be a nonempty complete prompt")
-        provenance["replacement_prompt"] = replacement_prompt
-    if reference_ids is not None:
-        base = node.get("reference_ids", []) + node.get("image_dependencies", [])
-        if (not isinstance(reference_ids, list) or not reference_ids
-                or any(not isinstance(item, str) or not item for item in reference_ids)
-                or len(set(reference_ids)) != len(reference_ids)
-                or [item for item in reference_ids if item in base] != base
-                or slot_id in reference_ids):
-            raise ValueError("correction references must preserve ordered base sources without duplicates or self-reference")
-        if any(_source_depends_on_slot(pack, source_id, slot_id) for source_id in reference_ids if source_id not in base):
-            raise ValueError("correction reference transitively depends on the corrected slot")
-        provenance["reference_ids"] = deepcopy(reference_ids)
-    suffix = _digest({"source": source["sha256"], "review": observation["review"], "changes": changes, **provenance})[:16]
-    output = Path(pack["prompt_pack"][slot_id]["output_path"])
-    return {"slot_id": slot_id, "source_sha256": source["sha256"], "review_id": observation["review"]["review_id"],
-        "failed_predicates": failed, "changes": changes, "output_path": str(output.with_name(output.stem + "-correction-" + suffix + output.suffix)),
-        "authority": "exact approved image scope and remaining canonical allowance required", **provenance}
 
 
 def review_observation_transfer(project_dir):

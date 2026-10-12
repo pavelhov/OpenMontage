@@ -333,9 +333,9 @@ def test_fixture_source_alone_cannot_skip_frozen_preparation(tmp_path, monkeypat
 def test_grok_historical_source_survives_later_shot_asset_materialization(production, monkeypatch, tmp_path):
     import copy
     from lib import production_draft as draft
-    from lib.production_provenance import validate_creator_repair_source_provenance
+    from lib.production_provenance import historical_source_provenance
     from tests.integration.test_first_pass_workflow import sign_planning_reviews
-    from tests.lib.test_production_repair_batches import enable
+    from tests.lib.test_first_cut_historical_mcp import enable_first_cut
 
     aid, directory, output = attempt(production)
     contract = production.contract
@@ -353,7 +353,7 @@ def test_grok_historical_source_survives_later_shot_asset_materialization(produc
     later["asset_ids"].append(board["id"])
     sign_planning_reviews(contract)
     production.persist_contract()
-    proof = validate_creator_repair_source_provenance(
+    proof = historical_source_provenance(
         production.root,
         aid,
         shot_id="entry",
@@ -363,7 +363,7 @@ def test_grok_historical_source_survives_later_shot_asset_materialization(produc
     assert proof["historical_source_only"]
     with pytest.raises(ProductionGovernanceError, match="planning semantics"):
         check(production, aid, output)
-    enable(production.root)
+    enable_first_cut(production.root)
     monkeypatch.setattr(draft, "_probe", lambda path: {"duration_seconds": 8})
     row = next(row for row in draft.first_cut_candidates(production.root) if row["shot_id"] == "entry")
     assert row["status"] == "candidate" and row["strict_selected"] is False
@@ -375,7 +375,7 @@ def test_grok_historical_source_survives_later_shot_asset_materialization(produc
 )
 def test_grok_historical_source_rejects_queried_shot_or_global_drift(production, change):
     import copy
-    from lib.production_provenance import validate_creator_repair_source_provenance
+    from lib.production_provenance import historical_source_provenance
     from tests.integration.test_first_pass_workflow import sign_planning_reviews
 
     aid, directory, output = attempt(production)
@@ -406,7 +406,7 @@ def test_grok_historical_source_rejects_queried_shot_or_global_drift(production,
         asset["review"]["reviewer"] = "Changed review"
     production.persist_contract()
     with pytest.raises(ProductionGovernanceError):
-        validate_creator_repair_source_provenance(
+        historical_source_provenance(
             production.root,
             aid,
             shot_id="entry",

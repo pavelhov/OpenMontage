@@ -411,7 +411,7 @@ def test_incomplete_entry_blocks_interior_without_another_motion_call(production
     assert 'interior' not in load_selected_attempts(p.root)
 
 
-def test_replacing_upstream_requires_fresh_dependent_review(production):
+def test_replacement_refused_preserves_original_dependent_binding(production):
     p = production
     first = p.generate('entry'); assert first.success, first.error
     p.select('entry', first)
@@ -426,16 +426,17 @@ def test_replacing_upstream_requires_fresh_dependent_review(production):
     repair['requests'] = {'entry':planned_request_digest(repair_inputs, project_dir=p.root)}
     repair['attempts_per_shot'] = {'entry':1}
     save(p.root/'production_scopes.json', {'version':'1.0','scopes':[p.scope,repair]})
-    second = p.selector.execute(repair_inputs); assert second.success, second.error
-    p.select('entry', second)
+    retained = {path: path.read_bytes() for path in (p.root/'production_attempts').rglob('*') if path.is_file()}
+    with pytest.raises(ProductionGovernanceError, match='approval phase'):
+        p.selector.execute(repair_inputs)
+    assert len(p.transport.native_requests) == 1
     assert p.contract['shots'][1]['upstream'] == original_binding
-    with pytest.raises(ProductionGovernanceError, match='selected attempt changed|selected hash changed|selected review changed'):
-        p.generate('interior')
-    assert len(p.transport.native_requests) == 2
-    p.bind_upstream('interior')
+    assert load_selected_attempts(p.root)['entry']['attempt_id'] == first.data['production_attempt_id']
+    assert all(path.read_bytes() == data for path, data in retained.items())
+    assert not Path(repair_inputs['output_path']).exists()
     interior = p.generate('interior')
     assert interior.success, interior.error
-    assert len(p.transport.native_requests) == 3
+    assert len(p.transport.native_requests) == 2
 
 
 def test_timeout_file_cannot_be_reused_but_original_session_can_reconcile(production):
@@ -617,7 +618,7 @@ def test_interrupted_native_image_recovery_uses_real_adapter_receipt(production,
     assert len(native_calls)==1 and not p.transport.native_requests
 
 
-def test_native_terminal_failure_reconciliation_allows_exact_motion_repair(production):
+def test_native_terminal_failure_reconciliation_does_not_unlock_replacement(production):
     p=production
     p.transport.timeout_next=True
     original=p.generate('entry')
@@ -653,13 +654,12 @@ def test_native_terminal_failure_reconciliation_allows_exact_motion_repair(produ
     inputs['output_path']=str(p.root/'assets/video/entry-approved-repair.mp4')
     repair['requests']={'entry':planned_request_digest(inputs,project_dir=p.root)}
     save(p.root/'production_scopes.json',{'version':'1.0','scopes':[p.scope,repair]})
-    result=p.selector.execute(inputs)
-    assert result.success,result.error
-    assert len(p.transport.native_requests)==2
-    assert read(p.root/'production_attempts'/result.data['production_attempt_id']/'request.json')['scope_attempt_index']==0
-    with pytest.raises(ProductionGovernanceError,match='exists|exhausted'):
+    retained = {path: path.read_bytes() for path in (p.root/'production_attempts'/aid).rglob('*') if path.is_file()}
+    with pytest.raises(ProductionGovernanceError, match='approval phase'):
         p.selector.execute(inputs)
-    assert len(p.transport.native_requests)==2
+    assert len(p.transport.native_requests) == 1
+    assert not Path(inputs['output_path']).exists()
+    assert all(path.read_bytes() == data for path, data in retained.items())
 
 
 def test_raw_native_return_recovers_after_output_snapshot_io_failure(production,monkeypatch):
@@ -683,7 +683,7 @@ def test_raw_native_return_recovers_after_output_snapshot_io_failure(production,
     assert len(p.transport.native_requests)==1
 
 
-def test_multi_shot_repair_batch_preserves_serial_bindings_and_exact_scope(production):
+def test_multi_shot_repair_batch_refused_preserves_original_bindings(production):
     p=production
     p.complete_shots()
     selected=load_selected_attempts(p.root)
@@ -697,12 +697,12 @@ def test_multi_shot_repair_batch_preserves_serial_bindings_and_exact_scope(produ
         repair['requests'][sid]=planned_request_digest(p.inputs[sid],project_dir=p.root)
     save(p.root/'production_scopes.json',{'version':'1.0','scopes':[p.scope,repair]})
     frozen_scope=(p.root/'production_scopes.json').read_bytes()
-    first=p.generate('entry');assert first.success,first.error
-    p.select('entry',first)
-    with pytest.raises(ProductionGovernanceError,match='selected attempt changed|selected hash changed|selected review changed'):
-        p.generate('interior')
-    p.bind_upstream('interior')
-    second=p.generate('interior');assert second.success,second.error
-    p.select('interior',second)
-    assert len(p.transport.native_requests)==5
-    assert (p.root/'production_scopes.json').read_bytes()==frozen_scope
+    retained = {path: path.read_bytes() for path in (p.root/'production_attempts').rglob('*') if path.is_file()}
+    for sid in ('entry', 'interior'):
+        with pytest.raises(ProductionGovernanceError, match='approval phase'):
+            p.generate(sid)
+        assert not Path(p.inputs[sid]['output_path']).exists()
+    assert load_selected_attempts(p.root) == selected
+    assert len(p.transport.native_requests) == 3
+    assert (p.root/'production_scopes.json').read_bytes() == frozen_scope
+    assert all(path.read_bytes() == data for path, data in retained.items())

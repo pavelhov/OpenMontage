@@ -3,9 +3,9 @@
 Strict enrollment is explicit in project.json. Legacy diagnostics are untouched.
 Approval sidecar production_scopes.json contains version=1.0 and scopes with:
 {id, status:approved, approved_by, evidence:{path,sha256}, project_id,
-story_revision, phase:first_pass|repair|image|audio, provider, requests:{shot_id:
-request_digest}, attempts_per_shot:{shot_id:int}, approval_plan_sha256 (motion),
-replaces_attempt_ids (repair)}. An approval is evidence, never a spending ceiling.
+story_revision, phase:first_pass|image|audio, provider, requests:{shot_id:
+request_digest}, attempts_per_shot:{shot_id:int}, approval_plan_sha256 (motion)}.
+Each planned clip has exactly one original request; nothing is resubmitted.
 
 Call inputs carry governance={scope_id,shot_id}; planned_request_digest computes
 a concrete approval binding. planned_request_template freezes static inputs while
@@ -852,7 +852,7 @@ def preflight(tool, inputs, *, _local_continuation=None):
     if not marker.get('story_revision') or scope.get('story_revision') != marker['story_revision'] or scope.get('project_id') != marker.get('project_id'):
         _fail('approval scope has stale project/story binding')
     phase = scope.get('phase')
-    if phase not in ({'first_pass','repair'} if kind == 'motion' else {kind}):
+    if phase not in ({'first_pass'} if kind == 'motion' else {kind}):
         _fail('approval phase does not authorize this media kind')
     provider = scope.get('provider')
     if not provider or (tool.provider != 'selector' and provider != tool.provider):
@@ -872,14 +872,9 @@ def preflight(tool, inputs, *, _local_continuation=None):
             except ValueError:
                 _fail('OpenArt MCP requires its distinct retained billing authorization ID')
     attempts = _attempts(root)
-    # A carried scope shares quota lineage with its source first-pass scope so a
-    # carry-forward can never reset a shot already consumed under the original.
     lineage = {scope_id}
-    carried = scope.get('carried_from')
-    if carried is not None:
-        if not isinstance(carried, dict) or not isinstance(carried.get('scope_id'), str):
-            _fail('malformed carried_from')
-        lineage.add(carried['scope_id'])
+    if scope.get('carried_from') is not None:
+        _fail('carried scopes are retired; each planned clip has one original request')
     scope_used = sum(item['scope_id'] in lineage and item['shot_id'] == shot_id for item in attempts)
     # The reserved occurrence is counted permanently; only its frozen request
     # index is replayed instead of selecting a new batch entry.
@@ -914,25 +909,7 @@ def preflight(tool, inputs, *, _local_continuation=None):
         effective = contract
         local_applicable = (_local_continuation is not None
             and _same_original_local_grok_applicability(root, _local_continuation))
-        if kind == 'motion' and not local_applicable:
-            # A prior-plan scope continues only through an authorized revision
-            # that names this exact scope (and its carry lineage); upstream
-            # selections of revised shots must be fresh reviews of the revision.
-            from lib.production_continuity import (revision_chain, undo_revision, require_retained_scope,
-                                                   require_revised_upstream)
-            chain = revision_chain(root, contract)
-            if chain:
-                require_revised_upstream(chain, contract, shot_id, load_selected_attempts(root))
-            for revision in chain:
-                if scope.get('approval_plan_sha256') == approval_plan_digest(effective):
-                    break
-                require_retained_scope(revision, scope, shot_id)
-                effective = undo_revision(effective, revision)
-        if carried is not None:
-            from lib.production_continuity import validate_carried_scope
-            if validate_carried_scope(root, scope, effective, scopes.get('scopes', [])) != carried['scope_id']:
-                _fail('carried scope lineage differs')
-        elif not local_applicable and scope.get('approval_plan_sha256') != approval_plan_digest(
+        if not local_applicable and scope.get('approval_plan_sha256') != approval_plan_digest(
                 effective, shot_id if scope.get('planning_mode') == 'shot_local_v1' else None):
             _fail('approval scope has a stale contract binding')
         if 'derived_from_policy' in scope:
@@ -968,21 +945,10 @@ def preflight(tool, inputs, *, _local_continuation=None):
         _fail('an original job is uncertain; reconcile it before another attempt')
     if any(item.get('provider') == 'openart_mcp' and _state(root, item)['status'] in {'prepared', 'submitted', 'awaiting_original_result'} for item in previous):
         _fail('an original OpenArt MCP job is reserved or pending; resolve that original before another attempt')
-    if phase == 'first_pass' and previous:
-        _fail('first-pass ceiling never authorizes a corrective reroll; approve an exact repair scope')
-    if phase == 'repair':
-        replaces = scope.get('replaces_attempt_ids')
-        authorized_shots = set(scope.get('requests', {})) & set(scope.get('attempts_per_shot', {}))
-        eligible = {item['attempt_id'] for item in attempts if item['shot_id'] in authorized_shots
-                    and classify_production_kind(item) == kind}
-        if (not isinstance(replaces, list) or not replaces or not set(replaces).issubset(eligible)
-                or not set(replaces).intersection(item['attempt_id'] for item in previous)):
-            _fail('repair scope must name existing exact attempts to replace')
-        if scope.get('repair_basis') == 'creator_batch':
-            from lib.production_repair_batches import validate_creator_repair_intent
-            validate_creator_repair_intent(root, scope.get('creator_repair'), shot_id=shot_id,
-                provider=provider, model=_clean(inputs).get('model'),
-                replaces_attempt_ids=scope.get('replaces_attempt_ids'), inputs=inputs)
+    if scope.get('replaces_attempt_ids'):
+        _fail('repair scopes are retired; each planned clip has one original request')
+    if kind == 'motion' and previous:
+        _fail('the shot already has its one original request; it is never resubmitted')
     from lib import episode_production_controls as episode_controls
     try:
         controls = episode_controls.effective_controls(root) if kind == 'motion' else None
@@ -1011,8 +977,7 @@ def preflight(tool, inputs, *, _local_continuation=None):
         try:
             episode_controls.require_admission(
                 root, shot_id=shot_id, provider=provider, model=_clean(inputs).get('model'), purpose=purpose,
-                replaces_attempt_ids=tuple(scope.get('replaces_attempt_ids') or ()), exclude_attempt_id=resumed,
-                repair_basis=scope.get('repair_basis', 'critical_review'), creator_repair=scope.get('creator_repair'))
+                exclude_attempt_id=resumed)
         except episode_controls.EpisodeControlsError as exc:
             _fail(str(exc))
     if any(_inside(item.get('submitted_inputs', {}).get('output_path', ''), root) == output
@@ -1307,7 +1272,7 @@ def _same_original_local_grok_applicability(root, request, *, retained_continuat
     eligibility remain mandatory. Post-dispatch use first validates the immutable
     once-only claim before treating its later genuine session as attributable.
     """
-    from lib import production_continuity as continuity
+    from lib.production_provenance import planning_closure
     directory = _inside(Path('production_attempts') / request['attempt_id'], root)
     if _read(directory / 'request.json') != request:
         _fail('local continuation request evidence changed')
@@ -1336,7 +1301,7 @@ def _same_original_local_grok_applicability(root, request, *, retained_continuat
         shots = [s for s in contract.get('shots', []) if s.get('id') == sid]
         if len(shots) != 1:
             _fail('local continuation own shot missing or duplicated')
-        closure = continuity._closure(contract, shots[0])
+        closure = planning_closure(contract, shots[0])
         plan = copy.deepcopy(contract)
         plan.pop('project_review', None)
         plan['shots'] = [copy.deepcopy(s) if s['id'] == sid else {'id': s['id']}
@@ -1592,6 +1557,10 @@ def _execute_governed(tool, inputs, invoke):
     import time
     from tools import _openart_cli as cli
     dispatch_deadline = time.monotonic()+cli.MAX_TIMEOUT
+    # Retained two-phase check (KTD3): the unlocked preflight rejects invalid
+    # requests leaving the project byte-identical (no lock file) and supplies
+    # the OpenArt CLI quote read outside the lock; the locked preflight is the
+    # authoritative drift recheck of sources, authority and counters.
     checked = preflight(tool, inputs)
     if not checked['governed']:
         return invoke(inputs)
@@ -1605,6 +1574,8 @@ def _execute_governed(tool, inputs, invoke):
         openart_prepared = credit_dispatch.prepare_dispatch(inputs, checked, session_id, dispatch_deadline)
     with _lock(root):
         checked = preflight(tool, inputs)  # allowance and source hashes rechecked under lock
+        if not checked.get('governed'):
+            _fail('strict project dispatch requires governed authority')
         openart_binding = None
         if checked.get('openart'):
             from lib import openart_jobs as jobs
@@ -2554,13 +2525,6 @@ def record_selection(project_dir, shot_id, selection):
                 or any(item['status'] != 'pass' and not ((audio_provisional and name == 'speaker_source' and item['status'] == 'unknown') or (name == accepted and item['status'] == 'fail'))
                        for name, item in predicates.items() if not (name == 'speaker_source' and audio_review_disabled(root)) and (item.get('severity','critical') == 'critical' or name in required))):
             _fail('selection has missing/failed critical predicates')
-        # A shot changed by an authorized planning revision needs a fresh
-        # selection bound to that revision and the current contract bytes.
-        from lib.production_continuity import revision_chain, require_selection_binding
-        current_contract = load_shot_contract(root)
-        chain = revision_chain(root, current_contract)
-        if chain:
-            require_selection_binding(chain, selection, current_contract, shot_id)
         selected = load_selected_attempts(root)
         selected[shot_id] = copy.deepcopy(selection)
         history = root / 'production_selections'
@@ -2580,7 +2544,7 @@ def record_selection(project_dir, shot_id, selection):
 
 
 def record_rejection(project_dir, attempt_id, review):
-    """Preserve a named failed review; a rejection never grants repair authority."""
+    """Preserve a named failed review; a rejection never grants new generation."""
     from schemas.artifacts import load_schema
     from jsonschema import Draft202012Validator
     root = Path(project_dir).resolve()
@@ -2591,7 +2555,7 @@ def record_rejection(project_dir, attempt_id, review):
         # MCP originals live in the connector journal; the review binds to the frozen
         # authority scope and the intact collected original, never a fresh request.
         from lib import openart_mcp_jobs as mcp_jobs
-        from lib.production_provenance import validate_creator_repair_source_provenance
+        from lib.production_provenance import historical_source_provenance
         from lib.production_request import digest as request_digest
         with _lock(root):
             frozen = mcp_jobs.frozen_request(root, attempt_id)
@@ -2603,7 +2567,7 @@ def record_rejection(project_dir, attempt_id, review):
             state = load_attempt_result(root, attempt_id)
             if state['status'] != 'generated':
                 _fail('rejection requires a named failed review bound to the generated output')
-            validate_creator_repair_source_provenance(root, attempt_id, shot_id=authority['shot_id'],
+            historical_source_provenance(root, attempt_id, shot_id=authority['shot_id'],
                 story_revision=scope['story_revision'], expected_output=state['output'])
             invalid = list(validator.iter_errors(review))
             if (invalid or review.get('status') != 'fail'
@@ -2769,12 +2733,52 @@ def resume_original_attempt(project_dir, attempt_id, *, request_sha256, dry_run=
     return jobs.resume_original(root, attempt_id, request_sha256=request_sha256)
 
 
-ACTION_KINDS = frozenset({'restore_derived_views', 'bind_selected_upstream', 'prepare_board_image', 'prepare_board_correction', 'begin_native_image',
-    'promote_imported_board',
-    'receive_native_image', 'review_board', 'review_planning', 'prepare_motion', 'review_selection',
+ACTION_KINDS = frozenset({'restore_derived_views', 'prepare_board_image', 'begin_native_image',
+    'promote_imported_board', 'receive_native_image', 'prepare_motion',
     'collect_grok_original', 'collect_openart_original', 'begin_openart_original',
     'receive_openart_original', 'poll_openart_original', 'download_openart_original',
     'compose_cut', 'complete', 'blocked'})
+
+
+def _reply_unavailable_action(root, aid, binding, operation):
+    return _production_action(root, 'receive_openart_original', subject=aid, binding=binding,
+                              inputs=operation, host=True, reason=operation['reason'])
+
+
+def _recoverable_original_action(root, aid):
+    """Exact receive replay for one begun MCP original whose reply is not retained."""
+    from lib import openart_mcp_jobs as jobs
+    state = jobs.resume_original(root, aid)
+    operation = state['next_action']
+    if operation['action'] != 'blocked_original_host_reply_unavailable':
+        return None
+    return _reply_unavailable_action(root, aid, {'attempt_id': aid, 'request_sha256': state['request_sha256'],
+                                                 'state_sha256': _digest(state)}, operation)
+
+
+def _native_original_action(root, call):
+    unavailable = bool(call.get('host_exception') and not call.get('host_receipt'))
+    inputs = {'call_id': call['call_id'], 'original_request_sha256': call['request_sha256'],
+              'supplemental_to': (call.get('host_receipt') or {}).get('sha256')}
+    reason = 'Retrieve and retain the exact original host return; the begun call is never emitted again.'
+    if unavailable:
+        reason = 'Consumed native image raised a host exception without a retained reply; retrieve its exact original return and replay receive. Never begin again.'
+        inputs.update(action='blocked_original_host_reply_unavailable', slot_id=call['slot_id'],
+                      counted_original=True, reason=reason)
+    return _production_action(root, 'receive_native_image', subject=call['call_id'],
+        binding={'call_id': call['call_id'], 'request_sha256': call['request_sha256'],
+                 'state': call['state'], 'scope_sha256': call['scope_sha256'],
+                 'host_receipt': call.get('host_receipt'), 'host_exception': call.get('host_exception')},
+        inputs=inputs, host=True, reason=reason)
+
+
+def _recoverable_native_original_action(root, call_id):
+    from lib import production_images as images
+    call = images.image_call_status(root, call_id)
+    if (call['state'] not in images.PENDING or not call.get('host_exception')
+            or call.get('host_receipt')):
+        return None
+    return _native_original_action(root, call)
 
 
 def _production_action(root, kind, *, subject, binding, inputs=None, reason=None, host=False):
@@ -2829,330 +2833,6 @@ def _validated_upstream_binding(root, contract, shot_id, upstream_id, selection)
     return binding
 
 
-def _selected_upstream_transition(root, contract, shot_id, selected):
-    """Pure prospective observation plan; no authority or review is created."""
-    from lib import production_autonomy as autonomy
-    from lib.shot_contract import shot_local
-    if not shot_local(contract):
-        return None
-    shot = next(s for s in contract['shots'] if s['id'] == shot_id)
-    reuse = _upstream_reuse_slots(root, shot_id)
-    if not any(set(item) == {'shot_id'} for item in shot['upstream']) and not reuse:
-        return None
-    policy, policy_sha, decision_id = autonomy.require_active_policy(root, shot_id=shot_id)
-    autonomy.contract_delta(root, shot_id, autonomy.current_projection(root, shot_id), policy=policy)
-    candidate = copy.deepcopy(contract)
-    target = next(s for s in candidate['shots'] if s['id'] == shot_id)
-    for index, item in enumerate(shot['upstream']):
-        current = _validated_upstream_binding(root, contract, shot_id, item['shot_id'], selected.get(item['shot_id']))
-        if set(item) != {'shot_id'} and item != current:
-            _fail('materialized upstream selection is stale; explicit rebinding is required')
-        target['upstream'][index] = current
-    binding = {'contract_sha256': contract_digest(contract),
-        'selected_sha256': _digest(selected), 'policy_sha256': policy_sha, 'decision_id': decision_id,
-        'upstream': copy.deepcopy(target['upstream'])}
-    boards_bound = {}
-    for slot, source_shot in reuse.items():
-        item = next((u for u in target['upstream'] if u['shot_id'] == source_shot), None)
-        if item is None:
-            _fail('upstream reuse board lacks its declared dependency')
-        boards_bound[slot] = {**item, 'path': selected[source_shot]['outgoing_frame']['path']}
-    if boards_bound:
-        # Present only for declared reuse boards; ordinary action bytes unchanged.
-        binding['reuse_boards'] = boards_bound
-    return {'contract': candidate, 'binding': binding}
-
-
-def _upstream_reuse_slots(root, shot_id):
-    """Declared reuse slots of a shot still lacking their selected-frame binding."""
-    from lib import production_boards as boards
-    if not (root / boards.ARTIFACT).exists():
-        return {}
-    pack = boards.load_board_pack(root)
-    return {slot: node['upstream_source']['shot_id'] for slot, node in pack['prompt_pack'].items()
-            if node['shot_id'] == shot_id and 'upstream_source' in node and slot not in pack['board_bindings']}
-
-
-def _bind_selected_upstream(root, action):
-    """Publish only the still-current mechanically derived contract observation."""
-    import os
-    from lib import production_boards as boards
-    def publish(root):
-        if action != next_production_action(root):
-            _fail('upstream production action is stale, foreign or modified')
-        planned = _selected_upstream_transition(root, load_shot_contract(root), action['subject'],
-            load_selected_attempts(root))
-        if planned is None or action['binding'] != _production_action(root, 'bind_selected_upstream',
-                subject=action['subject'], binding=planned['binding'])['binding']:
-            _fail('upstream production action binding changed')
-        path = _artifact_path(root, 'shot_contract.json')
-        legacy = root / 'shot_contract.json'
-        if path != legacy and legacy.exists() and _read(legacy) != planned['contract']:
-            _fail('legacy canonical upstream artifact conflict')
-        if _read(path) != planned['contract']:
-            temporary = path.with_name('.upstream-contract-' + str(uuid.uuid4()) + '.tmp')
-            try:
-                with temporary.open('x') as stream:
-                    json.dump(planned['contract'], stream, indent=2, allow_nan=False)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                temporary.replace(path)
-            finally:
-                temporary.unlink(missing_ok=True)
-        reuse = planned['binding'].get('reuse_boards')
-        if reuse:
-            # Same board transaction; replay after the contract write rediscovers
-            # the missing binding. No review is written or inherited.
-            pack = boards.load_board_pack(root)
-            if any(boards.bind_upstream_board_locked(root, pack, slot, selection)
-                   for slot, selection in reuse.items()):
-                boards._save(root, pack)
-                boards._promote_motion_bindings(root, pack)
-    with _lock(root):
-        if (root / boards.ARTIFACT).exists():
-            boards._board_transaction(publish)(root)
-        else:
-            publish(root)
-
-
-def _critical_repair(root, row):
-    """Read-only: the one bounded same-route repair the existing owners admit now.
-
-    Returns repair metadata for a candidate whose current retained review names a
-    failed critical predicate, or None. Eligibility reuses the existing repair
-    evidence, policy caps, cross-provider and episode-control admission checks;
-    cosmetic/unknown-only findings, exhausted caps or no active policy keep None.
-    """
-    from lib import production_autonomy as autonomy
-    from lib import episode_production_controls as episode_controls
-    if row.get('review') != 'fail' or not row.get('attempt_id'):
-        return None
-    if not any(isinstance(f, dict) and f.get('status') == 'fail' and f.get('severity', 'critical') == 'critical'
-               for f in row.get('findings') or []):
-        return None
-    sid, aid = row['shot_id'], row['attempt_id']
-    try:
-        attempts = _attempts(root)
-        request = next(a for a in attempts if a['attempt_id'] == aid)
-        # Already replaced by a dispatched repair: the repair owns the shot now.
-        if any(aid in (_attempt_scope(a).get('replaces_attempt_ids') or []) for a in attempts):
-            return None
-        policy, _, _ = autonomy.require_active_policy(root, shot_id=sid)
-        autonomy._validate_repair_evidence(root, sid, [aid])
-        if autonomy.cross_provider_block(root, sid):
-            return None
-        # A retained, unused exact repair scope (interrupted before reservation)
-        # is reused by derive_scope(reuse_undispatched=True); it is that same
-        # slot, never a further one, so it does not count against itself here.
-        retained = _undispatched_repair_scope(root, sid, aid)
-        autonomy.check_caps(policy, sid, autonomy.root_attempt_counts(root, policy,
-            exclude_scope_id=retained['id'] if retained else None), 'repair', root=root)
-        provider = (request.get('scope') or {}).get('provider') or request.get('provider')
-        model = (request.get('submitted_inputs') or {}).get('model')
-        if retained is not None and retained.get('provider') != provider:
-            return None
-        decision = episode_controls.generation_admission(root, shot_id=sid, provider=provider, model=model,
-            purpose='repair', replaces_attempt_ids=(aid,))
-    except (StopIteration, ValueError, KeyError, TypeError, OSError, ProductionGovernanceError,
-            episode_controls.EpisodeControlsError):
-        return None
-    if not decision['admitted']:
-        return None
-    return {'replaces_attempt_ids': [aid], 'output_sha256': row['output']['sha256'],
-            'provider': provider, 'model': model}
-
-
-def _attempt_scope(attempt):
-    """Embedded scope of a journal row or an OpenArt MCP row's scope snapshot."""
-    scope = attempt.get('scope')
-    if not isinstance(scope, dict):
-        scope = attempt.get('scope_snapshot')
-    return scope if isinstance(scope, dict) else {}
-
-
-def _undispatched_repair_scope(root, shot_id, original):
-    """The single retained, unused derived repair scope replacing ``original``."""
-    from lib.production_repair_batches import closed_unsubmitted_creator_scope
-    path = root / 'production_scopes.json'
-    if not path.exists():
-        return None
-    used = {a['scope_id'] for a in _attempts(root)}
-    pending = [s for s in _read(path).get('scopes', []) if s['id'] not in used
-               and shot_id in s.get('requests', {}) and 'derived_from_policy' in s
-               and not closed_unsubmitted_creator_scope(root, s)]
-    if (len(pending) == 1 and pending[0].get('phase') == 'repair'
-            and pending[0].get('replaces_attempt_ids') == [original]):
-        return pending[0]
-    return None
-
-
-def _retained_replaced_failure(root, request, observed, selected, replaced_by_repair):
-    """An original named by an admitted repair whose exact current bytes carry a
-    retained rejection is already reviewed; it is never re-reviewed or reselected."""
-    from lib.production_draft import _current_findings
-    output = observed.get('output') or {}
-    if request['attempt_id'] not in replaced_by_repair or not output.get('sha256'):
-        return False
-    _, findings = _current_findings(root, request['shot_id'], request['attempt_id'], output['sha256'],
-                                    request.get('story_revision'), selected)
-    return bool(findings)
-
-
-def _rejected_and_superseded(root, request, observed, selected, current_candidates):
-    """Retained failures and exact creator-selected sources need no repeat review
-    while a current selected replacement owns their shot. Original jobs, evidence
-    and counts stay retained; stale replacements never hide required work."""
-    from lib.production_draft import _current_findings
-    sid = request['shot_id']
-    current = selected.get(sid)
-    output = observed.get('output') or {}
-    if not isinstance(current, dict) or current.get('attempt_id') in {None, request['attempt_id']} or not output.get('sha256'):
-        return False
-    row = current_candidates.get(sid) or {}
-    if row.get('status') != 'candidate' or row.get('attempt_id') != current.get('attempt_id'):
-        return False
-    _, findings = _current_findings(root, sid, request['attempt_id'], output['sha256'],
-                                    request.get('story_revision'), selected)
-    if findings:
-        return True
-    if not row.get('strict_selected'):
-        return False
-    from lib import production_repair_batches as repairs
-    from lib.shot_contract import UPSTREAM_PREDICATES, required_review_predicates, audio_review_disabled
-    try:
-        for role in ('output', 'outgoing_frame'):
-            binding = current[role]
-            if file_sha256(_inside(binding['path'], root)) != binding['sha256']:
-                return False
-        review, _ = _current_findings(root, sid, current['attempt_id'], current['output']['sha256'],
-                                    request['story_revision'], selected)
-        if review is None or review['status'] != 'pass':
-            return False
-        predicates = {p['name']: p for p in review['predicates']}
-        required = required_review_predicates(root, UPSTREAM_PREDICATES)
-        if (not required.issubset(predicates)
-                or any(p.get('severity') == 'cosmetic' for name, p in predicates.items() if name in required)
-                or any(p['status'] != 'pass' for name, p in predicates.items()
-                       if not (name == 'speaker_source' and audio_review_disabled(root))
-                       and (name in required or p.get('severity', 'critical') == 'critical'))):
-            return False
-        replacement = next(a for a in _attempts(root) if a['attempt_id'] == current['attempt_id'])
-        scope = replacement.get('scope', replacement.get('scope_snapshot', {}))
-        creator = scope.get('creator_repair')
-        item = repairs.validate_creator_repair_intent(root, creator, shot_id=sid,
-            provider=scope.get('provider'), model=replacement['submitted_inputs'].get('model'),
-            replaces_attempt_ids=[request['attempt_id']])
-        if item['source_output']['sha256'] != output['sha256']:
-            return False
-        status = repairs.repair_batch_status(root, creator['batch_id'])
-        return not status['closed'] and any(
-            i['item_id'] == creator['item_id'] and i['scope_id'] == replacement['scope_id']
-            and i['attempt_id'] == current['attempt_id'] and i['state'] == 'completed'
-            and i['source_attempt_id'] == request['attempt_id'] for i in status['items'])
-    except (ValueError, OSError, KeyError, TypeError, StopIteration):
-        return False
-
-
-def _board_review_work(pack, asset_id, roles, *, boards, motion_roles=()):
-    """Separate missing evidence from a completed failure without judging pixels.
-
-    A named actual failure is retained evidence, not another request for the same
-    review. Missing declared predicates and critical unknowns still need their
-    exact review boundary before correction can be prepared.
-    """
-    from lib.shot_contract import ASSET_PREDICATES
-    node = pack['prompt_pack'].get(asset_id)
-    # A new board carries its node's requirements (legacy nodes use the floor).
-    # Reused references add the motion floor only for currently required roles.
-    required = set(node.get('required_predicates', ASSET_PREDICATES)) if node else set()
-    missing, observations, review_roles = set(), [], []
-    status_required = False
-    blocked = False
-    for role in roles:
-        role_required = required | (ASSET_PREDICATES if role in motion_roles else set())
-        observation = boards._observation(pack, asset_id, role)
-        if observation is None:
-            missing.update(role_required or ASSET_PREDICATES)
-            review_roles.append(role)
-            continue
-        if observation not in observations:
-            observations.append(observation)
-        review = observation['review']
-        predicates = {p['name']: p for p in review['predicates']}
-        role_missing = {name for name in role_required if name not in predicates or predicates[name]['status'] == 'unknown'}
-        role_missing.update(p['name'] for p in predicates.values()
-                            if p.get('severity') == 'critical' and p['status'] == 'unknown')
-        missing.update(role_missing)
-        if role_missing or review['status'] == 'unknown':
-            review_roles.append(role)
-        status_required |= review['status'] == 'unknown'
-        blocked |= bool(boards._review_blockers(pack, asset_id, role))
-    correction_observation = boards._correction_observation(pack, asset_id)
-    failed = ([p['name'] for p in correction_observation['review']['predicates']
-               if p.get('severity') == 'critical' and p['status'] == 'fail']
-              if correction_observation else [])
-    required |= ASSET_PREDICATES if set(roles).intersection(motion_roles) else set()
-    return {'required_predicates': sorted(required), 'missing_predicates': sorted(missing),
-            'failed_predicates': sorted(failed), 'review_status_required': status_required,
-            'observations': observations, 'review_roles': review_roles,
-            'correction_observation': correction_observation, 'blocked': blocked}
-
-
-def _board_between_pending_polls(root, poll_action, pack, board_actions, ready_images,
-                                 pending_motion_shots, image_calls):
-    """One independent board lane per actual original-status boundary.
-
-    Existing local receipt/status and image reservation events bound the overlap;
-    these are operation ordering, never inferred backend duration. Finish that
-    lane's original/import/review before choosing another board, then refresh
-    the accepted job's status. Unknown/missing ordering keeps polling first.
-    """
-    from datetime import datetime
-    from lib import openart_mcp_jobs as jobs
-    if not pack or poll_action['kind'] != 'poll_openart_original':
-        return None
-    original = jobs._load(root, poll_action['subject'])
-    last_status = (original['status_observations'][-1] if original['status_observations']
-                   else original.get('receipt') or {})
-    if last_status.get('status') not in {'PENDING', 'RUNNING'}:
-        return None
-    def event_time(event):
-        value = datetime.fromisoformat(event['observed_at'])
-        if value.tzinfo is None:
-            raise ValueError('local event timezone missing')
-        return value
-    try:
-        boundary = max(event_time(event) for event in original['events']
-            if event['kind'] in {'submission_receipt_retained', 'status_observed'})
-        recent = []
-        for call in image_calls:
-            reserved = [event_time(event) for event in call['events'] if event['kind'] == 'reserved']
-            if not reserved:
-                return None
-            if max(reserved) >= boundary:
-                recent.append((max(reserved), call['slot_id']))
-    except (ValueError, KeyError, TypeError):
-        return None
-    if recent:
-        # Even an unrelated manually admitted image consumes the opportunity;
-        # only complete the earliest current lane, never start all boards first.
-        slot = min(recent)[1]
-        current = board_actions.get(slot)
-        if current and current['kind'] in {'begin_native_image', 'receive_native_image',
-                                          'promote_imported_board', 'review_board'}:
-            return current
-        return None
-    for slot, current in board_actions.items():
-        if (current['kind'] == 'review_board' and slot in pack['prompt_pack']
-                and pack['prompt_pack'][slot]['shot_id'] not in pending_motion_shots):
-            return current
-    for slot in ready_images:
-        node = pack['prompt_pack'][slot]
-        if node['shot_id'] not in pending_motion_shots:
-            return board_actions[slot]
-    return None
-
-
 def next_production_action(project_dir):
     """One typed projection of existing canonical state; zero writes or host calls."""
     from lib import production_images as images, production_boards as boards
@@ -3163,12 +2843,9 @@ def next_production_action(project_dir):
     pack = boards.load_board_pack(root) if (root / boards.ARTIFACT).exists() else None
     board_action = None
     board_actions = {}
-    payoff_progress_action = None
-    payoff_retained_evidence = False
-    deferred_payoff_action = None
-    pending_image_action = None
     motion_action = None
-    pending_motion_shots = set()
+    uncertain_cli_actions = []
+    recoverable_originals = []
     image_calls = []
     ready_images = []
     def remember_motion(candidate):
@@ -3223,133 +2900,40 @@ def next_production_action(project_dir):
                 'state': call['state'], 'scope_sha256': call['scope_sha256'],
                 'host_receipt': call.get('host_receipt'), 'host_exception': call.get('host_exception')}
             if call['state'] == 'reserved':
-                link = call.get('replaces_host_exception') or {}
-                if link.get('call_id'):
-                    linked = images.image_call_status(root, link['call_id'])
-                    # A reserved recovery successor whose original later returned
-                    # actual bytes can never be emitted; keep it retained/counted.
-                    if linked.get('state') != 'uncertain' or linked.get('output'):
-                        continue
+                # A retained historical recovery successor is never dispatched.
+                if call.get('replaces_host_exception'):
+                    continue
                 original_action = action('begin_native_image', call['call_id'], binding)
                 if pack:
                     board_actions.setdefault(call['slot_id'], original_action)
                 board_action = board_action or original_action
                 continue
-            original_action = action('receive_native_image', call['call_id'], binding, host=True,
-                inputs={'call_id': call['call_id'], 'original_request_sha256': call['request_sha256'],
-                        'supplemental_to': (call.get('host_receipt') or {}).get('sha256')},
-                reason='Retrieve and retain the exact original host return; the begun call is never emitted again.')
+            original_action = _native_original_action(root, call)
+            if original_action['inputs'].get('action') == 'blocked_original_host_reply_unavailable':
+                recoverable_originals.append(original_action)
+                continue
             if pack:
                 board_actions.setdefault(call['slot_id'], original_action)
             board_action = board_action or original_action
-            pending_image_action = pending_image_action or original_action
     if pack:
-        schedule = boards.board_schedule(root, images=images)
-        correction_action = None
-        completed_blocker = None
-        failed_assets = set()
-        for aid, binding in pack['board_bindings'].items():
-            roles = boards._roles(pack, aid)
-            if not boards._binding_current(root, pack, aid) or not roles:
-                continue
-            work = _board_review_work(pack, aid, roles, boards=boards, motion_roles=motion_roles.get(aid, ()))
-            if work['blocked']:
-                failed_assets.add(aid)
-            if work['missing_predicates'] or work['review_status_required']:
-                # One successor covers compatible roles: differing retained
-                # same-name findings cannot be combined into a single verdict.
-                preceding = boards._observation(pack, aid, work['review_roles'][0])
-                review_roles = [role for role in work['review_roles']
-                                if boards._observation(pack, aid, role) == preceding]
-                review_work = _board_review_work(pack, aid, review_roles, boards=boards,
-                    motion_roles=motion_roles.get(aid, ()))
-                retained_predicates = ([p for p in preceding['review']['predicates'] if p['status'] != 'unknown']
-                                       if preceding else [])
-                review_action = action('review_board', aid,
-                    {'source': binding, 'roles': review_roles, 'observations': work['observations']}, host=True,
-                    inputs={'asset_id': aid, 'roles': review_roles, 'source': binding,
-                            'required_predicates': review_work['missing_predicates'],
-                            'review_status_required': review_work['review_status_required'],
-                            'retained_predicates': retained_predicates},
-                    reason='Inspect only the named missing/unknown evidence; return a complete successor verdict carrying retained_predicates unchanged.')
-                board_actions.setdefault(aid, review_action)
-                board_action = board_action or review_action
-            elif work['failed_predicates'] and aid in pack['prompt_pack']:
-                slot_correction = action('prepare_board_correction', aid,
-                    {'source': binding, 'roles': roles, 'observations': work['observations'],
-                     'correction_observation': work['correction_observation'],
-                     'specification_sha256': pack['specification_sha256']}, host=True,
-                    inputs={'slot_id': aid, 'source': binding, 'failed_predicates': work['failed_predicates']},
-                    reason='Producer supplies exact targeted changes and optional complete replacement prompt/references; retained image authority and caps still apply.')
-                board_actions.setdefault(aid, slot_correction)
-                correction_action = correction_action or slot_correction
-            elif work['blocked']:
-                completed_blocker = completed_blocker or action('blocked', aid,
-                    {'source': binding, 'roles': roles, 'observations': work['observations']},
-                    reason='The completed board verdict remains blocking and has no named critical failed image slot eligible for targeted correction.')
-        def failed_source(slot, seen=None):
-            seen = set() if seen is None else seen
-            if slot in seen:
-                return False
-            seen.add(slot)
-            if slot in failed_assets:
-                return True
-            node = pack['prompt_pack'].get(slot, {})
-            return any(failed_source(source, seen) for source in
-                       node.get('reference_ids', []) + node.get('image_dependencies', []))
-        ready_images = [slot for slot in schedule['ready_images'] if not failed_source(slot)]
+        # Current bound boards are ready mechanically; semantic observations
+        # are disclosed later and never stop or correct the pass.
+        counted_slots = {row['slot_id'] for row in images.image_usage(root)['occurrences'] if row['counted']}
+        ready_images = [slot for slot in boards.board_schedule(root, images=images)['ready_images']
+                        if slot not in counted_slots]
         for slot in ready_images:
             board_actions.setdefault(slot, action('prepare_board_image', slot,
                 {'specification_sha256': pack['specification_sha256'],
                  'source_bindings': copy.deepcopy(pack['board_bindings'])}, inputs={'slot_id': slot}))
         if ready_images and board_action is None:
             board_action = board_actions[ready_images[0]]
-        board_action = board_action or correction_action or completed_blocker
-        # A project review needs its declared payoff evidence, not every board.
-        # Resolve only an existing progress action in that image/source closure.
-        payoff_id = contract.get('payoff_asset_id') if contract else None
-        if payoff_id and (not boards._binding_current(root, pack, payoff_id)
-                or boards._review_blockers(pack, payoff_id, 'payoff_board')):
-            seen = set()
-            def payoff_dependency(slot):
-                if slot in seen:
-                    return None
-                seen.add(slot)
-                node = pack['prompt_pack'].get(slot, {})
-                for source in node.get('reference_ids', []) + node.get('image_dependencies', []):
-                    progress = payoff_dependency(source)
-                    if progress is not None:
-                        return progress
-                return board_actions.get(slot)
-            payoff_progress_action = payoff_dependency(payoff_id)
-            # Current payoff bytes can still need their first observation after
-            # a correction; the failed project verdict remains a motion gate.
-            payoff_retained_evidence = failed_source(payoff_id) or boards._binding_current(root, pack, payoff_id)
     selected = load_selected_attempts(root)
-    candidates = []
-    if contract_path.exists():
-        from lib.production_draft import first_cut_candidates
-        candidates = first_cut_candidates(root)
-    reviewed_candidates = {row['shot_id']: row for row in candidates
-        if row.get('status') == 'candidate' and (row.get('review') == 'pass' or row.get('findings'))}
-    # A critically failed candidate is not finished footage while the existing
-    # same-route repair evidence/caps/controls still admit one bounded repair.
-    # Its failed bytes stay reviewed (never re-reviewed); exhausted or
-    # ineligible failures keep the previous compose-with-gaps behavior.
-    repairable = {}
-    for sid, row in reviewed_candidates.items():
-        if sid not in selected:
-            repair = _critical_repair(root, row)
-            if repair is not None:
-                repairable[sid] = repair
-    current_candidates = {row['shot_id']: row for row in candidates if row.get('status') == 'candidate'}
-    # Originals named by an admitted repair keep their retained rejection;
-    # their unchanged failed bytes never return to review.
-    replaced_by_repair = {x for a in _attempts(root) for x in (_attempt_scope(a).get('replaces_attempt_ids') or [])}
+    attempted_shots = set()
     for request in _attempts(root):
         if request.get('media_kind') != 'motion':
             continue
         aid = request['attempt_id']; sid = request['shot_id']
+        attempted_shots.add(sid)
         if request.get('provider') == 'openart_mcp':
             from lib import openart_mcp_jobs as jobs
             state = jobs.resume_original(root, aid)
@@ -3359,14 +2943,13 @@ def next_production_action(project_dir):
             binding = {'attempt_id': aid, 'request_sha256': state['request_sha256'],
                        'state_sha256': _digest(state)}
             if kind:
-                pending_motion_shots.add(sid)
                 remember_motion(action(kind, aid, binding, inputs=operation,
                     host=kind in {'poll_openart_original'}))
                 continue
             if operation['action'] == 'blocked_original_host_reply_unavailable':
-                pending_motion_shots.add(sid)
-                remember_motion(action('receive_openart_original', aid, binding, inputs=operation, host=True,
-                              reason=operation['reason']))
+                # No receipt and no retained reply: the original stays counted
+                # and replayable, but cannot hold delivery of settled clips.
+                recoverable_originals.append(_reply_unavailable_action(root, aid, binding, operation))
                 continue
             observed = _state(root, request)
         else:
@@ -3376,125 +2959,84 @@ def next_production_action(project_dir):
         if observed.get('status') in {'uncertain', 'submitted', 'reserved'}:
             provider = request.get('scope', {}).get('provider')
             kind = {'grok_cli': 'collect_grok_original', 'openart_cli': 'collect_openart_original'}.get(provider, 'blocked')
-            pending_motion_shots.add(sid)
-            remember_motion(action(kind, aid, binding, inputs={'attempt_id': aid,
+            candidate = action(kind, aid, binding, inputs={'attempt_id': aid,
                 'request_sha256': request['request_sha256'], 'original_id': request.get('cli_session_id', aid),
-                'provider': provider}, reason=('Unsupported strict original collection; preserve original ID/count and never replace.' if kind == 'blocked' else None)))
+                'provider': provider}, reason=('Unsupported strict original collection; preserve original ID/count and never replace.' if kind == 'blocked' else None))
+            if kind == 'blocked':
+                recoverable_originals.append(candidate)
+            else:
+                if observed.get('status') == 'uncertain':
+                    uncertain_cli_actions.append(candidate)
+                remember_motion(candidate)
             continue
-        if (observed.get('status') == 'generated' and selected.get(sid, {}).get('attempt_id') != aid
-                and reviewed_candidates.get(sid, {}).get('attempt_id') != aid
-                and not _retained_replaced_failure(root, request, observed, selected, replaced_by_repair)
-                and not _rejected_and_superseded(root, request, observed, selected, current_candidates)):
-            return action('review_selection', aid, binding, host=True,
-                inputs={'shot_id': sid, 'attempt_id': aid, 'output': observed.get('output'),
-                        'preserved_output': observed.get('preserved_output')})
     if not contract_path.exists():
         if motion_action is not None:
             return motion_action
         if board_action is not None:
             return board_action
+        if recoverable_originals:
+            # Without planning nothing can be delivered; disclose the retained
+            # original's exact ID/count instead of a generic planning block.
+            return recoverable_originals[0]
         return action('blocked', 'planning', {}, reason='Canonical authored planning is missing; no trusted derived source is available.')
-    from lib import production_repair_batches as repairs
-    try:
-        creator_prepared = repairs.prepared_creator_repair_items(root)
-    except (ValueError, OSError, KeyError, TypeError) as exc:
-        if motion_action is not None:
-            return motion_action
-        return action('blocked', 'creator_repair', {}, reason='Retained creator repair is invalid: ' + str(exc))
-    if creator_prepared:
-        # Original receipts/status/collection stay ahead of any new creator call.
-        if motion_action is not None:
-            return motion_action
-        for shot in contract['shots']:
-            sid = shot['id']
-            if sid not in creator_prepared:
-                continue
-            prepared = creator_prepared[sid]
-            return action('prepare_motion', sid,
-                {'shot_subject': shot_review_subject(contract, sid),
-                 'creator_repair': prepared['creator_repair'],
-                 'scope_id': prepared['scope']['id'], 'scope_sha256': _digest(prepared['scope'])},
-                host=True, inputs={'shot_id': sid, 'phase': 'repair',
-                    'replaces_attempt_ids': prepared['scope']['replaces_attempt_ids']},
-                reason='Prepare the exact retained creator repair; its approved prompt and scope take precedence over the older critical request.')
-    shots = contract['shots']
-    if all(s['id'] in reviewed_candidates and s['id'] not in repairable for s in shots) and motion_action is None:
-        from lib.production_draft import first_cut_media_status, latest_first_cut
-        cut = latest_first_cut(root)
-        if cut:
-            current = first_cut_media_status(root, cut)
-            if current.get('status') == 'current' and cut.get('status') == 'complete' and cut.get('technical') and not cut.get('missing'):
-                return action('complete', 'cut', {'first_cut': {'path': cut['path'], 'sha256': cut['sha256']}}, inputs=current)
-        return action('compose_cut', 'cut', {'selections_sha256': _digest(selected),
-            'contract_sha256': contract_digest(contract), 'candidates_sha256': _digest(candidates)}, inputs={'candidates': candidates})
+    # Ready independent shots dispatch first: a running or uncertain original
+    # stays recoverable and is never resubmitted, but cannot hold other clips.
+    marker = _read(root / 'project.json')
     blocked_shots = {}
-    for shot in shots:
+    for shot in contract['shots']:
         sid = shot['id']
-        if sid in selected or sid in pending_motion_shots:
+        if sid in attempted_shots or sid in selected:
             continue
-        if sid in repairable:
-            repair = repairable[sid]
-            return action('prepare_motion', sid, {'shot_subject': shot_review_subject(contract, sid), 'repair': repair},
-                host=True, inputs={'shot_id': sid, 'phase': 'repair', 'replaces_attempt_ids': repair['replaces_attempt_ids']},
-                reason='Critical review failed; producer prepares one bounded same-route repair under existing caps. The failed original stays retained and counted.')
-        if sid in reviewed_candidates:
-            continue
-        try:
-            transition = _selected_upstream_transition(root, contract, sid, selected)
-        except (ValueError, OSError, KeyError, TypeError) as exc:
-            transition = None
-            blocked_shots[sid] = [str(exc)]
-        if transition is not None:
-            return action('bind_selected_upstream', sid, transition['binding'],
-                reason='Bind the current accepted upstream bytes and original review; the target still needs its own current semantic planning verdict.')
-        # Structural/prerequisite inspection may identify the actual semantic
-        # review needed; it never creates a passing verdict.
         checked = validate_shot_contract(contract, project_dir=root, shot_id=sid,
-            story_revision=_read(root / 'project.json')['story_revision'], selected_upstream=selected)
-        errors = checked['errors']
-        if errors:
-            blocked_shots.setdefault(sid, []).extend(errors)
-        review_only = errors and all('project_review' in e or f'shots.{sid}.review' in e for e in errors)
-        if review_only:
-            project_review = contract.get('project_review') or {}
-            project_failed = (project_review.get('status') == 'fail' or any(
-                p.get('status') == 'fail'
-                for p in project_review.get('predicates', [])))
-            if (payoff_progress_action is not None and (not project_failed or payoff_retained_evidence)
-                    and any(e.startswith('project_review') for e in errors)):
-                deferred_payoff_action = payoff_progress_action
-                # Continue scanning for independently eligible motion. At the end,
-                # collect existing originals before advancing this exact dependency.
-                continue
-            return action('review_planning', sid, {'project_subject': project_review_subject(contract),
-                'shot_subject': shot_review_subject(contract, sid)}, host=True,
-                inputs={'shot_id': sid, 'project_subject': project_review_subject(contract),
-                        'shot_subject': shot_review_subject(contract, sid)})
+            story_revision=marker['story_revision'], selected_upstream=selected)
         if checked['eligible']:
+            # Independent ready shots dispatch while other originals render.
             return action('prepare_motion', sid, {'shot_subject': shot_review_subject(contract, sid)}, host=True,
-                inputs={'shot_id': sid}, reason='Producer prepares exact registered-route request and actual named preparation review; engine admits and dispatches it.')
-    if motion_action is not None:
-        if motion_action['kind'] == 'poll_openart_original':
-            if pending_image_action is not None:
-                return pending_image_action
-            overlap = _board_between_pending_polls(root, motion_action, pack, board_actions,
-                ready_images, pending_motion_shots, image_calls)
-            if overlap is not None:
-                return overlap
+                inputs={'shot_id': sid}, reason='Producer prepares the one exact registered-route original request for this planned clip; engine admits and dispatches it.')
+        blocked_shots[sid] = checked['errors']
+    from lib.production_draft import first_cut_candidates, first_cut_media_status, latest_first_cut
+    # Save usable footage before waiting on another original. Its unchanged
+    # current partial cut does not render again; subsequent advance still
+    # collects/polls the exact pending operation, never another generation.
+    if board_action is None and motion_action is not None and motion_action in uncertain_cli_actions:
+        candidates = first_cut_candidates(root)
+        cut = latest_first_cut(root)
+        if (any(row['status'] == 'candidate' for row in candidates)
+                and (cut is None or first_cut_media_status(root, cut).get('status') != 'current')):
+            return action('compose_cut', 'cut', {'selections_sha256': _digest(selected),
+                'contract_sha256': contract_digest(contract), 'candidates_sha256': _digest(candidates)},
+                inputs={'candidates': candidates, 'blocked_shots': blocked_shots,
+                        'recoverable_originals': recoverable_originals + uncertain_cli_actions},
+                reason='Save the playable originals as a partial cut, retaining exact pending original collection actions.')
+    # Original recovery (receipt/collection/download) precedes board work;
+    # board preparation precedes a known pending poll.
+    if motion_action is not None and motion_action['kind'] != 'poll_openart_original':
         return motion_action
-    if deferred_payoff_action is not None:
-        if pending_image_action is not None:
-            return pending_image_action
-        return deferred_payoff_action
     if board_action is not None:
         return board_action
-    if any(sid not in repairable for sid in reviewed_candidates):
-        return action('compose_cut', 'cut', {'selections_sha256': _digest(selected),
-            'contract_sha256': contract_digest(contract), 'candidates_sha256': _digest(candidates)},
-            inputs={'candidates': candidates, 'blocked_shots': blocked_shots}, reason='Compose attributable usable footage with retained findings and gaps disclosed.')
-    return action('blocked', 'prerequisites', {'contract_sha256': contract_digest(contract)},
-        inputs={'blocked_shots': blocked_shots},
-        reason='No independent shot is eligible; inspect current source/review/upstream blockers.')
+    if motion_action is not None:
+        return motion_action
+    candidates = first_cut_candidates(root)
+    # Declared images whose one original is consumed (failed/uncertain with no
+    # bytes) can leave zero submittable clips; that closes out incomplete.
+    consumed_images = any(row['counted'] for row in images.image_usage(root)['occurrences'])
+    if not attempted_shots and not consumed_images:
+        return action('blocked', 'prerequisites', {'contract_sha256': contract_digest(contract)},
+            inputs={'blocked_shots': blocked_shots},
+            reason='No planned shot is mechanically ready; inspect current source/reference blockers.')
+    cut = latest_first_cut(root)
+    if cut and cut.get('status') in FIRST_CUT_TERMINAL:
+        current = first_cut_media_status(root, cut)
+        if current.get('status') == 'current':
+            return action('complete', 'cut', {'first_cut': {'path': cut['path'], 'sha256': cut['sha256']}},
+                          inputs=dict(current, recoverable_originals=recoverable_originals))
+    return action('compose_cut', 'cut', {'selections_sha256': _digest(selected),
+        'contract_sha256': contract_digest(contract), 'candidates_sha256': _digest(candidates)},
+        inputs={'candidates': candidates, 'blocked_shots': blocked_shots, 'recoverable_originals': recoverable_originals},
+        reason='Assemble every playable original in planned order; findings, gaps and missing footage are disclosed.')
+
+
+FIRST_CUT_TERMINAL = frozenset({'complete', 'partial', 'incomplete'})
 
 
 def _action_status(action):
@@ -3514,16 +3056,17 @@ def advance(project_dir, *, max_steps=8):
     if type(max_steps) is not int or not 1 <= max_steps <= 32:
         _fail('max_steps must be between 1 and 32')
     root = Path(project_dir).resolve()
+    # Each mechanical step recomputes the action exactly once after its
+    # mutation; that fresh action is carried into the next step.
+    action = next_production_action(root)
     for step in range(max_steps):
-        action = next_production_action(root); kind = action['kind']
+        kind = action['kind']
         status = _action_status(action)
         if status != 'mechanical':
             return {'status': status, 'action': action, 'steps': step, 'provider_calls': 0}
         try:
             if kind == 'restore_derived_views':
                 preparation.prepare_package(root, action['binding']['package'])
-            elif kind == 'bind_selected_upstream':
-                _bind_selected_upstream(root, action)
             elif kind == 'promote_imported_board':
                 boards.bind_imported_board(root, action['binding']['slot_id'], action['subject'], images=images)
             elif kind == 'prepare_board_image':
@@ -3542,7 +3085,10 @@ def advance(project_dir, *, max_steps=8):
                 resume_original_attempt(root, action['subject'], request_sha256=action['binding']['request_sha256'])
             elif kind == 'begin_openart_original':
                 envelope = jobs.begin(root, action['subject'], authority_fn=prepare_openart_mcp_handoff)
-                return {'status': 'host_action', 'action': next_production_action(root),
+                # The producer returns this begun original's reply through its
+                # exact receive action; independent work stays available.
+                return {'status': 'host_action', 'action': _recoverable_original_action(root, action['subject'])
+                        or next_production_action(root),
                         'host_envelope': envelope, 'steps': step + 1, 'provider_calls': 0}
             elif kind == 'receive_openart_original':
                 jobs.resume_original(root, action['subject'], outcome=action['inputs']['outcome'],
@@ -3558,7 +3104,7 @@ def advance(project_dir, *, max_steps=8):
         if updated['action_id'] == action['action_id']:
             return {'status': 'blocked', 'action': updated, 'steps': step + 1, 'provider_calls': 0,
                     'reason': 'Original operation is still pending; no replacement or duplicate collection was issued.'}
-    action = next_production_action(root)
+        action = updated
     return {'status': _action_status(action), 'action': action, 'steps': max_steps, 'provider_calls': 0}
 
 
@@ -3583,21 +3129,6 @@ def draft_motion_preparation(project_dir, action, *, output_path=None, compiled_
     sid = current['inputs'].get('shot_id')
     if sid != current['subject']:
         _fail('motion draft action subject differs from its shot')
-    creator = current['binding'].get('creator_repair')
-    if creator is not None:
-        from lib import production_repair_batches as repairs
-        prepared = repairs.prepare_creator_repair_prompt(root, creator['batch_id'], creator['item_id'])
-        if (prepared['creator_repair'] != creator
-                or prepared['inputs']['governance'].get('scope_id') != current['binding']['scope_id']
-                or _digest(repairs._scope(root, current['binding']['scope_id'])) != current['binding']['scope_sha256']):
-            _fail('creator repair draft differs from exact current scope')
-        if provider is not None and provider != prepared['provider']:
-            _fail('creator repair draft differs from approved provider')
-        for key, value in (('output_path', output_path), ('compiled_request_id', compiled_request_id),
-                           ('preparation_review_id', preparation_review_id)):
-            if value is not None and str(value) != prepared['inputs'].get(key):
-                _fail('creator repair draft cannot alter retained ' + key)
-        return dict(prepared, action_id=current['action_id'], shot_id=sid, frames=[], missing=[])
     policy, _, _ = autonomy.require_active_policy(root, shot_id=sid)
     retained = autonomy.retained_baselines(root, policy).get(sid)
     if not isinstance(retained, dict):
@@ -3605,12 +3136,6 @@ def draft_motion_preparation(project_dir, action, *, output_path=None, compiled_
     template = retained['planned_request_template']['inputs']
     routes = template.get('allowed_providers') or ([template['preferred_provider']] if template.get('preferred_provider') else [])
     named = template.get('preferred_provider', routes[0] if len(routes) == 1 else None)
-    repair = current['binding'].get('repair')
-    if repair is not None:
-        # A critical repair keeps its failed original's exact route/model.
-        if (provider is not None and provider != repair['provider']) or (routes and repair['provider'] not in routes):
-            _fail('critical repair draft must keep its original provider')
-        named, routes = repair['provider'], [repair['provider']] if routes else routes
     if routes and (provider is not None and provider != named):
         _fail('motion draft provider differs from retained request template route')
     provider = named if routes else provider
@@ -3674,7 +3199,13 @@ def complete_action(project_dir, action, *, outcome):
                 boards.bind_imported_board(root, call['slot_id'], action['subject'], images=images)
             current = next_production_action(root)
             return {'status': _action_status(current), 'action': current, 'provider_calls': 0, 'replayed': True}
-    if not valid or action != next_production_action(root):
+    # A begun original without a retained reply never preempts independent
+    # clips, but its exact receive replay stays accepted at any later point.
+    if not valid or (action != next_production_action(root) and not (
+            action['kind'] == 'receive_openart_original'
+            and action == _recoverable_original_action(root, action['subject']) or
+            action['kind'] == 'receive_native_image'
+            and action == _recoverable_native_original_action(root, action['subject']))):
         _fail('production action is stale, foreign or modified')
     if not isinstance(outcome, dict):
         _fail('actual structured producer outcome required')
@@ -3690,69 +3221,6 @@ def complete_action(project_dir, action, *, outcome):
             if imported['state'] == 'imported':
                 if (root / boards.ARTIFACT).exists():
                     boards.bind_imported_board(root, imported['slot_id'], aid, images=images)
-    elif kind == 'review_board':
-        if set(outcome) != {'review'}:
-            _fail('board review requires one actual verdict')
-        review = outcome['review']
-        if not isinstance(review, dict) or not isinstance(review.get('predicates'), list):
-            _fail('board review requires a complete actual successor verdict')
-        for retained in action['inputs'].get('retained_predicates', []):
-            supplied = [p for p in review['predicates'] if isinstance(p, dict) and p.get('name') == retained['name']]
-            if supplied != [retained]:
-                _fail('board successor must carry retained known predicate unchanged: ' + retained['name'])
-        for name in action['inputs']['required_predicates']:
-            if len([p for p in review['predicates'] if isinstance(p, dict) and p.get('name') == name]) != 1:
-                _fail('board successor must include the named review predicate: ' + name)
-        if (any(isinstance(p, dict) and p.get('severity') == 'critical' and p.get('status') == 'fail'
-                for p in review['predicates']) and review.get('status') != 'fail'):
-            _fail('board successor with a critical failed predicate requires status fail')
-        boards.record_board_review(root, aid, review, roles=action['binding']['roles'], images=images)
-    elif kind == 'prepare_board_correction':
-        if (set(outcome) - {'changes', 'replacement_prompt', 'reference_ids'} or 'changes' not in outcome
-                or not isinstance(outcome['changes'], str) or not outcome['changes'].strip()):
-            _fail('board correction requires exact producer changes and optional replacement prompt/references')
-        correction = boards.board_correction_intent(root, aid, **outcome)
-        prepared = boards.prepare_image_request(root, aid, correction=correction, images=images)
-        if not (root / 'production_scopes.json').exists() or not _read(root / 'production_scopes.json').get('image_envelope'):
-            images.activate_standing_image_envelope(root)
-        scope = images.derive_native_image_scope(root, prepared['packet'], aid, prepared['arguments'],
-            output_path=prepared['output_path'], correction_intent=prepared['correction_intent'])
-        call_id = 'board-' + prepared['request_sha256'][:24]
-        boards.reserve_board_image(root, aid, scope_id=scope, call_id=call_id, correction=correction, images=images)
-    elif kind == 'review_planning':
-        if set(outcome) not in ({'project_review', 'shot_review'}, {'shot_review'}):
-            _fail('planning review requires an actual target verdict and a current project verdict')
-        from lib.shot_contract import project_review_subject, shot_review_subject
-        with _lock(root):
-            contract = load_shot_contract(root)
-            project_review = outcome.get('project_review', contract.get('project_review'))
-            if (not isinstance(project_review, dict)
-                    or project_review.get('subject_sha256') != project_review_subject(contract)
-                    or outcome['shot_review'].get('subject_sha256') != shot_review_subject(contract, aid)):
-                _fail('actual review does not bind current planning')
-            if 'project_review' not in outcome:
-                checked = validate_shot_contract(contract, project_dir=root, shot_id=aid,
-                    story_revision=_read(root / 'project.json')['story_revision'],
-                    selected_upstream=load_selected_attempts(root))
-                if (project_review.get('status') != 'pass' or any(
-                        e.startswith('project_review') for e in checked['errors'])):
-                    _fail('omitted project verdict requires the exact current passing project review')
-            candidate = copy.deepcopy(contract)
-            if 'project_review' in outcome:
-                candidate['project_review'] = outcome['project_review']
-            next(s for s in candidate['shots'] if s['id'] == aid)['review'] = outcome['shot_review']
-            from jsonschema import Draft202012Validator
-            from schemas.artifacts import load_schema
-            Draft202012Validator(load_schema('shot_contract')).validate(candidate)
-            path = _artifact_path(root, 'shot_contract.json'); temp = path.with_suffix('.json.review-tmp')
-            temp.write_text(json.dumps(candidate, indent=2)); temp.replace(path)
-    elif kind == 'review_selection':
-        if set(outcome) == {'selection'}:
-            record_selection(root, action['inputs']['shot_id'], outcome['selection'])
-        elif set(outcome) == {'rejection'}:
-            record_rejection(root, aid, outcome['rejection'])
-        else:
-            _fail('selection or rejection requires one actual current media verdict')
     elif kind == 'poll_openart_original':
         if set(outcome) != {'result'}:
             _fail('original poll requires exact host result')
@@ -3768,23 +3236,8 @@ def complete_action(project_dir, action, *, outcome):
         provider = outcome['provider']; inputs = copy.deepcopy(outcome['inputs'])
         if provider not in autonomy.ROUTE_TOOLS or inputs.get('governance', {}).get('shot_id') != aid:
             _fail('prepared motion lies outside exact current action')
-        repair = action['binding'].get('repair')
-        if repair is not None and (provider != repair['provider']
-                or (repair.get('model') is not None and inputs.get('model') != repair['model'])):
-            _fail('critical repair must keep its original provider and media model')
-        creator = action['binding'].get('creator_repair')
-        if creator is not None:
-            from lib import production_repair_batches as repairs
-            scope = repairs._scope(root, action['binding']['scope_id'])
-            if (_digest(scope) != action['binding']['scope_sha256']
-                    or scope.get('creator_repair') != creator or scope.get('repair_basis') != 'creator_batch'):
-                _fail('prepared creator repair scope changed')
-            repairs.validate_creator_repair_intent(root, creator, shot_id=aid, provider=provider,
-                model=inputs.get('model'), replaces_attempt_ids=scope['replaces_attempt_ids'], inputs=inputs)
-        else:
-            scope = autonomy.derive_scope(root, inputs, provider=provider, observation=outcome.get('observation'),
-                reuse_undispatched=True, **({'phase': 'repair', 'replaces_attempt_ids': list(repair['replaces_attempt_ids'])}
-                                            if repair is not None else {}))
+        scope = autonomy.derive_scope(root, inputs, provider=provider, observation=outcome.get('observation'),
+            reuse_undispatched=True)
         inputs['governance'].update(shot_id=aid, scope_id=scope['id'])
         from tools.tool_registry import registry
         registry.ensure_discovered('tools.video')

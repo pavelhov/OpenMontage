@@ -724,10 +724,13 @@ class TestAgentContextFiles:
 
     def test_guide_distinguishes_first_cut_from_certification_and_legacy(self):
         contents = (PROJECT_ROOT / "AGENT_GUIDE.md").read_text(encoding="utf-8")
-        assert "first_cut" in contents
-        assert "absent" in contents and "disabled" in contents
-        assert "record_creator_repair_batch" in contents
-        assert "first-cut acceptance" in contents
+        text = " ".join(contents.split()).lower()
+        assert "first-cut draft inclusion/acceptance does not relax this gate" in text
+        assert "one-shot factory" in text
+        assert "recover only the same original job" in text
+        assert "factory has no correction, replacement, route fallback or review-approval loop" in text
+        assert "historical projects keep their recorded authority" in text
+        assert "cleanup does not migrate them or authorize new generation" in text
         assert "cosmetic" in contents.lower()
 
     def test_cinematic_owner_reuses_selected_direction_and_explicit_audio_choice(self):

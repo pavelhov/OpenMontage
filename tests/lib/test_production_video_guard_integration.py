@@ -41,11 +41,11 @@ def isolated(tmp_path, monkeypatch):
     return tmp_path
 
 
-def test_running_cross_provider_repair_is_blocked(isolated):
+def test_running_cross_provider_original_is_blocked(isolated):
     inputs, scope, _ = project(isolated, motion=True)
     journal(isolated, provider='openart_cli', status='running')
     tool = GrokMotion()
-    approve(isolated, inputs, scope, tool, phase='repair', replaces=['original'])
+    approve(isolated, inputs, scope, tool, phase='first_pass')
     with pytest.raises(execution.ProductionGovernanceError, match='unresolved'):
         execution.preflight(tool, inputs)
     assert tool.calls == 0
@@ -64,7 +64,7 @@ def test_same_shot_dispatch_blocks_without_provider_or_new_attempt(isolated, dir
     inputs, scope, _ = project(isolated, motion=True)
     journal(isolated, provider='openart_cli', status=status)
     tool = GrokMotion()
-    approve(isolated, inputs, scope, tool, phase='repair', replaces=['original'])
+    approve(isolated, inputs, scope, tool, phase='first_pass')
     with pytest.raises(execution.ProductionGovernanceError, match='unresolved'):
         invoke(tool, inputs, direct)
     assert tool.calls == 0
@@ -74,9 +74,8 @@ def test_same_shot_dispatch_blocks_without_provider_or_new_attempt(isolated, dir
 @pytest.mark.parametrize('direct', [False, True])
 def test_authoritative_duplicate_recheck_is_under_existing_lock(isolated, monkeypatch, direct):
     inputs, scope, _ = project(isolated, motion=True)
-    original = journal(isolated, provider='openart_cli', status='failed')
     tool = GrokMotion()
-    approve(isolated, inputs, scope, tool, phase='repair', replaces=['original'])
+    approve(isolated, inputs, scope, tool, phase='first_pass')
     real_lock = execution._lock
     real_reader = __import__('lib.production_video_guard', fromlist=['read_video_duplicate_blocks']).read_video_duplicate_blocks
     locked = []
@@ -85,7 +84,7 @@ def test_authoritative_duplicate_recheck_is_under_existing_lock(isolated, monkey
     def lock(root):
         with real_lock(root):
             locked.append(True)
-            (original / 'result.json').write_text(json.dumps({'status':'running'}))
+            journal(isolated, provider='openart_cli', status='running')
             try:
                 yield
             finally:
@@ -145,7 +144,7 @@ def test_unknown_prior_kind_fails_closed_in_every_phase(isolated, motion, kind):
     assert tool.calls == 0
 
 
-def private_grok(root, inputs, *, repair=None):
+def private_grok(root, inputs):
     inputs = copy.deepcopy(inputs)
     for key in ('compiled_request_id', 'preparation_review_id', 'credit_authorization_id',
                 'credit_quote_id', 'credit_qualification_sha256'):
@@ -164,10 +163,10 @@ def private_grok(root, inputs, *, repair=None):
     inputs['duration'] = 8
     inputs['allow_unknown_cost'] = True
     scope = json.loads((root / 'production_scopes.json').read_text())['scopes'][0]
-    scope['id'] = 'grok-repair' if repair else 'grok-first-pass'
+    scope['id'] = 'grok-first-pass'
     inputs['governance'] = {'scope_id': scope['id'], 'shot_id': 'entry'}
     tool = GrokMotion()
-    approve(root, inputs, scope, tool, phase='repair' if repair else 'first_pass', replaces=[repair] if repair else None)
+    approve(root, inputs, scope, tool, phase='first_pass')
     return inputs, tool
 
 
@@ -189,13 +188,14 @@ def test_real_private_outbox_before_journal_blocks_grok(governed, monkeypatch, d
     assert not (tmp / 'paid').exists()
 
 
-def test_valid_original_terminal_settlement_permits_exact_grok_repair(governed, monkeypatch):
+def test_terminal_settlement_does_not_unlock_cross_provider_original(governed, monkeypatch):
     root, original_inputs, _, tmp, attempt, binding, _ = _qualified_billing_origin(governed, monkeypatch)
     dispatch.resolve_attempt(root, attempt, binding.request_sha256)
-    inputs, tool = private_grok(root, original_inputs, repair=attempt)
+    inputs, tool = private_grok(root, original_inputs)
     before = (tmp / 'calls').read_bytes()
-    assert tool.execute(inputs).success
-    assert tool.calls == 1
+    with pytest.raises(execution.ProductionGovernanceError, match='one original request'):
+        tool.execute(inputs)
+    assert tool.calls == 0
     assert (tmp / 'calls').read_bytes() == before
 
 
@@ -212,7 +212,7 @@ def test_real_private_submitted_original_blocks_cross_provider(governed, monkeyp
     record['status'] = public_status
     path.chmod(0o600)
     path.write_text(json.dumps(record))
-    inputs, tool = private_grok(root, original_inputs, repair=attempt)
+    inputs, tool = private_grok(root, original_inputs)
     before = (tmp / 'calls').read_bytes()
     requests = list((root / 'production_attempts').glob('*/request.json'))
     def forbidden(*args, **kwargs):
@@ -243,7 +243,7 @@ def test_repair_cannot_replace_only_another_phase(isolated):
     inputs, scope, _ = project(isolated, motion=True)
     journal(isolated, kind='image', status='failed')
     approve(isolated, inputs, scope, MotionTool(), phase='repair', replaces=['original'])
-    with pytest.raises(execution.ProductionGovernanceError, match='exact attempts'):
+    with pytest.raises(execution.ProductionGovernanceError, match='approval phase'):
         MotionTool().execute(inputs)
 
 

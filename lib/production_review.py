@@ -204,7 +204,7 @@ def validate_final_review(
         for key in ('output', 'outgoing_frame'):
             check_file(selection.get(key), f'selected.{shot_id}.{key}')
         try:
-            from lib.production_review_successors import resolve_selection_review
+            from lib.shot_contract import resolve_selection_review
             selected_review = resolve_selection_review(root, shot_id, selection)
             malformed = list(Draft202012Validator(selected_review_schema).iter_errors(selected_review))
             if malformed:

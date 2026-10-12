@@ -252,13 +252,16 @@ def test_recovery_crash_after_canonical_copy_resumes_without_another_call(reject
     for name,raw in frozen.items(): assert (directory/name).read_bytes()==raw
 
 
-def test_recoverable_protocol_rejected_original_never_qualifies_for_access_fallback(rejected):
+def test_recoverable_protocol_rejected_original_never_opens_second_route(rejected):
     from lib import production_autonomy as pa
     from tests.lib.test_episode_production_controls import activate
     p, aid, directory, request, frozen = rejected
-    activate(p.root, 2, alternate='different_provider_or_media_model', fallback=True)
-    with pytest.raises(pa.AutonomyError, match='terminal'):
-        pa._validate_access_fallback(p.root, 'entry', [aid], 'openart_mcp', 'minimax-hailuo-02')
+    activate(p.root, 1, alternate='disabled', fallback=False)
+    from lib import episode_production_controls as controls
+    denied = controls.generation_admission(p.root, shot_id='entry', provider='openart_mcp',
+                                           model='minimax-hailuo-02', purpose='first_pass')
+    assert not denied['admitted']
+    assert controls.generation_usage(p.root)['per_shot']['entry'] == 1
     for name, raw in frozen.items():
         assert (directory/name).read_bytes() == raw
     assert collect(rejected, dry_run=False).success
@@ -266,12 +269,12 @@ def test_recoverable_protocol_rejected_original_never_qualifies_for_access_fallb
 
 
 @pytest.mark.parametrize('shape', ['completed_wrong_raw_output', 'failed_beside_completed'])
-def test_completed_native_update_labeled_terminal_never_qualifies_for_access_fallback(production, monkeypatch, shape):
+def test_completed_native_update_labeled_terminal_never_opens_second_route(production, monkeypatch, shape):
     """The wrapper label is not proof: retained native logs must show no completed update."""
     from lib import production_autonomy as pa
     from tests.lib.test_episode_production_controls import activate
     p = production
-    activate(p.root, 2, alternate='different_provider_or_media_model', fallback=True)
+    activate(p.root, 1, alternate='disabled', fallback=False)
     inputs = copy.deepcopy(p.inputs['entry'])
     inputs.pop('preferred_provider', None)
     inputs.pop('allowed_providers', None)
@@ -298,8 +301,11 @@ def test_completed_native_update_labeled_terminal_never_qualifies_for_access_fal
     assert not result.success and result.data['error_category'] == 'spending_limit'
     assert result.data['dispatch_status'] == 'failed'
     frozen = {name:(directory/name).read_bytes() for name in ('request.json','raw_result.json','result.json')}
-    with pytest.raises(pa.AutonomyError, match='completed native tool update'):
-        pa._validate_access_fallback(p.root, 'entry', [aid], 'openart_mcp', 'minimax-hailuo-02')
+    from lib import episode_production_controls as controls
+    denied = controls.generation_admission(p.root, shot_id='entry', provider='openart_mcp',
+                                           model='minimax-hailuo-02', purpose='first_pass')
+    assert not denied['admitted']
+    assert controls.generation_usage(p.root)['per_shot']['entry'] == 1
     for name, raw in frozen.items():
         assert (directory/name).read_bytes() == raw
     assert len(p.transport.native_requests) == 1

@@ -3,6 +3,7 @@ import hashlib
 import json
 from dataclasses import replace
 from uuid import uuid4
+from pathlib import Path
 
 import pytest
 
@@ -251,7 +252,7 @@ def test_unknown_private_original_blocks_governed_grok_before_new_attempt(unknow
     assert list(root.glob('production_attempts/*/request.json')) == before
 
 
-def test_unknown_terminal_allows_later_retained_approved_different_attempt(unknown_original, monkeypatch):
+def test_unknown_terminal_keeps_original_slot_consumed(unknown_original, monkeypatch):
     root, ledger, binding, _, _ = unknown_original
     inputs, scope, _ = project(root, motion=True)
     inputs['allow_unknown_cost'] = True
@@ -263,7 +264,9 @@ def test_unknown_terminal_allows_later_retained_approved_different_attempt(unkno
     monkeypatch.setattr(dispatch, 'existing_terminal_state', lambda *args: {'status': 'terminal_unselected'})
     tool = GrokMotion()
     approve(root, inputs, scope, tool, phase='repair', replaces=[binding.attempt_id])
-    result = tool.execute(inputs)
-    assert result.success and tool.calls == 1
-    assert result.data['production_attempt_id'] != binding.attempt_id
+    before = list(root.glob('production_attempts/*/request.json'))
+    with pytest.raises(execution.ProductionGovernanceError, match='approval phase'):
+        tool.execute(inputs)
+    assert tool.calls == 0 and list(root.glob('production_attempts/*/request.json')) == before
+    assert not Path(inputs['output_path']).exists()
     assert ledger.inspect_unpriced(binding.attempt_id)['billing_state'] == 'unknown'

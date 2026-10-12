@@ -372,7 +372,7 @@ def test_producer_completes_after_real_rejection_annotation_without_changing_med
 
 
 @pytest.mark.parametrize('accept_baseline', [False, True])
-def test_selected_repair_invalidates_saved_cut_and_composes_new_candidate_once(p, monkeypatch, accept_baseline):
+def test_refused_repair_preserves_saved_cut_and_acceptance(p, monkeypatch, accept_baseline):
     from lib import production_execution as execution
     from tools.base_tool import ToolResult
 
@@ -417,31 +417,22 @@ def test_selected_repair_invalidates_saved_cut_and_composes_new_candidate_once(p
     inputs['output_path'] = str(p.root / 'assets/video/payoff-repair.mp4')
     repair['requests'] = {'payoff': execution.planned_request_digest(inputs, project_dir=p.root)}
     save(p.root / 'production_scopes.json', {'version': '1.0', 'scopes': [p.scope, repair]})
-    replacement = p.selector.execute(inputs)
-    assert replacement.success, replacement.error
-    selected = p.select('payoff', replacement)
+    originals = list((p.root/'production_attempts').glob('*/request.json'))
+    with pytest.raises(execution.ProductionGovernanceError, match='approval phase'):
+        p.selector.execute(inputs)
+    assert list((p.root/'production_attempts').glob('*/request.json')) == originals
+    assert not Path(inputs['output_path']).exists()
     monkeypatch.setattr(subprocess, 'run', REAL_RUN)
     candidate = draft.first_cut_candidates(p.root)[-1]
-    assert candidate['attempt_id'] == selected['attempt_id']
-    assert draft.first_cut_media_status(p.root, first['first_cut']) == {
-        'status': 'stale', 'reasons': ['candidate_bindings_changed']}
-    assert execution.next_production_action(p.root)['kind'] == 'compose_cut'
-    with pytest.raises(ValueError, match='different clips, profile or audio'):
-        draft.deliver_standalone(p.root, operation_id=first['operation_id'], compose=compose)
-    fresh = draft.deliver_standalone(p.root, compose=compose)
-    assert len(calls) == 2 and fresh['status'] == 'complete'
-    assert fresh['operation_id'] != first['operation_id'] and fresh['export'] != first['export']
-    assert fresh['clips'][-1]['attempt_id'] == selected['attempt_id']
-    assert fresh['clips'][-1]['output'] == candidate['output']
-    assert fresh['currency'] == {'status': 'current', 'reasons': []}
+    assert candidate['attempt_id'] == original
+    assert draft.first_cut_media_status(p.root, first['first_cut']) == {'status': 'current', 'reasons': []}
     assert execution.next_production_action(p.root)['kind'] == 'complete'
-    assert execution.advance(p.root)['status'] == 'complete'
     replay = draft.deliver_standalone(p.root, compose=compose)
-    assert replay['first_cut'] == fresh['first_cut'] and len(calls) == 2
+    assert replay['first_cut'] == first['first_cut'] and len(calls) == 1
     assert all(file_sha256(path) == digest for path, digest in retained.items())
-    assert len(list((p.root / 'production_first_cuts').glob('*.json'))) == 2
+    assert len(list((p.root/'production_first_cuts').glob('*.json'))) == 1
     if accept_baseline:
-        assert 'candidate_bindings_changed' in draft.first_cut_acceptance_status(p.root, acceptance)['reasons']
+        assert draft.first_cut_acceptance_status(p.root, acceptance)['status'] == 'current'
 
 
 def test_changed_candidate_timing_does_not_replay_an_obsolete_placement(p, clips, monkeypatch):

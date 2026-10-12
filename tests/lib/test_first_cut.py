@@ -107,11 +107,14 @@ def test_pending_and_failed_originals_report_exact_reasons_without_repair(p):
     assert not list(p.root.glob('checkpoint_assets*')) and not list(p.root.glob('checkpoint_compose*'))
 
 
-def test_external_audio_rejected_for_dialogue(p):
+def test_first_cut_api_has_no_external_audio_writer(p):
     p.generate('entry')
-    with pytest.raises(ValueError, match='native dialogue'):
+    before = {path: path.read_bytes() for path in p.root.rglob('*') if path.is_file()}
+    with pytest.raises(TypeError, match='audio_path'):
         draft.compose_first_cut(p.root, audio_path=p.root / 'music.wav', compose=fake_compose)
     assert not (p.root / 'production_first_cuts').exists()
+    assert {path: path.read_bytes() for path in p.root.rglob('*') if path.is_file()} == before
+    assert len(p.transport.native_requests) == 1
 
 
 @needs_ff
@@ -162,7 +165,7 @@ def test_compose_first_cut_versions_acceptance_and_staleness(p, monkeypatch):
         return out + [{'shot_id': 'payoff', 'status': 'missing', 'reason': 'no_attempt', 'detail': {}}]
     monkeypatch.setattr(draft, 'first_cut_candidates', fake_rows)
     first = draft.compose_first_cut(p.root)
-    assert first['status'] == 'incomplete' and first['missing'][0]['reason'] == 'no_attempt'
+    assert first['status'] == 'partial' and first['missing'][0]['reason'] == 'no_attempt'
     assert first['export']['path'] == 'renders/first_cut/v001/first_cut.mp4' and first['technical']['has_audio']
     assert [(c['master_start'], c['master_end']) for c in first['clips']] == [(0.0, 1.0), (1.0, 2.0)]
     assert first['audio'] == 'native_source'
@@ -173,7 +176,7 @@ def test_compose_first_cut_versions_acceptance_and_staleness(p, monkeypatch):
         evidence={'path': str(evidence), 'sha256': file_sha256(evidence)})
     stored = read(Path(acceptance['path']))
     assert stored['not_certification'] is True and stored['export'] == first['export']
-    assert stored['status_at_acceptance'] == 'incomplete'
+    assert stored['status_at_acceptance'] == 'partial'
     assert draft.first_cut_acceptance_status(p.root, acceptance) == {'status': 'current', 'reasons': []}
     original = clips['entry'].read_bytes()
     clips['entry'].write_bytes(original + b'\0')
@@ -202,8 +205,8 @@ def silent(path, color, seconds=1.0):
 
 @needs_ff
 @pytest.mark.parametrize('with_dialogue', [False, True])
-def test_audio_requirement_follows_contract_dialogue(p, monkeypatch, with_dialogue):
-    """Approved silent coverage completes without audio; dialogue lacking audio stays incomplete."""
+def test_silent_coverage_completes_with_or_without_contract_dialogue(p, monkeypatch, with_dialogue):
+    """Dialogue coverage does not add an audio stream completion gate."""
     from lib import production_execution as execution
     monkeypatch.setattr(subprocess, 'run', REAL_RUN)
     contract = copy.deepcopy(execution.load_shot_contract(p.root))
@@ -222,9 +225,11 @@ def test_audio_requirement_follows_contract_dialogue(p, monkeypatch, with_dialog
         for sid, path in clips.items()])
     cut = draft.compose_first_cut(p.root)
     assert cut['export'] is not None
-    assert cut['audio_required'] is with_dialogue
-    assert bool(cut['audio_missing']) is with_dialogue
-    assert cut['status'] == ('incomplete' if with_dialogue else 'complete')
+    assert 'audio_required' not in cut and 'audio_missing' not in cut
+    assert cut['status'] == 'complete' and cut['audio'] == 'native_source'
+    assert isinstance(cut['technical']['has_audio'], bool)
+    reference = {'path': cut['path'], 'sha256': cut['sha256']}
+    assert draft.first_cut_status(p.root, reference) == {'status': 'current', 'reasons': []}
 
 
 @pytest.mark.parametrize('status', ['prepared', 'submitted', 'consumed_awaiting_original_receipt', 'completed'])

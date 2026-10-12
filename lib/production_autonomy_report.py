@@ -296,6 +296,24 @@ def _mcp_policy_rows(root, policy, sha):
     return rows, exposure, snapshot
 
 
+def _report_policy(root, policy_sha):
+    """Active policy, or the still-approved retained policy for saved history.
+
+    A report only reads existing attempts. When current planning no longer
+    admits new work (for example a retired retime of the current view) the
+    latest activation decision must still approve these exact policy bytes;
+    revocation or any byte change still raises."""
+    try:
+        return autonomy.require_active_policy(root)
+    except autonomy.AutonomyError:
+        decision = autonomy.activation_decision(root)
+        if not (isinstance(decision, dict) and decision.get('user_approved') is True
+                and decision.get('selected') == f'auto_continue:{policy_sha}'):
+            raise
+        return autonomy.load_historical_policy(root, {'derived_from_policy': {
+            'policy_sha256': policy_sha, 'decision_id': decision.get('decision_id')}})
+
+
 def completion_report(project_root, policy_sha):
     """Write a new report using current policy, attempts, ledger and certification.
 
@@ -303,7 +321,7 @@ def completion_report(project_root, policy_sha):
     evidence yields explicit draft findings; it never becomes a passing review.
     """
     root = Path(project_root).resolve()
-    policy, sha, decision_id = autonomy.require_active_policy(root)
+    policy, sha, decision_id = _report_policy(root, policy_sha)
     _require(sha == policy_sha, 'active policy SHA mismatch')
     marker = _read(root / 'project.json')
     _require((marker.get('project_id'), marker.get('story_revision')) ==
@@ -568,7 +586,7 @@ def completion_report(project_root, policy_sha):
     if mcp_exposure is not None:
         report['openart_mcp_unknown_cost'] = mcp_exposure
     # Recheck authorization after evidence collection, still before any writes.
-    current, current_sha, current_decision = autonomy.require_active_policy(root)
+    current, current_sha, current_decision = _report_policy(root, policy_sha)
     _require(current_sha == sha and current_decision == decision_id and current == policy, 'policy changed during report')
     _require(evidence_path.read_bytes() == evidence_raw, 'retained policy evidence changed during report')
     for journal_path, expected_hash in journal_hashes.items():

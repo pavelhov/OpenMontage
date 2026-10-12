@@ -19,7 +19,13 @@ import uuid
 VERSION = '1.0'
 ARTIFACT = Path('artifacts') / 'episode_production_controls.json'
 ALTERNATE_MODES = ('different_provider_or_media_model', 'disabled')
-PURPOSES = ('first_pass', 'repair', 'local_continuation', 'mcp_begin')
+PURPOSES = ('first_pass', 'local_continuation', 'mcp_begin')
+# One-shot factory: every planned clip receives exactly one counted original.
+# Older records may still carry a larger cap or an alternate mode; they parse
+# as history but never raise admission above this fresh cap.
+ONE_SHOT_LIMIT = 1
+DEFAULT_CONTROLS = {'max_generations_per_shot': 1, 'alternate_repair': 'disabled',
+                    'access_fallback': False, 'first_cut': {'enabled': True}}
 CONTROL_KEYS = {'max_generations_per_shot', 'alternate_repair', 'access_fallback'}
 AUTHORITY = {'kind': 'episode_controls_approval', 'grants': []}
 
@@ -112,6 +118,17 @@ def _evidence(root, evidence):
             'approved_by': evidence['approved_by']}
 
 
+def _check_new_controls(controls):
+    controls = _check_controls(controls)
+    if controls['max_generations_per_shot'] != ONE_SHOT_LIMIT:
+        _fail('max_generations_per_shot must be 1')
+    if controls['alternate_repair'] != 'disabled':
+        _fail('alternate_repair must be disabled')
+    if controls['access_fallback'] is not False:
+        _fail('access_fallback must be false')
+    return controls
+
+
 def _check_controls(controls):
     if not isinstance(controls, dict) or not CONTROL_KEYS <= set(controls) or set(controls) - CONTROL_KEYS - {'first_cut'}:
         _fail('controls require ' + ', '.join(sorted(CONTROL_KEYS)) + '; only first_cut is optional')
@@ -155,36 +172,11 @@ def effective_controls(project_dir):
     effective = _effective(data, _marker(root))
     if effective is None:
         return None
-    # A named-shot increase is authority only through the existing authenticated
-    # standing successor chain. Original controls and their chain stay frozen.
-    path = root / 'production_scopes.json'
-    try:
-        scopes = json.loads(path.read_text()) if path.exists() else {}
-    except (OSError, ValueError) as exc:
-        _fail(f'cannot read standing allowance chain: {exc}')
-    if scopes.get('standing_allowance_amendments'):
-        from lib import production_autonomy as autonomy
-        try:
-            policy, _, _ = autonomy.require_active_policy(root)
-            limits = autonomy.effective_standing_caps(root, policy).get('max_attempts_by_shot', {})
-            if limits:
-                original = autonomy._bound_document(root, policy['activation_basis']['standing_setup'],
-                                                    'standing setup').get('episode_controls')
-                current = next(record['controls'] for record in reversed(data['records'])
-                               if record['kind'] == 'controls'
-                               and record['story_revision'] == policy['story_revision'])
-                # A later controls amendment still owns any narrower admission.
-                # Only the exact retained starting controls receive the increase.
-                if original == current:
-                    effective['max_generations_by_shot'] = copy.deepcopy(limits)
-        except (ValueError, KeyError, StopIteration) as exc:
-            _fail(f'standing shot allowance is not current: {exc}')
     return effective
 
 
 def _shot_limit(effective, shot_id):
-    return (effective or {}).get('max_generations_by_shot', {}).get(
-        shot_id, (effective or {}).get('max_generations_per_shot'))
+    return None if effective is None else ONE_SHOT_LIMIT
 
 
 def first_cut_enabled(project_dir):
@@ -233,7 +225,7 @@ def _append_locked(root, kind, key, payload, evidence):
 def record_episode_controls(project_dir, controls, *, evidence):
     """Record approved episode controls -> {record_id, record_sha256, effective}."""
     root = _root(project_dir)
-    controls = _check_controls(controls)
+    controls = _check_new_controls(controls)
     evidence = _evidence(root, evidence)
     record, digest, effective = _append(root, 'controls', 'controls', controls, evidence)
     return {'record_id': record['record_id'], 'record_sha256': digest, 'effective': effective}
@@ -241,7 +233,7 @@ def record_episode_controls(project_dir, controls, *, evidence):
 
 def _record_episode_controls_locked(root, controls, *, evidence):
     """Same canonical recorder for an authenticated activation holding its lock."""
-    controls = _check_controls(controls)
+    controls = _check_new_controls(controls)
     evidence = _evidence(root, evidence)
     record, digest, effective = _append_locked(root, 'controls', 'controls', controls, evidence)
     return {'record_id': record['record_id'], 'record_sha256': digest, 'effective': effective}
@@ -356,15 +348,6 @@ def _media_model(provider, model):
     return None if provider in _MANAGED_MEDIA_PROVIDERS else model
 
 
-def alternate_route_eligible(original_provider, original_model, provider, model):
-    """True when (provider, model) is an alternate to the original route: a
-    different provider or a different reported media model. Mode, tool or
-    route key alone never makes an alternate."""
-    original_model = _media_model(original_provider, original_model)
-    model = _media_model(provider, model)
-    return original_provider != provider or (model is not None and model != original_model)
-
-
 def generation_usage(project_dir):
     """Trusted per-shot motion generation occurrences from journals and MCP state.
 
@@ -397,19 +380,17 @@ def generation_usage(project_dir):
                                 'phase': row.get('phase'), 'state': raw['status'], 'counted': not unbegun,
                                 'reason': 'mcp_prepared_not_begun' if unbegun else 'submitted_or_uncertain',
                                 'local_continuation_eligible': False})
-    per_shot, repair = {}, {}
+    per_shot = {}
     for item in occurrences:
         if item['counted']:
             per_shot[item['shot_id']] = per_shot.get(item['shot_id'], 0) + 1
-            if item['phase'] == 'repair':
-                repair[item['shot_id']] = repair.get(item['shot_id'], 0) + 1
     unresolved = [i['attempt_id'] for i in occurrences if i['counted']
                   and i['state'] in UNRESOLVED_STATES]
     # A completed MCP original still awaiting collection is pending media, not
     # uncertainty: collection costs no slot but the shot is not ready yet.
     pending = unresolved + [i['attempt_id'] for i in occurrences
                             if i['provider'] == 'openart_mcp' and i['state'] == 'completed']
-    return {'total': sum(per_shot.values()), 'per_shot': per_shot, 'repair': repair,
+    return {'total': sum(per_shot.values()), 'per_shot': per_shot,
             'occurrences': occurrences,
             'excluded_never_submitted': [i['attempt_id'] for i in occurrences if not i['counted']],
             'unresolved_originals': unresolved, 'pending': pending}
@@ -422,9 +403,8 @@ def shot_usage(project_dir, shot_id, *, exclude_attempt_id=None):
 
 
 def generation_admission(project_dir, *, shot_id, provider, model=None, purpose,
-                         replaces_attempt_ids=(), exclude_attempt_id=None,
-                         repair_basis='critical_review', creator_repair=None):
-    """Whether one new generation for shot_id may proceed under episode controls.
+                         exclude_attempt_id=None):
+    """Whether the one original generation for shot_id may proceed.
 
     -> {admitted, reasons, limit, used, controls_present}. Controls only narrow;
     existing scope/policy caps are enforced separately by their own checks."""
@@ -434,49 +414,15 @@ def generation_admission(project_dir, *, shot_id, provider, model=None, purpose,
     effective = effective_controls(root)
     if effective is None:
         return {'admitted': True, 'reasons': [], 'limit': None, 'used': None, 'controls_present': False}
-    creator_item = False
-    if repair_basis == 'creator_batch':
-        from lib.production_repair_batches import validate_creator_repair_intent
-        validate_creator_repair_intent(root, creator_repair, shot_id=shot_id, provider=provider,
-            model=model, replaces_attempt_ids=list(replaces_attempt_ids))
-        creator_item = True
     reasons = []
-    repairing = purpose == 'repair' or purpose == 'mcp_begin' and bool(replaces_attempt_ids)
-    if repairing and (effective.get('first_cut') or {}).get('enabled') and repair_basis == 'critical_review':
-        reasons.append('first-cut mode defers creative generation until an exact creator-selected repair')
     if provider in effective['restricted_providers']:
         reasons.append(f'provider {provider} is restricted for this episode')
     usage = generation_usage(root)
     used = sum(1 for i in usage['occurrences'] if i['counted'] and i['shot_id'] == shot_id
                and i['attempt_id'] != exclude_attempt_id)
-    pending = set(usage['pending'])
-    if (purpose != 'mcp_begin' or shot_id in effective.get('max_generations_by_shot', {})) and any(
-            i['counted'] and i['shot_id'] == shot_id and i['attempt_id'] in pending
-            and i['attempt_id'] != exclude_attempt_id for i in usage['occurrences']):
-        reasons.append(f'a pending original for {shot_id} blocks a duplicate generation')
-    limit = _shot_limit(effective, shot_id)
-    if limit is not None and used >= limit:
+    limit = ONE_SHOT_LIMIT
+    if used >= limit:
         reasons.append(f'episode generation limit reached for {shot_id} ({used}/{limit})')
-    routes = {i['attempt_id']: (i['provider'], i['model']) for i in usage['occurrences']}
-    # MCP begin replays the repair route rule so an amendment between prepare
-    # and begin cannot let a same-route reroll through.
-    if repairing and not creator_item and effective['alternate_repair'] == 'different_provider_or_media_model':
-        for original in replaces_attempt_ids or ():
-            old_provider, old_model = routes.get(original, (None, None))
-            if not alternate_route_eligible(old_provider, old_model, provider, model):
-                reasons.append(f'repair of {original} must use a different provider or media model')
-    elif (not creator_item and repair_basis != 'access_fallback'
-          and (purpose == 'repair' or (purpose == 'mcp_begin' and replaces_attempt_ids))
-          and effective['alternate_repair'] == 'disabled'):
-        # Ordinary critical repair stays on the original route; the separately
-        # preapproved access fallback keeps its own different-route rule.
-        model = _media_model(provider, model)
-        for original in replaces_attempt_ids or ():
-            old_provider, old_model = routes.get(original, (None, None))
-            if old_provider != provider or (model is not None and old_model is not None and model != old_model):
-                reasons.append(f'alternate repair is disabled: repair of {original} must keep its provider and media model')
-    if repair_basis == 'access_fallback' and not effective['access_fallback']:
-        reasons.append('access fallback is not approved in episode controls')
     return {'admitted': not reasons, 'reasons': reasons, 'limit': limit, 'used': used,
             'controls_present': True}
 
@@ -489,7 +435,7 @@ def require_admission(project_dir, **kwargs):
 
 
 def _review_entry(root, shot_id, selection, selected=None):
-    from lib.production_review_successors import resolve_selection_review
+    from lib.shot_contract import resolve_selection_review
     from lib.shot_contract import audio_review_disabled
     entry = {'attempt_id': (selection or {}).get('attempt_id') if isinstance(selection, dict) else None,
              'review_status': None, 'warnings': [], 'critical': [], 'unknown': [], 'error': None}
@@ -522,12 +468,12 @@ def _review_entry(root, shot_id, selection, selected=None):
 def _validate_current_selection(root, shot_id, selection, selected):
     """Read-only: a review only reports while the selected bytes and current
     planning still validate. No lock is taken and nothing is written."""
-    from lib.production_review_successors import _context
     from lib.production_provenance import validate_attempt_provenance
     from lib.shot_contract import validate_shot_contract
-    context = _context(root, shot_id, selection)
+    if not isinstance(selection, dict):
+        _fail('selected original required')
     validate_attempt_provenance(root, selection['attempt_id'], shot_id=shot_id,
-        story_revision=context['story_revision'], expected_output=selection['output'])
+        story_revision=_marker(root)['story_revision'], expected_output=selection['output'])
     if selected is None:
         selected = _ex().load_selected_attempts(root)
     readiness = validate_shot_contract(_ex().load_shot_contract(root), project_dir=root,

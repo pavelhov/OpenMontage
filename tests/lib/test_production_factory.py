@@ -100,8 +100,8 @@ def standing_controls_fixture(root, controls):
 
 def test_fresh_standing_activation_projects_explicit_creator_episode_controls(tmp_path):
     from lib import episode_production_controls as controls
-    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'different_provider_or_media_model',
-        'access_fallback': True, 'first_cut': {'enabled': True}}
+    payload = {'max_generations_per_shot': 1, 'alternate_repair': 'disabled',
+        'access_fallback': False, 'first_cut': {'enabled': True}}
     kwargs = standing_controls_fixture(tmp_path, payload)
     before = pa.root_attempt_counts(tmp_path, kwargs['policy'])
     result = pa.activate_standing_run(tmp_path, **kwargs)
@@ -141,11 +141,11 @@ def test_standing_episode_controls_absence_and_explicit_overrides_preserve_defau
 @pytest.mark.parametrize('payload', [None, {}, {'first_cut': {'enabled': True}},
     {'max_generations_per_shot': True, 'alternate_repair': 'disabled', 'access_fallback': False},
     {'max_generations_per_shot': 0, 'alternate_repair': 'disabled', 'access_fallback': False},
-    {'max_generations_per_shot': 2, 'alternate_repair': 'unknown', 'access_fallback': False},
-    {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': 'yes'},
-    {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False,
+    {'max_generations_per_shot': 1, 'alternate_repair': 'unknown', 'access_fallback': False},
+    {'max_generations_per_shot': 1, 'alternate_repair': 'disabled', 'access_fallback': 'yes'},
+    {'max_generations_per_shot': 1, 'alternate_repair': 'disabled', 'access_fallback': False,
      'first_cut': {'enabled': True, 'extra': True}},
-    {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False, 'provider': 'anything'}])
+    {'max_generations_per_shot': 1, 'alternate_repair': 'disabled', 'access_fallback': False, 'provider': 'anything'}])
 def test_standing_episode_controls_invalid_explicit_snapshot_writes_no_authority(tmp_path, payload):
     kwargs = standing_controls_fixture(tmp_path, payload)
     with execution._lock(tmp_path): pass
@@ -157,7 +157,7 @@ def test_standing_episode_controls_invalid_explicit_snapshot_writes_no_authority
 
 @pytest.mark.parametrize('change', ['setup_bytes', 'creator_subject', 'creator_identity', 'command_setup'])
 def test_standing_episode_controls_require_exact_creator_setup_and_command(tmp_path, change):
-    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False}
+    payload = {'max_generations_per_shot': 1, 'alternate_repair': 'disabled', 'access_fallback': False}
     kwargs = standing_controls_fixture(tmp_path, payload)
     setup = json.loads((tmp_path / kwargs['standing_setup']['path']).read_text())
     if change == 'setup_bytes':
@@ -179,7 +179,7 @@ def test_standing_episode_controls_require_exact_creator_setup_and_command(tmp_p
 
 
 @pytest.mark.parametrize('payload', [{'first_cut': 'malformed-old-ignored-extra'},
-    {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False,
+    {'max_generations_per_shot': 1, 'alternate_repair': 'disabled', 'access_fallback': False,
      'first_cut': {'enabled': True}}])
 def test_old_standing_activation_never_retrofits_ignored_episode_controls(tmp_path, monkeypatch, payload):
     from lib import episode_production_controls as controls
@@ -197,7 +197,7 @@ def test_old_standing_activation_never_retrofits_ignored_episode_controls(tmp_pa
 def test_standing_episode_controls_replay_preserves_later_creator_records(tmp_path):
     from lib import episode_production_controls as controls
     from tests.lib.test_episode_production_controls import approval
-    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False,
+    payload = {'max_generations_per_shot': 1, 'alternate_repair': 'disabled', 'access_fallback': False,
         'first_cut': {'enabled': True}}
     kwargs = standing_controls_fixture(tmp_path, payload)
     activation = pa.activate_standing_run(tmp_path, **kwargs)
@@ -217,7 +217,7 @@ def test_standing_episode_controls_replay_preserves_later_creator_records(tmp_pa
 @pytest.mark.parametrize('stage', ['controls', 'evidence', 'policy', 'decision', 'after_decision'])
 def test_standing_episode_controls_interrupted_fresh_activation_reuses_exact_record(tmp_path, monkeypatch, stage):
     from lib import episode_production_controls as controls
-    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False,
+    payload = {'max_generations_per_shot': 1, 'alternate_repair': 'disabled', 'access_fallback': False,
         'first_cut': {'enabled': True}}
     kwargs = standing_controls_fixture(tmp_path, payload)
     original_write = execution._write_new
@@ -254,7 +254,7 @@ def test_standing_episode_controls_interrupted_fresh_activation_reuses_exact_rec
 @pytest.mark.parametrize('change', ['remove', 'payload', 'record_identity', 'project', 'revoke'])
 def test_standing_episode_controls_initial_binding_refuses_tampering_or_revocation(tmp_path, change):
     from lib import episode_production_controls as controls
-    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False}
+    payload = {'max_generations_per_shot': 1, 'alternate_repair': 'disabled', 'access_fallback': False}
     kwargs = standing_controls_fixture(tmp_path, payload)
     pa.activate_standing_run(tmp_path, **kwargs)
     path = tmp_path / controls.ARTIFACT
@@ -280,9 +280,9 @@ def test_standing_episode_controls_initial_binding_refuses_tampering_or_revocati
 def test_standing_episode_controls_refuse_different_preexisting_current_controls(tmp_path):
     from lib import episode_production_controls as controls
     from tests.lib.test_episode_production_controls import approval
-    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False}
+    payload = {'max_generations_per_shot': 1, 'alternate_repair': 'disabled', 'access_fallback': False}
     kwargs = standing_controls_fixture(tmp_path, payload)
-    controls.record_episode_controls(tmp_path, {**payload, 'max_generations_per_shot': 1},
+    controls.record_episode_controls(tmp_path, {**payload, 'first_cut': {'enabled': True}},
         evidence=approval(tmp_path, 'SYNTHETIC-existing-controls'))
     before = file_bytes(tmp_path)
     with pytest.raises(pa.StandingSetupRequired, match='initial episode controls differ'):
@@ -295,8 +295,8 @@ def test_standing_absent_controls_replay_preserves_manual_episode_controls(tmp_p
     from tests.lib.test_episode_production_controls import approval
     kwargs = standing_fixture(tmp_path)
     activation = pa.activate_standing_run(tmp_path, **kwargs)
-    controls.record_episode_controls(tmp_path, {'max_generations_per_shot': 2,
-        'alternate_repair': 'different_provider_or_media_model', 'access_fallback': False,
+    controls.record_episode_controls(tmp_path, {'max_generations_per_shot': 1,
+        'alternate_repair': 'disabled', 'access_fallback': False,
         'first_cut': {'enabled': False}}, evidence=approval(tmp_path, 'SYNTHETIC-manual-override'))
     before = file_bytes(tmp_path)
     assert pa.activate_standing_run(tmp_path, **kwargs) == dict(activation, replayed=True)
@@ -307,7 +307,7 @@ def test_standing_absent_controls_replay_preserves_manual_episode_controls(tmp_p
 
 def test_standing_episode_controls_validate_existing_log_before_authority_writes(tmp_path):
     from jsonschema import ValidationError
-    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False}
+    payload = {'max_generations_per_shot': 1, 'alternate_repair': 'disabled', 'access_fallback': False}
     kwargs = standing_controls_fixture(tmp_path, payload)
     write(tmp_path, 'artifacts/decision_log.json', {'version': '1.0',
         'project_id': kwargs['policy']['project_id'], 'decisions': [{'decision_id': 'malformed'}]})
@@ -318,7 +318,7 @@ def test_standing_episode_controls_validate_existing_log_before_authority_writes
 
 
 def test_standing_episode_controls_duplicate_valid_decisions_write_no_authority(tmp_path):
-    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False,
+    payload = {'max_generations_per_shot': 1, 'alternate_repair': 'disabled', 'access_fallback': False,
         'first_cut': {'enabled': True}}
     kwargs = standing_controls_fixture(tmp_path, payload)
     row = {'decision_id': 'duplicate-existing', 'stage': 'edit', 'category': 'composition_mode',
@@ -337,7 +337,7 @@ def test_standing_episode_controls_duplicate_valid_decisions_write_no_authority(
 
 def test_standing_episode_controls_interrupted_full_decision_id_collision_writes_nothing(tmp_path, monkeypatch):
     from lib import episode_production_controls as controls
-    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False,
+    payload = {'max_generations_per_shot': 1, 'alternate_repair': 'disabled', 'access_fallback': False,
         'first_cut': {'enabled': True}}
     kwargs = standing_controls_fixture(tmp_path, payload)
     original_replace = Path.replace
@@ -831,16 +831,16 @@ def file_bytes(root):
     return {p.relative_to(root): p.read_bytes() for p in root.rglob('*') if p.is_file()}
 
 
-def standing_treatment_fixture(root, *, guided_routes=(), mode_location='project'):
+def standing_treatment_fixture(root, *, guided_routes=(), mode_location='project', treatment='reference_guided'):
     """Exact synthetic route pool over actual authored, possibly pending sources."""
     from lib import production_boards as boards
     if not (root / 'artifacts/shot_contract.json').exists():
         standing_fixture(root)
     contract = execution.load_shot_contract(root)
     if mode_location == 'project':
-        contract['reference_mode'] = 'reference_guided'
+        contract['reference_mode'] = treatment
     else:
-        contract['shots'][0]['reference_mode'] = 'reference_guided'
+        contract['shots'][0]['reference_mode'] = treatment
     write(root, 'artifacts/shot_contract.json', contract)
     marker = json.loads((root / 'project.json').read_text())
     marker.update(identity_id='fixture-identity', pipeline_type='cinematic')
@@ -1056,8 +1056,8 @@ def test_reconcile_standing_checkpoint_stages_freezes_original_and_replays_after
     assert pa.root_attempt_counts(tmp_path, active) == pa.root_attempt_counts(tmp_path, old_policy)
     amendment = copy.deepcopy(kwargs)
     amendment['policy']['checkpoint_stages'] = active['checkpoint_stages']
-    amendment['policy']['caps']['max_repair_attempts'] = 0
-    with pytest.raises(pa.StandingSetupRequired, match='explicit amendment required'):
+    amendment['policy']['caps']['max_total_attempts'] += 1
+    with pytest.raises(pa.StandingSetupRequired, match='caps, checkpoint stages or flex exceed standing setup'):
         pa.activate_standing_run(tmp_path, **amendment)
     # A repeat is a pure no-op even after legitimate production has begun.
     write(tmp_path, 'production_attempts/retained-progress/request.json', {'retained_original': True})
@@ -1477,23 +1477,26 @@ def test_actual_standing_run_derives_native_image_authority_without_new_creator_
         images.import_native_image(root, begun['action']['subject'], host_receipt=receipt)
         assert execution.next_production_action(root)['kind'] == 'promote_imported_board'
         recovered = execution.advance(root)
-        assert recovered['action']['kind'] == 'review_board' and 'host_envelope' not in recovered
-        assert images.image_usage(root)['total'] == 1
+        assert recovered['action']['kind'] not in {'review_board', 'review_planning', 'review_selection'}
+        if insufficient == 'import_crash':
+            assert recovered.get('host_envelope', {}).get('call_id') != begun['host_envelope']['call_id']
+            assert images.image_usage(root)['total'] == 2
+        else:
+            assert recovered['status'] == 'blocked'
+            assert images.image_usage(root)['total'] == 1
         received = execution.complete_action(root, begun['action'], outcome={'host_receipt': receipt})
         assert received['replayed']
     else:
         received = execution.complete_action(root, begun['action'], outcome={'host_receipt': receipt})
-    assert received['action']['kind'] == 'review_board'
-    source = boards.load_board_pack(root)['board_bindings'][slot]
-    review = attestation(source['sha256'], ASSET_PREDICATES, revision='r1'); review['reviewer'] = 'persistent reviewer'
-    continued = execution.complete_action(root, received['action'], outcome={'review': review})
-    pack = boards.load_board_pack(root)
-    assert boards._observation(pack, slot)['review'] == review
+    assert received['action']['kind'] not in {'review_board', 'review_planning', 'review_selection'}
+    assert slot in boards.load_board_pack(root)['board_bindings']
+    continued = received
     scopes = json.loads((root / 'production_scopes.json').read_text())
     assert scopes['image_envelope']['activation_basis']['policy_sha256'] == active['policy_sha256']
     assert scopes['image_envelope']['approval']['approved_by'].startswith('standing_media_authority:')
     if insufficient in {'revoked', 'import_crash_revoked'}:
-        assert continued['status'] == 'blocked'
+        assert 'host_envelope' not in continued
+        assert execution.advance(root)['status'] == 'blocked'
         assert images.image_usage(root)['total'] == 1
         with pytest.raises(pa.AutonomyError): images.activate_standing_image_envelope(root)
     else:
@@ -1521,7 +1524,7 @@ def test_loop_discloses_usable_failed_candidate_for_draft_without_fake_selection
     review = attestation(output_sha, ['possession'])
     review.update(status='fail', predicates=[{'name': 'possession', 'status': 'fail', 'evidence': 'SYNTHETIC duplicate bill'}])
     execution.record_rejection(p.root, aid, review)
-    # Remaining dependent shots cannot start from a failed upstream selection.
+    # Semantically failed playable footage remains eligible for the cut.
     action = execution.next_production_action(p.root)
     assert action['kind'] == 'compose_cut'
     candidate = action['inputs']['candidates'][0]
@@ -1661,285 +1664,7 @@ def test_motion_waiting_original_does_not_hold_independent_ready_shot(p, monkeyp
         'next_action': {'action': 'poll_original', 'attempt_id': original['attempt_id']}})
     action = execution.next_production_action(p.root)
     assert action['kind'] == 'prepare_motion' and action['subject'] == 'interior'
-
-
-def serial_factory_fixture(p, *, independent=False, board_pack=False):
-    """Real offline dispatcher/selection, synthetic four-shot standing authority."""
-    from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES
-    final = copy.deepcopy(p.contract['shots'][-1])
-    final.update(id='coda', upstream=[{'shot_id': 'payoff'}])
-    final['asset_ids'] = ['coda-start', 'coda-end', *final['cast_ids']]
-    p.contract['shots'].append(final)
-    p.add_asset('coda-start', 'start_frame', final['cast_ids'])
-    p.add_asset('coda-end', 'end_frame', final['cast_ids'])
-    p.contract['planning_mode'] = 'shot_local_v1'
-    if independent:
-        next(s for s in p.contract['shots'] if s['id'] == 'payoff')['upstream'] = []
-    for shot in p.contract['shots']:
-        shot['endpoint_completion'] = 'unknown'
-    p.contract['project_review'] = attestation(project_review_subject(p.contract), PROJECT_PREDICATES)
-    for shot in p.contract['shots']:
-        shot['review'] = attestation(shot_review_subject(p.contract, shot['id']), SHOT_PREDICATES)
-        if shot['id'] != 'entry' and not (independent and shot['id'] == 'payoff'):
-            shot['review']['status'] = 'unknown'
-            for predicate in shot['review']['predicates']:
-                predicate['status'] = 'unknown'
-    p.persist_contract()
-    p.plan, p.manifest = p.canonical_boards()
-    for scene in p.plan['scenes']:
-        scene['script_section_id'] = scene['id']
-    p.inputs = {shot['id']: p.request(shot) for shot in p.contract['shots']}
-    p.write_planning_checkpoints()
-    p.scope['approval_plan_sha256'] = execution.approval_plan_digest(p.contract)
-    if board_pack:
-        # Author the real retained reuse pack before any immutable original
-        # exists. Its local entry scope is exact for this source-only fixture.
-        from lib import production_boards as boards
-        p.plan['metadata'].update(project_id=p.contract['project_id'], story_revision=p.contract['story_revision'])
-        p.manifest['metadata'].update(project_id=p.contract['project_id'], story_revision=p.contract['story_revision'])
-        write(p.root, 'artifacts/scene_plan.json', p.plan)
-        write(p.root, 'artifacts/asset_manifest.json', p.manifest)
-        template = copy.deepcopy(p.contract)
-        for asset in template['assets']:
-            for key in ('path', 'sha256', 'review'):
-                asset.pop(key)
-        shared = [{'asset_id': a['id'], 'role': a['role']} for a in p.contract['assets']
-                  if a['role'] in {'identity_reference', 'payoff_board'}]
-        references = [{key: copy.deepcopy(a[key]) for key in ('id', 'role', 'path', 'sha256', 'review')}
-                      | {'applicability': {'story_revision': p.contract['story_revision'], 'roles': [a['role']]}}
-                      for a in p.contract['assets']]
-        p.board_spec = {'version': '1.1', 'reviewer': 'SYNTHETIC current board reviewer',
-            'story': write(p.root, 'notes/serial-board-story.json', p.contract['story']),
-            'approval': write(p.root, 'notes/serial-board-approval.json', {'status': 'approved', 'fixture_only': True}),
-            'references': references, 'image_nodes': [], 'shared_roles': shared,
-            'shots': [{'shot_id': shot['id'], 'roles': [{'asset_id': aid, 'role': next(
-                a['role'] for a in p.contract['assets'] if a['id'] == aid)} for aid in shot['asset_ids']
-                if aid not in {r['asset_id'] for r in shared}],
-                'video_dependencies': [row['shot_id'] for row in shot['upstream']]} for shot in p.contract['shots']],
-            'motion_binding': {'contract_template': template, 'motion_handoffs': p.manifest['metadata']['motion_handoffs']}}
-        write(p.root, 'production_scopes.json', {'version': '1.0', 'scopes': []})
-        boards.prepare_board_pack(p.root, p.board_spec, images=images)
-        p.contract = execution.load_shot_contract(p.root)
-        p.scope['planning_mode'] = 'shot_local_v1'
-        p.scope['approval_plan_sha256'] = execution.approval_plan_digest(p.contract, 'entry')
-    p.scope['requests'] = {sid: execution.planned_request_digest(inputs, project_dir=p.root)
-                           for sid, inputs in p.inputs.items()}
-    p.scope['attempts_per_shot'] = {sid: 1 for sid in p.inputs}
-    p.persist_scope()
-    script = json.loads((p.root / 'artifacts/script.json').read_text())
-    baselines = {}
-    for shot in p.contract['shots']:
-        sid = shot['id']; projection = pa.current_projection(p.root, sid)
-        baselines[sid] = {'projection': projection,
-            'planned_request_template': execution.planned_request_template(p.inputs[sid], project_dir=p.root),
-            'script_snapshot': script, 'dialogue_coverage': pa.dialogue_occurrences(projection),
-            'approval_plan_sha256': execution.approval_plan_digest(p.contract, sid)}
-    policy = make_policy(project_id=p.contract['project_id'], story_revision=p.contract['story_revision'],
-        caps={'max_total_attempts': 4, 'max_attempts_per_shot': 2, 'max_repair_attempts': 1},
-        locked={'cast': {}, 'dialogue': {}, 'sources': [], 'story_predicates': [], 'controls': {}})
-    accounts = {'grok_cli': 'SYNTHETIC-grok', 'openart_cli': 'SYNTHETIC-openart'}
-    setup = {'version': '1.0', 'identity_id': 'fixture-identity', 'enabled': True,
-        'providers': policy['providers'], 'provider_accounts': accounts, 'caps': policy['caps'],
-        'checkpoint_stages': policy['checkpoint_stages'], 'flex': policy['flex'],
-        'approved_source_sha256': [a['sha256'] for a in p.contract['assets']], 'required_permissions': [],
-        'source_transfer': [{'provider': provider, 'account': account,
-            'roles': sorted({a['role'] for a in p.contract['assets']}), 'generated_board_sources': True,
-            'max_files': 20, 'max_file_bytes': 10000, 'max_batch_bytes': 200000, 'max_batches': 8}
-            for provider, account in accounts.items()]}
-    standing = creator_fixture(p.root, 'serial-standing', setup)
-    command = creator_fixture(p.root, 'serial-command', {'version': '1.0', 'identity_id': 'fixture-identity',
-        'project_id': p.contract['project_id'], 'story_revision': p.contract['story_revision'], 'command': 'make_video',
-        'standing_setup_sha256': standing['sha256']})
-    pa.activate_standing_run(p.root, policy=policy, baselines=baselines, standing_setup=standing,
-        run_command=command, identity_id='fixture-identity')
-    result = p.generate('entry')
-    assert result.success, result.error
-    p.select('entry', result)
-    return p
-
-
-def test_selected_upstream_advances_all_four_local_shots_without_creative_pass(p):
-    from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES, review_digest
-    p = serial_factory_fixture(p)
-    authored = copy.deepcopy(p.contract)
-    frozen = {name: (p.root / name).read_bytes() for name in (
-        'production_scopes.json', 'artifacts/autonomy_policy.json', 'notes/serial-standing.json', 'notes/serial-command.json')}
-    for sid, upstream_id in [('interior', 'entry'), ('payoff', 'interior'), ('coda', 'payoff')]:
-        before = file_bytes(p.root)
-        action = execution.next_production_action(p.root)
-        assert (action['kind'], action['subject']) == ('bind_selected_upstream', sid)
-        assert file_bytes(p.root) == before
-        calls = len(p.transport.native_requests)
-        advanced = execution.advance(p.root)
-        assert advanced['steps'] == 1 and advanced['provider_calls'] == 0
-        planning = advanced['action']
-        assert (planning['kind'], planning['subject']) == ('review_planning', sid)
-        current = execution.load_shot_contract(p.root)
-        target = next(s for s in current['shots'] if s['id'] == sid)
-        selected = execution.load_selected_attempts(p.root)[upstream_id]
-        assert target['upstream'] == [{'shot_id': upstream_id, 'attempt_id': selected['attempt_id'],
-            'output_sha256': selected['output']['sha256'], 'outgoing_frame_sha256': selected['outgoing_frame']['sha256'],
-            'review_sha256': review_digest(selected['review'])}]
-        assert target['endpoint_completion'] == 'unknown' and target['review']['status'] == 'unknown'
-        assert execution.approval_plan_digest(current, sid) == execution.approval_plan_digest(authored, sid)
-        before_review = file_bytes(p.root)
-        assert execution.advance(p.root)['action'] == planning and file_bytes(p.root) == before_review
-        reviewed = execution.complete_action(p.root, planning, outcome={
-            'project_review': attestation(project_review_subject(current), PROJECT_PREDICATES),
-            'shot_review': attestation(shot_review_subject(current, sid), SHOT_PREDICATES)})
-        assert (reviewed['action']['kind'], reviewed['action']['subject']) == ('prepare_motion', sid)
-        assert len(p.transport.native_requests) == calls
-        # Only the fixture producer's explicit actual transport call follows its
-        # synthetic verdict; neither next/advance/review dispatches video.
-        p.contract = execution.load_shot_contract(p.root)
-        result = p.generate(sid)
-        assert result.success, result.error
-        p.select(sid, result)
-    assert len(p.transport.native_requests) == 4
-    assert {name: (p.root / name).read_bytes() for name in frozen} == frozen
-    assert execution.next_production_action(p.root)['kind'] == 'compose_cut'
-
-
-@pytest.mark.parametrize('defect,match', [
-    ('missing', 'current accepted selection'), ('output', 'bytes differ'),
-    ('outgoing', 'bytes missing or changed'), ('state', 'failed/uncertain/incomplete'),
-    ('review_subject', 'stale review binding'), ('critical', 'review is fail'),
-    ('dependency', 'changed outside'), ('cycle', 'changed outside'),
-    ('story', 'protected story'), ('revoked', 'revoked')])
-def test_selected_upstream_transition_refuses_stale_or_unauthorized_evidence(p, defect, match):
-    p = serial_factory_fixture(p)
-    contract = execution.load_shot_contract(p.root)
-    selected = execution.load_selected_attempts(p.root)
-    selection = selected['entry']
-    if defect == 'missing':
-        selected.pop('entry')
-    elif defect in {'output', 'outgoing'}:
-        role = 'output' if defect == 'output' else 'outgoing_frame'
-        path = Path(selection[role]['path']); path.chmod(0o644); path.write_bytes(b'SYNTHETIC changed bytes')
-    elif defect == 'state':
-        path = p.root / 'production_attempts' / selection['attempt_id'] / 'result.json'
-        value = json.loads(path.read_text()); value['status'] = 'failed'; path.chmod(0o644)
-        write(p.root, str(path.relative_to(p.root)), value)
-    elif defect == 'review_subject':
-        selection['review']['subject_sha256'] = '0'*64
-    elif defect == 'critical':
-        selection['review']['status'] = 'fail'
-        next(item for item in selection['review']['predicates'] if item['name'] == 'completed_action')['status'] = 'fail'
-    elif defect in {'dependency', 'cycle'}:
-        next(s for s in contract['shots'] if s['id'] == 'interior')['upstream'] = [
-            {'shot_id': 'payoff' if defect == 'dependency' else 'interior'}]
-        write(p.root, 'artifacts/shot_contract.json', contract)
-    elif defect == 'story':
-        contract['story']['payoff'] += ' Unauthorized story change.'
-        write(p.root, 'artifacts/shot_contract.json', contract)
-    else:
-        log = json.loads((p.root / 'artifacts/decision_log.json').read_text())
-        log['decisions'][-1]['user_approved'] = False
-        write(p.root, 'artifacts/decision_log.json', log)
-    before = file_bytes(p.root)
-    with pytest.raises((execution.ProductionGovernanceError, pa.AutonomyError), match=match):
-        execution._selected_upstream_transition(p.root, contract, 'interior', selected)
-    assert file_bytes(p.root) == before
-
-
-def test_upstream_metadata_has_no_generation_cap_or_count_effect(p, monkeypatch):
-    p = serial_factory_fixture(p)
-    policy = pa.require_active_policy(p.root)[0]
-    before = pa.root_attempt_counts(p.root, policy)
-    monkeypatch.setattr(pa, 'check_caps', lambda *a: pytest.fail('metadata binding consumed a generation gate'))
-    assert execution.advance(p.root)['action']['kind'] == 'review_planning'
-    assert pa.root_attempt_counts(p.root, policy) == before
-    assert len(p.transport.native_requests) == 1
-
-
-def test_upstream_binding_stale_action_refuses_writes_under_lock(p):
-    p = serial_factory_fixture(p)
-    action = execution.next_production_action(p.root)
-    selected = execution.load_selected_attempts(p.root)
-    selected['entry']['review']['subject_sha256'] = '0'*64
-    write(p.root, 'artifacts/selected_attempts.json', selected)
-    before = file_bytes(p.root)
-    with pytest.raises(execution.ProductionGovernanceError, match='production action is stale'):
-        execution._bind_selected_upstream(p.root, action)
-    assert file_bytes(p.root) == before
-
-
-def test_stale_upstream_does_not_hold_independent_eligible_work(p):
-    p = serial_factory_fixture(p, independent=True)
-    selected = execution.load_selected_attempts(p.root)
-    selected['entry']['review']['subject_sha256'] = '0'*64
-    write(p.root, 'artifacts/selected_attempts.json', selected)
-    before = file_bytes(p.root)
-    action = execution.next_production_action(p.root)
-    assert (action['kind'], action['subject']) == ('prepare_motion', 'payoff')
-    assert file_bytes(p.root) == before and len(p.transport.native_requests) == 1
-
-
-def test_existing_incomplete_cut_does_not_stop_selected_upstream_continuation(p):
-    from lib import production_draft as draft
-    from tools.base_tool import ToolResult
-    p = serial_factory_fixture(p)
-    def compose(inputs):
-        Path(inputs['output_path']).write_bytes(b'SYNTHETIC partial first cut')
-        return ToolResult(success=True, artifacts=[inputs['output_path']])
-    cut = draft.compose_first_cut(p.root, compose=compose)
-    assert cut['status'] == 'incomplete' and cut['missing'] and Path(cut['path']).is_file()
-    before = file_bytes(p.root)
-    assert execution.next_production_action(p.root)['kind'] == 'bind_selected_upstream'
-    assert file_bytes(p.root) == before
-    assert execution.advance(p.root)['action']['kind'] == 'review_planning'
-    assert len(p.transport.native_requests) == 1 and Path(cut['path']).is_file()
-
-
-def test_partial_cut_retains_precise_unresolvable_upstream_blocker(p):
-    p = serial_factory_fixture(p)
-    contract = execution.load_shot_contract(p.root)
-    target = next(s for s in contract['shots'] if s['id'] == 'interior')
-    target['upstream'][0].update(attempt_id='different-original', output_sha256='0'*64,
-        outgoing_frame_sha256='0'*64, review_sha256='0'*64)
-    write(p.root, 'artifacts/shot_contract.json', contract)
-    before = file_bytes(p.root)
-    action = execution.next_production_action(p.root)
-    assert action['kind'] == 'compose_cut'
-    assert any('selected attempt changed' in error for error in action['inputs']['blocked_shots']['interior'])
-    assert file_bytes(p.root) == before and len(p.transport.native_requests) == 1
-
-
-def test_board_reprojection_preserves_materialized_upstream_and_actual_planning_review(p):
-    from lib import production_boards as boards
-    from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES, contract_digest
-    p = serial_factory_fixture(p, board_pack=True)
-    planning = execution.advance(p.root)['action']
-    assert (planning['kind'], planning['subject']) == ('review_planning', 'interior')
-    contract = execution.load_shot_contract(p.root)
-    execution.complete_action(p.root, planning, outcome={
-        'project_review': attestation(project_review_subject(contract), PROJECT_PREDICATES),
-        'shot_review': attestation(shot_review_subject(contract, 'interior'), SHOT_PREDICATES)})
-    before = execution.load_shot_contract(p.root)
-    immutable = {str(path): path.read_bytes() for path in (p.root / 'production_attempts').rglob('*') if path.is_file()}
-    pack = boards.prepare_board_pack(p.root, p.board_spec, images=images)
-    assert execution.load_shot_contract(p.root) == before
-    assert pack['motion_projection']['contract_digest'] == contract_digest(before)
-    assert execution.next_production_action(p.root)['kind'] == 'prepare_motion'
-    assert {str(path): path.read_bytes() for path in (p.root / 'production_attempts').rglob('*') if path.is_file()} == immutable
-    assert len(p.transport.native_requests) == 1
-
-
-def test_board_reprojection_refuses_changed_accepted_upstream_without_publishing(p):
-    from lib import production_boards as boards
-    from lib.shot_contract import UPSTREAM_PREDICATES, selection_digest
-    p = serial_factory_fixture(p, board_pack=True)
-    execution.advance(p.root)
-    selection = execution.load_selected_attempts(p.root)['entry']
-    frame = p.root / 'assets/images/entry-new-current-outgoing.png'
-    frame.write_bytes(b'SYNTHETIC newly observed accepted outgoing state')
-    selection['outgoing_frame'] = {'path': str(frame), 'sha256': hashlib.sha256(frame.read_bytes()).hexdigest()}
-    selection['review'] = attestation(selection_digest(selection), UPSTREAM_PREDICATES)
-    execution.record_selection(p.root, 'entry', selection)
-    before = file_bytes(p.root)
-    with pytest.raises(ValueError, match='materialized upstream selection is stale'):
-        boards.prepare_board_pack(p.root, p.board_spec, images=images)
-    assert file_bytes(p.root) == before and len(p.transport.native_requests) == 1
+    assert execution._attempts(p.root) == [original]
 
 
 @pytest.mark.parametrize('cut', [
@@ -1947,7 +1672,14 @@ def test_board_reprojection_refuses_changed_accepted_upstream_without_publishing
     {'status': 'complete', 'technical': None, 'missing': []}])
 def test_current_first_cut_requires_complete_technical_master(p, monkeypatch, cut):
     from lib import production_draft as draft
-    candidates = [{'shot_id': s['id'], 'status': 'candidate', 'review': 'pass'} for s in p.contract['shots']]
+    for shot in p.contract['shots']:
+        sid = shot['id']
+        if shot['upstream']:
+            p.bind_upstream(sid)
+        result = p.generate(sid)
+        assert result.success
+        p.select(sid, result)
+    candidates = draft.first_cut_candidates(p.root)
     monkeypatch.setattr(draft, 'first_cut_candidates', lambda _: candidates)
     monkeypatch.setattr(draft, 'latest_first_cut', lambda _: dict(cut, path='existing-cut.json', sha256='a'*64))
     monkeypatch.setattr(draft, 'first_cut_status', lambda *a: {'status': 'current'})
@@ -2058,7 +1790,6 @@ def test_mcp_standing_upload_final_batch_original_receipt_and_account_revalidati
 
 @pytest.mark.parametrize('unrelated', [False, True])
 def test_standing_mcp_zero_source_prepare_then_begin_at_final_media_slot(lifecycle, monkeypatch, tmp_path, unrelated):
-    from tests.integration.test_openart_alternate_model_repair import _compile
     root, policy, _, inputs, _, _, jobs = lifecycle
     contract = execution.load_shot_contract(root); contract['planning_mode'] = 'shot_local_v1'
     contract['project_review']['subject_sha256'] = project_review_subject(contract)
@@ -2075,7 +1806,7 @@ def test_standing_mcp_zero_source_prepare_then_begin_at_final_media_slot(lifecyc
     marker = json.loads((root / 'project.json').read_text()); marker['identity_id'] = 'fixture-identity'
     write(root, 'project.json', marker)
     timing = json.loads((root / 'artifacts/compiled_request-original.json').read_text())['timing']
-    inputs, native, _ = _compile(root, inputs, 'standing-zero-source', timing)
+    inputs, native, _ = compile_original_mcp(root, inputs, 'standing-zero-source', timing)
     projection = pa.current_projection(root, 'entry')
     baselines = {'entry': {'projection': projection,
         'planned_request_template': execution.planned_request_template(inputs, project_dir=root),
@@ -2318,13 +2049,12 @@ def test_standing_board_materialization_derives_exact_authored_handoff_only(neut
     step = execution.advance(root)
     reviewed = set()
     while {'start', end} - reviewed:
-        assert step['status'] == 'host_action' and step['action']['kind'] == 'receive_native_image', step
+        assert step['status'] == 'host_action' and step['action']['kind'] == 'receive_native_image', step.get('reason', step)
         slot = images.image_call_status(root, step['host_envelope']['call_id'])['slot_id']
         received = execution.complete_action(root, step['action'],
             outcome={'host_receipt': host_receipt(root, step['host_envelope'], name='receipt-' + slot)})
-        source = boards.load_board_pack(root)['board_bindings'][slot]
-        review = attestation(source['sha256'], ASSET_PREDICATES, revision='r1'); review['reviewer'] = 'persistent reviewer'
-        step = execution.complete_action(root, received['action'], outcome={'review': review})
+        assert slot in boards.load_board_pack(root)['board_bindings']
+        step = received
         reviewed.add(slot)
     manifest_path = root / 'artifacts/asset_manifest.json'
     current = pa.current_projection(root, 's1')['manifest_requirements']
@@ -2448,161 +2178,11 @@ def test_shared_identity_reference_first_consumed_by_later_shot_keeps_stable_ali
     assert images.image_usage(root)['total'] == 0
 
 
-def test_corrected_board_never_reschedules_superseded_imported_original(neutral_package, original_host_exception=False):
-    # Original critically rejected, exact corrected board passes: the retained
-    # original stays counted/imported but is never promoted again.
-    from lib import production_boards as boards
-    from lib.shot_contract import ASSET_PREDICATES
-    root, package, bind = neutral_package
-    package = prospective_package(package); request.prepare_package(root, bind(package))
-    def run(call_id, correction=None, fail=False):
-        prepared = boards.prepare_image_request(root, 'start', correction=correction, images=images)
-        scope = {'id': 'scope-' + call_id, 'status': 'approved', 'approved_by': 'SYNTHETIC creator fixture',
-            'project_id': package['project_id'], 'story_revision': 'r1', 'phase': 'image', 'provider': 'native_imagegen',
-            'evidence': {k: package['boards']['approval'][k] for k in ('path', 'sha256')},
-            'image_allowance': 2, 'allowed_image_routes': ['native_imagegen'],
-            'requests': {'start': prepared['request_sha256']}, 'attempts_per_shot': {'start': 1}}
-        path = root / 'production_scopes.json'
-        scopes = json.loads(path.read_text()) if path.exists() else {'version': '1.0', 'scopes': []}
-        scopes['scopes'].append(scope); write(root, 'production_scopes.json', scopes)
-        boards.reserve_board_image(root, 'start', scope_id=scope['id'], call_id=call_id, correction=correction, images=images)
-        envelope = images.begin_native_image(root, call_id)
-        if original_host_exception and call_id == 'original-start':
-            from tests.lib.test_production_images import file_sha256
-            write(root, 'receipts/raised.json', {'call_id': call_id, 'tool_name': envelope['tool_name'],
-                'arguments': envelope['arguments'], 'exception': {'message': 'SYNTHETIC raised host exception'}})
-            raised = root / 'receipts/raised.json'
-            images.record_native_image_host_exception(root, call_id,
-                host_exception={'path': str(raised), 'sha256': file_sha256(raised)})
-        images.import_native_image(root, call_id, host_receipt=host_receipt(root, envelope, name=call_id))
-        source = boards.bind_imported_board(root, 'start', call_id, images=images)
-        review = attestation(source['sha256'], ASSET_PREDICATES, revision='r1')
-        review.update(reviewer='persistent reviewer', review_id='review-' + call_id)
-        if fail:
-            review['status'] = 'fail'; review['predicates'][0].update(status='fail', severity='critical')
-        boards.record_board_review(root, 'start', review, roles=['start_frame'], images=images)
-    run('original-start', fail=True)
-    run('corrected-start', correction=boards.board_correction_intent(root, 'start', changes='SYNTHETIC exact fix'))
-    pack = boards.load_board_pack(root)
-    assert pack['board_bindings']['start']['call_id'] == 'corrected-start'
-    assert boards.imported_board_eligibility(root, pack, 'start', 'original-start', images=images) is None
-    with pytest.raises(ValueError, match='differs from the current prepared board request'):
-        boards.bind_imported_board(root, 'start', 'original-start', images=images)
-    action = execution.next_production_action(root)
-    assert action['kind'] != 'promote_imported_board', action
-    stepped = execution.advance(root)
-    assert stepped.get('action', {}).get('kind') != 'promote_imported_board', stepped
-    assert boards.load_board_pack(root)['board_bindings']['start']['call_id'] == 'corrected-start'
-    assert images.image_usage(root)['total'] == 2
-    assert images.image_call_status(root, 'original-start')['state'] == 'imported'
-
-
-def test_corrected_board_never_repromotes_rejected_host_exception_original(neutral_package):
-    # The original retained an actual raised host exception, later imported real
-    # bytes, failed review, and a normal exact correction passed. No successor
-    # recovery moved the lane, so the original is superseded, never restored.
-    test_corrected_board_never_reschedules_superseded_imported_original(neutral_package, True)
-
-
-def test_selected_exact_repair_supersedes_rejected_original_review_until_replacement_stale(p):
-    # Original critically rejected; exact repair generated and selected. The old
-    # original keeps its count/evidence but no longer demands review_selection.
-    # Invalidating the replacement bytes makes the stale verdict hide nothing.
-    from tests.integration.test_first_pass_workflow import save
-    from lib.production_execution import record_rejection, planned_request_digest
-    first = p.generate('entry'); assert first.success, first.error
-    original = first.data['production_attempt_id']
-    rejection = attestation(file_sha256_of(first.artifacts[0]), ['possession'])
-    rejection.update(status='fail', predicates=[{'name': 'possession', 'status': 'fail',
-        'severity': 'critical', 'evidence': 'SYNTHETIC critical defect'}])
-    record_rejection(p.root, original, rejection)
-    repair = copy.deepcopy(p.scope)
-    repair.update(id='entry-repair', phase='repair', replaces_attempt_ids=[original], attempts_per_shot={'entry': 1})
-    repair_inputs = copy.deepcopy(p.inputs['entry'])
-    repair_inputs['governance']['scope_id'] = 'entry-repair'
-    repair_inputs['output_path'] = str(p.root / 'assets/video/entry-repair.mp4')
-    repair['requests'] = {'entry': planned_request_digest(repair_inputs, project_dir=p.root)}
-    save(p.root / 'production_scopes.json', {'version': '1.0', 'scopes': [p.scope, repair]})
-    second = p.selector.execute(repair_inputs); assert second.success, second.error
-    p.select('entry', second)
-    action = execution.next_production_action(p.root)
-    assert not (action['kind'] == 'review_selection' and action['subject'] == original), action
-    assert len(p.transport.native_requests) == 2
-    assert any(a['attempt_id'] == original for a in execution._attempts(p.root))
-    replacement = p.root / 'assets/video/entry-repair.mp4'
-    replacement.write_bytes(replacement.read_bytes() + b'SYNTHETIC drift')
-    # The stale selection no longer supersedes: the rejected original is again the
-    # disclosed current candidate (never strict), and the cut is not complete.
-    from lib import production_draft as draft
-    entry = next(r for r in draft.first_cut_candidates(p.root) if r['shot_id'] == 'entry')
-    assert (entry['attempt_id'], entry['review'], entry['strict_selected']) == (original, 'fail', False)
-    assert [f['name'] for f in entry['findings']] == ['possession']
-    stale = execution.next_production_action(p.root)
-    assert stale['kind'] not in {'complete', 'deliver'}, stale
-    assert len(p.transport.native_requests) == 2
-
-
 def file_sha256_of(path):
     return hashlib.sha256(open(path, 'rb').read()).hexdigest()
 
 
-@pytest.mark.parametrize('successor_emitted', [True, False])
-def test_late_host_exception_original_respects_successor_lane(neutral_package, successor_emitted):
-    # A late authentic original stays counted/collectable. A submitted linked
-    # successor owns the lane; an un-emitted reservation lets the original restore.
-    from lib import production_boards as boards
-    from tests.lib.test_production_images import file_sha256
-    root, package, bind = neutral_package
-    package = prospective_package(package); request.prepare_package(root, bind(package))
-    prepared = boards.prepare_image_request(root, 'start', images=images)
-    scope = {'id': 'scope-start', 'status': 'approved', 'approved_by': 'SYNTHETIC creator fixture',
-        'project_id': package['project_id'], 'story_revision': 'r1', 'phase': 'image', 'provider': 'native_imagegen',
-        'evidence': {k: package['boards']['approval'][k] for k in ('path', 'sha256')},
-        'image_allowance': 2, 'allowed_image_routes': ['native_imagegen'],
-        'requests': {'start': prepared['request_sha256']}, 'attempts_per_shot': {'start': 1}}
-    write(root, 'production_scopes.json', {'version': '1.0', 'scopes': [scope]})
-    boards.reserve_board_image(root, 'start', scope_id='scope-start', call_id='original-start', images=images)
-    envelope = images.begin_native_image(root, 'original-start')
-    path = root / 'receipts/exception.json'
-    write(root, 'receipts/exception.json', {'call_id': 'original-start', 'tool_name': envelope['tool_name'],
-        'arguments': envelope['arguments'], 'exception': {'message': 'SYNTHETIC raised host exception'}})
-    images.record_native_image_host_exception(root, 'original-start',
-        host_exception={'path': str(path), 'sha256': file_sha256(path)})
-    child = boards.prepare_image_request(root, 'start', replace_exception_call_id='original-start', images=images)
-    child_scope = 'scope-successor'
-    successor = dict(scope, id=child_scope, requests={'start': child['request_sha256']})
-    write(root, 'production_scopes.json', {'version': '1.0', 'scopes': [scope, successor]})
-    boards.reserve_board_image(root, 'start', scope_id=child_scope, call_id='successor-start',
-        replace_exception_call_id='original-start', images=images)
-    if successor_emitted:
-        images.begin_native_image(root, 'successor-start')
-    images.import_native_image(root, 'original-start', host_receipt=host_receipt(root, envelope, name='late-original'))
-    pack = boards.load_board_pack(root)
-    kind = boards.imported_board_eligibility(root, pack, 'start', 'original-start', images=images)
-    action = execution.next_production_action(root)
-    if successor_emitted:
-        assert kind == 'successor'
-        assert not (action['kind'] == 'promote_imported_board' and action['subject'] == 'original-start'), action
-        assert boards.bind_imported_board(root, 'start', 'original-start', images=images) is None
-        assert 'start' not in boards.load_board_pack(root)['board_bindings']
-    else:
-        assert kind == 'restore'
-        assert action['kind'] == 'promote_imported_board' and action['subject'] == 'original-start', action
-        bound = boards.bind_imported_board(root, 'start', 'original-start', images=images)
-        assert bound['call_id'] == 'original-start'
-        assert boards.load_board_pack(root)['image_packets']['start']['request_sha256'] == prepared['request_sha256']
-        # The never-emitted successor stays reserved/counted but is not scheduled:
-        # it can no longer qualify for recovery once the original returned bytes.
-        after = execution.next_production_action(root)
-        assert not (after['kind'] == 'begin_native_image' and after['subject'] == 'successor-start'), after
-        stepped = execution.advance(root)
-        assert stepped['action']['subject'] != 'successor-start', stepped
-        assert images.image_call_status(root, 'successor-start')['state'] == 'reserved'
-    assert images.image_usage(root)['total'] == 2
-    assert images.image_call_status(root, 'original-start')['state'] == 'imported'
-
-
-def correction_factory_fixture(neutral_package, *, image_allowance=8, required_start=(), extra_start_role=False):
+def board_factory_fixture(neutral_package, *, image_allowance=8, required_start=(), extra_start_role=False):
     """Activated synthetic board run; every host return below is fixture bytes."""
     root, package, bind = neutral_package
     package = prospective_package(package)
@@ -2635,8 +2215,8 @@ def correction_factory_fixture(neutral_package, *, image_allowance=8, required_s
             'roles': ['identity', 'identity_reference', 'start_frame', 'end_frame', 'payoff_board'],
             'generated_board_sources': True, 'max_files': 8, 'max_file_bytes': 10000,
             'max_batch_bytes': 80000, 'max_batches': 8} for provider, account in accounts.items()]}
-    standing = creator_fixture(root, 'standing-correction', setup)
-    command = creator_fixture(root, 'command-correction', {'version': '1.0', 'identity_id': 'fixture-identity',
+    standing = creator_fixture(root, 'standing-boards', setup)
+    command = creator_fixture(root, 'command-boards', {'version': '1.0', 'identity_id': 'fixture-identity',
         'project_id': contract['project_id'], 'story_revision': 'r1', 'command': 'make_video',
         'standing_setup_sha256': standing['sha256']})
     pa.activate_standing_run(root, policy=policy, baselines=baselines,
@@ -2645,11 +2225,11 @@ def correction_factory_fixture(neutral_package, *, image_allowance=8, required_s
     return root
 
 
-def retain_factory_board(root, slot, *, predicates=None, omitted=(), roles=None, replace_exception_call_id=None):
+def retain_factory_board(root, slot, *, predicates=None, omitted=(), roles=None):
     from lib import production_boards as boards
-    prepared = boards.prepare_image_request(root, slot, images=images, replace_exception_call_id=replace_exception_call_id)
-    scope = images.derive_native_image_scope(root, prepared['packet'], slot, prepared['arguments'], output_path=prepared['output_path'], replace_exception_call_id=replace_exception_call_id)
-    call = boards.reserve_board_image(root, slot, scope_id=scope, call_id='fixture-' + slot, images=images, replace_exception_call_id=replace_exception_call_id)
+    prepared = boards.prepare_image_request(root, slot, images=images)
+    scope = images.derive_native_image_scope(root, prepared['packet'], slot, prepared['arguments'], output_path=prepared['output_path'])
+    call = boards.reserve_board_image(root, slot, scope_id=scope, call_id='fixture-' + slot, images=images)
     envelope = images.begin_native_image(root, call['call_id'])
     images.import_native_image(root, call['call_id'], host_receipt=host_receipt(root, envelope, name='fixture-' + slot))
     source = boards.bind_imported_board(root, slot, call['call_id'], images=images)
@@ -2697,535 +2277,28 @@ def reference_review_factory_fixture(neutral_package, *, motion_identity=True, d
         from lib import production_boards as boards
         boards.prepare_board_pack(root, spec, images=images)
         return root
-    root = correction_factory_fixture((root, package, bind))
+    root = board_factory_fixture((root, package, bind))
     for slot in ('start', 'end', 'payoff'):
         retain_factory_board(root, slot)
     return root
 
 
-@pytest.mark.parametrize('restore_contract', [False, True])
-def test_motion_reference_gap_retains_evidence_then_reviews_current_planning(neutral_package, restore_contract):
-    from lib import production_boards as boards
-    from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES
-    root = reference_review_factory_fixture(neutral_package)
-    original = boards._observation(boards.load_board_pack(root), 'cast', 'identity_reference')['review']
-    frozen = {name: (root / name).read_bytes()
-              for name in ('notes/package.json', 'production_scopes.json')}
-    contract = execution.load_shot_contract(root)
-    assert contract['shots'][0]['endpoint_completion'] == 'unknown'
-    authored_digest = execution.contract_digest(contract)
-    if restore_contract:
-        (root / 'artifacts/shot_contract.json').unlink()
-        before_restore = file_bytes(root)
-        assert execution.next_production_action(root)['kind'] == 'restore_derived_views'
-        assert file_bytes(root) == before_restore
-        restored = execution.advance(root)
-        assert restored['action']['kind'] == 'review_board'
-        assert execution.load_shot_contract(root)['shots'][0]['endpoint_completion'] == 'unknown'
-    before = file_bytes(root)
-    action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('review_board', 'cast')
-    assert action['inputs']['required_predicates'] == ['asset_quality']
-    assert action['binding']['roles'] == ['identity_reference']
-    assert action['inputs']['retained_predicates'] == original['predicates']
-    assert file_bytes(root) == before
-    successor = copy.deepcopy(original)
-    successor['review_id'] = 'synthetic-actual-quality-successor'
-    successor['predicates'].append({'name': 'asset_quality', 'status': 'pass', 'severity': 'critical',
-        'evidence': 'SYNTHETIC actual observation of the named quality gap; not production evidence'})
-    completed = execution.complete_action(root, action, outcome={'review': successor})
-    assert 'host_envelope' not in completed
-    pack = boards.load_board_pack(root)
-    assert boards._observation(pack, 'cast', 'identity_reference')['review'] == successor
-    assert boards._observation(pack, 'cast', 'start_frame')['review'] == original
-    planning = completed['action']
-    assert (planning['kind'], planning['subject']) == ('review_planning', 's1')
-    contract = execution.load_shot_contract(root)
-    assert contract['shots'][0]['endpoint_completion'] == 'unknown'
-    assert execution.contract_digest(contract) == authored_digest
-    project_review = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='r1')
-    shot_review = attestation(shot_review_subject(contract, 's1'), SHOT_PREDICATES, revision='r1')
-    ready = execution.complete_action(root, planning,
-        outcome={'project_review': project_review, 'shot_review': shot_review})
-    assert (ready['action']['kind'], ready['action']['subject']) == ('prepare_motion', 's1')
-    assert 'host_envelope' not in ready
-    assert execution.load_shot_contract(root)['shots'][0]['endpoint_completion'] == 'unknown'
-    assert execution.contract_digest(execution.load_shot_contract(root)) == authored_digest
-    assert {name: (root / name).read_bytes() for name in frozen} == frozen
-    assert images.image_usage(root)['total'] == 3
-    assert not list((root / 'production_attempts').glob('*/request.json'))
-
-
-def test_unrelated_reused_reference_keeps_declared_evidence_contract(neutral_package):
-    root = reference_review_factory_fixture(neutral_package, motion_identity=False)
-    before = file_bytes(root)
-    action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('review_planning', 's1')
-    assert file_bytes(root) == before
-
-
-def test_motion_reference_floor_uses_declared_template_before_contract_exists(neutral_package):
+def test_motion_reference_evidence_never_adds_factory_review_gate(neutral_package):
     root = reference_review_factory_fixture(neutral_package, direct_pack=True)
     assert not (root / 'artifacts/shot_contract.json').exists()
     before = file_bytes(root)
     action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('review_board', 'cast')
-    assert action['inputs']['required_predicates'] == ['asset_quality']
-    assert action['binding']['roles'] == ['identity_reference']
+    assert action['kind'] not in {'review_board', 'review_planning', 'review_selection'}
     assert file_bytes(root) == before
 
 
-def failed_payoff_factory_fixture(neutral_package, *, failed_other=False, image_allowance=8):
-    """Canonical offline lifecycle with an observed failed payoff, never a fake pass."""
-    root, package, bind = neutral_package
-    package = copy.deepcopy(package)
-    next(n for n in package['boards']['image_nodes'] if n['slot_id'] == 'payoff')['required_predicates'].append('prop_body_invariants')
-    if failed_other:
-        next(n for n in package['boards']['image_nodes'] if n['slot_id'] == 'other')['required_predicates'].append('prop_body_invariants')
-    root = correction_factory_fixture((root, package, bind), image_allowance=image_allowance)
-    for slot in ('start', 'end', 'other', 'payoff'):
-        retain_factory_board(root, slot, predicates={'prop_body_invariants': 'fail'}
-            if slot == 'payoff' or (failed_other and slot == 'other') else None)
-    return root
-
-
-def failed_payoff_planning_outcome(root, sid='s1'):
-    from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES
-    contract = execution.load_shot_contract(root)
-    project_review = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='r1')
-    project_review['status'] = 'fail'
-    next(p for p in project_review['predicates'] if p['name'] == 'payoff').update(
-        status='fail', severity='critical', evidence='SYNTHETIC actual payoff prop/body invariant failure; correction still needs review')
-    return {'project_review': project_review,
-        'shot_review': attestation(shot_review_subject(contract, sid), SHOT_PREDICATES, revision='r1')}
-
-
-def retain_failed_payoff_planning(root, sid='s1'):
-    # A retained completed review is fixture setup, not a synthesized producer pass.
-    outcome = failed_payoff_planning_outcome(root, sid)
-    contract = execution.load_shot_contract(root)
-    contract['project_review'] = outcome['project_review']
-    next(s for s in contract['shots'] if s['id'] == sid)['review'] = outcome['shot_review']
-    write(root, 'artifacts/shot_contract.json', contract)
-    return outcome
-
-
-def test_truthful_failed_payoff_planning_advances_exact_correction_without_review_loop(neutral_package):
-    from lib import production_boards as boards
-    root = failed_payoff_factory_fixture(neutral_package)
-    outcome = retain_failed_payoff_planning(root)
-    contract = execution.load_shot_contract(root)
-    checked = execution.validate_shot_contract(contract, project_dir=root, shot_id='s1', story_revision='r1')
-    assert checked['errors'] and all(e.startswith('project_review') for e in checked['errors'])
-    assert contract['project_review'] == outcome['project_review']
-    assert contract['shots'][0]['review'] == outcome['shot_review']
-    before = file_bytes(root)
-    action = execution.next_production_action(root)
-    assert action == execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('prepare_board_correction', 'payoff')
-    assert action['inputs']['failed_predicates'] == ['prop_body_invariants']
-    assert action['binding']['source'] == boards.load_board_pack(root)['board_bindings']['payoff']
-    assert action['binding']['correction_observation']['review']['status'] == 'fail'
-    assert file_bytes(root) == before and images.image_usage(root)['total'] == 4
-    assert not execution._attempts(root)
-
-
-def test_failed_payoff_correction_stays_in_original_recovery_and_requires_fresh_reviews(neutral_package):
-    import base64
-    from lib import production_boards as boards
-    from lib.shot_contract import PROJECT_PREDICATES
-    from tests.lib.test_production_images import PNG
-    root = failed_payoff_factory_fixture(neutral_package)
-    outcome = retain_failed_payoff_planning(root)
-    old_pack = boards.load_board_pack(root)
-    old_calls = copy.deepcopy(images._load(root)['calls'])
-    correction = execution.next_production_action(root)
-    completed = execution.complete_action(root, correction,
-        outcome={'changes': 'SYNTHETIC targeted payoff prop/body correction, preserve authored story'})
-    envelope = completed['host_envelope']
-    assert (completed['action']['kind'], completed['action']['subject']) == ('receive_native_image', envelope['call_id'])
-    before = file_bytes(root)
-    assert execution.advance(root)['action'] == completed['action'] == execution.next_production_action(root)
-    assert file_bytes(root) == before and images.image_usage(root)['total'] == 5
-    assert execution.load_shot_contract(root)['project_review'] == outcome['project_review']
-    result = {'image_url': 'data:image/png;base64,' + base64.b64encode(PNG + b'SYNTHETIC payoff correction').decode()}
-    receipt = host_receipt(root, envelope, name='payoff-correction', result=result)
-    received = execution.complete_action(root, completed['action'], outcome={'host_receipt': receipt})
-    board_review = received['action']
-    assert (board_review['kind'], board_review['subject']) == ('review_board', 'payoff')
-    assert execution.load_shot_contract(root)['project_review'] == outcome['project_review']
-    source = boards.load_board_pack(root)['board_bindings']['payoff']
-    actual = attestation(source['sha256'], board_review['inputs']['required_predicates'], revision='r1')
-    actual.update(review_id='SYNTHETIC-corrected-payoff', reviewer='persistent reviewer')
-    for p in actual['predicates']:
-        p.update(severity='critical', evidence='SYNTHETIC current corrected image observation; not production evidence')
-    reviewed = execution.complete_action(root, board_review, outcome={'review': actual})
-    assert (reviewed['action']['kind'], reviewed['action']['subject']) == ('review_planning', 's1')
-    current = execution.load_shot_contract(root)
-    assert current['project_review'] == outcome['project_review']
-    assert not execution.validate_shot_contract(current, project_dir=root, shot_id='s1')['eligible']
-    assert boards.load_board_pack(root)['observations'][:len(old_pack['observations'])] == old_pack['observations']
-    assert images._load(root)['calls'][:len(old_calls)] == old_calls
-    project_pass = attestation(project_review_subject(current), PROJECT_PREDICATES, revision='r1')
-    planning_outcome = {'project_review': project_pass, 'shot_review': current['shots'][0]['review']}
-    ready = execution.complete_action(root, reviewed['action'], outcome=planning_outcome)
-    assert (ready['action']['kind'], ready['action']['subject']) == ('prepare_motion', 's1')
-    assert images.image_usage(root)['total'] == 5 and not execution._attempts(root)
-
-
-def test_failed_payoff_selects_its_own_correction_among_multiple_failed_slots(neutral_package):
-    root = failed_payoff_factory_fixture(neutral_package, failed_other=True)
-    retain_failed_payoff_planning(root)
-    before = file_bytes(root)
-    action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('prepare_board_correction', 'payoff')
-    assert action['binding']['correction_observation']['asset_id'] == 'payoff'
-    assert file_bytes(root) == before and images.image_usage(root)['total'] == 4
-
-
-@pytest.mark.parametrize('state,kind', [('reserved', 'begin_native_image'),
-    ('submitted', 'receive_native_image'), ('imported', 'promote_imported_board')])
-def test_failed_payoff_existing_correction_original_precedes_new_correction(neutral_package, state, kind):
-    from lib import production_boards as boards
-    root = failed_payoff_factory_fixture(neutral_package)
-    retain_failed_payoff_planning(root)
-    intent = boards.board_correction_intent(root, 'payoff', changes='SYNTHETIC retained original correction')
-    prepared = boards.prepare_image_request(root, 'payoff', correction=intent, images=images)
-    scope = images.derive_native_image_scope(root, prepared['packet'], 'payoff', prepared['arguments'],
-        output_path=prepared['output_path'], correction_intent=intent)
-    call = boards.reserve_board_image(root, 'payoff', scope_id=scope, call_id='pending-payoff-correction',
-        correction=intent, images=images)
-    if state != 'reserved':
-        envelope = images.begin_native_image(root, call['call_id'])
-        if state == 'imported':
-            images.import_native_image(root, call['call_id'],
-                host_receipt=host_receipt(root, envelope, name='original-payoff-correction'))
-    before = file_bytes(root)
-    action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == (kind, call['call_id'])
-    assert action == execution.next_production_action(root)
-    assert file_bytes(root) == before and images.image_usage(root)['total'] == 5
-
-
-def test_failed_payoff_collects_existing_independent_correction_original_first(neutral_package):
-    from lib import production_boards as boards
-    root = failed_payoff_factory_fixture(neutral_package, failed_other=True)
-    retain_failed_payoff_planning(root)
-    intent = boards.board_correction_intent(root, 'other', changes='SYNTHETIC targeted other correction')
-    prepared = boards.prepare_image_request(root, 'other', correction=intent, images=images)
-    scope = images.derive_native_image_scope(root, prepared['packet'], 'other', prepared['arguments'],
-        output_path=prepared['output_path'], correction_intent=intent)
-    call = boards.reserve_board_image(root, 'other', scope_id=scope, call_id='pending-other-correction',
-        correction=intent, images=images)
-    envelope = images.begin_native_image(root, call['call_id'])
-    before = file_bytes(root)
-    action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('receive_native_image', call['call_id'])
-    assert execution.advance(root)['action'] == action
-    assert file_bytes(root) == before and images.image_usage(root)['total'] == 5
-    assert images._call(images._load(root), call['call_id'])['submitted_arguments'] == envelope['arguments']
-
-
-@pytest.mark.parametrize('denied', ['allowance', 'revoked'])
-def test_failed_payoff_correction_never_submits_when_canonical_authority_denies(neutral_package, denied):
-    root = failed_payoff_factory_fixture(neutral_package, image_allowance=4 if denied == 'allowance' else 8)
-    retain_failed_payoff_planning(root)
-    action = execution.next_production_action(root)
-    if denied == 'revoked':
-        log = json.loads((root / 'artifacts/decision_log.json').read_text())
-        revoked = copy.deepcopy(log['decisions'][-1])
-        revoked.update(decision_id='SYNTHETIC-prospective-revocation', selected='strict')
-        log['decisions'].append(revoked)
-        write(root, 'artifacts/decision_log.json', log)
-        action = execution.next_production_action(root)
-    calls = copy.deepcopy(images._load(root))
-    scopes = (root / 'production_scopes.json').read_bytes()
-    for _ in range(2):
-        with pytest.raises(ValueError, match='allowance|exhausted|revoked|activation|inactive'):
-            execution.complete_action(root, action, outcome={'changes': 'SYNTHETIC exact targeted correction'})
-        assert images._load(root) == calls and images.image_usage(root)['total'] == 4
-        assert (root / 'production_scopes.json').read_bytes() == scopes
-    assert not execution._attempts(root)
-
-
-def test_completed_failed_board_prepares_independent_images_then_exact_correction(neutral_package):
-    from lib import production_boards as boards
-    root = correction_factory_fixture(neutral_package, required_start=['prop_body_invariants'])
-    source, review = retain_factory_board(root, 'start', predicates={'prop_body_invariants': 'fail'})
-    before = file_bytes(root)
-    action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('prepare_board_image', 'payoff')
-    assert file_bytes(root) == before and images.image_usage(root)['total'] == 1
-    retain_factory_board(root, 'payoff')
-    assert (execution.next_production_action(root)['kind'], execution.next_production_action(root)['subject']) == ('prepare_board_image', 'other')
-    retain_factory_board(root, 'other')
-    before = file_bytes(root)
-    step = execution.advance(root)
-    assert step['status'] == 'host_action' and 'host_envelope' not in step
-    assert (step['action']['kind'], step['action']['subject']) == ('prepare_board_correction', 'start')
-    assert step['action']['inputs']['failed_predicates'] == ['prop_body_invariants']
-    assert step['action']['binding']['source'] == source
-    assert step['action']['binding']['observations'][0]['review'] == review
-    assert file_bytes(root) == before and images.image_usage(root)['total'] == 3
-    # Imported failed start bytes exist, but its actual dependent ending stays blocked.
-    assert 's1' in boards.board_schedule(root, images=images)['board_blockers']
-    assert 'fixture-end' not in [c['call_id'] for c in images._load(root)['calls']]
-
-
-@pytest.mark.parametrize('gap', ['missing_required', 'unknown_required', 'unknown_extra'])
-def test_failed_board_with_incomplete_evidence_requests_only_named_predicate(neutral_package, gap):
-    root = correction_factory_fixture(neutral_package, required_start=['possession', 'prop_body_invariants'])
-    statuses = {'prop_body_invariants': 'fail'}
-    omitted = ['possession'] if gap == 'missing_required' else []
-    named = 'storyboard_continuity' if gap == 'unknown_extra' else 'possession'
-    if gap != 'missing_required':
-        statuses[named] = 'unknown'
-    _, review = retain_factory_board(root, 'start', predicates=statuses, omitted=omitted)
-    before = file_bytes(root)
-    action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('review_board', 'start')
-    assert action['inputs']['required_predicates'] == [named]
-    assert action['binding']['observations'][0]['review'] == review
-    assert file_bytes(root) == before and images.image_usage(root)['total'] == 1
-
-
-@pytest.mark.parametrize('replacement', [False, True])
-def test_factory_correction_completion_uses_exact_intent_and_original_lifecycle(neutral_package, replacement):
-    import base64
-    from lib import production_boards as boards
-    from tests.lib.test_production_images import PNG
-    root = correction_factory_fixture(neutral_package)
-    for slot in ('payoff', 'start', 'other', 'end'):
-        retain_factory_board(root, slot, predicates={'prop_body_invariants': 'fail'} if slot == 'end' else None)
-    action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('prepare_board_correction', 'end')
-    original = images.image_call_status(root, 'fixture-end')
-    old_scopes = json.loads((root / 'production_scopes.json').read_text())
-    old_pack = boards.load_board_pack(root)
-    outcome = {'changes': 'SYNTHETIC exact creator-preserving targeted correction', 'reference_ids': ['cast', 'start']}
-    if replacement:
-        outcome['replacement_prompt'] = 'SYNTHETIC complete exact corrected prompt'
-    corrected = execution.complete_action(root, action, outcome=outcome)
-    assert corrected['status'] == 'host_action' and corrected['action']['kind'] == 'receive_native_image'
-    envelope = corrected['host_envelope']
-    child = images.image_call_status(root, envelope['call_id'])
-    assert child['slot_id'] == 'end' and child['call_id'] != original['call_id']
-    assert child['output_path'] != original['output_path'] and images.image_usage(root)['total'] == 5
-    prepared = boards.load_board_pack(root)['image_packets']['end']
-    intent = prepared['correction_intent']
-    assert intent['changes'] == outcome['changes'] and intent['source_binding'] == old_pack['board_bindings']['end']
-    assert intent['preceding_request_sha256'] == original['request_sha256']
-    assert envelope['arguments']['prompt'] == (outcome['replacement_prompt'] if replacement else
-        old_pack['image_packets']['end']['arguments']['prompt'] + '\nTargeted correction: ' + outcome['changes'])
-    assert boards.load_board_pack(root)['specification'] == old_pack['specification']
-    scopes = json.loads((root / 'production_scopes.json').read_text())
-    assert scopes['scopes'][:-1] == old_scopes['scopes'] and scopes['image_envelope'] == old_scopes['image_envelope']
-    resumed = execution.advance(root)
-    assert resumed['action'] == corrected['action'] and 'host_envelope' not in resumed
-    assert images.image_call_status(root, 'fixture-end') == original
-    with pytest.raises(execution.ProductionGovernanceError, match='stale'):
-        execution.complete_action(root, action, outcome=outcome)
-    assert images.image_usage(root)['total'] == 5
-    result = {'image_url': 'data:image/png;base64,' + base64.b64encode(PNG + b'SYNTHETIC corrected bytes').decode()}
-    receipt = host_receipt(root, envelope, name='fixture-correction', result=result)
-    received = execution.complete_action(root, resumed['action'], outcome={'host_receipt': receipt})
-    assert (received['action']['kind'], received['action']['subject']) == ('review_board', 'end')
-    assert received['action']['inputs']['required_predicates'] == ['asset_quality', 'cast_identity']
-    assert boards.load_board_pack(root)['board_bindings']['end']['call_id'] == child['call_id']
-    assert old_pack['observations'] == boards.load_board_pack(root)['observations']
-    assert images.image_usage(root)['total'] == 5
-
-
-def test_factory_correction_does_not_expand_exhausted_image_authority(neutral_package):
-    root = correction_factory_fixture(neutral_package, image_allowance=4)
-    for slot in ('payoff', 'start', 'other', 'end'):
-        retain_factory_board(root, slot, predicates={'prop_body_invariants': 'fail'} if slot == 'end' else None)
-    action = execution.next_production_action(root)
-    assert action['kind'] == 'prepare_board_correction'
-    before = images._load(root)
-    scopes = (root / 'production_scopes.json').read_bytes()
-    with pytest.raises(ValueError, match='allowance|exhausted'):
-        execution.complete_action(root, action, outcome={'changes': 'SYNTHETIC exact targeted correction'})
-    assert images._load(root) == before and images.image_usage(root)['total'] == 4
-    assert (root / 'production_scopes.json').read_bytes() == scopes
-
-
-def test_failed_board_preserves_pending_independent_native_original(neutral_package):
-    from lib import production_boards as boards
-    root = correction_factory_fixture(neutral_package, required_start=['prop_body_invariants'])
-    retain_factory_board(root, 'start', predicates={'prop_body_invariants': 'fail'})
-    prepared = boards.prepare_image_request(root, 'payoff', images=images)
-    scope = images.derive_native_image_scope(root, prepared['packet'], 'payoff', prepared['arguments'], output_path=prepared['output_path'])
-    call = boards.reserve_board_image(root, 'payoff', scope_id=scope, call_id='pending-payoff', images=images)
-    images.begin_native_image(root, call['call_id'])
-    before = file_bytes(root)
-    recovered = execution.advance(root)
-    assert (recovered['action']['kind'], recovered['action']['subject']) == ('receive_native_image', 'pending-payoff')
-    assert 'host_envelope' not in recovered and images.image_usage(root)['total'] == 2
-    assert recovered['action'] == execution.advance(root)['action'] and file_bytes(root) == before
-
-
-def test_incomplete_draft_contract_never_preempts_pending_native_original(neutral_package):
-    from lib import production_boards as boards
-    root = correction_factory_fixture(neutral_package)
-    prepared = boards.prepare_image_request(root, 'start', images=images)
-    scope = images.derive_native_image_scope(root, prepared['packet'], 'start', prepared['arguments'],
-        output_path=prepared['output_path'])
-    call = boards.reserve_board_image(root, 'start', scope_id=scope,
-        call_id='synthetic-pending-original', images=images)
-    images.begin_native_image(root, call['call_id'])
-    draft = {'shots': [{'id': 's1', 'cast_ids': [], 'asset_ids': []}]}
-    write(root, 'artifacts/shot_contract.json', draft)
-    assert not execution.validate_shot_contract(draft, project_dir=root, shot_id='s1')['eligible']
-    before = file_bytes(root)
-    action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('receive_native_image', call['call_id'])
-    assert action['inputs']['original_request_sha256'] == call['request_sha256']
-    resumed = execution.advance(root)
-    assert resumed['action'] == action and 'host_envelope' not in resumed
-    assert images.image_usage(root)['total'] == 1
-    assert file_bytes(root) == before
-
-
-def test_completed_minor_board_finding_continues_without_correction(neutral_package):
-    from lib import production_boards as boards
-    root = correction_factory_fixture(neutral_package)
-    _, review = retain_factory_board(root, 'start')
-    review = copy.deepcopy(review)
-    review['review_id'] += '-cosmetic'
-    review['predicates'].append({'name': 'background_alignment', 'status': 'fail', 'severity': 'cosmetic',
-        'evidence': 'SYNTHETIC minor finding disclosed without essential failure'})
-    boards.record_board_review(root, 'start', review, roles=['start_frame'], images=images)
-    before = file_bytes(root)
-    action = execution.next_production_action(root)
-    assert action['kind'] == 'prepare_board_image' and action['subject'] == 'payoff'
-    assert file_bytes(root) == before and images.image_usage(root)['total'] == 1
-
-
-def test_factory_correction_uses_current_failed_role_after_other_role_pass(neutral_package):
-    from lib import production_boards as boards
-    root = correction_factory_fixture(neutral_package, required_start=['prop_body_invariants'], extra_start_role=True)
-    _, failed_review = retain_factory_board(root, 'start', predicates={'prop_body_invariants': 'fail'}, roles=['start_frame'])
-    other_role_review = copy.deepcopy(failed_review)
-    other_role_review.update(review_id='same-bytes-end-role-pass', status='pass')
-    for predicate in other_role_review['predicates']:
-        predicate['status'] = 'pass'
-    boards.record_board_review(root, 'start', other_role_review, roles=['end_frame'], images=images)
-    retain_factory_board(root, 'payoff')
-    retain_factory_board(root, 'other')
-    action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('prepare_board_correction', 'start')
-    assert action['binding']['correction_observation']['review'] == failed_review
-    assert boards._observation(boards.load_board_pack(root), 'start')['review'] == other_role_review
-    corrected = execution.complete_action(root, action, outcome={'changes': 'SYNTHETIC exact failed starting-role correction'})
-    assert corrected['action']['kind'] == 'receive_native_image' and corrected['host_envelope']
-    intent = boards.load_board_pack(root)['image_packets']['start']['correction_intent']
-    assert intent['review_id'] == failed_review['review_id']
-    assert intent['review_sha256'] == request.digest(failed_review)
-    assert images.image_usage(root)['total'] == 4
-
-
-def test_named_missing_role_review_preserves_other_current_failed_role(neutral_package):
-    from lib import production_boards as boards
-    root = correction_factory_fixture(neutral_package, required_start=['prop_body_invariants'], extra_start_role=True)
-    _, failed_review = retain_factory_board(root, 'start', predicates={'prop_body_invariants': 'fail'}, roles=['start_frame'])
-    retain_factory_board(root, 'payoff')
-    retain_factory_board(root, 'other')
-    action = execution.next_production_action(root)
-    assert action['kind'] == 'review_board' and action['binding']['roles'] == ['end_frame']
-    actual_end_role = copy.deepcopy(failed_review)
-    actual_end_role.update(review_id='actual-new-end-role-pass', status='pass')
-    for predicate in actual_end_role['predicates']:
-        predicate['status'] = 'pass'
-    completed = execution.complete_action(root, action, outcome={'review': actual_end_role})
-    assert (completed['action']['kind'], completed['action']['subject']) == ('prepare_board_correction', 'start')
-    pack = boards.load_board_pack(root)
-    assert boards._observation(pack, 'start', 'start_frame')['review'] == failed_review
-    assert boards._observation(pack, 'start', 'end_frame')['review'] == actual_end_role
-    assert images.image_usage(root)['total'] == 3 and 'host_envelope' not in completed
-
-
-@pytest.mark.parametrize('invalid', ['partial', 'changed_fail', 'unknown_fail', 'changed_evidence', 'duplicate',
-                                     'overall_pass', 'overall_unknown'])
-def test_named_gap_requires_carried_complete_verdict_without_erasing_current_failure(neutral_package, invalid):
-    from lib import production_boards as boards
-    root = correction_factory_fixture(neutral_package, required_start=['possession', 'prop_body_invariants'])
-    _, original = retain_factory_board(root, 'start', predicates={'prop_body_invariants': 'fail'}, omitted=['possession'])
-    retain_factory_board(root, 'payoff')
-    retain_factory_board(root, 'other')
-    action = execution.next_production_action(root)
-    assert action['inputs']['required_predicates'] == ['possession']
-    assert action['inputs']['retained_predicates'] == original['predicates']
-    complete = copy.deepcopy(original)
-    complete['review_id'] = 'actual-possession-gap-successor'
-    complete['predicates'].append({'name': 'possession', 'status': 'pass', 'severity': 'critical',
-        'evidence': 'SYNTHETIC actual named gap observation'})
-    invalid_review = copy.deepcopy(complete)
-    failed = next(p for p in invalid_review['predicates'] if p['name'] == 'prop_body_invariants')
-    if invalid == 'partial':
-        invalid_review.update(status='pass', predicates=[invalid_review['predicates'][-1]])
-    elif invalid == 'changed_fail':
-        failed['status'] = 'pass'
-    elif invalid == 'unknown_fail':
-        failed['status'] = 'unknown'
-    elif invalid == 'changed_evidence':
-        failed['evidence'] = 'SYNTHETIC changed retained evidence'
-    elif invalid in {'overall_pass', 'overall_unknown'}:
-        invalid_review['status'] = invalid.removeprefix('overall_')
-    else:
-        invalid_review['predicates'].append(copy.deepcopy(failed))
-    before = file_bytes(root)
-    with pytest.raises(execution.ProductionGovernanceError,
-                       match='carry retained known predicate unchanged|critical failed predicate requires status fail'):
-        execution.complete_action(root, action, outcome={'review': invalid_review})
-    assert file_bytes(root) == before
-    assert boards._observation(boards.load_board_pack(root), 'start')['review'] == original
-    completed = execution.complete_action(root, action, outcome={'review': complete})
-    assert (completed['action']['kind'], completed['action']['subject']) == ('prepare_board_correction', 'start')
-    assert boards._observation(boards.load_board_pack(root), 'start')['review'] == complete
-    assert completed['action']['binding']['correction_observation']['review'] == complete
-    assert images.image_usage(root)['total'] == 3 and 'host_envelope' not in completed
-
-
-def test_conflicting_incomplete_role_observations_receive_separate_carried_successors(neutral_package):
-    from lib import production_boards as boards
-    root = correction_factory_fixture(neutral_package, required_start=['possession', 'prop_body_invariants'], extra_start_role=True)
-    _, first = retain_factory_board(root, 'start', predicates={'prop_body_invariants': 'fail'},
-        omitted=['possession'], roles=['start_frame'])
-    second = copy.deepcopy(first)
-    second.update(review_id='same-bytes-other-incomplete-role', status='pass')
-    next(p for p in second['predicates'] if p['name'] == 'prop_body_invariants')['status'] = 'pass'
-    boards.record_board_review(root, 'start', second, roles=['end_frame'], images=images)
-    retain_factory_board(root, 'payoff')
-    retain_factory_board(root, 'other')
-    action = execution.next_production_action(root)
-    assert action['binding']['roles'] == ['start_frame'] and action['inputs']['retained_predicates'] == first['predicates']
-    first_complete = copy.deepcopy(first)
-    first_complete['review_id'] = 'actual-start-role-gap-successor'
-    first_complete['predicates'].append({'name': 'possession', 'status': 'pass', 'severity': 'critical',
-        'evidence': 'SYNTHETIC actual starting-role missing evidence'})
-    completed = execution.complete_action(root, action, outcome={'review': first_complete})
-    next_action = completed['action']
-    assert next_action['kind'] == 'review_board' and next_action['binding']['roles'] == ['end_frame']
-    assert next_action['inputs']['retained_predicates'] == second['predicates']
-    assert boards._observation(boards.load_board_pack(root), 'start', 'start_frame')['review'] == first_complete
-    second_complete = copy.deepcopy(second)
-    second_complete['review_id'] = 'actual-end-role-gap-successor'
-    second_complete['predicates'].append({'name': 'possession', 'status': 'pass', 'severity': 'critical',
-        'evidence': 'SYNTHETIC actual ending-role missing evidence'})
-    recovered = execution.complete_action(root, next_action, outcome={'review': second_complete})
-    assert recovered['action']['kind'] == 'prepare_board_correction'
-    assert recovered['action']['binding']['correction_observation']['review'] == first_complete
-    assert images.image_usage(root)['total'] == 3
-
-
-def frame_amendment_fixture(neutral_package, monkeypatch, *, cast_bearing=False, episode_controls=None, repair_public_layout=False):
+def frame_shapes_fixture(neutral_package, monkeypatch, *, cast_bearing=False, episode_controls=None, public_layout=False):
     """Legacy incompatible synthetic activation, complete current board evidence."""
     from lib import production_boards as boards
     root, package, bind = neutral_package
     package = prospective_package(package)
     spec = package['boards']; template = spec['motion_binding']['contract_template']
-    template['reference_mode'] = 'reference_guided'
+    template['reference_mode'] = 'frame_conditioned'
     node_by_id = {n['slot_id']: n for n in spec['image_nodes']}
     node_by_id['payoff']['shot_id'] = 's4'
     node_by_id['other']['shot_id'] = 's2'
@@ -3264,6 +2337,7 @@ def frame_amendment_fixture(neutral_package, monkeypatch, *, cast_bearing=False,
     for mapping in spec['shots']:
         sid = mapping['shot_id']; shot = copy.deepcopy(original_shot)
         shot.update(id=sid, asset_ids=list(dict.fromkeys(r['asset_id'] for r in mapping['roles'])), upstream=[])
+        shot['frame_input'] = {'asset_id': next(r['asset_id'] for r in mapping['roles'] if r['role'] == 'start_frame'), 'role': 'start_frame'}
         if cast_bearing:
             shot['cast_ids'] = ['actor'] + (['second-actor'] if sid in {'s3', 's4'} else [])
         template['shots'].append(shot)
@@ -3272,16 +2346,16 @@ def frame_amendment_fixture(neutral_package, monkeypatch, *, cast_bearing=False,
             authored['cast'] = shot['cast_ids']
         package['shots'].append(authored)
     request.prepare_package(root, bind(package))
-    kwargs = standing_treatment_fixture(root)
+    kwargs = standing_treatment_fixture(root, treatment='frame_conditioned')
     setup = json.loads((root / kwargs['standing_setup']['path']).read_text()); setup.pop('authorization')
     setup['native_images']['image_allowance'] = 8
-    if repair_public_layout:
+    if public_layout:
         # Exact synthetic account/project and public controls are retained at activation.
         from lib import openart_mcp as mcp
         provider = next(p for p in kwargs['policy']['providers'] if p['id'] == 'openart_mcp')
         provider.update(uid_sha256=mcp.account_summary()['uid_sha256'], project_id='fixture-project')
         setup['providers'] = copy.deepcopy(kwargs['policy']['providers'])
-    kwargs['policy']['caps'].update(max_total_attempts=8, max_repair_attempts=4)
+    kwargs['policy']['caps'].update(max_total_attempts=4, max_attempts_per_shot=1, max_repair_attempts=0)
     setup['caps'] = copy.deepcopy(kwargs['policy']['caps'])
     for term in setup['source_transfer']:
         term['max_batches'] = 8
@@ -3296,187 +2370,18 @@ def frame_amendment_fixture(neutral_package, monkeypatch, *, cast_bearing=False,
         aid = next(r['asset_id'] for r in mapping['roles'] if r['role'] == 'start_frame')
         value['planned_request_template'] = execution.planned_request_template(
             {'duration': value['projection']['shot']['duration_seconds'], 'image_path': {'$board': {'asset_id': aid}},
-             **({'resolution': '720p', 'aspect_ratio': '9:16'} if repair_public_layout else {})}, project_dir=root)
-    with monkeypatch.context() as patch:
-        patch.setattr(pa, '_validate_standing_route_treatments', lambda *args: None)
-        pa.activate_standing_run(root, **kwargs)
+             **({'resolution': '720p', 'aspect_ratio': '9:16'} if public_layout else {})}, project_dir=root)
+    pa.activate_standing_run(root, **kwargs)
     images.activate_standing_image_envelope(root)
     for slot in ('payoff', 'start', 'end', 'other', 'third-start', 'third-end'):
-        original_id = None
-        if slot in {'start', 'third-start'}:
-            original_id = 'uncertain-' + slot
-            prepared = boards.prepare_image_request(root, slot, images=images)
-            scope = images.derive_native_image_scope(root, prepared['packet'], slot, prepared['arguments'], output_path=prepared['output_path'])
-            boards.reserve_board_image(root, slot, scope_id=scope, call_id=original_id, images=images)
-            envelope = images.begin_native_image(root, original_id)
-            exception = write(root, 'receipts/' + original_id + '.json', {'call_id': original_id,
-                'tool_name': envelope['tool_name'], 'arguments': envelope['arguments'],
-                'exception': {'message': 'SYNTHETIC host exception, original remains collectable.'}})
-            images.record_native_image_host_exception(root, original_id, host_exception=exception)
-        retain_factory_board(root, slot, predicates={'cast_count': 'pass'}, replace_exception_call_id=original_id)
+        retain_factory_board(root, slot, predicates={'cast_count': 'pass'})
     contract = execution.load_shot_contract(root)
     from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES
     contract['project_review'] = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='r1')
     for shot in contract['shots']:
         shot['review'] = attestation(shot_review_subject(contract, shot['id']), SHOT_PREDICATES, revision='r1')
     write(root, 'artifacts/shot_contract.json', contract)
-    proposal = write(root, 'notes/frame-proposal.json', {'SYNTHETIC': 'exact frame input correction only'})
-    authority = write(root, 'notes/frame-authority.json', {'version': '1.0', 'kind': 'delegated_authorization_source',
-        'project_id': package['project_id'], 'story_revision': 'r1', 'source_thread_id': 'SYNTHETIC',
-        'source_turn_id': 'SYNTHETIC', 'relay_message_id': 'SYNTHETIC',
-        'relay_text': 'SYNTHETIC exact correction approval, never production authority.',
-        'human_delegation': {'message_id': 'SYNTHETIC', 'text': 'SYNTHETIC delegated correction authority.'},
-        'proposal_sha256': proposal['sha256']})
-    return root, proposal, authority
-
-
-@pytest.mark.parametrize('change', ['remove', 'payload'])
-def test_standing_episode_controls_original_binding_survives_frame_successor(neutral_package, monkeypatch, change):
-    from lib import production_frame_amendment as amendment, episode_production_controls as controls
-    payload = {'max_generations_per_shot': 2, 'alternate_repair': 'disabled', 'access_fallback': False,
-        'first_cut': {'enabled': True}}
-    root, proposal, authority = frame_amendment_fixture(neutral_package, monkeypatch, episode_controls=payload)
-    original_envelope = json.loads((root / 'production_scopes.json').read_text())['image_envelope']
-    usage = images.image_usage(root)
-    expected = amendment.expected_original(root)
-    plan = amendment.plan_frame_input_amendment(root, expected=expected, proposal=proposal, authority=authority)
-    result = amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
-        expected=expected, proposal=proposal, authority=authority)
-    assert pa.require_active_policy(root)[2] == result['successor_decision_id']
-    assert controls.first_cut_enabled(root)
-    path = root / controls.ARTIFACT
-    if change == 'remove': path.unlink()
-    else:
-        data = json.loads(path.read_text())
-        data['records'][0]['controls']['max_generations_per_shot'] = 3
-        write(root, str(controls.ARTIFACT), data)
-    before = file_bytes(root)
-    assert pa.load_active_policy(root)[0] is None
-    assert amendment.historical_image_envelope(root, original_envelope)
-    assert images.image_usage(root) == usage
-    assert file_bytes(root) == before
-
-
-def test_frame_amendment_is_pure_linked_preserves_usage_and_stales_planning(neutral_package, monkeypatch):
-    from lib import production_frame_amendment as amendment, production_boards as boards
-    from lib.shot_contract import validate_shot_contract
-    root, proposal, authority = frame_amendment_fixture(neutral_package, monkeypatch)
-    before = file_bytes(root); usage = images.image_usage(root)
-    assert usage['total'] == 8 and len(usage['unresolved_originals']) == 2
-    expected = amendment.expected_original(root)
-    plan = amendment.plan_frame_input_amendment(root, expected=expected, proposal=proposal, authority=authority)
-    assert file_bytes(root) == before
-    assert plan['provider_calls'] == plan['reservations'] == 0
-    result = amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
-        expected=expected, proposal=proposal, authority=authority)
-    assert images.image_usage(root) == usage
-    for path, raw in before.items():
-        if str(path) not in plan['changed_paths']:
-            assert (root / path).read_bytes() == raw
-    assert pa.require_active_policy(root)[1] == result['successor_policy_sha256']
-    contract = execution.load_shot_contract(root)
-    assert contract['reference_mode'] == 'frame_conditioned'
-    assert not validate_shot_contract(contract, project_dir=root, shot_id='s1')['eligible']
-    assert len([a for a in contract['assets'] if a['id'] == 'payoff']) == 1
-    assert next(a for a in contract['assets'] if a['id'] == 'payoff')['role'] == 'payoff_board'
-    assert boards._observation(boards.load_board_pack(root), 'payoff', 'start_frame')
-    scopes = json.loads((root / 'production_scopes.json').read_text())
-    assert images._image_envelope(root, scopes) == scopes['image_envelope']
-    after = file_bytes(root)
-    assert amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
-        expected=expected, proposal=proposal, authority=authority)['replayed']
-    assert file_bytes(root) == after
-
-
-@pytest.mark.parametrize('defect', ['expected', 'authority', 'revocation', 'scope', 'prepared', 'private_pending', 'caps', 'board_bytes', 'unobserved'])
-def test_frame_amendment_refuses_changed_authority_motion_work_or_originals(neutral_package, monkeypatch, defect):
-    from lib import production_frame_amendment as amendment, production_boards as boards
-    root, proposal, authority = frame_amendment_fixture(neutral_package, monkeypatch)
-    expected = amendment.expected_original(root)
-    if defect == 'expected':
-        expected['files']['artifacts/shot_contract.json'] = 'f'*64
-    elif defect == 'authority':
-        write(root, authority['path'], {'revoked': True})
-    elif defect == 'revocation':
-        log = json.loads((root / 'artifacts/decision_log.json').read_text())
-        log['decisions'][-1]['user_approved'] = False
-        write(root, 'artifacts/decision_log.json', log)
-    elif defect == 'scope':
-        value = json.loads((root / 'production_scopes.json').read_text()); value['scopes'].append({'id':'unbegun', 'phase':'first_pass'})
-        write(root, 'production_scopes.json', value)
-    elif defect == 'prepared':
-        write(root, 'openart_mcp/attempts/unbegun/request.json', {'SYNTHETIC': 'prepared but not begun'})
-    elif defect == 'private_pending':
-        from lib import provider_credit_ledger as ledger
-        from dataclasses import asdict
-        snapshot = ledger.read_existing_snapshot()
-        binding = ledger.UnpricedBinding(provider='openart_cli', account_id='SYNTHETIC-account',
-            workspace_id='SYNTHETIC-workspace', project_root=str(root),
-            attempt_id='00000000-0000-4000-8000-000000000099', request_sha256='a'*64,
-            authorization_occurrence='SYNTHETIC-private-only', authorization_sha256='b'*64,
-            native_sha256='c'*64, profile_sha256='d'*64, evidence_sha256='e'*64)
-        snapshot['unpriced_reservations'].append({'attempt_id': binding.attempt_id,
-            'binding_json': json.dumps(asdict(binding))})
-        monkeypatch.setattr(ledger, 'read_existing_snapshot', lambda: snapshot)
-    elif defect == 'caps':
-        policy = json.loads((root / pa.POLICY_ARTIFACT).read_text()); policy['caps']['max_total_attempts'] += 1
-        (root / pa.POLICY_ARTIFACT).chmod(0o644)
-        write(root, pa.POLICY_ARTIFACT, policy)
-    elif defect == 'board_bytes':
-        pack = boards.load_board_pack(root); (root / pack['board_bindings']['payoff']['path']).write_bytes(b'changed')
-    else:
-        pack = boards.load_board_pack(root); pack['observations'] = [o for o in pack['observations'] if o['asset_id'] != 'payoff']
-        write(root, boards.ARTIFACT, pack)
-    before = file_bytes(root)
-    from tools._openart_cli import OpenArtCLIError
-    with pytest.raises((ValueError, KeyError, OpenArtCLIError)):
-        amendment.plan_frame_input_amendment(root, expected=expected, proposal=proposal, authority=authority)
-    assert file_bytes(root) == before
-    assert not (root / amendment.POINTER).exists()
-
-
-@pytest.mark.parametrize('boundary', [1, 2, 3, 4, 5])
-def test_frame_amendment_interruption_is_closed_and_exact_replay_preserves_fresh_reviews(neutral_package, monkeypatch, boundary):
-    from lib import production_frame_amendment as amendment
-    from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES
-    root, proposal, authority = frame_amendment_fixture(neutral_package, monkeypatch)
-    expected = amendment.expected_original(root)
-    plan = amendment.plan_frame_input_amendment(root, expected=expected, proposal=proposal, authority=authority)
-    original_publish = amendment._publish
-    calls = []
-    def interrupted(path, raw):
-        original_publish(path, raw); calls.append(path)
-        if len(calls) == boundary:
-            raise OSError('SYNTHETIC interrupted publication')
-    with monkeypatch.context() as patch:
-        patch.setattr(amendment, '_publish', interrupted)
-        with pytest.raises(OSError, match='interrupted'):
-            amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
-                expected=expected, proposal=proposal, authority=authority)
-    assert pa.load_active_policy(root)[0] is None
-    amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
-        expected=expected, proposal=proposal, authority=authority)
-    contract = execution.load_shot_contract(root)
-    contract['project_review'] = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='r1')
-    for shot in contract['shots']:
-        shot['review'] = attestation(shot_review_subject(contract, shot['id']), SHOT_PREDICATES, revision='r1')
-    write(root, 'artifacts/shot_contract.json', contract)
-    after = file_bytes(root)
-    assert amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
-        expected=expected, proposal=proposal, authority=authority)['replayed']
-    assert file_bytes(root) == after
-    log = json.loads((root / 'artifacts/decision_log.json').read_text()); log['decisions'][-1]['user_approved'] = False
-    write(root, 'artifacts/decision_log.json', log)
-    before = file_bytes(root)
-    with pytest.raises(pa.AutonomyError, match='revoked'):
-        amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
-            expected=expected, proposal=proposal, authority=authority)
-    assert file_bytes(root) == before
-    # Historical original replay remains collectible, never prospective authority.
-    retained = json.loads((root / 'production_scopes.json').read_text())
-    assert images._image_envelope(root, retained) == retained['image_envelope']
-    with pytest.raises(pa.AutonomyError):
-        images.activate_standing_image_envelope(root)
+    return root
 
 
 def test_frame_conditioned_prospective_activation_allows_pending_board_observations(neutral_package):
@@ -3503,24 +2408,9 @@ def test_frame_conditioned_prospective_activation_allows_pending_board_observati
     assert all(a.get('preparation_pending') for a in contract['assets'])
 
 
-def refreshed_frame_amendment(neutral_package, monkeypatch, *, cast_bearing=False, repair_public_layout=False):
-    from lib import production_frame_amendment as amendment
-    from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES
-    root, proposal, authority = frame_amendment_fixture(neutral_package, monkeypatch, cast_bearing=cast_bearing, repair_public_layout=repair_public_layout)
-    expected = amendment.expected_original(root)
-    plan = amendment.plan_frame_input_amendment(root, expected=expected, proposal=proposal, authority=authority)
-    amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'], expected=expected, proposal=proposal, authority=authority)
-    contract = execution.load_shot_contract(root)
-    contract['project_review'] = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='r1')
-    for shot in contract['shots']:
-        shot['review'] = attestation(shot_review_subject(contract, shot['id']), SHOT_PREDICATES, revision='r1')
-    write(root, 'artifacts/shot_contract.json', contract)
-    return root, proposal, authority, expected, plan
-
-
-def prepared_frame_shapes(neutral_package, monkeypatch, provider, *, repair_public_layout=False):
+def prepared_frame_shapes(neutral_package, monkeypatch, provider, *, public_layout=False):
     from lib import openart_mcp as mcp, openart_mcp_jobs as mcp_jobs
-    root, _, _, _, _ = refreshed_frame_amendment(neutral_package, monkeypatch, cast_bearing=True, repair_public_layout=repair_public_layout)
+    root = frame_shapes_fixture(neutral_package, monkeypatch, cast_bearing=True, public_layout=public_layout)
     contract = execution.load_shot_contract(root)
     assert [s['duration_seconds'] for s in contract['shots']] == [5]*4
     frame_sources = {}
@@ -3552,7 +2442,7 @@ def prepared_frame_shapes(neutral_package, monkeypatch, provider, *, repair_publ
         sid = shot['id']; aid = shot['frame_input']['asset_id']
         authored = request.compile_provider_prompt(root, sid, provider=provider)
         inputs = {'project_dir':str(root), 'governance':{'shot_id':sid}, 'prompt':authored['prompt'],
-            'duration':5, **({'resolution': '720p', 'aspect_ratio': '9:16'} if repair_public_layout else {}),
+            'duration':5, **({'resolution': '720p', 'aspect_ratio': '9:16'} if public_layout else {}),
             'output_path':str(root/'assets/video'/('SYNTHETIC-'+sid+'.mp4')),
             'compiled_request_id':'frame-'+sid, 'preparation_review_id':'frame-'+sid}
         if provider == 'grok_cli':
@@ -3562,7 +2452,7 @@ def prepared_frame_shapes(neutral_package, monkeypatch, provider, *, repair_publ
         else:
             inputs.update(model=profile['model'], mode=profile['mode'], openart_project_id='fixture-project',
                 input_assets=[{'role':'first_frame', **frame_sources[aid]}])
-            if repair_public_layout:
+            if public_layout:
                 inputs['image_path'] = inputs.pop('input_assets')[0]['source_path']
             native = request.prep_builder(provider)(inputs, profile)
         timing = {'method':'segmented_estimate','duration_seconds':5,'language':'en','margin_seconds':.5,
@@ -3591,7 +2481,7 @@ def prepared_frame_shapes(neutral_package, monkeypatch, provider, *, repair_publ
         if sid == 's4':
             assert aid == 'payoff' and next(a for a in contract['assets'] if a['id'] == aid)['role'] == 'payoff_board'
         prepared[sid] = (inputs, native, profile, compiled, review)
-    assert images.image_usage(root) == before_usage and before_usage['total'] == 8
+    assert images.image_usage(root) == before_usage and before_usage['total'] == 6
     return root, prepared
 
 
@@ -3728,7 +2618,7 @@ def test_frame_carrier_supported_provenance_and_member_roles(neutral_package, mo
         call['scope_sha256'] = images.digest(scope)
         before = file_bytes(root)
         # Isolate the supported ordered-scope representation without rewriting
-        # the immutable original amendment/image authority of this fixture.
+        # the immutable original image authority of this fixture.
         with monkeypatch.context() as patch:
             patch.setattr(images, '_load', lambda _: journal)
             patch.setattr(images, '_scope', lambda _, sid: scope if sid == call['scope_id'] else None)
@@ -3751,119 +2641,6 @@ def test_frame_carrier_supported_provenance_and_member_roles(neutral_package, mo
         else:
             pa._frame_carrier_members(root, frame, projection, composites)
     assert file_bytes(root) == before
-
-
-def test_frame_amendment_later_output_publication_and_uncertain_original_collection_survive_revocation(neutral_package, monkeypatch):
-    from lib import production_frame_amendment as amendment, production_boards as boards
-    root, proposal, authority, expected, plan = refreshed_frame_amendment(neutral_package, monkeypatch)
-    manifest = json.loads((root / 'artifacts/asset_manifest.json').read_text())
-    manifest['assets'].append({'id':'SYNTHETIC-attributed-output','type':'video','path':'assets/video/output.mp4',
-        'scene_id':'s1','source_tool':'grok_cli_video'})
-    write(root, 'artifacts/asset_manifest.json', manifest)
-    assert pa.require_active_policy(root)[1] == plan['successor_policy_sha256']
-    before = file_bytes(root)
-    assert amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
-        expected=expected, proposal=proposal, authority=authority)['replayed']
-    assert file_bytes(root) == before
-    log = json.loads((root / 'artifacts/decision_log.json').read_text()); log['decisions'][-1]['user_approved'] = False
-    write(root, 'artifacts/decision_log.json', log)
-    original = images._call(images._load(root), 'uncertain-start')
-    envelope = {'arguments':original['submitted_arguments']}
-    late = host_receipt(root, envelope, name='SYNTHETIC-late-original')
-    scopes = json.loads((root / 'production_scopes.json').read_text())
-    assert images._scope(root, original['scope_id'])['id'] == original['scope_id']
-    collected = images.import_native_image(root, 'uncertain-start', host_receipt=late)
-    assert collected['state'] == 'imported'
-    assert images.import_native_image(root, 'uncertain-start', host_receipt=late) == collected
-    assert images.image_usage(root)['total'] == 8
-    current_board = boards.load_board_pack(root)['board_bindings']['start']
-    assert boards.bind_imported_board(root, 'start', 'uncertain-start', images=images) == current_board
-    assert boards.load_board_pack(root)['board_bindings']['start']['call_id'] == 'fixture-start'
-    assert images._image_envelope(root, scopes) == scopes['image_envelope']
-    assert pa.load_active_policy(root)[0] is None
-    with pytest.raises(pa.AutonomyError):
-        images.derive_native_image_scope(root, original['packet'], 'start', original['host_arguments'], output_path=original['output_path'])
-
-
-@pytest.mark.parametrize('defect', ['inventory', 'policy_terms', 'package_terms', 'contract_delta', 'original_envelope', 'foreign_original'])
-def test_frame_amendment_mutually_rehashed_forged_links_cannot_expand_authority(neutral_package, monkeypatch, defect):
-    from lib import production_frame_amendment as amendment
-    root, _, _, _, _ = refreshed_frame_amendment(neutral_package, monkeypatch)
-    pointer = json.loads((root / amendment.POINTER).read_text())
-    record_path = root / pointer['record']['path']; record = json.loads(record_path.read_text())
-    plan = record['plan']
-    if defect == 'inventory':
-        record['originals'].pop('artifacts/script.json')
-    elif defect == 'policy_terms':
-        plan['changes'][pa.POLICY_ARTIFACT]['caps']['max_total_attempts'] += 1
-    elif defect == 'package_terms':
-        path = next(p for p in plan['retained_new'] if p.endswith('successor-package.json'))
-        plan['retained_new'][path]['shots'][0]['script'] = 'SYNTHETIC unrelated dialogue change'
-    elif defect == 'contract_delta':
-        plan['changes']['artifacts/shot_contract.json']['shots'][0]['dominant_action'] = 'SYNTHETIC unrelated action'
-    elif defect == 'original_envelope':
-        data = json.loads((root / 'production_scopes.json').read_text()); data['image_envelope']['definition']['image_allowance'] += 1
-        data['image_envelope']['envelope_sha256'] = request.digest(data['image_envelope']['definition'])
-        write(root, 'production_scopes.json', data)
-    else:
-        path = root / record['originals'][pa.POLICY_ARTIFACT]['path']; path.chmod(0o644)
-        value = json.loads(path.read_text()); value['project_id'] = 'SYNTHETIC-foreign-run'
-        write(root, str(path.relative_to(root)), value)
-        record['originals'][pa.POLICY_ARTIFACT]['sha256'] = file_sha256_of(path)
-        plan['expected']['files'][pa.POLICY_ARTIFACT] = file_sha256_of(path)
-    plan['plan_sha256'] = request.digest({k:v for k,v in plan.items() if k != 'plan_sha256'})
-    record_path.chmod(0o644); write(root, pointer['record']['path'], record)
-    pointer['record']['sha256'] = file_sha256_of(record_path); pointer['plan_sha256'] = plan['plan_sha256']
-    write(root, amendment.POINTER, pointer)
-    assert pa.load_active_policy(root)[0] is None
-    with pytest.raises(ValueError):
-        images._image_envelope(root, json.loads((root / 'production_scopes.json').read_text()))
-
-
-def test_frame_amendment_pre_pointer_abandoned_snapshot_temp_does_not_block_retry(neutral_package, monkeypatch):
-    from lib import production_frame_amendment as amendment
-    root, proposal, authority = frame_amendment_fixture(neutral_package, monkeypatch)
-    expected = amendment.expected_original(root)
-    plan = amendment.plan_frame_input_amendment(root, expected=expected, proposal=proposal, authority=authority)
-    def abandoned(path, raw):
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.with_name('.' + path.name + '.frame-history-tmp').write_bytes(raw)
-        raise OSError('SYNTHETIC exit before immutable snapshot link')
-    with monkeypatch.context() as patch:
-        patch.setattr(amendment, '_save_raw', abandoned)
-        with pytest.raises(OSError):
-            amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
-                expected=expected, proposal=proposal, authority=authority)
-    assert not (root / amendment.POINTER).exists()
-    assert pa.require_active_policy(root)[1] == expected['policy_sha256']
-    result = amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
-        expected=expected, proposal=proposal, authority=authority)
-    assert result['successor_policy_sha256'] == plan['successor_policy_sha256']
-
-
-def test_frame_amendment_snapshot_is_readonly_at_hardlink_interruption(neutral_package, monkeypatch):
-    from lib import production_frame_amendment as amendment
-    import stat
-    root, proposal, authority = frame_amendment_fixture(neutral_package, monkeypatch)
-    expected = amendment.expected_original(root)
-    plan = amendment.plan_frame_input_amendment(root, expected=expected, proposal=proposal, authority=authority)
-    original_link = amendment.os.link
-    published = []
-    def interrupted(source, destination):
-        original_link(source, destination)
-        published.append(destination)
-        raise OSError('SYNTHETIC exit immediately after snapshot publication')
-    with monkeypatch.context() as patch:
-        patch.setattr(amendment.os, 'link', interrupted)
-        with pytest.raises(OSError, match='snapshot publication'):
-            amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
-                expected=expected, proposal=proposal, authority=authority)
-    assert len(published) == 1 and stat.S_IMODE(published[0].stat().st_mode) == 0o444
-    assert not (root / amendment.POINTER).exists()
-    assert pa.require_active_policy(root)[1] == expected['policy_sha256']
-    result = amendment.apply_frame_input_amendment(root, expected_plan_sha256=plan['plan_sha256'],
-        expected=expected, proposal=proposal, authority=authority)
-    assert result['successor_policy_sha256'] == plan['successor_policy_sha256']
 
 
 @pytest.mark.parametrize('defect', [None, 'source_bytes', 'script', 'native_prompt', 'compiled_coverage',
@@ -3984,207 +2761,84 @@ def test_submitted_delivery_original_replays_after_revocation_without_new_admiss
     assert file_bytes(root) == before and len(calls) == 1
 
 
-@pytest.mark.parametrize('frame_field,audio_off', [('image_path', False), ('first_frame', False), ('first_frame', True)])
-def test_frame_conditioned_grok_to_mini_repair_retains_public_layout_and_original(
-        neutral_package, monkeypatch, guided_observations, frame_field, audio_off):
-    """Offline semantic failure and authorized alternate; no live provider evidence."""
-    import shutil
-    import socket
-    def forbidden(*args, **kwargs):
-        pytest.fail('frame model-switch regression attempted a network connection')
-    monkeypatch.setattr(socket.socket, 'connect', forbidden)
-    monkeypatch.setattr(socket.socket, 'connect_ex', forbidden)
-    monkeypatch.setattr(socket, 'create_connection', forbidden)
-    from lib import openart_mcp as mcp, openart_mcp_jobs as jobs
-    from lib import production_provenance as provenance
-    from tools import _grok_cli_media as media
-    from tools.video import grok_cli_video
-    from tools.base_tool import ToolResult
-    from tests.lib.test_first_cut import lavfi
+def compile_original_mcp(root, inputs, request_id, timing):
+    from lib import openart_mcp as mcp
+    inputs = copy.deepcopy(inputs)
+    inputs.update(compiled_request_id=request_id, preparation_review_id=request_id)
+    authored = request.compile_provider_prompt(root, 'entry', provider='openart_mcp', model=inputs['model'])
+    inputs['prompt'] = authored['prompt']
+    profile = mcp.load_profile(inputs['model'], inputs['mode'], require='supported')
+    assert profile['readiness']['empirical_result']['status'] == 'not_tested'
+    native = mcp.prepare_native_request(execution._openart_mcp_controls(inputs), profile)
+    compiled = request.prepare_compiled_request(inputs, native, profile,
+        coverage=authored['coverage'], timing=timing)
+    review = execution._read(root / 'artifacts/preparation_review-original.json')
+    review.update(review_id=request_id, subject_sha256=request.digest(compiled))
+    write(root, f'artifacts/compiled_request-{request_id}.json', compiled)
+    write(root, f'artifacts/preparation_review-{request_id}.json', review)
+    request.validate_preparation(inputs, native, profile)
+    return inputs, native, compiled
 
-    root, prepared = prepared_frame_shapes(neutral_package, monkeypatch, 'openart_mcp', repair_public_layout=True)
-    candidate, native, profile, compiled, review = prepared['s1']
-    policy, _, _ = pa.require_active_policy(root)
-    baseline = pa.retained_baselines(root, policy)['s1']['planned_request_template']['inputs']
-    assert baseline['image_path'] == {'$board': {'asset_id': 'start'}}
-    assert candidate['image_path'] and 'input_assets' not in candidate and 'native_params' not in candidate
-    upload_files = file_bytes(root / 'openart_mcp')
-    board_bytes = Path(candidate['image_path']).read_bytes()
-    timing = compiled['timing']
-    observation = {'cli_version': '1.0.34', 'grok_path': '/SYNTHETIC/offline/grok'}
-    original = copy.deepcopy(candidate)
-    for key in ('model', 'mode', 'openart_project_id'):
-        original.pop(key)
-    original.update(operation='reference_to_video', allow_unknown_cost=True, timeout_seconds=600,
-        preferred_provider='grok_cli', allowed_providers=['grok_cli'],
-        preferred_tool='grok_cli_video', hosting_provider='grok_cli',
-        compiled_request_id='grok-frame-original', preparation_review_id='grok-frame-original',
-        output_path=str(root / 'assets/video/SYNTHETIC-grok-original.mp4'))
-    authored = request.compile_provider_prompt(root, 's1', provider='grok_cli')
-    original['prompt'] = authored['prompt']
-    grok_native = request.prep_builder('grok_cli')(original, observation)
-    judgment = {k: copy.deepcopy(v) for k, v in review.items()
-                if k not in ('review_id', 'subject_sha256', 'composite_boards')}
-    judgment['evidence_kind'] = 'reviewed'  # SYNTHETIC reviewer; no live qualification claim.
-    grok_compiled, grok_review = request.prepare_compiled_request(original, grok_native, {'source': 'real'},
-        coverage=authored['coverage'], timing=timing, review=judgment)
-    write(root, 'artifacts/compiled_request-grok-frame-original.json', grok_compiled)
-    write(root, 'artifacts/preparation_review-grok-frame-original.json', grok_review)
-    scope = pa.derive_scope(root, original, provider='grok_cli', observation=observation)
-    original['governance']['scope_id'] = scope['id']
-    clip = lavfi(root / 'SYNTHETIC-transport.mp4', 'red', 440, seconds=5)
-    calls = []
-    def transport(**kw):
-        calls.append(copy.deepcopy(kw))
-        Path(kw['output_path']).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(clip, kw['output_path'])
-        return ToolResult(success=True, artifacts=[kw['output_path']], data={
-            'provider': 'grok_cli', 'cli_version': observation['cli_version'],
-            'session_id': kw['session_id'], 'dispatch_status': 'completed'})
-    monkeypatch.setattr(media, 'observe_grok_cli_compatibility', lambda *a, **kw: dict(observation))
-    monkeypatch.setattr(grok_cli_video, 'execute_grok_cli_media', transport)
-    monkeypatch.setenv('GROK_CLI_PATH', observation['grok_path'])
-    tool = grok_cli_video.GrokCLIVideo(grok_path=observation['grok_path'], sessions_root=str(root/'sessions'))
-    generated = tool.execute(original)
-    assert generated.success, generated.error
-    aid = generated.data['production_attempt_id']
-    output = execution.load_attempt_result(root, aid)['output']
-    provenance.validate_attempt_provenance(root, aid, shot_id='s1', story_revision=policy['story_revision'], expected_output=output)
-    rejection = {'review_id': 'SYNTHETIC-semantic-failure', 'reviewer': 'SYNTHETIC offline reviewer',
-        'story_revision': policy['story_revision'], 'subject_sha256': output['sha256'], 'status': 'fail',
-        'predicates': [{'name': 'completed_end_state', 'status': 'fail', 'severity': 'critical',
-            'evidence': 'SYNTHETIC observed endpoint failure, not a live judgment'}]}
-    execution.record_rejection(root, aid, rejection)
-    retained_original = file_bytes(root / 'production_attempts' / aid)
-    output_bytes = Path(output['path']).read_bytes()
-    scopes_before = (root / 'production_scopes.json').read_bytes()
-    counts_before = pa.root_attempt_counts(root, policy)
 
-    invalid = copy.deepcopy(candidate)
-    invalid['input_assets'] = [{'role': 'first_frame', 'source_path': invalid.pop('image_path'),
-        'source_sha256': hashlib.sha256(board_bytes).hexdigest(),
-        'upload_id': native['input_assets'][0]['upload_id']}]
-    invalid['native_params'] = {'duration': 5, 'resolution': '720p', 'aspectRatio': '9:16',
-        'videoCount': 1, 'generateAudio': True}
-    with pytest.raises(ValueError, match='exact upstream pointer/layout/order changed'):
-        pa.derive_scope(root, invalid, provider='openart_mcp', phase='repair', replaces_attempt_ids=[aid])
-    duplicate = copy.deepcopy(candidate)
-    duplicate['native_params'] = {'duration': 5, 'resolution': '720p', 'aspectRatio': '9:16'}
-    with pytest.raises(ValueError, match='duplicate|ambiguous'):
-        pa.derive_scope(root, duplicate, provider='openart_mcp', phase='repair', replaces_attempt_ids=[aid])
-    assert pa.root_attempt_counts(root, policy) == counts_before
-    assert (root / 'production_scopes.json').read_bytes() == scopes_before
-    assert len(calls) == 1
-
-    # Fresh public dict for this retained first-frame-only template, not a native packet.
-    # Actual Grok routing/timeout metadata never becomes Mini public controls.
-    candidate = {key: original[key] for key in
-        ('project_dir', 'image_path', 'duration', 'resolution', 'aspect_ratio')}
-    candidate.update(governance={'shot_id': 's1'}, model=profile['model'], mode=profile['mode'],
-        openart_project_id='fixture-project', preferred_provider='openart_mcp',
-        allowed_providers=['openart_mcp'], preferred_tool='openart_mcp_video', hosting_provider='openart_mcp',
-        compiled_request_id='mini-frame-repair', preparation_review_id='mini-frame-repair',
-        output_path=str(root / 'assets/video/SYNTHETIC-mini-repair.mp4'))
-    if frame_field == 'first_frame':
-        candidate['first_frame'] = candidate.pop('image_path')
-        from tools.video.openart_mcp_video import OpenArtMCPVideo
-        assert 'first_frame' in OpenArtMCPVideo.input_schema['properties']
-    if audio_off:
-        candidate['native_params'] = {'generateAudio': False}
-    # A route change has its own prompt, current compiled packet and actual judgment.
-    mini_authored = request.compile_provider_prompt(root, 's1', provider='openart_mcp', model=candidate['model'])
-    candidate['prompt'] = mini_authored['prompt']
-    native = request.prep_builder('openart_mcp')(candidate, profile)
-    mini_compiled, mini_review = request.prepare_compiled_request(candidate, native, profile,
-        coverage=mini_authored['coverage'], timing=timing, review=judgment)
-    write(root, 'artifacts/compiled_request-mini-frame-repair.json', mini_compiled)
-    write(root, 'artifacts/preparation_review-mini-frame-repair.json', mini_review)
-    assert mini_compiled['source_binding'] == grok_compiled['source_binding']
-    assert mini_compiled['request_sha256'] != grok_compiled['request_sha256']
-    # Ordinary production refuses fixture readiness. Only the existing isolated
-    # test seam admits synthetic transport; it does not fabricate live evidence.
-    with pytest.raises(ValueError, match='profile_not_ready'):
-        mcp.load_profile(candidate['model'], candidate['mode'], require='supported')
-    monkeypatch.setattr(mcp, '_ALLOW_FIXTURE_PRODUCTION', True)
-    if audio_off:
-        from tests.lib.test_factory_audio_off import retain_audio_off
-        _, policy_sha, _ = pa.require_active_policy(root)
-        audio_approval = retain_audio_off(root, policy, policy_sha, profile)
-        pa.adopt_native_audio_off_approval(root, expected_policy_sha256=policy_sha, approval=audio_approval)
-    pa._validate_request_delta(root, policy, 's1', candidate, 'openart_mcp')
-    repair = pa.derive_scope(root, candidate, provider='openart_mcp', phase='repair', replaces_attempt_ids=[aid])
-    assert repair['replaces_attempt_ids'] == [aid] and repair['phase'] == 'repair'
-    candidate['governance']['scope_id'] = repair['id']
-    jobs.prepare(root, attempt_id='SYNTHETIC-mini-repair', generation_inputs=candidate,
-        authority_fn=execution.prepare_openart_mcp_handoff)
-    envelope = jobs.begin(root, 'SYNTHETIC-mini-repair', authority_fn=execution.prepare_openart_mcp_handoff)
-    assert envelope['arguments'] == native['body']
-    assert set(native['body']['params']) == {'prompt', 'duration', 'resolution', 'aspectRatio', 'startFrame'} | ({'generateAudio'} if audio_off else set())
-    if audio_off:
-        assert native['body']['params']['generateAudio'] is False
-        assert repair['derived_from_policy']['native_audio_off_approval']['approval']['sha256'] == audio_approval['sha256']
-        audio_record = json.loads((root / audio_approval['path']).read_text())
-        (root / audio_record['authorization']['path']).write_text('SYNTHETIC authority revoked after emission')
-        with pytest.raises(pa.AutonomyError):
-            pa.validate_derived_scope(root, repair, inputs=candidate)
-    assert native['input_assets'][0]['source_sha256'] == hashlib.sha256(board_bytes).hexdigest()
-    assert file_bytes(root / 'production_attempts' / aid) == retained_original
-    assert Path(output['path']).read_bytes() == output_bytes
-    assert Path(candidate[frame_field]).read_bytes() == board_bytes
-    # The new job does not upload again or alter the original source-transfer receipts.
-    assert all(file_bytes(root / 'openart_mcp').get(path) == raw for path, raw in upload_files.items())
-    assert pa.root_attempt_counts(root, policy)['total'] == 2
-    assert pa.root_attempt_counts(root, policy)['repair'] == 1
-    assert len(calls) == 1 and jobs.attempt_state(root, 'SYNTHETIC-mini-repair')['status'] == 'uncertain'
-
-    # A consumed handoff is recovered through the original receipt, never begin.
-    repair_id = 'SYNTHETIC-mini-repair'
-    frozen = jobs.frozen_request(root, repair_id)
-    assert jobs.resume_original(root, repair_id)['next_action']['action'] == 'blocked_original_host_reply_unavailable'
-    with pytest.raises(ValueError):
-        jobs.begin(root, repair_id, authority_fn=execution.prepare_openart_mcp_handoff)
-    jobs.receive(root, repair_id, outcome={'historyId': 'SYNTHETIC-mini-history', 'status': 'PENDING'})
-    poll = jobs.poll_args(root, repair_id)
-    assert poll['arguments'] == {'historyId': 'SYNTHETIC-mini-history'}
-    jobs.record_status(root, repair_id, result={'historyId': 'SYNTHETIC-mini-history', 'status': 'RUNNING'})
-    assert jobs.resume_original(root, repair_id)['next_action']['action'] == 'poll_original'
-    assert jobs.frozen_request(root, repair_id) == {**frozen, 'status': 'submitted'}
-    assert pa.root_attempt_counts(root, policy)['total'] == 2
-    jobs.record_status(root, repair_id, result={'historyId': 'SYNTHETIC-mini-history', 'status': 'COMPLETED',
-        'resources': [{'id': 'SYNTHETIC-mini-video', 'mediaType': 'video', 'status': 'COMPLETED',
-                       'url': 'https://fixture.invalid/mini-original.mp4'}]})
-    from tests.integration.test_openart_mcp_governance import install_fake_download
-    replacement = lavfi(root / 'SYNTHETIC-mini-transport.mp4', 'green', 660, seconds=5)
-    install_fake_download(monkeypatch, jobs, replacement)
-    download = jobs.download_original(root, repair_id)
-    jobs.collect(root, repair_id, downloaded_path=download['downloaded_path'])
-    repair_output = execution.load_attempt_result(root, repair_id)['output']
-    assert repair_output['sha256'] != output['sha256']
-    # Synthetic provenance is rejected by production; only its existing test seam admits it.
-    with pytest.raises(execution.ProductionGovernanceError, match='fixture-only connector evidence'):
-        provenance.validate_attempt_provenance(root, repair_id, shot_id='s1',
-            story_revision=policy['story_revision'], expected_output=repair_output)
-    monkeypatch.setattr(provenance, '_ALLOW_OPENART_FIXTURE_PROVENANCE', True)
-    from lib.shot_contract import UPSTREAM_PREDICATES, file_sha256, selection_digest
-    frame = root / 'assets/images/SYNTHETIC-mini-outgoing.png'
-    import subprocess
-    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-sseof', '-0.2', '-i', repair_output['path'],
-                    '-frames:v', '1', str(frame)], check=True, capture_output=True)
-    selection = {'attempt_id': repair_id, 'output': repair_output,
-        'outgoing_frame': {'path': str(frame), 'sha256': file_sha256(frame)}}
-    selection['review'] = attestation(selection_digest(selection), UPSTREAM_PREDICATES,
-        revision=policy['story_revision'])
-    selection['review']['reviewer'] = 'SYNTHETIC offline repair reviewer'
-    execution.record_selection(root, 's1', selection)
-    assert execution.load_selected_attempts(root)['s1']['attempt_id'] == repair_id
-    assert jobs.attempt_state(root, repair_id)['status'] == 'collected'
-    stable = file_bytes(root)
-    jobs.collect(root, repair_id, downloaded_path=download['downloaded_path'])
-    jobs.resume_original(root, repair_id)
-    assert file_bytes(root) == stable
-    assert file_bytes(root / 'production_attempts' / aid) == retained_original
-    assert Path(output['path']).read_bytes() == output_bytes
-    assert Path(candidate[frame_field]).read_bytes() == board_bytes
-    assert pa.root_attempt_counts(root, policy)['total'] == 2
-    assert pa.root_attempt_counts(root, policy)['repair'] == 1
-    assert len(calls) == 1 and len(jobs.list_attempts(root)) == 1
+def test_adjacent_native_pin_clips_share_one_prepared_boundary(tmp_path):
+    """One authored image occupies clip one's end pin and clip two's start pin."""
+    from tests.lib.test_production_execution import (
+        _reviewed_pin_request, ImageTool, MotionTool, write_scopes,
+    )
+    from tests.lib.test_shot_contract import refresh
+    from lib.shot_contract import file_sha256
+    first, motion_scope, contract = _reviewed_pin_request(tmp_path)
+    boundary = tmp_path / 'assets/end.svg'
+    # Prepare the declared boundary once, before either original motion request.
+    boundary.unlink()
+    image_inputs = {'project_dir': str(tmp_path), 'prompt': 'SYNTHETIC shared authored boundary',
+        'image_path': str(tmp_path / 'assets/reference.png'), 'output_path': str(boundary),
+        'governance': {'scope_id': 'boundary-image', 'shot_id': 'boundary'}}
+    image_scope = copy.deepcopy(motion_scope)
+    image_scope.update(id='boundary-image', phase='image',
+        requests={'boundary': execution.planned_request_digest(image_inputs, project_dir=tmp_path)},
+        attempts_per_shot={'boundary': 1})
+    image_scope.pop('approval_plan_sha256')
+    write_scopes(tmp_path, image_scope)
+    image_tool = ImageTool()
+    assert image_tool.execute(image_inputs).success and image_tool.calls == 1
+    end = next(a for a in contract['assets'] if a['id'] == 'end')
+    end['sha256'] = end['review']['subject_sha256'] = file_sha256(boundary)
+    shared_start = copy.deepcopy(end)
+    shared_start.update(id='boundary-start', role='start_frame')
+    second_end = copy.deepcopy(end)
+    second_end.update(id='second-end', path='assets/second-end.svg')
+    (tmp_path / second_end['path']).write_bytes(b'SYNTHETIC distinct second endpoint')
+    second_end['sha256'] = second_end['review']['subject_sha256'] = file_sha256(tmp_path / second_end['path'])
+    contract['assets'].extend([shared_start, second_end])
+    second_shot = copy.deepcopy(contract['shots'][0])
+    second_shot.update(id='second', initial_state=contract['shots'][0]['completed_end_state'],
+        asset_ids=['boundary-start', 'second-end', 'patient'])
+    contract['shots'].append(second_shot)
+    refresh(contract)
+    (tmp_path / 'shot_contract.json').write_text(json.dumps(contract))
+    second = copy.deepcopy(first)
+    second.update(first_frame=str(boundary), last_frame=str(tmp_path / second_end['path']),
+        output_path=str(tmp_path / 'assets/second.mp4'))
+    second['governance']['shot_id'] = 'second'
+    motion_scope['approval_plan_sha256'] = execution.approval_plan_digest(contract)
+    motion_scope['requests'] = {i['governance']['shot_id']:
+        execution.planned_request_digest(i, project_dir=tmp_path) for i in (first, second)}
+    motion_scope['attempts_per_shot'] = {'entry': 1, 'second': 1}
+    (tmp_path / 'production_scopes.json').write_text(json.dumps(
+        {'version': '1.0', 'scopes': [image_scope, motion_scope]}))
+    tool = MotionTool()
+    for inputs in (first, second):
+        assert inputs['operation'] == 'first_last_frame'
+        assert execution.preflight(tool, inputs)['governed']
+        assert tool.execute(inputs).success
+    records = [json.loads(path.read_text()) for path in (tmp_path / 'production_attempts').glob('*/request.json')]
+    originals = {r['shot_id']: r for r in records if r['phase'] == 'first_pass'}
+    first_end = next(a for a in originals['entry']['input_assets'] if a['role'] == 'last_frame')
+    next_start = next(a for a in originals['second']['input_assets'] if a['role'] == 'first_frame')
+    assert first['last_frame'] == second['first_frame'] == str(boundary)
+    assert first_end['sha256'] == next_start['sha256'] == file_sha256(boundary)
+    assert Path(first_end['path']).read_bytes() == Path(next_start['path']).read_bytes() == boundary.read_bytes()
+    assert all(not shot['upstream'] for shot in contract['shots'])
+    assert image_tool.calls == 1 and tool.calls == 2
+    assert len(records) == 3 and sum(r['phase'] == 'image' for r in records) == 1

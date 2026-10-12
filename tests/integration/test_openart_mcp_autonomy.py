@@ -243,7 +243,7 @@ def test_mini_exact_project_enters_full_frame_scope_reusing_retained_upload(neut
     from lib import openart_mcp as mcp, openart_mcp_jobs as jobs
     from tests.lib import test_production_factory as factory
     # Configure the exact synthetic approved project before standing activation
-    # and amendment. No retained baseline, approval or original is edited later.
+    # and original preparation. No retained baseline, approval or original is edited later.
     original = factory.standing_treatment_fixture
     def exact_project(root, **kwargs):
         configured = original(root, **kwargs)
@@ -384,47 +384,20 @@ def test_actual_policy_original_collection_provenance_and_unknown_cost_report(li
     assert snapshot['frozen_sha256']['policy-original']
 
 
-def test_actual_original_failure_review_allows_one_bounded_repair(lifecycle):
-    root, old_policy, _, inputs, _, _, jobs = lifecycle
-    p = copy.deepcopy(old_policy)
-    p['caps'] = {'max_total_attempts': 2, 'max_attempts_per_shot': 2, 'max_repair_attempts': 1}
-    policy, _ = install_existing(root, p, templates={'entry': execution.planned_request_template(inputs, project_dir=root)})
-    (root / 'production_scopes.json').write_text(json.dumps({'version': '1.0', 'scopes': []}))
-    scope = pa.derive_scope(root, inputs, provider='openart_mcp')
-    inputs['governance']['scope_id'] = scope['id']
-    jobs.prepare(root, attempt_id='policy-original', generation_inputs=inputs,
+def test_terminal_original_consumes_slot_without_replacement(lifecycle):
+    root, policy, _, inputs, _, _, jobs = lifecycle
+    jobs.prepare(root, attempt_id='terminal-original', generation_inputs=inputs,
                  authority_fn=execution.prepare_openart_mcp_handoff)
-    jobs.begin(root, 'policy-original', authority_fn=execution.prepare_openart_mcp_handoff)
-    jobs.receive(root, 'policy-original', outcome={'historyId': 'fixture-original', 'status': 'PENDING'})
+    jobs.begin(root, 'terminal-original', authority_fn=execution.prepare_openart_mcp_handoff)
+    jobs.receive(root, 'terminal-original', outcome={'historyId': 'fixture-original', 'status': 'PENDING'})
+    jobs.record_status(root, 'terminal-original', result={'historyId': 'fixture-original', 'status': 'FAILED'})
+    terminal = jobs.terminal_failure_record(root, 'terminal-original')
+    assert terminal['terminal_failure_sha256']
+    before = (root / 'openart_mcp/attempts/terminal-original/state.json').read_bytes()
+    duplicate = copy.deepcopy(inputs)
+    duplicate['output_path'] = str(root / 'forbidden-second-original.mp4')
     with pytest.raises(ValueError):
-        pa.derive_scope(root, inputs, provider='openart_mcp', phase='repair', replaces_attempt_ids=['policy-original'])
-    jobs.record_status(root, 'policy-original', result={'historyId': 'fixture-original', 'status': 'FAILED'})
-    terminal = jobs.terminal_failure_record(root, 'policy-original')
-    rejection = root / 'openart_mcp/attempts/policy-original/rejection.json'
-    rejection.write_text(json.dumps({'status': 'fail', 'kind': 'generation_terminal_failure',
-        'attempt_id': 'policy-original', 'terminal_failure_sha256': terminal['terminal_failure_sha256'],
-        'reviewer': 'Synthetic offline engineering rejection'}))
-    inputs['output_path'] = str(root / 'repair.mp4')
-    inputs['compiled_request_id'] = 'repair'
-    inputs['preparation_review_id'] = 'repair'
-    from lib import openart_mcp as mcp
-    profile = mcp.load_profile(inputs['model'], inputs['mode'], require='supported')
-    assert profile['readiness']['empirical_result']['status'] == 'not_tested'
-    native = mcp.prepare_native_request(execution._openart_mcp_controls(inputs), profile)
-    original = json.loads((root / 'artifacts/compiled_request-original.json').read_text())
-    authored = preparation.compile_provider_prompt(root, 'entry', provider='openart_mcp', model=inputs['model'])
-    compiled = preparation.prepare_compiled_request(inputs, native, profile,
-        coverage=authored['coverage'], timing=original['timing'])
-    (root / 'artifacts/compiled_request-repair.json').write_text(json.dumps(compiled))
-    review = json.loads((root / 'artifacts/preparation_review-original.json').read_text())
-    review.update(review_id='repair', subject_sha256=preparation.digest(compiled))
-    (root / 'artifacts/preparation_review-repair.json').write_text(json.dumps(review))
-    repair = pa.derive_scope(root, inputs, provider='openart_mcp', phase='repair', replaces_attempt_ids=['policy-original'])
-    inputs['governance']['scope_id'] = repair['id']
-    jobs.prepare(root, attempt_id='policy-repair', generation_inputs=inputs,
-                 authority_fn=execution.prepare_openart_mcp_handoff)
-    jobs.begin(root, 'policy-repair', authority_fn=execution.prepare_openart_mcp_handoff)
-    counts = pa.root_attempt_counts(root, policy)
-    assert counts['total'] == 2 and counts['repair'] == 1
-    with pytest.raises(ValueError):
-        pa.derive_scope(root, inputs, provider='openart_mcp', phase='repair', replaces_attempt_ids=['policy-original'])
+        pa.derive_scope(root, duplicate, provider='openart_mcp')
+    assert pa.root_attempt_counts(root, policy)['per_shot']['entry'] == 1
+    assert len(jobs.list_attempts(root)) == 1
+    assert (root / 'openart_mcp/attempts/terminal-original/state.json').read_bytes() == before

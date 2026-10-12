@@ -427,7 +427,7 @@ def test_actual_settled_refunded_and_quarantined_credits_are_exact(openart_proje
     assert report['openart_credits'][0]['settled_net'] == '3.75'
 
 
-def test_actual_openart_failure_then_generated_grok_mixed_report(openart_project, monkeypatch):
+def test_actual_openart_failure_then_refused_grok_retains_exact_credit_report(openart_project, monkeypatch):
     from lib import production_request as preparation
     from tools.video.openart_cli_video import OpenArtCLIVideo
     from tools.video.grok_cli_video import GrokCLIVideo
@@ -460,22 +460,16 @@ def test_actual_openart_failure_then_generated_grok_mixed_report(openart_project
            'terminal_failure_sha256': terminal['terminal_failure_sha256'],
            'reviewer': 'Synthetic software-test engineering review of actual fake-provider terminal failure; no AV claim'})
     observation = observe_grok_cli_compatibility('grok', cwd=root)
-    scope = autonomy.derive_scope(root, grok, provider='grok_cli', observation=observation,
-                                  phase='repair', replaces_attempt_ids=[original])
-    grok['governance']['scope_id'] = scope['id']
-    result = GrokCLIVideo(grok_path='grok', sessions_root=str(root / 'sessions')).execute(grok)
-    assert result.success, result.error
+    before = list((root/'production_attempts').glob('*/request.json'))
+    with pytest.raises(autonomy.AutonomyError, match='one original request|attempts.*exhausted'):
+        autonomy.derive_scope(root, grok, provider='grok_cli', observation=observation)
+    assert list((root/'production_attempts').glob('*/request.json')) == before
     report = json.loads(completion_report(root, sha).read_bytes())
-    assert len(report['attempts']) == 2
-    by_provider = {r['settings']['provider']: r for r in report['attempts']}
-    assert by_provider['grok_cli']['status'] == 'generated'
-    assert by_provider['grok_cli']['settings']['media_model'] is None
-    assert by_provider['grok_cli']['settings']['media_model_status'] == 'unreported'
-    assert by_provider['grok_cli']['settings']['agent_model'] is not None
-    assert by_provider['openart_cli']['status'] == 'failed'
-    assert report['grok'] == 'subscription quota unknown, 1 attempts'
+    assert len(report['attempts']) == 1
+    assert report['attempts'][0]['settings']['provider'] == 'openart_cli'
+    assert report['attempts'][0]['status'] == 'failed'
     assert report['openart_credits'][0]['settled_net'] == '2.00'
-    assert len(transport.native_requests) == 1
+    assert not transport.native_requests
 
 
 @pytest.mark.parametrize('state,expected', [
@@ -601,14 +595,16 @@ def test_valid_different_policy_journal_is_excluded_with_finding(project):
     assert any(f['code'] == 'excluded_other_policy_or_strict_attempt' for f in report['findings'])
 
 
-def test_actual_historical_failed_attempt_survives_approved_current_retime(openart_project, monkeypatch):
+def test_actual_historical_failed_attempt_survives_changed_current_duration(openart_project, monkeypatch):
     from tools.video.openart_cli_video import OpenArtCLIVideo
     root, inputs, _, _, policy, sha = openart_project
     aid = OpenArtCLIVideo().execute(inputs).data['production_attempt_id']
     settle_fake_openart(root, aid, monkeypatch)
-    retained = autonomy.retained_baselines(root, policy)
-    contract, scene, script = autonomy._canonical_global_planning(policy, retained, {'entry': 6})
+    # Model existing saved history by editing only the temporary current view;
+    # no removed retime/planning writer executes and no new request is admitted.
     original_contract = json.loads((root / 'artifacts/shot_contract.json').read_bytes())
+    contract = copy.deepcopy(original_contract)
+    next(shot for shot in contract['shots'] if shot['id'] == 'entry')['duration_seconds'] = 6
     original_assets = {a['id']: a for a in original_contract['assets']}
     for asset in contract['assets']:
         asset['review'] = copy.deepcopy(original_assets[asset['id']]['review'])
@@ -619,9 +615,8 @@ def test_actual_historical_failed_attempt_survives_approved_current_retime(opena
     for shot in contract['shots']:
         shot['review'] = attestation(current_digest, SHOT_PREDICATES, policy['story_revision'])
     write(root / 'artifacts/shot_contract.json', contract)
-    write(root / 'artifacts/scene_plan.json', scene)
-    write(root / 'artifacts/script.json', script)
-    assert autonomy.require_active_policy(root)[1] == sha
+    with pytest.raises(autonomy.AutonomyError, match='retimed planning is retired'):
+        autonomy.require_active_policy(root)
     report = json.loads(completion_report(root, sha).read_bytes())
     assert report['attempts'][0]['status'] == 'failed'
     assert report['attempts'][0]['settings']['duration'] == 8

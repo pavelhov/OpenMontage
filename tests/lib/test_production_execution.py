@@ -94,22 +94,30 @@ def test_motion_first_pass_ceiling_is_not_repair_permission(tmp_path):
     tool = MotionTool()
     tool.execute(inputs)
     Path(inputs['output_path']).unlink()  # even deleting output does not authorize a reroll
-    with pytest.raises(ProductionGovernanceError, match='first-pass ceiling'):
+    with pytest.raises(ProductionGovernanceError, match='already has its one original request'):
         tool.execute(inputs)
     assert tool.calls == 1
 
 
-def test_exact_repair_scope_can_run_after_reconciled_attempt(tmp_path):
+@pytest.mark.parametrize('phase', ['repair', 'first_pass'])
+def test_replacement_scope_cannot_dispatch_after_original(tmp_path, phase):
     inputs, scope, _ = project(tmp_path, motion=True)
     tool = MotionTool()
-    first = tool.execute(inputs)
-    scope.update(id='repair',phase='repair',replaces_attempt_ids=[first.data['production_attempt_id']])
-    inputs['governance']['scope_id'] = 'repair'
-    inputs['output_path'] = str(tmp_path/'assets'/'repair.mp4')
-    scope['requests']['entry'] = planned_request_digest(inputs,project_dir=tmp_path)
-    write_scopes(tmp_path,scope)
-    assert tool.execute(inputs).success
-    assert len(list((tmp_path/'production_attempts').glob('*/request.json'))) == 2
+    original = tool.execute(inputs)
+    aid = original.data['production_attempt_id']
+    retained = {path: path.read_bytes() for path in (tmp_path/'production_attempts'/aid).rglob('*') if path.is_file()}
+    output = Path(inputs['output_path']).read_bytes()
+    scope.update(id='replacement', phase=phase, replaces_attempt_ids=[aid])
+    inputs['governance']['scope_id'] = scope['id']
+    inputs['output_path'] = str(tmp_path/'assets/replacement.mp4')
+    scope['requests']['entry'] = planned_request_digest(inputs, project_dir=tmp_path)
+    write_scopes(tmp_path, scope)
+    with pytest.raises(ProductionGovernanceError, match='approval phase|repair scopes are retired'):
+        tool.execute(inputs)
+    assert tool.calls == 1 and len(list((tmp_path/'production_attempts').glob('*/request.json'))) == 1
+    assert not Path(inputs['output_path']).exists()
+    assert (tmp_path/'assets/output.mp4').read_bytes() == output
+    assert all(path.read_bytes() == data for path, data in retained.items())
 
 
 @pytest.mark.parametrize('change', ['prompt','provider','approval','scope','contract_review'])
@@ -269,27 +277,32 @@ def test_snapshot_digest_detects_source_changed_then_restored(tmp_path,monkeypat
     assert tool.calls == 0
 
 
-def test_same_approved_repair_batch_covers_two_distinct_attempt_outputs(tmp_path):
+def test_rejected_original_does_not_unlock_extra_approved_outputs(tmp_path):
     from lib.production_execution import record_rejection
-    inputs,scope,_ = project(tmp_path,motion=True)
+    inputs, scope, _ = project(tmp_path, motion=True)
     tool = MotionTool()
-    initial = tool.execute(inputs)
-    scope.update(id='repair',phase='repair',replaces_attempt_ids=[initial.data['production_attempt_id']],attempts_per_shot={'entry':2})
-    first = copy.deepcopy(inputs);first['governance']['scope_id']='repair';first['output_path']=str(tmp_path/'assets'/'repair-one.mp4')
-    second = copy.deepcopy(first);second['output_path']=str(tmp_path/'assets'/'repair-two.mp4')
-    scope['requests']['entry']=[planned_request_digest(first,project_dir=tmp_path),planned_request_digest(second,project_dir=tmp_path)]
-    write_scopes(tmp_path,scope)
-    rejected=tool.execute(first)
-    review={'review_id':'reject-1','reviewer':'offline reviewer','story_revision':'story-1',
-        'subject_sha256':file_sha256(first['output_path']),'status':'fail',
-        'predicates':[{'name':'completed_action','status':'fail','evidence':'Synthetic incomplete action.'}]}
-    record_rejection(tmp_path,rejected.data['production_attempt_id'],review)
-    assert tool.execute(second).success
-    assert Path(first['output_path']).read_bytes() == b'mocked output'
-    assert (tmp_path/'production_attempts'/rejected.data['production_attempt_id']/'rejections').is_dir()
-    with pytest.raises(ProductionGovernanceError,match='exhausted'):
-        tool.execute(second)
-    assert tool.calls == 3
+    original = tool.execute(inputs)
+    aid = original.data['production_attempt_id']
+    review = {'review_id': 'reject-1', 'reviewer': 'offline reviewer', 'story_revision': 'story-1',
+        'subject_sha256': file_sha256(inputs['output_path']), 'status': 'fail',
+        'predicates': [{'name': 'completed_action', 'status': 'fail', 'evidence': 'Synthetic incomplete action.'}]}
+    record_rejection(tmp_path, aid, review)
+    retained = {path: path.read_bytes() for path in (tmp_path/'production_attempts'/aid).rglob('*') if path.is_file()}
+    scope.update(id='repair', phase='repair', replaces_attempt_ids=[aid], attempts_per_shot={'entry': 2})
+    first = copy.deepcopy(inputs)
+    first['governance']['scope_id'] = 'repair'
+    first['output_path'] = str(tmp_path/'assets/repair-one.mp4')
+    second = copy.deepcopy(first)
+    second['output_path'] = str(tmp_path/'assets/repair-two.mp4')
+    scope['requests']['entry'] = [planned_request_digest(item, project_dir=tmp_path) for item in (first, second)]
+    write_scopes(tmp_path, scope)
+    for item in (first, second):
+        with pytest.raises(ProductionGovernanceError, match='approval phase'):
+            tool.execute(item)
+        assert not Path(item['output_path']).exists()
+    assert tool.calls == 1 and len(list((tmp_path/'production_attempts').glob('*/request.json'))) == 1
+    assert Path(inputs['output_path']).read_bytes() == b'mocked output'
+    assert all(path.read_bytes() == data for path, data in retained.items())
 
 
 def test_approval_plan_preserves_semantics_while_observed_handoff_fills(tmp_path):
@@ -621,37 +634,39 @@ def test_motion_omitted_duration_rejected_before_reservation(tmp_path):
     assert tool.calls==0 and not (tmp_path/'production_attempts').exists()
 
 
-def test_exact_multi_shot_repair_batch_accepts_only_named_shots(tmp_path,monkeypatch):
-    import lib.production_execution as execution
-    inputs,scope,contract=project(tmp_path,motion=True)
-    # This test isolates repair scope/allowance. Real contract handoffs are covered
-    # by test_first_pass_workflow's selectors + adapters integration.
-    monkeypatch.setattr(execution,'validate_shot_contract',lambda *a,**kw:{'eligible':True,'errors':[]})
-    monkeypatch.setattr(execution,'_check_motion_inputs',lambda *a:None)
-    tool=MotionTool()
-    first=tool.execute(inputs)
-    other=copy.deepcopy(inputs);other['governance']['shot_id']='payoff';other['output_path']=str(tmp_path/'assets'/'payoff.mp4')
-    scope['requests']['payoff']=planned_request_digest(other,project_dir=tmp_path)
-    scope['attempts_per_shot']['payoff']=1
-    write_scopes(tmp_path,scope)
-    second=tool.execute(other)
-    scope.update(id='repairs',phase='repair',replaces_attempt_ids=[first.data['production_attempt_id'],second.data['production_attempt_id']],attempts_per_shot={'entry':1,'payoff':1})
-    for item in (inputs,other):
-        item['governance']['scope_id']='repairs'
-        item['output_path']=str(Path(item['output_path']).with_stem('repair-'+item['governance']['shot_id']))
-        scope['requests'][item['governance']['shot_id']]=planned_request_digest(item,project_dir=tmp_path)
-    write_scopes(tmp_path,scope)
-    assert tool.execute(inputs).success
-    assert tool.execute(other).success
-    assert tool.calls==4
-    scope['replaces_attempt_ids'].append('unrelated-attempt')
-    scope['attempts_per_shot']['entry']=2
-    inputs['output_path']=str(tmp_path/'assets'/'unapproved-repair.mp4')
-    scope['requests']['entry']=planned_request_digest(inputs,project_dir=tmp_path)
-    write_scopes(tmp_path,scope)
-    with pytest.raises(ProductionGovernanceError,match='existing exact attempts'):
-        tool.execute(inputs)
-    assert tool.calls==4
+def test_exact_multi_shot_replacement_batch_preserves_both_originals(tmp_path):
+    from tests.lib.test_shot_contract import refresh
+    inputs, scope, contract = project(tmp_path, motion=True)
+    other_shot = copy.deepcopy(contract['shots'][0])
+    other_shot['id'] = 'payoff'
+    contract['shots'].append(other_shot)
+    refresh(contract)
+    (tmp_path/'shot_contract.json').write_text(json.dumps(contract))
+    other = copy.deepcopy(inputs)
+    other['governance']['shot_id'] = 'payoff'
+    other['output_path'] = str(tmp_path/'assets/payoff.mp4')
+    scope['approval_plan_sha256'] = approval_plan_digest(contract)
+    scope['requests']['payoff'] = planned_request_digest(other, project_dir=tmp_path)
+    scope['attempts_per_shot']['payoff'] = 1
+    write_scopes(tmp_path, scope)
+    tool = MotionTool()
+    originals = [tool.execute(item) for item in (inputs, other)]
+    retained = {path: path.read_bytes() for path in (tmp_path/'production_attempts').rglob('*') if path.is_file()}
+    scope.update(id='repairs', phase='repair',
+        replaces_attempt_ids=[item.data['production_attempt_id'] for item in originals],
+        attempts_per_shot={'entry': 1, 'payoff': 1})
+    for item in (inputs, other):
+        item['governance']['scope_id'] = 'repairs'
+        item['output_path'] = str(Path(item['output_path']).with_stem('repair-'+item['governance']['shot_id']))
+        scope['requests'][item['governance']['shot_id']] = planned_request_digest(item, project_dir=tmp_path)
+    write_scopes(tmp_path, scope)
+    for item in (inputs, other):
+        with pytest.raises(ProductionGovernanceError, match='approval phase'):
+            tool.execute(item)
+        assert not Path(item['output_path']).exists()
+    assert tool.calls == 2 and len(list((tmp_path/'production_attempts').glob('*/request.json'))) == 2
+    assert all(path.read_bytes() == data for path, data in retained.items())
+    assert (tmp_path/'assets/output.mp4').read_bytes() == (tmp_path/'assets/payoff.mp4').read_bytes() == b'mocked output'
 
 
 def interrupted_grok_image(tmp_path,operation):
@@ -877,7 +892,7 @@ def test_dry_run_reuses_only_its_operation_check_and_dispatch_rechecks(tmp_path,
     assert checks == [False, False, False, True]
     assert tool.calls == 1
     Path(inputs['output_path']).unlink()  # original attempt still consumes its cap
-    with pytest.raises(ProductionGovernanceError, match='first-pass ceiling'):
+    with pytest.raises(ProductionGovernanceError, match='already has its one original request'):
         tool.dry_run(inputs)
     assert len(checks) == 5 and tool.calls == 1
 

@@ -214,21 +214,7 @@ def test_grok_preparation_uses_real_builder_and_closed_native_arm(package, monke
         execution.record_selection(root, shot_id, chosen)
         return chosen
     first_selection = select('entry', result)
-    from lib.production_retime import retime_planning
-    updated = retime_planning(contract, scene_plan, script, {'other': 6})
-    current_contract = updated['contract']
-    new_sha = contract_digest(current_contract)
-    current_contract['project_review'] = attestation(new_sha, PROJECT_PREDICATES, revision=contract['story_revision'])
-    for shot in current_contract['shots']:
-        shot['review'] = attestation(new_sha, SHOT_PREDICATES, revision=contract['story_revision'])
-    contract_path.write_text(json.dumps(current_contract))
-    scene_path.write_text(json.dumps(updated['scene_plan']))
-    script_path.write_text(json.dumps(updated['script']))
-    assert autonomy.require_active_policy(root)
-    assert updated['script']['total_duration_seconds'] == 14
-    assert validate_attempt_provenance(root, aid, shot_id='entry', story_revision=contract['story_revision'],
-                                       expected_output=retained_result['output'])
-    other_inputs['duration'] = 6
+    current_contract = contract
     other_inputs['reference_image_paths'] = other_inputs['reference_image_paths'][1:]
     # Legal partial drop retains the immutable original asset pool and requires
     # a newly compiled actual native request and fresh named preparation review.
@@ -236,12 +222,10 @@ def test_grok_preparation_uses_real_builder_and_closed_native_arm(package, monke
     other_inputs['prompt'] = other_prompt['prompt']
     other_native = request.prepare_grok_native(other_inputs, observation)
     other_timing = copy.deepcopy(timing)
-    other_timing['duration_seconds'] = 6
+    other_timing['duration_seconds'] = 8
     other_timing['margin_seconds'] = .3
     for window in other_timing['action_windows']:
         window['source_pointer'] = window['source_pointer'].replace('/shots/0/', '/shots/1/')
-        window['start_seconds'] *= .75
-        window['end_seconds'] *= .75
     stale_prepared_inputs = dict(other_inputs, compiled_request_id='g1', preparation_review_id='gr1')
     with pytest.raises(ValueError):
         request.validate_preparation(stale_prepared_inputs, other_native, {'source': 'real'})
@@ -260,20 +244,20 @@ def test_grok_preparation_uses_real_builder_and_closed_native_arm(package, monke
     master = root / 'master.mp4'
     master.write_bytes(b'Synthetic master assembled from actual offline native result files')
     from lib.production_review import certify_final
-    monkeypatch.setattr('lib.production_review.probe_master', lambda path: {'duration_seconds': 14})
+    monkeypatch.setattr('lib.production_review.probe_master', lambda path: {'duration_seconds': 16})
     final = {'version': '2.0', 'project_id': current_contract['project_id'],
              'story_revision': current_contract['story_revision'], 'contract_sha256': contract_digest(current_contract),
-             'output_path': str(master), 'output_sha256': file_sha256(master), 'duration_seconds': 14,
+             'output_path': str(master), 'output_sha256': file_sha256(master), 'duration_seconds': 16,
              'release_status': 'final', 'reviewer': {'id': 'synthetic-author', 'kind': 'agent',
                 'method': 'Synthetic offline AV attestation, no production quality claim', 'reviewed_at': '2026-10-06T00:00:00Z'},
              'dimensions': {name: {'status': 'pass', 'evidence': 'Synthetic offline evidence'}
                  for name in ('transport', 'technical', 'visual', 'audio', 'story')},
              'av_review': {'status': 'pass', 'mode': 'synchronized_av', 'watched_full': True,
-                 'listened_full': True, 'start_seconds': 0, 'end_seconds': 14, 'evidence': 'Synthetic offline evidence'},
+                 'listened_full': True, 'start_seconds': 0, 'end_seconds': 16, 'evidence': 'Synthetic offline evidence'},
              'scenes': [{'scene_id': sid, 'attempt_id': chosen['attempt_id'], 'output_sha256': chosen['output']['sha256'],
                  'selection_sha256': selection_digest(chosen), 'review_sha256': review_digest(chosen['review']),
                  'start_seconds': start, 'end_seconds': end}
-                 for sid, chosen, start, end in [('entry', first_selection, 0, 8), ('other', second_selection, 8, 14)]],
+                 for sid, chosen, start, end in [('entry', first_selection, 0, 8), ('other', second_selection, 8, 16)]],
              'predicates': attestation('0' * 64, PROJECT_PREDICATES, revision=contract['story_revision'])['predicates']}
     certify_final(root, final)
 
@@ -308,7 +292,7 @@ def test_grok_preparation_uses_real_builder_and_closed_native_arm(package, monke
     capped = copy.deepcopy(autonomy.require_active_policy(root)[0])
     capped['caps']['max_total_attempts'] = 2
     with pytest.raises(ValueError, match='total attempts'):
-        autonomy.check_caps(capped, 'other', counts, 'repair')
+        autonomy.check_caps(capped, 'other', counts, 'first_pass')
     journal = root / 'production_attempts' / aid / 'request.json'
     original_journal = journal.read_bytes()
     journal.chmod(0o600)
@@ -326,90 +310,6 @@ def test_grok_preparation_uses_real_builder_and_closed_native_arm(package, monke
         result_path.write_text(json.dumps({'status': status}))
         assert autonomy.root_attempt_counts(root, capped)['total'] == 2
     result_path.write_bytes(original_result)
-    with pytest.raises(ValueError):
-        autonomy._validate_repair_evidence(root, 'entry', [aid, aid])
-    with pytest.raises(ValueError):
-        autonomy._validate_repair_evidence(root, 'other', [aid])
-    with pytest.raises(ValueError):
-        autonomy._validate_repair_evidence(root, 'entry', [aid])
-    from lib.production_execution import record_rejection
-    failed_review = copy.deepcopy(first_selection['review'])
-    failed_review['status'] = 'fail'
-    failed_review['subject_sha256'] = retained_result['output']['sha256']
-    # Cosmetic-only or unknown-only findings never create semantic repair authority.
-    for weak in ({'name': 'grain', 'status': 'fail', 'evidence': 'slight grain', 'severity': 'cosmetic'},
-                 {'name': 'identity', 'status': 'unknown', 'evidence': 'not judged', 'severity': 'critical'}):
-        weak_review = dict(failed_review, review_id=failed_review['review_id'] + '-' + weak['status'],
-                           predicates=[weak])
-        weak_dir = root / 'production_attempts' / aid / 'rejections'
-        record_rejection(root, aid, weak_review)
-        with pytest.raises(ValueError, match='critical'):
-            autonomy._validate_repair_evidence(root, 'entry', [aid])
-        for path in weak_dir.glob('*.json'):
-            path.chmod(0o600)
-            path.unlink()
-    # Legacy reviews may omit severity; the canonical engine default is critical.
-    failed_review['predicates'] = [{'name': 'character_identity', 'status': 'fail',
-                                    'evidence': 'face changes mid-shot'}]
-    record_rejection(root, aid, failed_review)
-    autonomy._validate_repair_evidence(root, 'entry', [aid])
-    repair_inputs = copy.deepcopy(inputs)
-    repair_inputs.update(output_path=str(root / 'repair.mp4'), compiled_request_id='g3', preparation_review_id='gr3')
-    repair_prompt = request.compile_provider_prompt(root, 'entry', provider='grok_cli')
-    repair_inputs['prompt'] = repair_prompt['prompt']
-    repair_native = request.prepare_grok_native(repair_inputs, observation)
-    repair_compiled = request.prepare_compiled_request(repair_inputs, repair_native, {'source': 'real'},
-                                                       coverage=repair_prompt['coverage'], timing=timing)
-    repair_review = copy.deepcopy(review)
-    repair_review.update(review_id='gr3', subject_sha256=request.digest(repair_compiled))
-    (root / 'artifacts/compiled_request-g3.json').write_text(json.dumps(repair_compiled))
-    (root / 'artifacts/preparation_review-gr3.json').write_text(json.dumps(repair_review))
-    repair_scope = autonomy.derive_scope(root, repair_inputs, provider='grok_cli', observation=observation,
-                                         phase='repair', replaces_attempt_ids=[aid])
-    repair_inputs['governance']['scope_id'] = repair_scope['id']
-    repair_result = registry.get('grok_cli_video').execute(repair_inputs)
-    assert repair_result.success, repair_result.error
-    assert autonomy.root_attempt_counts(root, autonomy.require_active_policy(root)[0])['repair'] == 1
-    repair_journal = root / 'production_attempts' / repair_result.data['production_attempt_id'] / 'request.json'
-    raw_repair_journal = repair_journal.read_bytes()
-    repair_journal.chmod(0o600)
-    corrupted = json.loads(raw_repair_journal)
-    corrupted['phase'] = 'first_pass'
-    repair_journal.write_text(json.dumps(corrupted))
-    with pytest.raises(ValueError, match='phase'):
-        autonomy.root_attempt_counts(root, autonomy.require_active_policy(root)[0])
-    repair_journal.write_bytes(raw_repair_journal)
-    valid_counts = autonomy.root_attempt_counts(root, autonomy.require_active_policy(root)[0])
-    repair_cap_policy = copy.deepcopy(autonomy.require_active_policy(root)[0])
-    repair_cap_policy['caps'].update(max_total_attempts=99, max_attempts_per_shot=99)
-    with pytest.raises(ValueError, match='repair attempts'):
-        autonomy.check_caps(repair_cap_policy, 'entry', valid_counts, 'repair')
-    for mutate in (
-        lambda r: r.update(phase=None),
-        lambda r: (r.update(phase='first_pass'), r['scope'].update(phase='first_pass')),
-        lambda r: r.update(scope_id='missing-retained-scope'),
-        lambda r: r.update(request_sha256='f' * 64),
-    ):
-        corrupted = json.loads(raw_repair_journal)
-        mutate(corrupted)
-        repair_journal.write_text(json.dumps(corrupted))
-        with pytest.raises(ValueError):
-            autonomy.root_attempt_counts(root, autonomy.require_active_policy(root)[0])
-        repair_journal.write_bytes(raw_repair_journal)
-    scopes_path = root / 'production_scopes.json'
-    raw_scopes = scopes_path.read_bytes()
-    scopes = json.loads(raw_scopes)
-    scopes['scopes'].append(copy.deepcopy(repair_scope))
-    scopes_path.write_text(json.dumps(scopes))
-    with pytest.raises(ValueError, match='duplicate scope'):
-        autonomy.root_attempt_counts(root, autonomy.require_active_policy(root)[0])
-    scopes_path.write_bytes(raw_scopes)
-    rejection_path = next((root / 'production_attempts' / aid / 'rejections').glob('*.json'))
-    failed_review['subject_sha256'] = 'f' * 64
-    rejection_path.chmod(0o600)
-    rejection_path.write_text(json.dumps(failed_review))
-    with pytest.raises(ValueError):
-        autonomy._validate_repair_evidence(root, 'entry', [aid])
 
 
 def test_named_board_end_reference_does_not_satisfy_native_end_pin(package):

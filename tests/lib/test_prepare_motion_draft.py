@@ -6,9 +6,9 @@ import pytest
 
 from lib import production_autonomy as pa, production_execution as execution
 from lib import production_images as images, production_request as request
-from lib.shot_contract import SHOT_PREDICATES, file_sha256, shot_review_subject
+from lib.shot_contract import file_sha256
 from tests.integration.test_first_pass_workflow import attestation
-from tests.lib.test_factory_board_resume import late_board_run, reuse_review
+from tests.lib.test_factory_frame_alias import original_frame_run
 from tests.lib.test_production_factory import file_bytes, write
 from tests.lib.test_production_request import neutral_package  # noqa: F401
 
@@ -17,13 +17,7 @@ OBSERVATION = {'cli_version': '1.0.34', 'grok_path': '/SYNTHETIC/offline/grok'}
 
 def _current_prepare(root):
     execution.advance(root)
-    reuse_review(root)
     action = execution.next_production_action(root)
-    if action['kind'] == 'review_planning':
-        contract = execution.load_shot_contract(root)
-        execution.complete_action(root, action, outcome={
-            'shot_review': attestation(shot_review_subject(contract, 's3'), SHOT_PREDICATES, revision='r1')})
-        action = execution.next_production_action(root)
     assert (action['kind'], action['subject']) == ('prepare_motion', 's3'), action
     return action
 
@@ -52,7 +46,7 @@ def _synthetic_preparation(root, draft, record_id, composite_boards=None):
 
 
 def test_draft_feeds_existing_preparation_and_native_admission(neutral_package, monkeypatch):
-    root, transport, _, _ = late_board_run(neutral_package, monkeypatch, reuse=True)
+    root, transport, _ = original_frame_run(neutral_package, monkeypatch)
     monkeypatch.setenv('GROK_SESSIONS_ROOT', str(root / 'sessions'))
     action = _current_prepare(root)
     usage = images.image_usage(root)['total']
@@ -79,7 +73,7 @@ def test_draft_feeds_existing_preparation_and_native_admission(neutral_package, 
 
 
 def test_draft_refuses_stale_modified_or_foreign_route_without_writes(neutral_package, monkeypatch):
-    root, transport, _, _ = late_board_run(neutral_package, monkeypatch, reuse=True)
+    root, transport, _ = original_frame_run(neutral_package, monkeypatch)
     action = _current_prepare(root)
     before = file_bytes(root)
     modified = copy.deepcopy(action); modified['inputs']['shot_id'] = 's1'
@@ -97,7 +91,7 @@ def test_draft_refuses_stale_modified_or_foreign_route_without_writes(neutral_pa
 
 
 def test_draft_refuses_changed_board_bytes_and_preserves_retained_controls(neutral_package, monkeypatch):
-    root, transport, _, _ = late_board_run(neutral_package, monkeypatch, reuse=True)
+    root, transport, _ = original_frame_run(neutral_package, monkeypatch)
     action = _current_prepare(root)
     policy, _, _ = pa.require_active_policy(root, shot_id='s3')
     template = pa.retained_baselines(root, policy)['s3']['planned_request_template']['inputs']
@@ -114,7 +108,7 @@ def test_draft_refuses_changed_board_bytes_and_preserves_retained_controls(neutr
 
 
 def _admission_ready(neutral_package, monkeypatch):
-    root, transport, _, _ = late_board_run(neutral_package, monkeypatch, reuse=True)
+    root, transport, _ = original_frame_run(neutral_package, monkeypatch)
     monkeypatch.setenv('GROK_SESSIONS_ROOT', str(root / 'sessions'))
     action = _current_prepare(root)
     draft = execution.draft_motion_preparation(root, action, provider='grok_cli',
@@ -130,61 +124,10 @@ def _asset(root):
     return {**expected, **execution.resolve_board_input(root, {'asset_id': 'other'})}, expected
 
 
-def test_reuse_admission_refuses_plain_reuse_binding(neutral_package, monkeypatch):
-    from lib import production_boards as boards
-    root, transport, action, _ = _admission_ready(neutral_package, monkeypatch)
-    asset, expected = _asset(root)
-    pa._validate_generated_board_source(root, asset, expected=expected)  # declared reuse accepted
-    real = boards.load_board_pack
-    def plain(r):
-        pack = real(r); pack['board_bindings']['other'].pop('upstream_source', None)
-        pack['prompt_pack']['other'].pop('upstream_source', None); return pack
-    monkeypatch.setattr(boards, 'load_board_pack', plain)
-    with pytest.raises(Exception):
-        pa._validate_generated_board_source(root, asset, expected=expected)
-    monkeypatch.setattr(boards, 'load_board_pack', real)
-    for key in ('upstream_source',):
-        undeclared = {k: v for k, v in expected.items() if k != key}
-        with pytest.raises(pa.AutonomyError):
-            pa._validate_generated_board_source(root, asset, expected=undeclared)
-    assert len(transport.native_requests) == 1
-
-
-@pytest.mark.parametrize('damage', ['changed_selection', 'failed_consumer_review'])
-def test_reuse_admission_fails_closed_before_native_call(neutral_package, monkeypatch, damage):
-    from lib.shot_contract import UPSTREAM_PREDICATES, selection_digest
-    from tests.lib.test_production_images import PNG
-    root, transport, action, inputs = _admission_ready(neutral_package, monkeypatch)
-    if damage == 'changed_selection':
-        selection = execution.load_selected_attempts(root)['s1']
-        frame = root / 'assets/images/SYNTHETIC-new-outgoing.png'; frame.write_bytes(PNG + b'changed')
-        selection['outgoing_frame'] = {'path': str(frame), 'sha256': file_sha256(frame)}
-        selection['review'] = attestation(selection_digest(selection), UPSTREAM_PREDICATES, revision='r1')
-        execution.record_selection(root, 's1', selection)
-    else:
-        from lib import production_boards as boards
-        pack = boards.load_board_pack(root)
-        names = sorted(pack['prompt_pack']['other']['required_predicates'] + ['cast_count'])
-        failed = attestation(pack['board_bindings']['other']['sha256'], names, revision='r1')
-        failed.update(review_id='SYNTHETIC-consumer-fail', reviewer='persistent reviewer', status='fail')
-        failed['predicates'][0].update(status='fail', severity='critical')
-        boards.record_board_review(root, 'other', failed, roles=['start_frame'], images=images)
-    with pytest.raises(Exception):
-        execution.complete_action(root, execution.next_production_action(root)
-            if execution.next_production_action(root)['kind'] == 'prepare_motion' else action,
-            outcome={'inputs': inputs, 'provider': 'grok_cli', 'observation': OBSERVATION})
-    assert len(transport.native_requests) == 1
-    assert not (root / 'assets/video/neg-s3.mp4').exists()
-
-
-def _cast_bearing_reuse(neutral_package, monkeypatch):
-    """C88 S02 shape: reused selected outgoing frame plus a cast identity_reference.
-
-    The reused start_frame asset stays unmaterialized (no sha256) in the shot
-    projection, so composite member matching must tolerate pending assets.
-    """
-    from tests.lib import test_factory_board_resume as resume
-    original = resume.prospective_package
+def _cast_bearing_frame(neutral_package, monkeypatch):
+    """C88 S02 shape: a prepared start_frame board plus a cast identity_reference."""
+    from tests.lib import test_factory_frame_alias as frames
+    original = frames.prospective_package
 
     def cast_bearing(package):
         package = original(package)
@@ -197,12 +140,11 @@ def _cast_bearing_reuse(neutral_package, monkeypatch):
         next(s for s in template['shots'] if s['id'] == 's3')['cast_ids'] = ['actor']
         next(a for a in template['assets'] if a['id'] == 'other')['cast_ids'] = ['actor']
         return package
-    monkeypatch.setattr(resume, 'prospective_package', cast_bearing)
-    root, transport, _, _ = resume.late_board_run(neutral_package, monkeypatch, reuse=True)
+    monkeypatch.setattr(frames, 'prospective_package', cast_bearing)
+    root, transport, _ = frames.original_frame_run(neutral_package, monkeypatch)
     monkeypatch.setenv('GROK_SESSIONS_ROOT', str(root / 'sessions'))
     action = _current_prepare(root)
     projection = pa.current_projection(root, 's3')
-    assert 'sha256' not in next(a for a in projection['assets'] if a['id'] == 'other')  # pending reuse asset
     cast = next(a for a in projection['assets'] if a['id'] == 'cast')
     draft = execution.draft_motion_preparation(root, action, provider='grok_cli',
         output_path='assets/video/cast-s3.mp4', compiled_request_id='cast-s3', preparation_review_id='cast-s3')
@@ -212,8 +154,8 @@ def _cast_bearing_reuse(neutral_package, monkeypatch):
     return root, transport, action, {**draft, 'inputs': inputs}, composite
 
 
-def test_reused_frame_with_semantic_composite_membership_admits_and_dispatches(neutral_package, monkeypatch):
-    root, transport, action, draft, composite = _cast_bearing_reuse(neutral_package, monkeypatch)
+def test_prepared_frame_with_semantic_composite_membership_admits_and_dispatches(neutral_package, monkeypatch):
+    root, transport, action, draft, composite = _cast_bearing_frame(neutral_package, monkeypatch)
     _synthetic_preparation(root, draft, 'cast-s3', composite_boards=[composite])
     review = __import__('json').loads((root / 'artifacts/preparation_review-cast-s3.json').read_text())
     assert review['composite_boards'] == [composite]
@@ -225,8 +167,8 @@ def test_reused_frame_with_semantic_composite_membership_admits_and_dispatches(n
 
 
 @pytest.mark.parametrize('damage', ['unknown_member', 'duplicate_member', 'wrong_carrier', 'wrong_cast'])
-def test_reused_frame_composite_membership_still_fails_closed(neutral_package, monkeypatch, damage):
-    root, transport, _, draft, composite = _cast_bearing_reuse(neutral_package, monkeypatch)
+def test_prepared_frame_composite_membership_still_fails_closed(neutral_package, monkeypatch, damage):
+    root, transport, _, draft, composite = _cast_bearing_frame(neutral_package, monkeypatch)
     member = composite['members'][0]
     if damage == 'unknown_member':
         member['sha256'] = '0' * 64
@@ -253,54 +195,19 @@ def _dispatch(root, action, record_id):
     return result
 
 
-def _reject(root, action, severity='critical'):
-    assert action['kind'] == 'review_selection', action
-    output = action['inputs']['output']
-    review = attestation(output['sha256'], ['completed_action'], revision='r1')
-    review.update(status='fail', predicates=[{'name': 'completed_action', 'status': 'fail',
-        'severity': severity, 'evidence': 'SYNTHETIC end state not reached'}])
-    execution.complete_action(root, action, outcome={'rejection': review})
-    return action['subject']
-
-
-def _critical_failed_s3(neutral_package, monkeypatch, severity='critical'):
-    root, transport, _, _ = late_board_run(neutral_package, monkeypatch, reuse=True)
+def test_failed_observation_never_rerolls(neutral_package, monkeypatch):
+    """One-shot: a recorded failed observation is report-only; no successor request follows."""
+    root, transport, _ = original_frame_run(neutral_package, monkeypatch)
     monkeypatch.setenv('GROK_SESSIONS_ROOT', str(root / 'sessions'))
     _dispatch(root, _current_prepare(root), 'orig-s3')
-    original = _reject(root, execution.next_production_action(root), severity)
-    return root, transport, original
-
-
-def test_critical_failure_dispatches_one_bounded_repair_before_cut(neutral_package, monkeypatch):
-    from lib import production_autonomy as autonomy
-    root, transport, original = _critical_failed_s3(neutral_package, monkeypatch)
+    attempt = next(a for a in execution._attempts(root) if a['shot_id'] == 's3')
+    output = attempt['output'] if 'output' in attempt else None
+    sha = (output or {}).get('sha256') or file_sha256(root / 'assets/video/orig-s3.mp4')
+    review = attestation(sha, ['completed_action'], revision='r1')
+    review.update(status='fail', predicates=[{'name': 'completed_action', 'status': 'fail',
+        'severity': 'critical', 'evidence': 'SYNTHETIC end state not reached'}])
+    execution.record_rejection(root, attempt['attempt_id'], review)
+    calls = len(transport.native_requests)
     action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('prepare_motion', 's3'), action
-    assert action['binding']['repair']['replaces_attempt_ids'] == [original]
-    assert action['inputs']['phase'] == 'repair' and action['binding']['repair']['provider'] == 'grok_cli'
-    # Same original route only.
-    with pytest.raises(Exception):
-        execution.complete_action(root, action, outcome={'inputs': {'governance': {'shot_id': 's3'}},
-                                                         'provider': 'openart_cli'})
-    calls = len(transport.native_requests)
-    _dispatch(root, action, 'repair-s3')
-    assert len(transport.native_requests) == calls + 1
-    repair = next(a for a in execution._attempts(root) if a['attempt_id'] != original and a['shot_id'] == 's3')
-    scope = repair['scope']
-    assert scope['phase'] == 'repair' and scope['replaces_attempt_ids'] == [original]
-    # The failed original is not re-reviewed; the repair is the next verdict.
-    review = execution.next_production_action(root)
-    assert review['kind'] == 'review_selection' and review['subject'] == repair['attempt_id']
-    _reject(root, review)
-    # Per-shot cap now exhausted: no further repair loop; compose discloses the gap.
-    final = execution.next_production_action(root)
-    assert final['kind'] == 'compose_cut', final
-    assert execution.next_production_action(root)['kind'] == 'compose_cut'
-    assert autonomy.root_attempt_counts(root, autonomy.require_active_policy(root, shot_id='s3')[0])['repair'] == 1
-
-
-def test_cosmetic_only_failure_never_rerolls(neutral_package, monkeypatch):
-    root, transport, _ = _critical_failed_s3(neutral_package, monkeypatch, severity='cosmetic')
-    calls = len(transport.native_requests)
-    assert execution.next_production_action(root)['kind'] == 'compose_cut'
+    assert action['kind'] != 'prepare_motion' and 'repair' not in str(action.get('binding', {})), action
     assert len(transport.native_requests) == calls

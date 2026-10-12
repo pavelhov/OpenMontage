@@ -396,9 +396,14 @@ class VideoCompose(BaseTool):
                 stderr=subprocess.STDOUT,
                 text=True,
             )
-            return "audio" in out
-        except Exception:
-            return False
+        except Exception as exc:
+            detail = getattr(exc, "output", None) or str(exc)
+            if isinstance(detail, bytes):
+                detail = detail.decode("utf-8", errors="replace")
+            raise RuntimeError(f"ffprobe failed while detecting source audio in {path}: {detail}") from exc
+        if not isinstance(out, str):
+            raise RuntimeError(f"ffprobe returned invalid audio probe output for {path}")
+        return "audio" in out
 
     def _mux_external_audio(self, video_path: Path, audio_path: str | Path) -> ToolResult:
         """Atomically replace a rendered video's audio with the approved mix."""

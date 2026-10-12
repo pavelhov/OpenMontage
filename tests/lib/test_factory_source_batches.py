@@ -7,7 +7,7 @@ import pytest
 
 from lib import production_autonomy as pa, production_execution as execution
 from tests.lib.test_production_factory import (creator_fixture, file_bytes, standing_fixture, write,
-    correction_factory_fixture, host_receipt)
+    board_factory_fixture, host_receipt)
 from tests.lib.test_production_request import neutral_package  # noqa: F401
 
 
@@ -188,7 +188,7 @@ def test_source_batch_successor_serializes_concurrent_exact_replay(tmp_path):
 @pytest.mark.parametrize('allowance_kind', ['source', 'total'])
 def test_source_batch_successor_keeps_emitted_original_image_collectable(neutral_package, revoke_successor, allowance_kind):
     from lib import production_boards as boards, production_images as images
-    root = correction_factory_fixture(neutral_package)
+    root = board_factory_fixture(neutral_package)
     policy, sha, _ = pa.require_active_policy(root)
     prepared = boards.prepare_image_request(root, 'payoff', images=images)
     scope = images.derive_native_image_scope(root, prepared['packet'], 'payoff', prepared['arguments'],
@@ -395,7 +395,7 @@ def test_total_allowance_mcp_remaining_cap_audit_uses_same_successor(tmp_path, m
     log = json.loads((tmp_path / 'artifacts/decision_log.json').read_text())
     entry = next(d for d in reversed(log['decisions']) if d['category'] == 'provider_selection')
     remaining = json.loads(entry['reason'].split('remaining attempt caps ', 1)[1].split(' [policy:', 1)[0])
-    assert remaining == {'total': 0, 'per_shot': 1, 'repair': 1}
+    assert remaining == {'total': 0, 'per_shot': 0}
     assert '[policy:' + sha + ' activation:' + decision_id + ']' in entry['reason']
 
 

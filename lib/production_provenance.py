@@ -26,6 +26,56 @@ from lib.production_trim_validation import (
 )
 
 
+_PLANNING_BYTE_FIELDS = ('path', 'sha256', 'review')
+
+
+def planning_closure(contract, shot):
+    """Own static assets, payoff and identity references relevant to a shot."""
+    cast = set(shot.get('cast_ids', [])) | set(contract.get('late_cast_ids', []))
+    ids = set(shot.get('asset_ids', []))
+    if contract.get('payoff_asset_id'):
+        ids.add(contract['payoff_asset_id'])
+    ids |= {asset['id'] for asset in contract.get('assets', [])
+            if asset.get('role') == 'identity_reference' and set(asset.get('cast_ids', [])) & cast}
+    return ids
+
+
+def _planning_projection(contract, keep_bytes):
+    plan = copy.deepcopy(contract)
+    plan.pop('project_review', None)
+    for shot in plan['shots']:
+        shot.pop('review', None)
+        shot['upstream'] = [{'shot_id': item['shot_id']} for item in shot.get('upstream', [])]
+    for asset in plan.get('assets', []):
+        if asset.get('upstream_source') or asset['id'] not in keep_bytes:
+            for field in _PLANNING_BYTE_FIELDS:
+                asset.pop(field, None)
+    return plan
+
+
+def _one_planning_shot(contract, shot_id):
+    shots = [shot for shot in contract.get('shots', []) if shot.get('id') == shot_id]
+    if len(shots) != 1:
+        raise ValueError(f'provenance: shot {shot_id} missing or duplicated in contract')
+    return shots[0]
+
+
+def shot_planning_digest(contract, shot_id):
+    """Digest of global/order/semantic fields plus this shot's own static closure."""
+    from lib.production_execution import _digest
+    return _digest(_planning_projection(contract, planning_closure(contract, _one_planning_shot(contract, shot_id))))
+
+
+def historical_shot_planning_digest(contract, shot_id):
+    """Source-only applicability: globals/order, own semantics and static closure."""
+    from lib.production_execution import _digest
+    closure = planning_closure(contract, _one_planning_shot(contract, shot_id))
+    plan = _planning_projection(contract, closure)
+    plan['shots'] = [shot if shot['id'] == shot_id else {'id': shot['id']} for shot in plan['shots']]
+    plan['assets'] = [asset for asset in plan.get('assets', []) if asset['id'] in closure]
+    return _digest(plan)
+
+
 _ALLOW_OPENART_FIXTURE_PROVENANCE = False  # module test seam, never caller-authorized
 _ALLOW_OPENART_COMPONENT_PREPARATION = False  # isolated U2 component fixtures only
 
@@ -154,8 +204,8 @@ def _validate_attempt_provenance(
     require(request['contract_sha256'] == digest, 'frozen contract digest differs from reservation')
     current = execution.load_shot_contract(root)
     require(contract['project_id'] == marker['project_id'] and contract['story_revision'] == story_revision, 'frozen contract story/project differs')
-    from lib import production_continuity as continuity
     local_continuation_applicable = False
+    retained_revision_ledger = False
     if not _historical_source and (directory / 'local_continuation_claim.json').exists():
         local_continuation_applicable = execution._same_original_local_grok_applicability(
             root, request, retained_continuation=True)
@@ -181,44 +231,19 @@ def _validate_attempt_provenance(
         # changes the global plan digest); this attempt stays eligible only
         # when its shot-scoped planning projection is unchanged.
         planning = contract
+        require('carried_from' not in scope, 'retired carried-scope history cannot certify an attempt')
+        # A retained retired revision ledger is inert history: it is never replayed
+        # or undone. The attempt still certifies only from its own frozen
+        # contract/scope and unchanged shot-scoped planning below; its presence
+        # is disclosed as unknown applicability instead of hiding the original.
+        retained_revision_ledger = (root / 'production_revisions.json').exists()
         try:
-            # An authorized append-only planning revision maps the current plan
-            # back to its prior plan. Historical attempts must be named by the
-            # revision; fresh attempts dispatched after it under a prior-plan
-            # scope must use a scope (and lineage) the revision retains.
-            chain = continuity.revision_chain(root, current)
-            index = 0
-            frozen_plan = execution.approval_plan_digest(contract)
-            # Historical phase: undo newer revisions from current until it
-            # reaches this attempt's frozen plan; each must retain the attempt.
-            while index < len(chain) and execution.approval_plan_digest(current) != frozen_plan:
-                if index == 0:
-                    state = execution.load_attempt_result(root, attempt_id)
-                    output_sha = (state.get('preserved_output') or state.get('output') or {}).get('sha256')
-                continuity.require_retained_attempt(chain[index], attempt_id, shot_id, output_sha)
-                current = continuity.undo_revision(current, chain[index])
-                index += 1
-            # Fresh phase: an attempt dispatched under a prior-plan scope after
-            # older revisions; undo both frozen and current via retained scopes.
-            while index < len(chain) and scope.get('approval_plan_sha256') != execution.approval_plan_digest(planning):
-                require(execution.approval_plan_digest(planning)
-                        == execution.approval_plan_digest(chain[index]['revised']),
-                        'approved planning semantics changed')
-                continuity.require_retained_scope(chain[index], scope, shot_id)
-                planning = continuity.undo_revision(planning, chain[index])
-                current = continuity.undo_revision(current, chain[index])
-                index += 1
             require(scope.get('approval_plan_sha256') == execution.approval_plan_digest(planning),
                     'approved planning semantics changed')
-            # Fast path: unchanged global plan keeps the original exact rule.
-            planning_digest = (continuity.historical_shot_planning_digest if _historical_source
-                               else continuity.shot_planning_digest)
+            planning_digest = historical_shot_planning_digest if _historical_source else shot_planning_digest
             same_shot_plan = (planning_digest(planning, shot_id) == planning_digest(current, shot_id)
                 or (not _historical_source and execution.approval_plan_digest(planning)
                     == execution.approval_plan_digest(current)))
-            if 'carried_from' in scope:
-                scopes = read(root / 'production_scopes.json').get('scopes', [])
-                continuity.validate_carried_scope(root, scope, planning, scopes)
         except (KeyError, TypeError) as exc:
             fail(f'shot planning continuity unreadable: {exc}')
         require(same_shot_plan, 'approved planning semantics changed')
@@ -226,7 +251,7 @@ def _validate_attempt_provenance(
         current_assets = {asset['id']:asset for asset in current.get('assets', [])}
         frozen_shot = next(shot for shot in contract['shots'] if shot['id'] == shot_id)
         from lib.shot_contract import required_asset_ids, shot_local
-        closure = required_asset_ids(contract, frozen_shot) if shot_local(contract) else continuity._closure(contract,frozen_shot)
+        closure = required_asset_ids(contract, frozen_shot) if shot_local(contract) else planning_closure(contract,frozen_shot)
         for asset_id in closure:
             asset = current_assets.get(asset_id)
             require(asset is not None, 'current historical static source missing')
@@ -239,9 +264,20 @@ def _validate_attempt_provenance(
     reference_free = project_reference_free or shot.get('reference_mode') == 'reference_free'
     require(not reference_free or openart, 'reference-free contract requires OpenArt text2video')
 
+    # Report-only semantics follow the attempt's frozen standing make_video
+    # authority, independent of later package/approval drift.
+    from lib.shot_contract import frozen_factory_authority
+    report_only = frozen_factory_authority(root, scope)
+
     def bound_review(review, subject, names, label, *, allow_draft=False, selection=None, upstream_id=None):
         review_schema = {'$defs': schema['$defs'], '$ref': '#/$defs/review'}
         require(not list(Draft202012Validator(review_schema).iter_errors(review)), f'{label}: incomplete semantic evidence')
+        seen = [predicate['name'] for predicate in review['predicates']]
+        if report_only:
+            # One-shot factory: frozen reviews are report-only observations; the
+            # frozen contract digest already binds the exact request closure.
+            require(len(seen) == len(set(seen)), f'{label}: duplicated predicates')
+            return
         from lib.production_draft import accepted_draft_predicate
         accepted = accepted_draft_predicate(selection, root, shot_id=upstream_id) if allow_draft and selection else None
         audio_provisional = allow_draft and provisional_audio_review(review, root)
@@ -249,7 +285,6 @@ def _validate_attempt_provenance(
         require((review['status'] == 'pass' or provisional) and review['subject_sha256'] == subject
                 and review['story_revision'] == story_revision, f'{label}: failed/stale review')
         names = required_review_predicates(root, names)
-        seen = [predicate['name'] for predicate in review['predicates']]
         require(len(seen) == len(set(seen)) and names.issubset(seen), f'{label}: missing/duplicated required predicates')
         for predicate in review['predicates']:
             if predicate['name'] == 'speaker_source' and audio_review_disabled(root):
@@ -269,9 +304,16 @@ def _validate_attempt_provenance(
         require(asset_id in assets, 'required frozen asset missing')
         asset = assets[asset_id]
         bound_review(asset['review'], asset['sha256'], ASSET_PREDICATES, f'frozen asset {asset_id}')
+    from lib.shot_contract import source_upstream_ids
+    # Ordering-only upstreams (factory, no bound upstream_source asset) carry no
+    # frame binding; every bound frame source keeps the exact hash/review checks.
+    frame_sources = set(source_upstream_ids(contract, shot, root, factory=report_only))
     for binding in shot['upstream']:
+        if binding['shot_id'] not in frame_sources:
+            require(set(binding) == {'shot_id'}, 'frozen ordering-only upstream carries a frame binding')
+            continue
         selection = selected_snapshot.get(binding['shot_id'])
-        require(isinstance(selection, dict) and selection.get('attempt_id') == binding['attempt_id'], 'frozen upstream attempt differs')
+        require(isinstance(selection, dict) and selection.get('attempt_id') == binding.get('attempt_id'), 'frozen upstream attempt differs')
         for role in ('output', 'outgoing_frame'):
             require(isinstance(selection.get(role), dict) and selection[role].get('sha256') == binding[role + '_sha256'], 'frozen upstream hash differs')
         require(review_digest(selection.get('review')) == binding['review_sha256'], 'frozen upstream review differs')
@@ -483,6 +525,8 @@ def _validate_attempt_provenance(
                     require({key: value for key, value in original_receipt.items() if key not in runtime_fields} == stable_receipt,
                             'reconciliation changed retained original controls')
     return {'request': request, 'result': result,
+        **({'retained_planning_revision_ledger': 'unknown_applicability'}
+           if retained_revision_ledger else {}),
         **({'historical_upstream_changed':historical_upstream_changed,
             'historical_source_changed': execution.approval_plan_digest(contract) != execution.approval_plan_digest(current)
                                          or historical_upstream_changed} if _historical_source else {})}
@@ -641,7 +685,7 @@ def validate_attempt_provenance(
         raise ProductionGovernanceError(f'attempt provenance: incomplete/invalid evidence ({exc})') from exc
 
 
-def validate_creator_repair_source_provenance(project_dir, attempt_id, *, shot_id,
+def historical_source_provenance(project_dir, attempt_id, *, shot_id,
                                              story_revision, expected_output):
     """Historical, source-only proof for an exact creator item or draft clip.
 
@@ -858,7 +902,7 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
     import base64
     import copy
     import hashlib
-    from lib.production_continuity import shot_planning_digest
+    from lib.production_provenance import shot_planning_digest
     snapshot_path = jobs._path(root, attempt_id).parent / 'evidence.json'
     snapshot = jobs._read(snapshot_path)
     require(preparation.digest(snapshot) == retained['evidence_snapshot_sha256'], 'frozen preparation snapshot changed')
@@ -879,7 +923,7 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
     require(frozen_subject == packet['binding']['contract_sha256']
             and preparation.digest([frozen_contract['project_review'], frozen_shots[0].get('review')])
                 == packet['binding']['reviews_sha256'], 'frozen contract/reviews differ')
-    from lib.production_continuity import historical_shot_planning_digest
+    from lib.production_provenance import historical_shot_planning_digest
     digest_shot_plan = historical_shot_planning_digest if _historical_source else shot_planning_digest
     planning_digest = (lambda contract: execution.approval_plan_digest(contract, shot_id)) if shot_local(frozen_contract) else (lambda contract: digest_shot_plan(contract, shot_id))
     require(planning_digest(frozen_contract) == planning_digest(current_contract),
@@ -935,7 +979,7 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
                 and review_digest(row.get('review')) == binding['review_sha256']}
             require(len(matches) == 1, 'original upstream selection history missing or changed')
             selection = next(iter(matches.values()))
-            validate_creator_repair_source_provenance(root, selection['attempt_id'], shot_id=sid,
+            historical_source_provenance(root, selection['attempt_id'], shot_id=sid,
                 story_revision=story_revision, expected_output=selection['output'])
             historical_selected[sid] = selection
             upstream_changed |= preparation.digest(current_selected.get(sid)) != binding['selection_sha256']
@@ -951,7 +995,7 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
             require(current.get('sha256') == reference['sha256']
                     and review_digest(current.get('review')) == reference['review_sha256'],
                     'current MCP static reference review/bytes changed')
-        source = preparation._creator_repair_source_packet(root, shot_id, native=native,
+        source = preparation._original_source_packet(root, shot_id, native=native,
             contract=frozen_contract, selected=historical_selected,
             script=frozen_script, scene_plan=frozen_scene_plan)
     require(preparation.digest(snapshot['scope']) == authority['scope_sha256'], 'frozen scope differs')

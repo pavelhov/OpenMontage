@@ -486,7 +486,6 @@ def activate_standing_run(project_dir, *, policy, baselines, standing_setup, run
         _validate_standing_route_treatments(candidate, baselines)
         counts = root_attempt_counts(root, candidate)
         if (counts['total'] > candidate['caps']['max_total_attempts']
-                or counts['repair'] > candidate['caps']['max_repair_attempts']
                 or any(value > candidate['caps']['max_attempts_per_shot'] for value in counts['per_shot'].values())):
             raise StandingSetupRequired('retained cumulative usage exceeds standing allowance')
         missing_shots = [sid for sid in baselines if counts['per_shot'].get(sid, 0) == 0]
@@ -558,7 +557,11 @@ def _standing_episode_controls(root, setup, basis):
         return None
     from lib import episode_production_controls as episode
     try:
-        payload = episode._check_controls(setup['episode_controls'])
+        # Retained standing authority with older broader controls activates
+        # only the narrower one-shot runtime; the setup itself is never rewritten.
+        payload = {**episode._check_controls(setup['episode_controls']),
+                   'max_generations_per_shot': episode.ONE_SHOT_LIMIT,
+                   'alternate_repair': 'disabled', 'access_fallback': False}
         authorization = _bound_document(root, setup['authorization'], 'standing creator authorization')
         evidence = episode._evidence(root, {**basis['standing_setup'],
             'approved_by': 'creator:' + basis['identity_id'] + ':' + authorization['message_id']})
@@ -580,7 +583,11 @@ def _standing_controls_initial(root, policy, controls):
         if not records:
             return None
         first = records[0]
-        if first['kind'] != 'controls' or first['controls'] != controls[0] or first['evidence'] != controls[1]:
+        historical = {**first.get('controls', {}), **{key: controls[0][key] for key in
+                      ('max_generations_per_shot', 'alternate_repair', 'access_fallback')}}
+        # Older activations retain their recorded initial controls unchanged.
+        if (first['kind'] != 'controls' or first['evidence'] != controls[1]
+                or first['controls'] != controls[0] and historical != controls[0]):
             raise StandingSetupRequired('standing initial episode controls differ from authenticated setup')
         return first
     except episode.EpisodeControlsError as exc:
@@ -589,15 +596,6 @@ def _standing_controls_initial(root, policy, controls):
 
 def _validate_standing_controls_activation(root, policy, sha, decision):
     """Check new activation's initial record, including a linked frame successor."""
-    from lib import production_frame_amendment as frame
-    if (Path(root) / frame.POINTER).exists():
-        record = frame._completed_record(root)  # Existing owner authenticates the original activation chain.
-        policy = _json(frame._bound(root, record['originals'][POLICY_ARTIFACT]))
-        sha = record['plan']['expected']['policy_sha256']
-        old_log_path = next(path for path in record['originals'] if Path(path).name == 'decision_log.json')
-        original_log = _json(frame._bound(root, record['originals'][old_log_path]))
-        decision = next(entry for entry in reversed(original_log['decisions'])
-            if entry.get('category') == ACTIVATION_CATEGORY and entry.get('subject') == ACTIVATION_SUBJECT)
     prefix = 'standing-' + sha[:24] + '-controls-'
     if not decision or not decision.get('decision_id', '').startswith(prefix):
         return  # Older activations never retrofit ignored optional setup fields.
@@ -794,8 +792,12 @@ def reconcile_standing_checkpoint_stages(project_dir, *, expected_policy_sha256)
         raise StandingSetupRequired('checkpoint reconciliation cannot be validated: ' + str(exc)) from exc
 
 
-def _standing_allowance_changes(previous, candidate, *, source_only=False, shot_ids=()):
-    """Only authenticated allowance increases; every other term stays exact."""
+def _standing_allowance_changes(previous, candidate, *, source_only=False, shot_ids=(), historical=False):
+    """Only authenticated allowance increases; every other term stays exact.
+
+    Named-shot (caps.max_attempts_by_shot) deltas are read only from already
+    retained records (historical=True); the current writer refuses them.
+    """
     if not isinstance(previous, dict) or not isinstance(candidate, dict):
         raise StandingSetupRequired('source batch amendment requires complete standing setups')
     before = copy.deepcopy(previous); after = copy.deepcopy(candidate)
@@ -846,8 +848,10 @@ def _standing_allowance_changes(previous, candidate, *, source_only=False, shot_
         else:
             new_caps.pop('max_attempts_by_shot', None)
     if before != after or not changes:
-        allowed = 'max_batches' if source_only else 'max_batches and max_total_attempts or exact shot limits'
+        allowed = 'max_batches' if source_only else 'max_batches and max_total_attempts'
         raise StandingSetupRequired('standing allowance changes only ' + allowed + '; no other caps, sources, rights or protections')
+    if not historical and any(c.get('field') == 'caps.max_attempts_by_shot' for c in changes):
+        raise StandingSetupRequired('named-shot attempt expansion is retired; only retained history is readable')
     return changes
 
 
@@ -883,7 +887,8 @@ def _standing_setup_state(root, policy):
             raise StandingSetupRequired('standing allowance predecessor differs from current activation/setup')
         candidate = _bound_document(root, record['standing_setup'], 'standing allowance successor setup')
         _bound_authorization(root, candidate, basis['identity_id'])
-        if _standing_allowance_changes(setup, candidate, source_only=source_only, shot_ids=policy['shots']) != record['changes']:
+        if _standing_allowance_changes(setup, candidate, source_only=source_only, shot_ids=policy['shots'],
+                                       historical=True) != record['changes']:
             raise StandingSetupRequired('standing allowance differs from exact creator setup')
         retained_records.append((retained, record))
         setup, binding = candidate, record['standing_setup']
@@ -917,9 +922,10 @@ def amend_standing_source_max_batches(project_dir, *, expected_policy_sha256,
 
 def amend_standing_allowance(project_dir, *, expected_policy_sha256,
                              expected_setup_sha256, standing_setup):
-    """Append exact creator-approved source batch, total or named-shot increases.
+    """Append exact creator-approved source batch or total attempt increases.
 
-    Named-shot limits use caps.max_attempts_by_shot in the authenticated successor.
+    Fresh named-shot (caps.max_attempts_by_shot) expansion is retired; already
+    retained named-shot records stay readable through _standing_setup_state.
     No other caps, account/route/rights/source/plan/control changes are admitted.
     Original activation, scopes, envelopes, jobs, selections and counts remain
     frozen. Merely preparing approval never activates an allowance. Exact replay
@@ -949,6 +955,8 @@ def _amend_standing_allowance(project_dir, *, expected_policy_sha256,
                 if source_only and any(c.get('field') in {'caps.max_total_attempts', 'caps.max_attempts_by_shot'}
                                        for c in latest['changes']):
                     raise StandingSetupRequired('source batch amendment changes only max_batches')
+                if any(c.get('field') == 'caps.max_attempts_by_shot' for c in latest['changes']):
+                    raise StandingSetupRequired('named-shot attempt expansion is retired; retained record is read-only history')
                 return {'amendment': copy.deepcopy(latest_binding), 'policy_sha256': sha,
                     'standing_setup': copy.deepcopy(standing_setup), 'changes': latest['changes'],
                     'replayed': True, 'provider_calls': 0}
@@ -1357,8 +1365,6 @@ def _load_active_policy(root, *, shot_id=None):
         errors = schema_errors(policy)
         if errors:
             return None, None, None, [f'schema: {e}' for e in errors]
-        from lib.production_frame_amendment import validate_successor
-        validate_successor(root, policy)
         baselines = retained_baselines(root, policy)
         sha = digest(evidence_content(policy, baselines))
         local = policy.get('planning_mode') == 'shot_local_v1'
@@ -1821,9 +1827,7 @@ def _canonical_global_planning(policy, baselines, durations):
         # No retime: the deterministic transform is the identity on retained bytes.
         # Reference-free contracts may legitimately carry an empty assets list.
         return contract, scene_plan, script
-    from lib.production_retime import retime_planning
-    transformed = retime_planning(contract, scene_plan, script, durations)
-    return transformed['contract'], transformed['scene_plan'], transformed['script']
+    raise AutonomyError('retimed planning is retired; each original keeps its authored duration')
 
 
 def _validate_global_planning(root, policy, baselines):
@@ -2324,19 +2328,23 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
         canonical = preparation.compile_provider_prompt(root, shot_id, provider=provider, **({'model': native['model']} if provider == 'openart_mcp' else {}))
     body = preparation._body(native)
     prompt = body['params'].get('sceneDescription' if provider == 'openart_mcp' and native.get('prompt_param_path') == '/params/sceneDescription' else 'prompt')
+    exact = (preparation.historical_prompt_matches(prompt, canonical)
+             if historical is not None or policy_context is not None else prompt == canonical['prompt'])
     if compiled.get('creator_prompt_override') is not None:
-        # Exact retained creator batch prompt: the full canonical compilation above
-        # still ran; the shared validator reproves the batch item, native prompt,
-        # full source occurrences and dialogue-only coverage against the same packet.
-        packet_source = (preparation._historical_source_packet if historical is not None or policy_context is not None
-                         else preparation.source_packet)
-        packet = packet_source(root, shot_id, provider=provider, native=native)
+        # Retained creator prompt: read-only authentication of the frozen marker
+        # against the exact submitted prompt, current historical source occurrences
+        # and dialogue-only coverage. Fresh/prospective overrides stay refused.
+        if not historical_replay:
+            raise AutonomyError('submitted native prompt/coverage is not canonical root compilation')
+        pointer = ('/arguments/prompt' if provider == 'grok_cli' else '/params/' + (
+            'sceneDescription' if provider == 'openart_mcp' and native.get('prompt_param_path') == '/params/sceneDescription'
+            else 'prompt'))
         try:
-            preparation.validate_creator_prompt_override(compiled, inputs, native, packet,
-                                                         historical=historical_replay)
-        except (ValueError, KeyError) as exc:
-            raise AutonomyError(f'submitted creator prompt override is not exact retained authority: {exc}') from exc
-    elif prompt != canonical['prompt'] or compiled['coverage'] != canonical['coverage']:
+            packet = preparation._historical_source_packet(root, shot_id, provider=provider, native=native)
+            preparation.historical_creator_prompt_coverage(compiled, prompt, packet, native_pointer=pointer)
+        except (ValueError, KeyError, TypeError) as exc:
+            raise AutonomyError(f'retained creator prompt override is not authenticated history: {exc}') from exc
+    elif not exact or compiled['coverage'] != canonical['coverage']:
         raise AutonomyError('submitted native prompt/coverage is not canonical root compilation')
     if provider == 'grok_cli':
         actual_controls = dict(native['request']['arguments'])
@@ -2401,8 +2409,8 @@ def check_caps(policy, shot_id, counts, phase, *, root=None):
         raise AutonomyError('caps: total attempts exhausted; deliver draft')
     if counts['per_shot'].get(shot_id, 0) + 1 > caps.get('max_attempts_by_shot', {}).get(shot_id, caps['max_attempts_per_shot']):
         raise AutonomyError(f'caps: attempts for {shot_id} exhausted; deliver draft')
-    if phase == 'repair' and counts['repair'] + 1 > caps['max_repair_attempts']:
-        raise AutonomyError('caps: repair attempts exhausted; deliver draft')
+    if phase != 'first_pass':
+        raise AutonomyError('repair attempts are retired; deliver draft')
 
 
 # ---------------------------------------------------------------- derived scope
@@ -2411,23 +2419,46 @@ def openart_allowance_id(sha):
     return f'policy:{sha}:openart'
 
 
+def _retained_scope_record(policy, sha, decision_id, retained, **material):
+    """Pure historical reader: reconstruct a retained scope for exact comparison.
+
+    Retired repair scopes keep their recorded phase/replacement/basis fields so
+    their counted originals stay collectable; no writer produces them."""
+    scope = _scope_record(policy, sha, decision_id, **material)
+    if retained.get('phase') == 'repair':
+        if not retained.get('replaces_attempt_ids'):
+            raise AutonomyError('historical repair scope must name replaced attempts')
+        scope['phase'] = 'repair'
+        scope['replaces_attempt_ids'] = list(retained['replaces_attempt_ids'])
+        basis = retained.get('repair_basis', 'critical_review')
+        if basis not in ('access_fallback', 'creator_batch', 'critical_review'):
+            raise AutonomyError('unknown historical repair basis')
+        if basis != 'critical_review':
+            scope['repair_basis'] = basis
+        if basis == 'creator_batch':
+            if not isinstance(retained.get('creator_repair'), dict):
+                raise AutonomyError('historical creator batch requires an exact item binding')
+            scope['creator_repair'] = copy.deepcopy(retained['creator_repair'])
+    elif retained.get('phase') != 'first_pass':
+        raise AutonomyError('historical scope phase is invalid')
+    return scope
+
+
 def _scope_record(policy, sha, decision_id, *, shot_id, provider, request_digest, approval_plan_sha256,
                  derivation_index, lock_digest, compiled_request_sha256=None, preparation_review_id=None,
-                 resolved_upstream=None, phase='first_pass', replaces_attempt_ids=None, credit_authorization_sha256=None,
-                 unknown_cost_authorization_sha256=None, repair_basis='critical_review', creator_repair=None,
+                 resolved_upstream=None, credit_authorization_sha256=None,
+                 unknown_cost_authorization_sha256=None,
                  delivery_approval=None, native_audio_off_approval=None):
-    """Normal v1.0 production scope for one attempt; exact single-shot scope."""
+    """The v1.0 original (first_pass) production scope for one planned clip."""
     if shot_id not in policy['shots']:
         raise AutonomyError(f'{shot_id} has no approved baseline')
     if provider not in {p['id'] for p in policy['providers']}:
         raise AutonomyError(f'{provider} not approved by policy')
-    if phase not in ('first_pass', 'repair') or (phase == 'repair') != bool(replaces_attempt_ids):
-        raise AutonomyError('repair scope must (only) name replaced attempts')
     scope = {
         'id': f'policy-{sha[:12]}-{shot_id}-{derivation_index}', 'status': 'approved',
         'approved_by': f'policy:{sha}', 'evidence': dict(policy['evidence']),
         'project_id': policy['project_id'], 'story_revision': policy['story_revision'],
-        'phase': phase, 'provider': provider, 'requests': {shot_id: request_digest},
+        'phase': 'first_pass', 'provider': provider, 'requests': {shot_id: request_digest},
         'attempts_per_shot': {shot_id: 1}, 'approval_plan_sha256': approval_plan_sha256,
         'derived_from_policy': {
             'policy_sha256': sha, 'decision_id': decision_id, 'derivation_index': derivation_index,
@@ -2446,19 +2477,6 @@ def _scope_record(policy, sha, decision_id, *, shot_id, provider, request_digest
         scope['derived_from_policy']['native_audio_off_approval'] = copy.deepcopy(native_audio_off_approval)
     if policy.get('planning_mode') == 'shot_local_v1':
         scope['planning_mode'] = 'shot_local_v1'
-    if phase == 'repair':
-        scope['replaces_attempt_ids'] = list(replaces_attempt_ids)
-    if repair_basis == 'access_fallback':
-        if phase != 'repair':
-            raise AutonomyError('access fallback is a repair basis')
-        scope['repair_basis'] = 'access_fallback'
-    elif repair_basis == 'creator_batch':
-        if phase != 'repair' or not isinstance(creator_repair, dict):
-            raise AutonomyError('creator batch requires an exact item binding')
-        scope['repair_basis'] = 'creator_batch'
-        scope['creator_repair'] = copy.deepcopy(creator_repair)
-    elif repair_basis != 'critical_review':
-        raise AutonomyError('unknown repair basis')
     if provider == 'openart_mcp':
         if credit_authorization_sha256 is not None:
             raise AutonomyError('MCP exact-credit ceiling is not qualified')
@@ -2554,9 +2572,8 @@ def validate_policy_mcp_attempt(root, scope, *, inputs, native, profile, authori
     """Reprove a retained connector policy origin without editing its journal."""
     policy, sha, decision_id, material = _scope_material(root, inputs, 'openart_mcp', derived_unknown_id=scope['id'],
                                                          historical_scope=scope)
-    expected = _scope_record(policy, sha, decision_id, derivation_index=scope['derived_from_policy']['derivation_index'],
-        phase=scope['phase'], replaces_attempt_ids=scope.get('replaces_attempt_ids'),
-        repair_basis=scope.get('repair_basis', 'critical_review'), creator_repair=scope.get('creator_repair'), **material)
+    expected = _retained_scope_record(policy, sha, decision_id, scope,
+        derivation_index=scope['derived_from_policy']['derivation_index'], **material)
     scopes = _json(Path(root) / 'production_scopes.json')['scopes']
     if scope != expected or len([s for s in scopes if s == expected]) != 1:
         raise AutonomyError('historical MCP scope differs from retained rooted policy')
@@ -2605,10 +2622,8 @@ def _validate_retained_packet_policy_mcp_attempt(root, scope, *, inputs, native,
     if audio_off is not None:
         material['native_audio_off_approval'] = audio_off
     material['unknown_cost_authorization_sha256'] = scope.get('unknown_cost_authorization_sha256')
-    expected = _scope_record(policy, sha, decision_id,
-        derivation_index=scope['derived_from_policy']['derivation_index'], phase=scope['phase'],
-        replaces_attempt_ids=scope.get('replaces_attempt_ids'), repair_basis=scope.get('repair_basis', 'critical_review'),
-        creator_repair=scope.get('creator_repair'), **material)
+    expected = _retained_scope_record(policy, sha, decision_id, scope,
+        derivation_index=scope['derived_from_policy']['derivation_index'], **material)
     scopes = _json(Path(root) / 'production_scopes.json')['scopes']
     if scope != expected or len([s for s in scopes if s == expected]) != 1:
         raise AutonomyError('historical MCP source scope differs from retained rooted policy')
@@ -2716,7 +2731,8 @@ def _scope_material(root, inputs, provider, observation=None, *, derived_unknown
     contract = execution.load_shot_contract(root)
     own_shot = next(s for s in contract['shots'] if s['id'] == shot_id)
     selected = execution.load_selected_attempts(root)
-    producers = [u['shot_id'] for u in own_shot.get('upstream', [])]
+    from lib.shot_contract import source_upstream_ids
+    producers = source_upstream_ids(contract, own_shot, root)
     resolved = {producer: copy.deepcopy(selected[producer]) for producer in producers}
     material = {'shot_id': shot_id, 'provider': provider,
         'request_digest': execution.planned_request_digest(inputs, project_dir=root),
@@ -2766,24 +2782,11 @@ def validate_derived_scope(root, scope, *, inputs, observation=None):
     index = policy_scopes.index(scope)
     phase = scope.get('phase')
     basis = scope.get('repair_basis', 'critical_review')
-    if phase == 'repair' and basis == 'access_fallback':
-        from lib import episode_production_controls as episode_controls
-        effective = episode_controls.effective_controls(root)
-        if effective is None or effective['access_fallback'] is not True:
-            raise AutonomyError('access fallback is not approved in current episode controls')
-        _validate_access_fallback(root, material['shot_id'], scope.get('replaces_attempt_ids'),
-                                  scope['provider'], inputs.get('model'))
-    elif phase == 'repair' and basis == 'creator_batch':
-        from lib.production_repair_batches import validate_creator_repair_intent
-        validate_creator_repair_intent(root, scope.get('creator_repair'), shot_id=material['shot_id'],
-            provider=scope['provider'], model=inputs.get('model'),
-            replaces_attempt_ids=scope.get('replaces_attempt_ids'), inputs=inputs)
-    elif phase == 'repair':
-        _validate_repair_evidence(root, material['shot_id'], scope.get('replaces_attempt_ids'))
+    if phase != 'first_pass' or scope.get('replaces_attempt_ids') or basis != 'critical_review':
+        raise AutonomyError('repair scopes are retired; each planned clip has one original request')
     counts = root_attempt_counts(root, policy, exclude_scope_id=scope['id'])
     check_caps(policy, material['shot_id'], counts, phase, root=root)
-    expected = _scope_record(policy, sha, decision_id, derivation_index=index, phase=phase,
-                             replaces_attempt_ids=scope.get('replaces_attempt_ids'), repair_basis=basis, creator_repair=scope.get('creator_repair'), **material)
+    expected = _scope_record(policy, sha, decision_id, derivation_index=index, **material)
     if expected != scope:
         raise AutonomyError('derived scope differs from authoritative current replay')
     if scope['provider'] == 'openart_cli':
@@ -2794,207 +2797,25 @@ def validate_derived_scope(root, scope, *, inputs, observation=None):
     return policy, sha, decision_id
 
 
-def _validate_repair_evidence(root, shot_id, replacement_ids):
-    """A retry names actual motion attempts and independently verified failure facts."""
-    from lib import production_execution as execution
-    from lib.production_provenance import validate_attempt_provenance
-    attempts = {a['attempt_id']: a for a in execution._attempts(root)}
-    if (not isinstance(replacement_ids, list) or not replacement_ids or
-            len(replacement_ids) != len(set(replacement_ids))):
-        raise AutonomyError('repair requires unique actual replacement attempts')
-    for aid in replacement_ids:
-        request = attempts.get(aid)
-        if not request or request['shot_id'] != shot_id or production_kind(request) != 'motion':
-            raise AutonomyError('repair must name actual same-shot motion attempts')
-        if request.get('provider') == 'openart_mcp':
-            from lib import openart_mcp_jobs as mcp_jobs
-            frozen = mcp_jobs.frozen_request(root, aid)
-            original_scope = frozen['authority']['scope']
-            if digest(original_scope) != frozen['authority']['scope_sha256'] or original_scope['provider'] != 'openart_mcp':
-                raise AutonomyError('MCP repair original scope identity differs')
-            state = execution.load_attempt_result(root, aid)
-            directory = Path(root) / 'openart_mcp' / 'attempts' / aid
-            request = {**request, 'scope': original_scope, 'story_revision': original_scope['story_revision']}
-        else:
-            directory = root / 'production_attempts' / aid
-            state = execution._state(root, request)
-        if state['status'] == 'generated':
-            validate_attempt_provenance(root, aid, shot_id=shot_id,
-                story_revision=request['story_revision'], expected_output=state['output'])
-            schema = load_schema('shot_contract')
-            validator = Draft202012Validator({'$defs': schema['$defs'], '$ref': '#/$defs/review'})
-            reviews = list((directory / 'rejections').glob('*.json'))
-            valid = False
-            for path in reviews:
-                review = _json(path)
-                # Semantic repair authority needs a named failed critical predicate; cosmetic-only
-                # or unknown-only findings never authorize a resubmit or alternate route.
-                critical = any(isinstance(p, dict) and p.get('status') == 'fail' and
-                               (p.get('name') in CRITICAL_PREDICATES or
-                                p.get('severity', 'critical') == 'critical') and
-                               not (p.get('name') in CRITICAL_PREDICATES and p.get('severity') == 'cosmetic')
-                               for p in review.get('predicates') or [])
-                if (not list(validator.iter_errors(review)) and review['status'] == 'fail' and critical and
-                        review['subject_sha256'] == state['output']['sha256'] and
-                        review['story_revision'] == request['story_revision']):
-                    valid = True
-            if not valid:
-                raise AutonomyError('repair requires named failed critical review of actual generated output')
-        elif request['scope']['provider'] == 'openart_mcp':
-            if state['status'] != 'failed':
-                raise AutonomyError('MCP original is pending or uncertain; never resubmit')
-            terminal = mcp_jobs.terminal_failure_record(root, aid)
-            review = _json(directory / 'rejection.json')
-            if (set(review) != {'status', 'kind', 'attempt_id', 'terminal_failure_sha256', 'reviewer'} or
-                    review['status'] != 'fail' or review['kind'] != 'generation_terminal_failure' or
-                    review['attempt_id'] != aid or review['terminal_failure_sha256'] != terminal['terminal_failure_sha256'] or
-                    not isinstance(review['reviewer'], str) or not review['reviewer'].strip()):
-                raise AutonomyError('MCP terminal failure review differs from original provider evidence')
-        elif request['scope']['provider'] == 'openart_cli':
-            from lib import openart_jobs as jobs
-            frozen = execution.load_openart_frozen(request)
-            terminal = jobs.verify_terminal_failure(aid, frozen['profile'])
-            review = _json(directory / 'rejection.json')
-            if (set(review) != {'status', 'kind', 'attempt_id', 'terminal_failure_sha256', 'reviewer'} or
-                    review['status'] != 'fail' or review['kind'] != 'generation_terminal_failure' or
-                    review['attempt_id'] != aid or
-                    review['terminal_failure_sha256'] != terminal['terminal_failure_sha256'] or
-                    not isinstance(review['reviewer'], str) or not review['reviewer'].strip()):
-                raise AutonomyError('repair terminal engineering review differs from actual failure')
-        else:
-            raise AutonomyError('repair requires verified generated-output or terminal-failure evidence')
-
-
-# Grok adapter categories that are confirmed terminal provider/access refusals.
-# Recoverable protocol/artifact/CLI failures never qualify as access fallback originals.
-_GROK_TERMINAL_ACCESS_CATEGORIES = frozenset({'spending_limit', 'auth', 'tier', 'zdr_storage', 'permission_policy'})
-
-
-def _grok_terminal_no_result_proof(directory, request, result):
-    """Re-derive Grok terminal access proof from retained canonical evidence.
-
-    The wrapper label alone is not proof: the stream parser can classify a
-    terminal category from a stream that also holds a completed tool update.
-    Require raw/result parity, session identity, provider text that classifies
-    to the same category, and retained native session logs with no completed
-    tool update (the only evidence an original collection can recover from)."""
-    from urllib.parse import quote
-    from tools._grok_cli_media import _classify_message
-    raw_path = directory / 'raw_result.json'
-    if not raw_path.is_file() or _json(raw_path) != result.get('result'):
-        raise AutonomyError('access fallback original raw result differs from its journal')
-    data = result['result'].get('data') or {}
-    category = data.get('error_category')
-    sid = request.get('cli_session_id')
-    prefix = f'Grok CLI {category} error: '
-    error = result['result'].get('error')
-    if (category not in _GROK_TERMINAL_ACCESS_CATEGORIES or not sid
-            or data.get('session_id') != sid or data.get('dispatch_session_id') != sid
-            or data.get('retry_attempted') is not False or data.get('fallback_attempted') is not False
-            or not isinstance(error, str) or not error.startswith(prefix)
-            or _classify_message(error[len(prefix):], dispatched=True).category != category):
-        raise AutonomyError('access fallback original is not a confirmed terminal provider/access failure')
-    diagnostics = data.get('diagnostics') or {}
-    if any(isinstance(item, dict) and item.get('tool_completion_observed')
-           for item in diagnostics.values()):
-        raise AutonomyError('access fallback original recorded a completed native tool update')
-    submitted = request.get('submitted_inputs') or {}
-    cwd = Path(submitted.get('cwd') or Path(submitted.get('output_path', '.')).parent).resolve()
-    session = Path(data.get('session_directory') or '').expanduser()
-    if session.name != sid or session.parent.name != quote(str(cwd), safe=''):
-        raise AutonomyError('access fallback original session directory differs from its request')
-    if session.is_symlink():
-        raise AutonomyError('access fallback original session directory cannot be a symlink')
-    for name in ('updates.jsonl', 'events.jsonl'):
-        log = session / name
-        if log.is_symlink():
-            raise AutonomyError('access fallback original session log cannot be a symlink')
-        if not log.exists():
-            continue
-        for line in log.read_text(errors='replace').splitlines():
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(row, dict):
-                continue
-            params = row.get('params')
-            event = params['update'] if isinstance(params, dict) and isinstance(params.get('update'), dict) else row
-            kind = event.get('type') or event.get('sessionUpdate')
-            if kind == 'tool_completed' or (kind == 'tool_call_update'
-                                            and str(event.get('status', '')).lower() == 'completed'):
-                raise AutonomyError('access fallback original retains a completed native tool update')
-
-
-def _validate_access_fallback(root, shot_id, replacement_ids, provider, model):
-    """Episode-approved access fallback: each original is a confirmed terminal
-    provider/access failure with no usable output, and the fallback uses a
-    different provider or media model. Uncertain, never-dispatched or
-    collection-error originals never qualify; no review is fabricated."""
-    from lib import production_execution as execution
-    from lib.episode_production_controls import _media_model
-    model = _media_model(provider, model)
-    attempts = {a['attempt_id']: a for a in execution._attempts(root)}
-    if (not isinstance(replacement_ids, list) or not replacement_ids or
-            len(replacement_ids) != len(set(replacement_ids))):
-        raise AutonomyError('access fallback requires unique actual replacement attempts')
-    for aid in replacement_ids:
-        request = attempts.get(aid)
-        if not request or request['shot_id'] != shot_id or production_kind(request) != 'motion':
-            raise AutonomyError('access fallback must name actual same-shot motion attempts')
-        if request.get('provider') == 'openart_mcp':
-            from lib import openart_mcp_jobs as mcp_jobs
-            if execution.load_attempt_result(root, aid).get('status') != 'failed':
-                raise AutonomyError('access fallback original is not a confirmed terminal failure')
-            mcp_jobs.terminal_failure_record(root, aid)
-            old_provider = 'openart_mcp'
-            old_model = mcp_jobs.frozen_request(root, aid).get('generation_inputs', {}).get('model')
-        else:
-            directory = Path(root) / 'production_attempts' / aid
-            if (directory / 'reconciliation.json').exists() or (directory / 'local_continuation_claim.json').exists():
-                raise AutonomyError('access fallback original has reconciled or continued state')
-            result = _json(directory / 'result.json') if (directory / 'result.json').is_file() else {}
-            data = (result.get('result') or {}).get('data') or {}
-            if (result.get('status') != 'failed' or result.get('exception') is not None
-                    or result.get('output') is not None or result.get('preserved_output') is not None
-                    or (result.get('result') or {}).get('success') is not False
-                    or data.get('dispatch_status') != 'failed'):
-                raise AutonomyError('access fallback original is not a confirmed terminal no-output failure')
-            old_provider = (request.get('scope') or {}).get('provider')
-            old_model = (request.get('submitted_inputs') or {}).get('model')
-            # Generic no-output shape is not enough: require the provider's canonical terminal proof.
-            if old_provider == 'grok_cli':
-                _grok_terminal_no_result_proof(directory, request, result)
-            elif old_provider == 'openart_cli':
-                from lib import openart_jobs as jobs
-                try:
-                    jobs.verify_terminal_failure(aid, execution.load_openart_frozen(request)['profile'])
-                except Exception as exc:
-                    raise AutonomyError(f'access fallback original lacks verified terminal failure proof: {exc}') from exc
-            else:
-                raise AutonomyError('access fallback original provider has no canonical terminal failure proof')
-        old_model = _media_model(old_provider, old_model)
-        if old_provider == provider and (model is None or model == old_model):
-            raise AutonomyError('access fallback must use a different provider or media model')
-
-
-def _controls_admission(root, shot_id, provider, inputs, phase, replaces_attempt_ids, repair_basis, creator_repair=None):
+def _controls_admission(root, shot_id, provider, inputs):
     from lib import episode_production_controls as episode_controls
     if episode_controls.effective_controls(root) is None:
-        if repair_basis == 'access_fallback':
-            raise AutonomyError('access fallback requires approved episode controls')
         return
     try:
-        episode_controls.require_admission(
-            root, shot_id=shot_id, provider=provider, model=inputs.get('model'), purpose=phase,
-            replaces_attempt_ids=tuple(replaces_attempt_ids or ()), repair_basis=repair_basis, creator_repair=creator_repair)
+        episode_controls.require_admission(root, shot_id=shot_id, provider=provider, model=inputs.get('model'),
+                                           purpose='first_pass')
     except episode_controls.EpisodeControlsError as exc:
         raise AutonomyError(str(exc))
 
 
-def derive_scope(root, inputs, *, provider, observation=None, phase='first_pass', replaces_attempt_ids=None,
-                 repair_basis='critical_review', creator_repair=None, reuse_undispatched=False):
-    """Append a normal exact one-attempt scope under the project lock, without CLI calls."""
+def derive_scope(root, inputs, *, provider, observation=None, reuse_undispatched=False):
+    """Append the one exact original scope for a planned clip under the project lock.
+
+    Each planned clip receives exactly one generation request; an existing
+    counted original (known or unknown) is never resubmitted or replaced.
+    """
+    phase = 'first_pass'
+
     from lib import production_execution as execution
     root = Path(root).resolve()
     with execution._lock(root):
@@ -3009,38 +2830,25 @@ def derive_scope(root, inputs, *, provider, observation=None, phase='first_pass'
             raise AutonomyError('invalid production scopes version')
         scopes = data['scopes']
         used_scopes = {a['scope_id'] for a in execution._attempts(root)}
-        from lib.production_repair_batches import closed_unsubmitted_creator_scope
         pending = [s for s in scopes if s['id'] not in used_scopes and shot_id in s.get('requests', {})
-                   and 'derived_from_policy' in s and not closed_unsubmitted_creator_scope(root, s)]
+                   and 'derived_from_policy' in s and s.get('phase') == 'first_pass']
         if pending and reuse_undispatched:
             if (len(pending) != 1 or pending[0]['provider'] != provider or pending[0]['phase'] != phase
-                    or pending[0].get('replaces_attempt_ids') != replaces_attempt_ids
                     or pending[0]['requests'][shot_id] != material['request_digest']):
                 raise AutonomyError('undispatched scope differs from exact original request/route/phase')
             validate_derived_scope(root, pending[0], inputs=inputs, observation=observation)
             return copy.deepcopy(pending[0])
         if pending:
             raise AutonomyError('an undispatched derived scope already exists for this shot')
-        if repair_basis not in ('critical_review', 'access_fallback', 'creator_batch'):
-            raise AutonomyError('unknown repair basis')
-        _controls_admission(root, shot_id, provider, inputs, phase, replaces_attempt_ids, repair_basis, creator_repair)
+        if any(a['shot_id'] == shot_id and production_kind(a) == 'motion' for a in execution._attempts(root)):
+            raise AutonomyError('episode generation limit reached: shot already has its one original request')
+        _controls_admission(root, shot_id, provider, inputs)
         check_caps(policy, shot_id, root_attempt_counts(root, policy), phase, root=root)
         index = sum('derived_from_policy' in s for s in scopes)
-        if phase == 'repair' and repair_basis == 'access_fallback':
-            _validate_access_fallback(root, shot_id, replaces_attempt_ids, provider, inputs.get('model'))
-        elif phase == 'repair' and repair_basis == 'creator_batch':
-            from lib.production_repair_batches import validate_creator_repair_intent
-            validate_creator_repair_intent(root, creator_repair, shot_id=shot_id, provider=provider,
-                model=inputs.get('model'), replaces_attempt_ids=replaces_attempt_ids, inputs=inputs)
-        elif phase == 'repair':
-            _validate_repair_evidence(root, shot_id, replaces_attempt_ids)
-        elif any(a['shot_id'] == shot_id and production_kind(a) == 'motion' for a in execution._attempts(root)):
-            raise AutonomyError('first_pass cannot authorize a corrective reroll')
-        _append_route_decisions_locked(root, policy, sha, decision_id, shot_id, provider, inputs, phase=phase, replaces_attempt_ids=replaces_attempt_ids)
+        _append_route_decisions_locked(root, policy, sha, decision_id, shot_id, provider, inputs)
         material.pop('credit_authorization_sha256', None)
         material.pop('unknown_cost_authorization_sha256', None)
-        scope = _scope_record(policy, sha, decision_id, derivation_index=index, phase=phase,
-                              replaces_attempt_ids=replaces_attempt_ids, repair_basis=repair_basis, creator_repair=creator_repair, **material)
+        scope = _scope_record(policy, sha, decision_id, derivation_index=index, **material)
         if provider == 'openart_mcp':
             profile, native = _prepare_mcp_policy_native(root, policy, shot_id, inputs)
             scope['unknown_cost_authorization_sha256'] = digest(_mcp_policy_terms(root, policy, sha, decision_id, scope, inputs, native))
@@ -3242,13 +3050,13 @@ def root_attempt_counts(root, policy, *, exclude_scope_id=None):
            for row in list(snapshot['outbox']) + list(snapshot.get('unpriced_outbox', []))
            if row['attempt_id'] not in reserved):
         raise AutonomyError('private outbox origin is missing')
+    if exclude_scope_id is not None:
+        # Revalidating one retained scope never counts its own original reservation.
+        records = {aid: value for aid, value in records.items() if value[2] != exclude_scope_id}
     used = {value[2] for value in records.values()}
     open_shots = set()
     for scope in scopes:
         if 'derived_from_policy' not in scope or scope['id'] in used or scope['id'] == exclude_scope_id:
-            continue
-        from lib.production_repair_batches import closed_unsubmitted_creator_scope
-        if closed_unsubmitted_creator_scope(root, scope):
             continue
         if not isinstance(scope['derived_from_policy'], dict):
             raise AutonomyError('malformed open policy scope')
@@ -3348,7 +3156,9 @@ def validate_policy_attempt(root, request, scope, frozen_contract, *, frozen_ope
     if locks != derived['lock_digest'] or digest(payload['compiled']) != derived['compiled_request_sha256']:
         raise AutonomyError('historical actual lock/compilation proof differs')
     selected = _json(directory / 'selected_attempts.json')
-    producers = [u['shot_id'] for u in frozen_shot.get('upstream', [])]
+    from lib.shot_contract import source_upstream_ids, _standing_make_video
+    producers = source_upstream_ids(frozen_contract, frozen_shot, root,
+                                    factory=_standing_make_video(root, policy))
     material = {'shot_id': shot_id, 'provider': scope['provider'], 'request_digest': request['request_sha256'],
         'approval_plan_sha256': scope['approval_plan_sha256'], 'lock_digest': locks,
         'compiled_request_sha256': digest(payload['compiled']), 'preparation_review_id': review['review_id'],
@@ -3367,9 +3177,8 @@ def validate_policy_attempt(root, request, scope, frozen_contract, *, frozen_ope
         material[key] = fn(manifest['authorization'])
         if binding.authorization_sha256 != material[key]:
             raise AutonomyError('historical private credit authorization differs')
-    expected = _scope_record(policy, sha, decision_id, derivation_index=derived['derivation_index'],
-        phase=scope['phase'], replaces_attempt_ids=scope.get('replaces_attempt_ids'),
-        repair_basis=scope.get('repair_basis', 'critical_review'), creator_repair=scope.get('creator_repair'), **material)
+    expected = _retained_scope_record(policy, sha, decision_id, scope,
+        derivation_index=derived['derivation_index'], **material)
     scopes = _json(root / 'production_scopes.json')['scopes']
     if scope != expected or len([s for s in scopes if s == expected]) != 1:
         raise AutonomyError('historical derived scope differs from rooted authority')
@@ -3517,7 +3326,7 @@ def _require_route_decision(root, sha, decision_id, shot_id, provider):
         raise AutonomyError('policy route decision is missing or stale')
 
 
-def _append_route_decisions_locked(root, policy, sha, decision_id, shot_id, provider, inputs, *, phase='first_pass', replaces_attempt_ids=None):
+def _append_route_decisions_locked(root, policy, sha, decision_id, shot_id, provider, inputs):
     """Caller holds project lock; avoid nested lock and preserve canonical history."""
     from lib.production_execution import _artifact_path
     from uuid import uuid4
@@ -3534,10 +3343,9 @@ def _append_route_decisions_locked(root, policy, sha, decision_id, shot_id, prov
         counts = root_attempt_counts(root, policy)
         caps = effective_standing_caps(root, policy)
         remaining = {'total': caps['max_total_attempts'] - counts['total'] - 1,
-                     'per_shot': caps.get('max_attempts_by_shot', {}).get(shot_id, caps['max_attempts_per_shot']) - counts['per_shot'].get(shot_id, 0) - 1,
-                     'repair': caps['max_repair_attempts'] - counts['repair'] - int(phase == 'repair')}
+                     'per_shot': caps.get('max_attempts_by_shot', {}).get(shot_id, caps['max_attempts_per_shot']) - counts['per_shot'].get(shot_id, 0) - 1}
         reason = ('Exact production-ready MCP route ' + inputs['model'] + '/' + inputs['mode']
-                  + '; phase ' + phase + '; replaces ' + json.dumps(replaces_attempt_ids or [])
+                  + '; phase first_pass; replaces []'
                   + '; unknown cost with no enforceable credit ceiling; remaining attempt caps '
                   + json.dumps(remaining, sort_keys=True) + ' ' + citation)
         entries[0] = ('provider_selection', f'Production route for {shot_id}', provider, reason)

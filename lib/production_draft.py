@@ -13,7 +13,7 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 from schemas.artifacts import load_schema
 from lib.shot_contract import (UPSTREAM_PREDICATES, CRITICAL_PREDICATES, file_sha256,
-                               selection_digest, provisional_audio_review, draft_audio_policy_digest, audio_review_disabled)
+                               selection_digest, provisional_audio_review, draft_audio_policy_digest)
 
 _KEYS = {'version', 'mode', 'project_id', 'story_revision', 'shot_id', 'attempt_id',
          'contract', 'output', 'outgoing_frame', 'failed_review', 'failed_predicate',
@@ -68,7 +68,7 @@ def _review(review, subject, revision):
 def validate_creator_draft_exception(project_dir, record, selection, *, shot_id=None, creating=False):
     """Replay exact original failure, creator evidence and clean outgoing review."""
     from lib import production_execution as execution
-    from lib.production_continuity import shot_planning_digest
+    from lib.production_provenance import shot_planning_digest
     root = Path(project_dir).resolve()
     marker = execution._read(root / 'project.json')
     if (not isinstance(record, dict) or set(record) != _KEYS
@@ -221,7 +221,7 @@ def _selection_review(root, shot_id, selection, revision):
     revision, selection_digest subject, unique predicates)."""
     if not isinstance(selection, dict):
         return None
-    from lib.production_review_successors import resolve_selection_review
+    from lib.shot_contract import resolve_selection_review
     try:
         review = resolve_selection_review(root, shot_id, selection)
         _review(review, selection_digest(selection), revision)
@@ -281,72 +281,56 @@ def _attempt_order(root, row):
     return (path.stat().st_mtime_ns if path.exists() else 0, row.get('scope_attempt_index', 0))
 
 
-def _candidate_provenance(root, shot_id, attempt_id, output, revision, *, allow_historical=False):
+def _candidate_provenance(root, shot_id, attempt_id, output, revision, *, allow_historical=True):
+    """Current attempt provenance, or the pure historical source reader when only
+    unrelated planning/upstream changed after the original request."""
     from lib.production_provenance import validate_attempt_provenance
     output = {**output, 'path': str((root / output['path']).resolve())}
     try:
         return validate_attempt_provenance(root, attempt_id, shot_id=shot_id,
-                                          story_revision=revision, expected_output=output), False
+                                           story_revision=revision, expected_output=output), False
     except ValueError as exc:
-        continuity_error = any(message in str(exc) for message in (
+        changed = any(message in str(exc) for message in (
             'upstream selection changed since this attempt', 'canonical reviewed source/reference/upstream changed',
             'stale source/reference/review/upstream bindings', 'current MCP planning semantics changed',
             'approved planning semantics changed'))
-        if not allow_historical or not continuity_error:
+        if not allow_historical or not changed:
             raise
-        from lib.production_provenance import validate_creator_repair_source_provenance
-        proof = validate_creator_repair_source_provenance(root, attempt_id, shot_id=shot_id,
+        from lib.production_provenance import historical_source_provenance
+        proof = historical_source_provenance(root, attempt_id, shot_id=shot_id,
             story_revision=revision, expected_output=output)
-        if (proof.get('historical_upstream_changed') is False
-                and not proof.get('historical_source_changed')):
+        if proof.get('historical_upstream_changed') is False and not proof.get('historical_source_changed'):
             raise exc
         return proof, True
 
 
-def _continuity_source_warning(proof):
+def _historical_source_warning(proof):
     if proof.get('historical_upstream_changed') is False:
         return {'name': 'source_applicability_changed', 'status': 'unknown', 'severity': 'critical',
-                'evidence': 'Retained clip matches its original approved shot and source bytes. Unrelated episode planning changed; current cut applicability needs review.'}
-    return {'name': 'continuity_source_changed', 'status': 'unknown', 'severity': 'critical',
-            'evidence': 'Retained clip used an earlier reviewed upstream selection. Current continuity needs review after the selected repair.'}
+                'evidence': 'Retained clip matches its original shot and source bytes. Unrelated episode planning changed; current cut applicability is unreviewed.'}
+    return {'name': 'upstream_source_changed', 'status': 'unknown', 'severity': 'critical',
+            'evidence': 'Retained clip used an earlier upstream selection; current applicability is unreviewed.'}
 
 
-def _candidate(root, shot_id, attempt_id, output, revision, selected, *, historical_source=True):
-    proof, historical_source = _candidate_provenance(root, shot_id, attempt_id, output, revision,
-                                                    allow_historical=historical_source)
+def _candidate(root, shot_id, attempt_id, output, revision, selected):
+    """A playable collected original; semantic findings are disclosed, never excluding."""
+    proof, historical = _candidate_provenance(root, shot_id, attempt_id, output, revision)
     path = Path(output['path'])
     path = path if path.is_absolute() else root / path
     timing = (proof or {}).get('derived_timing') if isinstance(proof, dict) else None
     duration = timing['duration_seconds'] if timing else _probe(path)['duration_seconds']
     review, findings = _current_findings(root, shot_id, attempt_id, output['sha256'], revision, selected)
-    strict = not historical_source and review is not None and review['status'] == 'pass'
-    # A strict pass may still disclose cosmetic findings; provisional stays provisional.
+    strict = review is not None and review['status'] == 'pass' and not historical
     status = review['status'] if review is not None else ('fail' if findings else 'unknown')
-    if historical_source:
-        status = 'unknown'
-        findings = [*findings, _continuity_source_warning(proof)]
+    if historical:
+        # A failed observation bound to these exact bytes stays truthful; the
+        # historical source warning only adds unknown applicability.
+        findings, status = [*findings, _historical_source_warning(proof)], ('fail' if any(
+            f.get('status') == 'fail' for f in findings) else 'unknown')
     return {'shot_id': shot_id, 'status': 'candidate', 'attempt_id': attempt_id,
             'output': {'path': _rel(root, path), 'sha256': output['sha256']},
             'duration_seconds': duration, 'strict_selected': strict,
             'review': status, 'findings': findings}
-
-
-def _replaces_candidate(attempts, attempt_id, original_id):
-    """Use retained repair ancestry, not filesystem dates, to supersede a baseline."""
-    by_id = {row['attempt_id']: row for row in attempts}
-    pending, seen = [attempt_id], set()
-    while pending:
-        aid = pending.pop()
-        if aid in seen:
-            continue
-        seen.add(aid)
-        row = by_id.get(aid, {})
-        scope = row.get('scope', row.get('scope_snapshot', {}))
-        replaced = scope.get('replaces_attempt_ids', [])
-        if original_id in replaced:
-            return True
-        pending.extend(replaced)
-    return False
 
 
 def first_cut_candidates(project_dir):
@@ -364,65 +348,21 @@ def first_cut_candidates(project_dir):
     contract = execution.load_shot_contract(root)
     selected = execution.load_selected_attempts(root)
     attempts = [a for a in execution._attempts(root) if a.get('story_revision') == revision]
-    from lib.production_repair_batches import (creator_repair_candidates, suppressed_creator_repair_attempts,
-                                                creator_repair_source_candidates, accepted_first_cut_candidates)
-    creator_candidates = creator_repair_candidates(root)
-    suppressed = suppressed_creator_repair_attempts(root)
-    retained_sources = creator_repair_source_candidates(root)
-    accepted_candidates = accepted_first_cut_candidates(root)
+    from lib.shot_contract import factory_project
+    factory = factory_project(root)
     rows, by_shot = [], {}
+    errors = (execution.ProductionGovernanceError, OSError, ValueError, KeyError, TypeError,
+              subprocess.SubprocessError)
     for shot in contract['shots']:
         sid = shot['id']
         selection = selected.get(sid)
-        selection_review = _selection_review(root, sid, selection, revision)
         row = None
-        creator_attempt = creator_candidates.get(sid)
-        if (creator_attempt is not None and selection_review is not None
-                and selection['attempt_id'] not in suppressed
-                and _replaces_candidate(attempts, selection['attempt_id'], creator_attempt)):
-            creator_attempt = selection['attempt_id']
-        if creator_attempt is not None:
-            try:
-                state = execution.load_attempt_result(root, creator_attempt)
-                row = _candidate(root, sid, creator_attempt, state['output'], revision, selected)
-            except (execution.ProductionGovernanceError, OSError, ValueError, KeyError,
-                    TypeError, subprocess.SubprocessError):
-                row = None
-        accepted = accepted_candidates.get(sid)
-        if (row is None and accepted is not None and selection_review is not None
-                and selection['attempt_id'] not in suppressed
-                and _replaces_candidate(attempts, selection['attempt_id'], accepted['attempt_id'])):
-            try:
-                # A current selected repair supersedes its accepted source. An
-                # older strict selection must not roll back an accepted preview.
-                row = _candidate(root, sid, selection['attempt_id'], selection['output'], revision, selected)
-            except (execution.ProductionGovernanceError, OSError, ValueError, KeyError,
-                    TypeError, subprocess.SubprocessError):
-                row = None
-        if row is None and accepted is not None:
-            try:
-                row = _candidate(root, sid, accepted['attempt_id'], accepted['output'], revision, selected,
-                                 historical_source=True)
-            except (execution.ProductionGovernanceError, OSError, ValueError, KeyError,
-                    TypeError, subprocess.SubprocessError):
-                row = None
-        if row is None and selection_review is not None:
+        if isinstance(selection, dict) and selection.get('output'):
             try:
                 row = _candidate(root, sid, selection['attempt_id'], selection['output'], revision, selected)
-            except (execution.ProductionGovernanceError, OSError, ValueError, KeyError,
-                    TypeError, subprocess.SubprocessError):
+            except errors:
                 row = None
-        retained = retained_sources.get(sid)
-        if row is None and retained is not None:
-            try:
-                # Historical source-only inclusion preserves playable old footage
-                # during partial repairs and reports its stale continuity openly.
-                row = _candidate(root, sid, retained['attempt_id'], retained['output'], revision,
-                                 selected, historical_source=True)
-            except (execution.ProductionGovernanceError, OSError, ValueError, KeyError,
-                    TypeError, subprocess.SubprocessError):
-                row = None
-        own = sorted((a for a in attempts if a.get('shot_id') == sid and a['attempt_id'] not in suppressed),
+        own = sorted((a for a in attempts if a.get('shot_id') == sid and a.get('media_kind', 'motion') == 'motion'),
                      key=lambda a: _attempt_order(root, a), reverse=True)
         states = []
         if row is None:
@@ -435,13 +375,14 @@ def first_cut_candidates(project_dir):
                 if state.get('status') == 'generated' and row is None:
                     try:
                         row = _candidate(root, sid, attempt['attempt_id'], state['output'], revision, selected)
-                    except (execution.ProductionGovernanceError, OSError, ValueError, KeyError,
-                            TypeError, subprocess.SubprocessError) as exc:
+                    except errors as exc:
                         states[-1] = 'unplayable:' + str(exc)[:200]
         if row is None:
             # An upstream counts only when its own row is a playable candidate
             # (current bytes and provenance) and its review passes the canonical gate.
-            upstream = [b['shot_id'] for b in shot.get('upstream', [])
+            # One-shot factory: each clip has its own prepared frame, so an
+            # upstream is an ordering note; generic manifests keep the gate.
+            upstream = [] if factory else [b['shot_id'] for b in shot.get('upstream', [])
                         if by_shot.get(b['shot_id'], {}).get('status') != 'candidate'
                         or not _dependency_ok(root, b['shot_id'], selected.get(b['shot_id']),
                                               _selection_review(root, b['shot_id'], selected.get(b['shot_id']), revision))]
@@ -559,8 +500,12 @@ def _export_intact(root, record):
     return path.is_file() and file_sha256(path) == export['sha256']
 
 
-def _compose_bindings(root, clips, export_profile, audio_path):
-    """Exact inputs a compose intent binds: current clip bytes, profile and audio."""
+def _compose_bindings(root, clips, export_profile):
+    """Exact inputs a compose intent binds: current clip bytes and profile.
+
+    Keep the historical ``audio: null`` slot so already-saved no-music intents
+    retain their digest. The factory no longer writes or accepts external audio.
+    """
     bindings = {'clips': [{'shot_id': row['shot_id'], 'attempt_id': row['attempt_id'], 'output': row['output']}
                           for row in clips],
                 'export_profile': export_profile, 'audio': None}
@@ -568,9 +513,6 @@ def _compose_bindings(root, clips, export_profile, audio_path):
         source = root / row['output']['path']
         if not source.is_file() or file_sha256(source) != row['output']['sha256']:
             raise ValueError('first-cut candidate bytes changed before compose: ' + row['shot_id'])
-    if audio_path:
-        audio = Path(audio_path).resolve()
-        bindings['audio'] = {'path': _rel(root, audio), 'sha256': file_sha256(audio)}
     return bindings
 
 
@@ -601,7 +543,7 @@ def _find_intent(root, operation_id):
 
 
 @_write
-def compose_first_cut(project_dir, *, audio_path=None, compose=None, export_profile=None, operation_id=None):
+def compose_first_cut(project_dir, *, compose=None, export_profile=None, operation_id=None):
     """Render a versioned preview from current candidates and record it immutably.
 
     ``export_profile`` (explicit media profile name) is validated before any
@@ -611,7 +553,7 @@ def compose_first_cut(project_dir, *, audio_path=None, compose=None, export_prof
     existing record is returned, a complete local render is recorded without
     re-rendering. A confirmed technical mismatch or incomplete MP4 preserves
     the original beside its replacement; probe uncertainty preserves it for retry.
-    Changed clip/profile/audio bindings reject the stale intent."""
+    Changed clip/profile bindings reject the stale intent."""
     from lib import production_execution as execution
     from lib.shot_contract import contract_digest
     from lib.events import emit_event
@@ -622,18 +564,14 @@ def compose_first_cut(project_dir, *, audio_path=None, compose=None, export_prof
         raise ValueError('compose operation_id must be a nonempty string')
     marker = execution._read(root / 'project.json')
     contract = execution.load_shot_contract(root)
-    shots = {shot['id']: shot for shot in contract['shots']}
     rows = first_cut_candidates(root)
     clips = [row for row in rows if row['status'] == 'candidate']
     missing = [row for row in rows if row['status'] == 'missing']
-    dialogue = any(shots[row['shot_id']].get('dialogue') for row in clips)
-    if audio_path and dialogue:
-        raise ValueError('external audio cannot replace approved native dialogue in a first cut')
-    bindings = _compose_bindings(root, clips, export_profile, audio_path) if operation_id is not None else None
+    bindings = _compose_bindings(root, clips, export_profile) if operation_id is not None else None
     bindings_sha256 = execution._digest(bindings) if operation_id is not None else None
     recorded = set()
     if operation_id is not None:
-        # Same operation replays only with identical clip/profile/audio bindings.
+        # Same operation replays only with identical clip/profile bindings.
         # A retained render failure stays as history; the operation resumes with a
         # new local render under a higher sequence so the retry is latest.
         # Newest valid matching record wins, so a restored older export never
@@ -700,7 +638,7 @@ def compose_first_cut(project_dir, *, audio_path=None, compose=None, export_prof
                 technical = None
         if resumed is None:
             first = _probe(root / placed[0]['output']['path'])
-            metadata = {'preserve_source_audio': not audio_path}
+            metadata = {'preserve_source_audio': True}
             if profile is None:
                 metadata['compose_target'] = {'width': first['width'], 'height': first['height'], 'fit': 'pad'}
             edit = {'version': '1.0', 'render_runtime': 'ffmpeg',
@@ -710,8 +648,6 @@ def compose_first_cut(project_dir, *, audio_path=None, compose=None, export_prof
             inputs = {'operation': 'compose', 'edit_decisions': edit, 'output_path': str(output)}
             if profile is not None:
                 inputs['profile'] = profile.name
-            if audio_path:
-                inputs['audio_path'] = str(audio_path)
             if compose is None:
                 from tools.video.video_compose import VideoCompose
                 compose = VideoCompose().execute
@@ -740,23 +676,16 @@ def compose_first_cut(project_dir, *, audio_path=None, compose=None, export_prof
             log_path = directory / 'render_error.log'
             log_path.write_text(error + '\n')
             log = {'path': _rel(root, log_path), 'sha256': file_sha256(log_path)}
-    # Audio is required only by included dialogue (native clip bytes must carry it;
-    # padded export silence proves nothing) or an explicit external track.
-    # Approved silent coverage completes without any audio stream. Future visual-only
-    # projects retain availability facts below but do not gate completion on them.
-    audio_required = bool(dialogue or audio_path)
-    audio_missing = [row['shot_id'] for row in clips if shots[row['shot_id']].get('dialogue')
-                     and not _probe(root / row['output']['path'])['has_audio']]
-    visual_only = audio_review_disabled(root)
+    # Audio presence remains available as factual probe metadata, but dialogue
+    # streams and audio quality never gate this draft delivery.
     complete = (export is not None and not missing
-                and (visual_only or (not audio_missing and (technical['has_audio'] or not audio_path)))
                 and abs(technical['duration_seconds'] - cursor) <= 0.05 + 0.04 * len(placed))
     record = {'version': '1.0', 'kind': 'first_cut', 'sequence': sequence, 'project_id': marker['project_id'],
               'story_revision': marker['story_revision'], 'contract_sha256': contract_digest(contract),
-              'status': 'complete' if complete else ('render_failed' if error else 'incomplete'),
+              'status': ('complete' if complete else 'render_failed' if error
+                         else 'partial' if export is not None else 'incomplete'),
               'export': export, 'technical': technical, 'clips': placed, 'missing': missing,
-              'audio': 'external_replacement' if audio_path else 'native_source',
-              'audio_required': audio_required, 'audio_missing': audio_missing,
+              'audio': 'native_source',
               'render_error': error, 'render_log': log}
     if export_profile is not None:
         record['export_profile'] = export_profile
@@ -776,11 +705,11 @@ def compose_first_cut(project_dir, *, audio_path=None, compose=None, export_prof
 
 
 @_write
-def deliver_standalone(project_dir, *, export_profile=None, operation_id=None, audio_path=None, compose=None):
+def deliver_standalone(project_dir, *, export_profile=None, operation_id=None, compose=None):
     """Engine-only saved draft cut from current candidates; no Studio, Drive or account.
 
-    Idempotent per ``operation_id`` (default derives from the current clip,
-    profile and audio bindings). Reports honest per-clip review/findings and
+    Idempotent per ``operation_id`` (default derives from current clip and
+    profile bindings). Reports honest per-clip review/findings and
     missing shots; never certification, publication or provider work."""
     from lib import production_execution as execution
     root = Path(project_dir).resolve()
@@ -789,8 +718,8 @@ def deliver_standalone(project_dir, *, export_profile=None, operation_id=None, a
             from lib.media_profiles import get_profile
             get_profile(export_profile)
         clips = [row for row in first_cut_candidates(root) if row['status'] == 'candidate']
-        operation_id = 'deliver-' + execution._digest(_compose_bindings(root, clips, export_profile, audio_path))[:24]
-    cut = compose_first_cut(root, audio_path=audio_path, compose=compose,
+        operation_id = 'deliver-' + execution._digest(_compose_bindings(root, clips, export_profile))[:24]
+    cut = compose_first_cut(root, compose=compose,
                             export_profile=export_profile, operation_id=operation_id)
     binding = {'path': _rel(root, cut['path']), 'sha256': cut['sha256']}
     status = first_cut_media_status(root, binding)
@@ -820,7 +749,8 @@ def _current_clip_projection(root, clip, revision, selected):
     except (ValueError, OSError, KeyError, TypeError):
         historical = False
     if historical:
-        return [*values, _continuity_source_warning(proof)], 'unknown'
+        return [*values, _historical_source_warning(proof)], ('fail' if any(
+            v.get('status') == 'fail' for v in values) else 'unknown')
     return values, review['status'] if review is not None else ('fail' if values else 'unknown')
 
 
@@ -867,7 +797,11 @@ def _cut_reasons(root, cut, *, include_findings=True):
         return ['record_changed']
     record = execution._read(path)
     reasons = []
-    if record['export'] is None or not (root / record['export']['path']).is_file() \
+    if record['export'] is None:
+        # Intentional absence: an incomplete cut retains no usable clip.
+        if record.get('status') != 'incomplete' or record['clips']:
+            reasons.append('export_changed')
+    elif not (root / record['export']['path']).is_file() \
             or file_sha256(root / record['export']['path']) != record['export']['sha256']:
         reasons.append('export_changed')
     for clip in record['clips']:

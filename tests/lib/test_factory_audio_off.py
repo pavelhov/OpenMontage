@@ -5,8 +5,7 @@ import json
 import pytest
 
 from lib import production_autonomy as pa, openart_mcp as mcp
-from tests.lib.test_factory_board_resume import late_board_run
-from tests.lib.test_factory_frame_alias import alternate_inputs
+from tests.lib.test_factory_frame_alias import alternate_inputs, original_frame_run
 from tests.lib.test_production_factory import creator_fixture, file_bytes, write
 from tests.lib.test_openart_mcp_native import observations as guided_observations  # noqa: F401
 from tests.lib.test_production_request import neutral_package  # noqa: F401
@@ -27,7 +26,7 @@ def retain_audio_off(root, policy, sha, profile, *, shots=None, change=None):
 
 @pytest.fixture
 def audio_run(neutral_package, monkeypatch, guided_observations):
-    root, transport, _, _ = late_board_run(neutral_package, monkeypatch)
+    root, transport, _ = original_frame_run(neutral_package, monkeypatch)
     monkeypatch.setattr(mcp, '_ALLOW_FIXTURE_PRODUCTION', True)
     policy, sha, _ = pa.require_active_policy(root)
     profile = mcp.load_profile('byte-plus-seedance-2-mini', 'image2video', require='supported')

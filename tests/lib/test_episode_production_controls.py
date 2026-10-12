@@ -17,96 +17,29 @@ from tests.integration.test_local_grok_continuation import (
 )
 
 
-def test_without_controls_preserves_existing_exact_strict_repair(tmp_path):
-    inputs, scope, _ = project(tmp_path, motion=True)
-    tool = MotionTool()
-    first = tool.execute(inputs)
-    scope.update(id='repair', phase='repair', replaces_attempt_ids=[first.data['production_attempt_id']])
-    inputs['governance']['scope_id'] = 'repair'
-    inputs['output_path'] = str(tmp_path / 'assets' / 'repair.mp4')
-    scope['requests']['entry'] = execution.planned_request_digest(inputs, project_dir=tmp_path)
-    write_scopes(tmp_path, scope)
-    assert tool.execute(inputs).success
-    assert tool.calls == 2
-    assert not (tmp_path / 'artifacts' / 'episode_production_controls.json').exists()
-
-
 def approval(root, name='episode-approval'):
     path = Path(root) / (name + '.txt')
     path.write_text('Synthetic creator approval for the exact episode controls below.')
     return {'path': path.name, 'sha256': file_sha256(path), 'approved_by': 'Offline creator fixture'}
 
 
-def activate(root, limit=2, *, alternate='disabled', fallback=False, name='episode-approval'):
+def activate(root, limit=1, *, alternate='disabled', fallback=False, name='episode-approval'):
     return controls.record_episode_controls(root, {
         'max_generations_per_shot': limit, 'alternate_repair': alternate,
         'access_fallback': fallback,
     }, evidence=approval(root, name))
 
 
-def repair_request(root, inputs, scope, previous, index, *, scope_id=None):
+def duplicate_request(root, inputs, scope, previous, index, *, scope_id=None):
     inputs = copy.deepcopy(inputs)
     scope = copy.deepcopy(scope)
-    scope.update(id=scope_id or 'repair-' + str(index), phase='repair', replaces_attempt_ids=[previous])
+    scope.update(id=scope_id or 'duplicate-' + str(index), phase='first_pass')
+    scope.pop('replaces_attempt_ids', None)
     inputs['governance']['scope_id'] = scope['id']
-    inputs['output_path'] = str(root / 'assets' / ('repair-' + str(index) + '.mp4'))
+    inputs['output_path'] = str(root / 'assets' / ('duplicate-' + str(index) + '.mp4'))
     scope['requests']['entry'] = execution.planned_request_digest(inputs, project_dir=root)
     write_scopes(root, scope)
     return inputs
-
-
-@pytest.mark.parametrize('limit', [1, 2, 3])
-def test_declared_limit_caps_real_dispatch_without_hidden_two_clamp(tmp_path, limit):
-    inputs, scope, _ = project(tmp_path, motion=True)
-    assert scope['attempts_per_shot']['entry'] == 5
-    activate(tmp_path, limit)
-    tool = MotionTool()
-    result = tool.execute(inputs)
-    for index in range(1, limit):
-        inputs = repair_request(tmp_path, inputs, scope, result.data['production_attempt_id'], index)
-        result = tool.execute(inputs)
-        assert result.success
-    assert tool.calls == limit
-    assert controls.generation_usage(tmp_path)['per_shot']['entry'] == limit
-    denied = repair_request(tmp_path, inputs, scope, result.data['production_attempt_id'], limit)
-    with pytest.raises((execution.ProductionGovernanceError, controls.EpisodeControlsError)):
-        tool.execute(denied)
-    assert tool.calls == limit
-
-
-def test_single_repair_scope_cap_still_bounds_higher_episode_allowance(tmp_path):
-    inputs, scope, _ = project(tmp_path, motion=True)
-    activate(tmp_path, 3)
-    tool = MotionTool()
-    result = tool.execute(inputs)
-    repair_scope = copy.deepcopy(scope)
-    repair_scope['attempts_per_shot']['entry'] = 1
-    inputs = repair_request(tmp_path, inputs, repair_scope, result.data['production_attempt_id'], 1)
-    result = tool.execute(inputs)
-    assert result.success
-    inputs = repair_request(tmp_path, inputs, repair_scope, result.data['production_attempt_id'], 2,
-                            scope_id='repair-1')
-    with pytest.raises((execution.ProductionGovernanceError, controls.EpisodeControlsError)):
-        tool.execute(inputs)
-    assert tool.calls == 2
-
-
-def test_later_opt_in_and_amendments_keep_old_spent_generations(tmp_path):
-    inputs, scope, _ = project(tmp_path, motion=True)
-    tool = MotionTool()
-    result = tool.execute(inputs)
-    activate(tmp_path, 1)
-    assert controls.generation_usage(tmp_path)['total'] == 1
-    first = (tmp_path / 'artifacts/episode_production_controls.json').read_bytes()
-    activate(tmp_path, 3, name='amended-approval')
-    records = json.loads((tmp_path / 'artifacts/episode_production_controls.json').read_text())['records']
-    assert len(records) == 2
-    assert records[0] == json.loads(first)['records'][0]
-    assert records[1]['previous_sha256']
-    assert controls.generation_usage(tmp_path)['total'] == 1
-    inputs = repair_request(tmp_path, inputs, scope, result.data['production_attempt_id'], 1)
-    assert tool.execute(inputs).success
-    assert controls.generation_usage(tmp_path)['total'] == 2
 
 
 @pytest.mark.parametrize('mutation', ['bad_hash', 'empty_approver', 'outside_root', 'bool_limit', 'extra_field'])
@@ -116,7 +49,7 @@ def test_controls_require_retained_creator_evidence_and_valid_exact_fields(tmp_p
     artifact = tmp_path / 'artifacts/episode_production_controls.json'
     before = artifact.read_bytes()
     evidence = approval(tmp_path, 'invalid-approval')
-    payload = {'max_generations_per_shot': 3, 'alternate_repair': 'disabled', 'access_fallback': False}
+    payload = {'max_generations_per_shot': 1, 'alternate_repair': 'disabled', 'access_fallback': False}
     if mutation == 'bad_hash': evidence['sha256'] = '0' * 64
     elif mutation == 'empty_approver': evidence['approved_by'] = ''
     elif mutation == 'outside_root':
@@ -254,11 +187,11 @@ def test_mcp_original_status_download_and_collection_do_not_consume_new_slots(fi
 
 def test_status_reports_controls_limit_and_per_scope_allowances_separately(tmp_path):
     inputs, scope, _ = project(tmp_path, motion=True)
-    activate(tmp_path, 2)
+    activate(tmp_path, 1)
     MotionTool().execute(inputs)
     status = controls.episode_production_status(tmp_path)
     cap = status['generation_caps']['entry']
-    assert cap == {'controls_limit': 2, 'scope_allowances': {scope['id']: 5}, 'used': 1}
+    assert cap == {'controls_limit': 1, 'scope_allowances': {scope['id']: 5}, 'used': 1}
     assert 'effective' not in cap and 'policy caps not included' in status['generation_caps_note']
     assert status['delivery'] == 'draft_only' and status['provider_calls'] == 0
 
@@ -273,40 +206,29 @@ def test_changed_evidence_bytes_invalidate_recorded_controls(tmp_path):
 
 def test_grok_media_model_is_none_and_agent_model_relabel_is_same_route(production):
     p = production
-    activate(p.root, 3, alternate='different_provider_or_media_model')
+    activate(p.root)
     first = p.generate('entry').data['production_attempt_id']
     usage = controls.generation_usage(p.root)
     assert next(i for i in usage['occurrences'] if i['attempt_id'] == first)['model'] is None
-    same = controls.generation_admission(p.root, shot_id='entry', provider='grok_cli', model='grok-agent-relabel',
-                                         purpose='repair', replaces_attempt_ids=[first])
-    assert not same['admitted'] and 'different provider' in same['reasons'][0]
-    other = controls.generation_admission(p.root, shot_id='entry', provider='openart_cli', model=None,
-                                          purpose='repair', replaces_attempt_ids=[first])
-    assert other['admitted'], other['reasons']
-
-
-def test_access_fallback_requires_explicit_episode_approval(tmp_path):
-    inputs, _, _ = project(tmp_path, motion=True)
-    activate(tmp_path, 3)
-    first = MotionTool().execute(inputs).data['production_attempt_id']
-    kwargs = dict(shot_id='entry', provider='grok_cli', purpose='repair', replaces_attempt_ids=[first],
-                  repair_basis='access_fallback')
-    assert 'access fallback is not approved' in ' '.join(controls.generation_admission(tmp_path, **kwargs)['reasons'])
-    activate(tmp_path, 3, fallback=True, name='fallback-approval')
-    assert controls.generation_admission(tmp_path, **kwargs)['admitted']
+    for provider, model in [('grok_cli', 'grok-agent-relabel'), ('openart_cli', None)]:
+        admitted = controls.generation_admission(p.root, shot_id='entry', provider=provider,
+                                                 model=model, purpose='first_pass')
+        assert not admitted['admitted']
+        assert 'episode generation limit reached' in ' '.join(admitted['reasons'])
+    assert len(p.transport.native_requests) == 1
 
 
 def test_pending_submitted_and_uncollected_mcp_originals_block_duplicates(fixture_observations, tmp_path):
     from lib import openart_mcp_jobs as jobs
     inputs, _ = prepare_project(tmp_path / 'mcp')
     root = Path(inputs['project_dir'])
-    activate(root, 3)
+    activate(root, 1)
     jobs.prepare(root, attempt_id='original', generation_inputs=inputs, authority_fn=execution.prepare_openart_mcp_handoff)
     jobs.begin(root, 'original', authority_fn=execution.prepare_openart_mcp_handoff)
     shot = inputs['governance']['shot_id']
     def blocked():
         reasons = controls.generation_admission(root, shot_id=shot, provider='grok_cli', purpose='first_pass')['reasons']
-        return any('pending original' in r for r in reasons)
+        return any('episode generation limit reached' in r for r in reasons)
     assert blocked()
     jobs.receive(root, 'original', outcome={'historyId': 'synthetic-original'})
     jobs.record_status(root, 'original', result={'historyId': 'synthetic-original', 'status': 'COMPLETED',
@@ -318,74 +240,6 @@ def test_pending_submitted_and_uncollected_mcp_originals_block_duplicates(fixtur
 
 
 # --- actual native dispatch regressions; retained fixtures, no provider calls
-
-def native_episode_context(tmp_path, monkeypatch, request):
-    """Reuse the strict native fixture without exporting circular pytest fixtures."""
-    import socket
-    from lib import production_autonomy as pa
-    from tests.integration.test_openart_mcp_autonomy import lifecycle
-    from tests.integration.test_openart_alternate_model_repair import repair_context
-    from tests.lib.test_production_autonomy import install_existing
-
-    def forbidden(*args, **kwargs):
-        pytest.fail('episode dispatch regression attempted a network connection')
-    for name in ('connect', 'connect_ex'):
-        monkeypatch.setattr(socket.socket, name, forbidden)
-    monkeypatch.setattr(socket, 'create_connection', forbidden)
-    base = lifecycle.__wrapped__(tmp_path, monkeypatch)
-    context = repair_context.__wrapped__(base, tmp_path, monkeypatch, None, request)
-    root, policy, _, inputs, native, compiled, timing, jobs = context
-    policy = copy.deepcopy(policy)
-    # Keep the existing policy ceiling above the episode allowance, so a
-    # two-generation refusal proves the shared episode cap itself.
-    policy['caps'] = {'max_total_attempts': 3, 'max_attempts_per_shot': 3, 'max_repair_attempts': 2}
-    policy, sha = install_existing(root, policy,
-        templates={'entry': execution.planned_request_template(inputs, project_dir=root)})
-    assert jobs.list_attempts(root) == []
-    (root / 'production_scopes.json').write_text(json.dumps({'version': '1.0', 'scopes': []}))
-    scope = pa.derive_scope(root, inputs, provider='openart_mcp')
-    inputs['governance']['scope_id'] = scope['id']
-    return root, policy, sha, inputs, native, compiled, timing, jobs
-
-
-def test_mcp_begin_rechecks_alternate_repair_amended_after_native_prepare(tmp_path, monkeypatch, request):
-    from lib import production_autonomy as pa
-    from tests.integration.test_openart_alternate_model_repair import _begin, _compile, ORIGINAL
-    context = native_episode_context(tmp_path, monkeypatch, request)
-    root, _, _, inputs, native, _, timing, jobs = context
-    activate(root, 2, alternate='disabled')
-    _begin(context, inputs, ORIGINAL, native)
-    jobs.record_status(root, ORIGINAL, result={'historyId': 'fixture-' + ORIGINAL,
-        'status': 'FAILED', 'error': 'Synthetic provider rejection'})
-    terminal = jobs.terminal_failure_record(root, ORIGINAL)
-    original_dir = root / 'openart_mcp/attempts' / ORIGINAL
-    # Engineering rejection binds the actual terminal receipt; there is no
-    # semantic review of nonexistent footage.
-    (original_dir / 'rejection.json').write_text(json.dumps({'status': 'fail',
-        'kind': 'generation_terminal_failure', 'attempt_id': ORIGINAL,
-        'terminal_failure_sha256': terminal['terminal_failure_sha256'],
-        'reviewer': 'Synthetic offline engineering reviewer'}))
-    candidate = copy.deepcopy(inputs)
-    candidate['output_path'] = str(root / 'same-route-repair.mp4')
-    candidate, _, _ = _compile(root, candidate, 'same-route-repair', timing)
-    scope = pa.derive_scope(root, candidate, provider='openart_mcp', phase='repair',
-        replaces_attempt_ids=[ORIGINAL])
-    candidate['governance']['scope_id'] = scope['id']
-    jobs.prepare(root, attempt_id='prepared-repair', generation_inputs=candidate,
-        authority_fn=execution.prepare_openart_mcp_handoff)
-    assert controls.generation_usage(root)['total'] == 1
-    prepared = (root / 'openart_mcp/attempts/prepared-repair/state.json').read_bytes()
-    original = (original_dir / 'state.json').read_bytes()
-    scopes = (root / 'production_scopes.json').read_bytes()
-    activate(root, 2, alternate='different_provider_or_media_model', name='alternate-required')
-    with pytest.raises(ValueError, match='different provider or media model'):
-        jobs.begin(root, 'prepared-repair', authority_fn=execution.prepare_openart_mcp_handoff)
-    assert jobs.attempt_state(root, 'prepared-repair')['status'] == 'prepared'
-    assert jobs._load(root, 'prepared-repair')['begin_envelope'] is None
-    assert controls.generation_usage(root)['total'] == 1
-    assert (root / 'openart_mcp/attempts/prepared-repair/state.json').read_bytes() == prepared
-    assert (original_dir / 'state.json').read_bytes() == original
-    assert (root / 'production_scopes.json').read_bytes() == scopes
 
 
 @pytest.mark.parametrize('governance', [None, {'mode': 'legacy', 'version': '1.0'},
@@ -404,59 +258,7 @@ def test_record_controls_rejects_legacy_or_non_strict_project(tmp_path, governan
     assert controls.effective_controls(tmp_path) is None
 
 
-@pytest.mark.parametrize('agent_label', ['grok-agent-relabel', 'grok-4-fast'])
-def test_access_fallback_grok_agent_label_is_not_a_different_media_route(production, monkeypatch, agent_label):
-    import subprocess
-    from lib import production_autonomy as pa
-    p = production
-    activate(p.root, 2, fallback=True)
-    launches = []
-    def access_refusal(argv, **kwargs):
-        if '--prompt-file' in argv:
-            aid = argv[argv.index('--session-id') + 1]
-            assert (p.root / 'production_attempts' / aid / 'request.json').is_file()
-            launches.append(aid)
-            return subprocess.CompletedProcess(argv, 1, '',
-                'HTTP 403 personal-team-blocked:spending-limit')
-        return p.transport(argv, **kwargs)
-    monkeypatch.setattr('tools._grok_cli_media.subprocess.run', access_refusal)
-    result = p.generate('entry')
-    assert not result.success
-    aid = result.data['production_attempt_id']
-    assert launches == [aid]
-    retained = execution.load_attempt_result(p.root, aid)
-    assert retained['status'] == 'failed' and retained['output'] is None
-    assert retained['result']['data']['dispatch_status'] == 'failed'
-    before = (p.root / 'production_attempts' / aid / 'result.json').read_bytes()
-    # The canonical adapter rejects explicit model selection before derivation.
-    # Exercise the fallback route comparison against the actual terminal journal
-    # as well, so compatibility agent labels cannot become model alternatives.
-    with pytest.raises(pa.AutonomyError, match='different provider or media model'):
-        pa._validate_access_fallback(p.root, 'entry', [aid], 'grok_cli', agent_label)
-    assert controls.generation_usage(p.root)['total'] == 1
-    assert (p.root / 'production_attempts' / aid / 'result.json').read_bytes() == before
-    assert launches == [aid]
-
-
-def test_disabled_alternate_repair_keeps_ordinary_repair_on_route_but_fallback_independent(production):
-    p = production
-    activate(p.root, 3, alternate='disabled', fallback=True)
-    first = p.generate('entry').data['production_attempt_id']
-    kwargs = dict(shot_id='entry', purpose='repair', replaces_attempt_ids=[first])
-    changed = controls.generation_admission(p.root, provider='openart_cli', model='other-model', **kwargs)
-    assert not changed['admitted'] and 'alternate repair is disabled' in ' '.join(changed['reasons'])
-    begin = controls.generation_admission(p.root, provider='openart_mcp', model='other-model',
-                                          **{**kwargs, 'purpose': 'mcp_begin'})
-    assert not begin['admitted']
-    same = controls.generation_admission(p.root, provider='grok_cli', model=None, **kwargs)
-    assert same['admitted'], same['reasons']
-    fallback = controls.generation_admission(p.root, provider='openart_cli', model='other-model',
-                                             repair_basis='access_fallback', **kwargs)
-    assert fallback['admitted'], fallback['reasons']
-
-
-@pytest.mark.parametrize('change', ['output_bytes', 'outgoing_frame_deleted'])
-def test_status_validates_current_selected_bytes_before_reporting_ready(production, change):
+def test_status_validates_current_selected_bytes_before_reporting_ready(production):
     p = production
     p.complete_shots()
     before = controls.episode_production_status(p.root)
@@ -464,10 +266,7 @@ def test_status_validates_current_selected_bytes_before_reporting_ready(producti
     assert before['delivery'] != 'draft_only'
     selected = execution.load_selected_attempts(p.root)
     shot_id = sorted(selected)[0]
-    if change == 'output_bytes':
-        Path(selected[shot_id]['output']['path']).write_bytes(b'changed selected bytes')
-    else:
-        Path(selected[shot_id]['outgoing_frame']['path']).unlink()
+    Path(selected[shot_id]['output']['path']).write_bytes(b'changed selected bytes')
     status = controls.episode_production_status(p.root)
     assert status['selections'][shot_id]['review_status'] == 'invalid'
     assert status['selections'][shot_id]['error']
@@ -492,9 +291,36 @@ def test_proven_missing_output_cwd_preserves_episode_cap_and_same_reservation(
     assert len(execution._attempts(p.root)) == len(p.transport.native_requests) == 1
     for name, original in frozen.items():
         assert (directory / name).read_bytes() == original
-    inputs = repair_request(p.root, p.inputs["entry"], p.scope, aid, 1)
+    inputs = duplicate_request(p.root, p.inputs["entry"], p.scope, aid, 1)
     with pytest.raises(
         (execution.ProductionGovernanceError, controls.EpisodeControlsError)
     ):
         p.cli.execute(inputs)
     assert len(p.transport.native_requests) == 1
+
+
+@pytest.mark.parametrize('controls_override', [
+    {'max_generations_per_shot': 2},
+    {'alternate_repair': 'different_provider_or_media_model'},
+    {'access_fallback': True},
+])
+def test_one_shot_controls_refuse_expanded_generation_authority(tmp_path, controls_override):
+    project(tmp_path, motion=True)
+    payload = {'max_generations_per_shot': 1, 'alternate_repair': 'disabled', 'access_fallback': False}
+    payload.update(controls_override)
+    with pytest.raises(controls.EpisodeControlsError):
+        controls.record_episode_controls(tmp_path, payload, evidence=approval(tmp_path))
+    assert not (tmp_path / controls.ARTIFACT).exists()
+
+
+def test_new_scope_cannot_dispatch_second_original(tmp_path):
+    inputs, scope, _ = project(tmp_path, motion=True)
+    activate(tmp_path)
+    tool = MotionTool()
+    first = tool.execute(inputs)
+    assert first.success
+    duplicate = duplicate_request(tmp_path, inputs, scope, first.data['production_attempt_id'], 1)
+    with pytest.raises((execution.ProductionGovernanceError, controls.EpisodeControlsError)):
+        tool.execute(duplicate)
+    assert tool.calls == 1
+    assert controls.generation_usage(tmp_path)['per_shot']['entry'] == 1

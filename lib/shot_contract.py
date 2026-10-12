@@ -58,6 +58,92 @@ def shot_local(contract: dict) -> bool:
     return contract.get("planning_mode") == "shot_local_v1"
 
 
+def source_upstream_ids(contract, shot, project_dir, *, factory=None) -> list:
+    """Upstream shots whose selected outgoing frame feeds this shot.
+
+    In the one-shot factory an upstream without a bound ``upstream_source``
+    asset is an ordering note; generic manifests keep every declared upstream.
+    Historical readers pass ``factory`` from the attempt's frozen authority."""
+    declared = [u['shot_id'] for u in shot.get('upstream', [])]
+    if not (factory_project(project_dir) if factory is None else factory):
+        return declared
+    bound = {(a.get('upstream_source') or {}).get('shot_id') for a in contract.get('assets', [])
+             if a.get('id') in shot.get('asset_ids', [])}
+    return [sid for sid in declared if sid in bound]
+
+
+def factory_project(project_dir) -> bool:
+    """True only for an explicitly activated standing make_video project.
+
+    The one-shot factory treats semantic planning reviews as report-only
+    observations. Generic manifest pipelines keep strict review gating. Both
+    existing retained authorities must hold: the board pack's exact package
+    binding and a current user-approved autonomy policy whose activation basis
+    binds an enabled standing setup and an actual ``make_video`` run command
+    for this project/story. A package binding alone never relaxes review.
+    Original collection uses the attempt's frozen authority instead
+    (:func:`frozen_factory_authority`).
+    """
+    from lib import production_boards as boards
+    root = Path(project_dir).resolve()
+    if not (root / boards.ARTIFACT).is_file():
+        return False
+    try:
+        pack = boards.load_board_pack(root)
+        binding = pack.get("package_binding")
+        if not isinstance(binding, dict) or not binding.get("path") or not binding.get("sha256"):
+            return False
+        path = boards._inside(root, binding["path"])
+        if not (path.is_file() and file_sha256(path) == binding["sha256"]):
+            return False
+        from lib import production_autonomy as autonomy
+        policy_path = root / autonomy.POLICY_ARTIFACT
+        if not policy_path.is_file():
+            return False
+        policy = json.loads(policy_path.read_text())
+        if autonomy.schema_errors(policy) or not _standing_make_video(root, policy):
+            return False
+        sha = autonomy.policy_sha256(policy, autonomy.retained_baselines(root, policy))
+        decision = autonomy.activation_decision(root)
+        return bool(decision) and decision.get("selected") == f"auto_continue:{sha}" \
+            and decision.get("user_approved") is True
+    except Exception:
+        return False
+
+
+def _standing_make_video(root, policy) -> bool:
+    """Exact retained standing setup + make_video run command for the current project/story."""
+    from lib import production_autonomy as autonomy
+    basis = policy.get("activation_basis") or {}
+    if basis.get("kind") != "standing_run" or policy.get("planning_mode") != "shot_local_v1":
+        return False
+    setup = autonomy._bound_document(root, basis.get("standing_setup"), "standing setup")
+    command = autonomy._bound_document(root, basis.get("run_command"), "run command")
+    marker = json.loads((Path(root) / "project.json").read_text())
+    identity = basis.get("identity_id")
+    return (isinstance(setup, dict) and setup.get("enabled") is True and setup.get("identity_id") == identity
+            and isinstance(command, dict) and command.get("command") == "make_video"
+            and command.get("identity_id") == identity
+            and command.get("standing_setup_sha256") == basis["standing_setup"]["sha256"]
+            and all(command.get(k) == marker.get(k) == policy.get(k) for k in ("project_id", "story_revision")))
+
+
+def frozen_factory_authority(project_dir, scope) -> bool:
+    """Whether an already-reserved attempt was dispatched under standing make_video.
+
+    Reads the attempt's frozen ``derived_from_policy`` authority (retained policy
+    bytes + its approval decision), independent of the current package/approval.
+    Generic or ambiguous historical scopes stay strict."""
+    if not isinstance(scope, dict) or not isinstance(scope.get("derived_from_policy"), dict):
+        return False
+    from lib import production_autonomy as autonomy
+    try:
+        policy, _, _ = autonomy.load_historical_policy(project_dir, scope)
+        return _standing_make_video(Path(project_dir).resolve(), policy)
+    except Exception:
+        return False
+
+
 def frame_conditioned_start(contract: dict, shot: dict, project_dir) -> dict:
     """Resolve one real board in its exact authored/current observed starting role.
 
@@ -88,16 +174,24 @@ def frame_conditioned_start(contract: dict, shot: dict, project_dir) -> dict:
             or boards._inside(root, binding["path"]) != boards._inside(root, asset.get("path", ""))):
         raise ValueError("frame_input differs from exact current board bytes")
     observation = boards._observation(pack, aid, "start_frame")
-    if not observation or boards._review_blockers(pack, aid, "start_frame"):
-        raise ValueError("frame_input lacks passing current starting-role observation")
-    review = observation["review"]
-    predicates = review["predicates"]
-    if (review["story_revision"] != contract["story_revision"]
-            or any(len([p for p in predicates if p["name"] == name]) != 1
-                   or len([p for p in predicates if p["name"] == name and p["status"] == "pass"
-                           and p.get("severity", "critical") == "critical"]) != 1
-                   for name in ("cast_identity", "cast_count"))):
-        raise ValueError("frame_input lacks exact current cast composition proof")
+    if factory_project(root):
+        # One-shot factory: the retained observation is report-only evidence.
+        if not observation:
+            raise ValueError("frame_input lacks a retained current starting-role observation")
+        review = observation["review"]
+        if review["story_revision"] != contract["story_revision"]:
+            raise ValueError("frame_input observation belongs to another story revision")
+    else:
+        if not observation or boards._review_blockers(pack, aid, "start_frame"):
+            raise ValueError("frame_input lacks passing current starting-role observation")
+        review = observation["review"]
+        predicates = review["predicates"]
+        if (review["story_revision"] != contract["story_revision"]
+                or any(len([p for p in predicates if p["name"] == name]) != 1
+                       or len([p for p in predicates if p["name"] == name and p["status"] == "pass"
+                               and p.get("severity", "critical") == "critical"]) != 1
+                       for name in ("cast_identity", "cast_count"))):
+            raise ValueError("frame_input lacks exact current cast composition proof")
     return {"asset_id": aid, "role": "start_frame", "sha256": asset["sha256"],
             "review_sha256": review_digest(review), "path": str(boards._inside(root, asset["path"]))}
 
@@ -157,6 +251,135 @@ def shot_review_subject(contract: dict, shot_id: str) -> str:
 def review_digest(review: dict) -> str:
     """Hash the entire review, including its subject binding and provenance."""
     return _digest(review)
+
+
+def _successor_require(condition, message):
+    if not condition:
+        raise ValueError("review successor: " + message)
+
+
+def _successor_bound(root, binding, *, return_bytes=False):
+    _successor_require(isinstance(binding, dict) and set(binding) == {"path", "sha256"}, "exact evidence path/hash required")
+    _successor_require(isinstance(binding["path"], str) and bool(binding["path"].strip()), "evidence path required")
+    path = (root / binding["path"]).resolve()
+    _successor_require(path.is_relative_to(root), "evidence missing, changed or outside project")
+    try:
+        raw = path.read_bytes() if return_bytes else None
+        digest = hashlib.sha256(raw).hexdigest() if return_bytes else file_sha256(path)
+    except OSError as exc:
+        raise ValueError("review successor: evidence missing or unreadable") from exc
+    _successor_require(digest == binding["sha256"], "evidence missing, changed or outside project")
+    return raw if return_bytes else path
+
+
+def _successor_context(root, shot_id, selection):
+    from lib import production_execution as execution
+    from lib.production_provenance import shot_planning_digest
+    marker = execution._read(root / "project.json")
+    contract = execution.load_shot_contract(root)
+    _successor_require(marker.get("governance", {}).get("mode") == "strict", "strict project required")
+    _successor_require((contract.get("project_id"), contract.get("story_revision")) ==
+                       (marker.get("project_id"), marker.get("story_revision")), "project/story differs")
+    for key in ("output", "outgoing_frame"):
+        _successor_bound(root, selection.get(key))
+    _successor_require(selection.get("review", {}).get("subject_sha256") == selection_digest(selection)
+                       and selection["review"].get("story_revision") == marker["story_revision"],
+                       "selection review subject differs")
+    return {"project_id": marker["project_id"], "story_revision": marker["story_revision"],
+            "shot_id": shot_id, "selection_sha256": review_digest(selection),
+            "subject_sha256": selection_digest(selection),
+            "planning_sha256": shot_planning_digest(contract, shot_id)}
+
+
+def _successor_listening(root, evidence, context, selection, review):
+    value = json.loads(_successor_bound(root, evidence, return_bytes=True))
+    expected = {k: context[k] for k in ("project_id", "story_revision", "shot_id", "subject_sha256")}
+    expected.update(version="1.0", kind="synchronized_audio_review", attempt_id=selection["attempt_id"],
+                    output_sha256=selection["output"]["sha256"], reviewer=review["reviewer"],
+                    coverage="complete_clip", synchronized=True, listened=True, status="pass")
+    _successor_require(review_digest(value) == review_digest(expected),
+                       "complete synchronized listening attestation differs from exact selected clip/reviewer")
+
+
+def _successor_transition(old, new):
+    schema = load_schema("shot_contract")
+    validator = Draft202012Validator({"$defs": schema["$defs"], "$ref": "#/$defs/review"})
+    _successor_require(validator.is_valid(old) and validator.is_valid(new), "valid old/new named reviews required")
+    _successor_require(old["status"] == "provisional", "original provisional review required")
+    _successor_require(old["review_id"] != new["review_id"], "new review identity required")
+    _successor_require(old["story_revision"] == new["story_revision"] and old["subject_sha256"] == new["subject_sha256"],
+                       "review subject/story differs")
+    before = {p["name"]: p for p in old["predicates"]}
+    after = {p["name"]: p for p in new["predicates"]}
+    _successor_require(len(before) == len(old["predicates"]) and len(after) == len(new["predicates"])
+                       and set(before) == set(after) and UPSTREAM_PREDICATES.issubset(before),
+                       "complete unique unchanged predicate set required")
+    _successor_require(before["speaker_source"]["status"] == "unknown" and after["speaker_source"]["status"] == "pass"
+                       and bool(after["speaker_source"]["evidence"].strip())
+                       and before["speaker_source"]["evidence"] != after["speaker_source"]["evidence"]
+                       and before["speaker_source"].get("severity") == after["speaker_source"].get("severity"),
+                       "only substantiated audio unknown-to-pass permitted")
+    _successor_require(all(before[name] == after[name] for name in before if name != "speaker_source"),
+                       "visual facts and failed predicates must remain unchanged")
+    accepted = "creator_draft_exception" in old
+    if not accepted:
+        _successor_require(all(p["status"] == "pass" for name, p in before.items()
+                               if name != "speaker_source" and (name in CRITICAL_PREDICATES or p.get("severity", "critical") == "critical")),
+                           "critical visual failure or uncertainty cannot advance to pass")
+    _successor_require(new["status"] == ("provisional" if accepted else "pass"), "accepted critical defect remains provisional")
+    allowed = {"review_id", "reviewer", "status", "predicates", "draft_policy_sha256"}
+    _successor_require({k: v for k, v in old.items() if k not in allowed} ==
+                       {k: v for k, v in new.items() if k not in allowed}, "review authority differs")
+    if accepted:
+        _successor_require(new.get("draft_policy_sha256") == old.get("draft_policy_sha256"), "draft authority must remain bound")
+    else:
+        _successor_require("draft_policy_sha256" not in new, "passing successor cannot retain draft policy")
+
+
+def resolve_selection_review(project_dir, shot_id, selection, *, expected_review_sha256=None):
+    """Resolve the selected review, reading one retained same-media successor.
+
+    Read-only: retained ``production_review_successors`` records written before
+    the writer was retired still apply when content-addressed, uniquely bound to
+    this unchanged original/subject/media/planning context and backed by their
+    bound synchronized listening attestation. No record means the original
+    review. ``expected_review_sha256`` must equal the current original review.
+    """
+    root = Path(project_dir).resolve()
+    original = selection.get("review") if isinstance(selection, dict) else None
+    if not isinstance(original, dict):
+        raise ValueError("original review missing")
+    predecessor_sha256 = review_digest(original)
+    if expected_review_sha256 is not None and predecessor_sha256 != expected_review_sha256:
+        raise ValueError("historical original review differs")
+    directory = root / "production_review_successors"
+    if not directory.exists() and not directory.is_symlink():
+        return copy.deepcopy(original)
+    _successor_require(not directory.is_symlink(), "history directory cannot be a symlink")
+    subject_sha256 = selection_digest(selection)
+    matches = []
+    for path in directory.glob("*.json"):
+        raw = path.read_bytes()
+        record = json.loads(raw)
+        _successor_require(isinstance(record, dict), "malformed history")
+        if (record.get("shot_id") == shot_id and record.get("attempt_id") == selection.get("attempt_id")
+                and record.get("predecessor_sha256") == predecessor_sha256
+                and record.get("subject_sha256") == subject_sha256):
+            matches.append((path, record, hashlib.sha256(raw).hexdigest()))
+    if not matches:
+        return copy.deepcopy(original)
+    _successor_require(len(matches) == 1, "conflicting successors")
+    path, record, record_sha256 = matches[0]
+    _successor_require(path.parent.resolve() == directory.resolve() and not path.is_symlink()
+                       and path.name == record_sha256 + ".json", "content-addressed immutable history required")
+    context = _successor_context(root, shot_id, selection)
+    _successor_require(set(record) == set(context) | {"version", "attempt_id", "predecessor_sha256", "review", "evidence"},
+                       "unsupported record fields")
+    _successor_require(record["version"] == "1.0" and all(record[k] == v for k, v in context.items())
+                       and record["predecessor_sha256"] == predecessor_sha256, "stale or forged chain binding")
+    _successor_listening(root, record["evidence"], context, selection, record["review"])
+    _successor_transition(original, record["review"])
+    return copy.deepcopy(record["review"])
 
 
 def selection_digest(selection: dict) -> str:
@@ -265,8 +488,7 @@ def validate_shot_contract(
     from the expected bindings stored in this contract.
     """
     return _validate_shot_contract(contract, project_dir=project_dir, shot_id=shot_id,
-        story_revision=story_revision, selected_upstream=selected_upstream,
-        resolve_successors=True)
+        story_revision=story_revision, selected_upstream=selected_upstream)
 
 
 def _validate_original_shot_contract(
@@ -280,13 +502,11 @@ def _validate_original_shot_contract(
     evidence or eligibility under an appended review successor.
     """
     return _validate_shot_contract(contract, project_dir=project_dir, shot_id=shot_id,
-        story_revision=story_revision, selected_upstream=selected_upstream,
-        resolve_successors=False)
+        story_revision=story_revision, selected_upstream=selected_upstream)
 
 
 def _validate_shot_contract(
     contract, *, project_dir, shot_id, story_revision, selected_upstream,
-    resolve_successors,
 ):
     errors: list[str] = []
     warnings: list[str] = []
@@ -304,6 +524,9 @@ def _validate_shot_contract(
     if story_revision is not None and revision != story_revision:
         errors.append("story_revision: contract does not match current story")
     root = Path(project_dir).resolve()
+    # Factory semantic planning reviews are disclosed observations; generic
+    # manifests keep strict review gating.
+    report_only = factory_project(root)
 
     def check_file(record, label):
         try:
@@ -315,45 +538,49 @@ def _validate_shot_contract(
         except (KeyError, TypeError, ValueError, OSError) as exc:
             errors.append(f"{label}: unreadable bound asset ({exc})")
 
-    def check_review(review, subject, required, label, *, allow_draft=False, selection=None, upstream_id=None):
+    def check_review(review, subject, required, label, *, allow_draft=False, selection=None, upstream_id=None,
+                     gating=True):
+        # Semantic planning reviews are observations in the one-shot factory:
+        # their findings are disclosed as warnings and never gate motion.
+        review_errors = errors if gating else warnings
         # Upstream review records enter from outside the schema-validated plan.
         review_schema = {"$defs": schema["$defs"], "$ref": "#/$defs/review"}
         malformed = list(Draft202012Validator(review_schema).iter_errors(review))
         if malformed:
-            errors.append(f"{label}: invalid/missing review: {malformed[0].message}")
+            review_errors.append(f"{label}: invalid/missing review: {malformed[0].message}")
             return
         if review["story_revision"] != revision or review["subject_sha256"] != subject:
-            errors.append(f"{label}: stale review binding (story revision or subject hash)")
+            review_errors.append(f"{label}: stale review binding (story revision or subject hash)")
         from lib.production_draft import accepted_draft_predicate
         accepted = accepted_draft_predicate(selection, root, shot_id=upstream_id) if allow_draft and selection else None
         audio_provisional = allow_draft and provisional_audio_review(review, root)
         provisional = audio_provisional or accepted is not None
         if review["status"] != "pass" and not provisional:
-            errors.append(f"{label}: review is {review['status']}")
+            review_errors.append(f"{label}: review is {review['status']}")
         required = required_review_predicates(root, required)
         seen = set()
         for predicate in review["predicates"]:
             name = predicate["name"]
             if name in seen:
-                errors.append(f"{label}.{name}: duplicate/conflicting predicate")
+                review_errors.append(f"{label}.{name}: duplicate/conflicting predicate")
             seen.add(name)
             if name == "speaker_source" and audio_review_disabled(root):
                 continue
             critical = name in CRITICAL_PREDICATES or predicate.get("severity", "critical") == "critical"
             if name in CRITICAL_PREDICATES and predicate.get("severity") == "cosmetic":
-                errors.append(f"{label}.{name}: required critical predicate cannot be cosmetic")
+                review_errors.append(f"{label}.{name}: required critical predicate cannot be cosmetic")
             deferred = (audio_provisional and name == "speaker_source" and predicate["status"] == "unknown") or (name == accepted and predicate["status"] == "fail")
             if predicate["status"] != "pass":
-                (errors if critical and not deferred else warnings).append(f"{label}.{name}: {predicate['status']}: {predicate['evidence']}")
+                (review_errors if critical and not deferred else warnings).append(f"{label}.{name}: {predicate['status']}: {predicate['evidence']}")
         for name in sorted(required - seen):
-            errors.append(f"{label}.{name}: missing critical review predicate")
+            review_errors.append(f"{label}.{name}: missing critical review predicate")
 
     try:
         digest = contract_digest(contract)
     except (ValueError, TypeError) as exc:
         errors.append(f"$: invalid JSON planning value ({exc})")
         return result()
-    check_review(contract["project_review"], project_review_subject(contract), PROJECT_PREDICATES, "project_review")
+    check_review(contract["project_review"], project_review_subject(contract), PROJECT_PREDICATES, "project_review", gating=not report_only)
     assets = {}
     for asset in contract["assets"]:
         if asset["id"] in assets:
@@ -406,7 +633,7 @@ def _validate_shot_contract(
             errors.append(f"asset_ids.{asset_id}: unknown asset")
             continue
         check_file(asset, f"assets.{asset_id}")
-        check_review(asset.get("review"), asset.get("sha256"), ASSET_PREDICATES, f"assets.{asset_id}.review")
+        check_review(asset.get("review"), asset.get("sha256"), ASSET_PREDICATES, f"assets.{asset_id}.review", gating=not report_only)
         source = asset.get("upstream_source")
         if source:
             upstream_id = source["shot_id"]
@@ -454,7 +681,7 @@ def _validate_shot_contract(
     for transformation in transformations.values():
         if not set(shot["prop_body_invariants"]).issubset(transformation["preserved_invariants"]):
             errors.append(f"shots.{shot_id}.allowed_transformations: must preserve prop/body invariants")
-    check_review(shot.get("review"), shot_review_subject(contract, shot_id), SHOT_PREDICATES, f"shots.{shot_id}.review")
+    check_review(shot.get("review"), shot_review_subject(contract, shot_id), SHOT_PREDICATES, f"shots.{shot_id}.review", gating=not report_only)
 
     for binding in shot["upstream"]:
         upstream_id = binding["shot_id"]
@@ -462,6 +689,13 @@ def _validate_shot_contract(
         ordered_ids = list(shots)
         if upstream_id not in shots or ordered_ids.index(upstream_id) >= ordered_ids.index(shot_id):
             errors.append(f"{label}: upstream must precede dependent shot (no self/cyclic dependencies)")
+        elif report_only and not any((a.get("upstream_source") or {}).get("shot_id") == upstream_id
+                                     for a in (assets.get(i) for i in shot["asset_ids"]) if a):
+            # One-shot factory: every clip uses its own prepared frame. An
+            # upstream without a bound outgoing-frame source is an ordering note.
+            if not isinstance((selected_upstream or {}).get(upstream_id), dict):
+                warnings.append(f"{label}: upstream not selected (ordering note only)")
+            continue
         elif shots[upstream_id]["endpoint_completion"] not in allowed_endpoints:
             errors.append(f"{label}: upstream endpoint_completion is not completed")
         selection = (selected_upstream or {}).get(upstream_id)
@@ -480,14 +714,8 @@ def _validate_shot_contract(
             else:
                 check_file(record, f"{label}.{key}")
         try:
-            if resolve_successors:
-                from lib.production_review_successors import resolve_selection_review
-                review = resolve_selection_review(root, upstream_id, selection,
-                    expected_review_sha256=binding["review_sha256"])
-            else:
-                review = selection.get("review")
-                if review_digest(review) != binding["review_sha256"]:
-                    raise ValueError("historical original review differs")
+            review = resolve_selection_review(root, upstream_id, selection,
+                expected_review_sha256=binding["review_sha256"])
         except (OSError, ValueError, TypeError, KeyError) as exc:
             errors.append(f"{label}: selected review changed or missing ({exc})")
             continue

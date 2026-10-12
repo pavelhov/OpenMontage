@@ -17,8 +17,8 @@ from lib.events import read_events
 from lib.shot_contract import file_sha256
 from tests.lib.test_production_images import PNG, host_receipt
 from tests.lib.test_production_execution import MotionTool, project
-from tests.lib.test_production_repair_batches import (
-    mcp_two as base_two, media_path, real_av_clip, collect_fixture, mcp_compile, approval,
+from tests.lib.test_first_cut_historical_mcp import (
+    mcp_two as base_two, media_path, real_av_clip, collect_fixture, approval,
 )
 from tests.integration.test_openart_mcp_autonomy import lifecycle as base_lifecycle
 
@@ -137,13 +137,18 @@ def prepare_episode_boards(root, boards):
     assert images.image_usage(root)['total'] == 1
 
 
-def test_offline_episode_board_cut_disclosure_mixed_repairs_acceptance(mcp_two, monkeypatch, tmp_path):
+def test_offline_episode_originals_cut_disclosure_acceptance(mcp_two, monkeypatch, tmp_path):
     entry = pytest.importorskip('production_entry')
     boards = pytest.importorskip('prepare_boards')
     timing = pytest.importorskip('production_timing')
-    from lib import production_repair_batches as batches
     root, policy, originals, template_timing, jobs = mcp_two
     engine = Path(execution.__file__).resolve().parents[1]
+    identity = tmp_path / 'identity'
+    (identity / 'content').mkdir(parents=True)
+    (identity / 'content/episode-number-register.json').write_text(json.dumps({
+        'episodes': [{'number': 'C999', 'engine_project': str(root),
+                      'canonical_directory': 'assets/generated/c999-offline-originals'}]}))
+    monkeypatch.setattr(entry, '_identity_root', lambda: identity)
     source = real_av_clip(tmp_path / 'source.mp4', seconds=2)
     for sid in originals:
         collect_fixture(root, jobs, 'original-' + sid, source, monkeypatch)
@@ -151,7 +156,7 @@ def test_offline_episode_board_cut_disclosure_mixed_repairs_acceptance(mcp_two, 
     from tests.integration.test_first_pass_workflow import attestation
     review = attestation(output['sha256'], ['grain'], policy['story_revision'])
     review.update(status='fail', predicates=[{'name': 'grain', 'status': 'fail', 'severity': 'cosmetic',
-                                            'evidence': 'Synthetic grain warning, retained before repair.'}])
+                                            'evidence': 'Synthetic grain warning, retained in original.'}])
     execution.record_rejection(root, 'original-entry', review)
     cut = entry.compose_first_cut(engine, root)
     handoff = entry.cut_handoff(engine, root)
@@ -159,43 +164,21 @@ def test_offline_episode_board_cut_disclosure_mixed_repairs_acceptance(mcp_two, 
     assert [clip['master_start'] for clip in cut['clips']] == [0, 2]
     assert [clip['master_end'] for clip in cut['clips']] == [2, 4]
     assert cut['clips'][0]['review'] == 'fail' and handoff['provider_calls'] == 0
-    observations = [{'clip': 1, 'at': 0.5, 'defect': 'Synthetic grain warning.', 'severity': 'minor',
+    observations = [{'clip': 1, 'at': 0.5, 'defect': 'Synthetic grain warning.', 'severity': 'pass_unwanted',
         'viewing': 'viewed', 'listening': 'listened', 'basis': 'synthetic synchronized AV fixture',
         'proposed': 'Creator can keep it or select a clearer framing.', 'reviewer': 'fixture reviewer'}]
     disclosure = entry.record_cut_disclosure(engine, root, observations)
     assert entry.record_cut_disclosure(engine, root, observations) == disclosure
     assert len([e for e in read_events(root) if e['event'] == 'cut-disclosure-retained']) == 1
-    selections = []
-    for number, (sid, model) in enumerate((('entry', 'pixverseV6'), ('other', 'wan3-0')), 1):
-        inputs = copy.deepcopy(originals[sid])
-        inputs.update(model=model, output_path=str(root / ('repair-' + sid + '.mp4')))
-        inputs, _ = mcp_compile(root, inputs, sid, 'repair-' + sid, template_timing)
-        selections.append({'clip': number, 'item_id': sid, 'selected_route': {'provider': 'openart_mcp',
-            'tool': 'openart_mcp_video', 'model': model, 'mode': 'text2video'},
-            'changes': 'Creator requests clearer framing.', 'inputs': inputs})
-    evidence = approval(root, 'mixed-intent')
-    status = entry.record_repair_batch(engine, root, {'batch_id': 'episode-mixed', 'cut': handoff['first_cut'],
-        'evidence': evidence['path'], 'approved_by': evidence['approved_by'], 'selections': selections})
-    assert all(item['state'] == 'planned' for item in status['items'])
-    entry.prepare_repair(engine, root, 'episode-mixed', 'entry')
-    actions = entry.resume_repair(engine, root, 'episode-mixed')
-    assert len(actions['actions']) == 2
-    assert entry.resume_repair(engine, root, 'episode-mixed')['actions'] == []
-    repaired = real_av_clip(tmp_path / 'repaired.mp4', seconds=2, freq=660)
-    for item in actions['items']:
-        jobs.receive(root, item['attempt_id'], outcome={'historyId': 'history-' + item['attempt_id']})
-        collect_fixture(root, jobs, item['attempt_id'], repaired, monkeypatch)
-    successor = entry.compose_first_cut(engine, root)
-    assert [c['attempt_id'] for c in successor['clips']] == [i['attempt_id'] for i in actions['items']]
-    assert successor['technical']['has_audio']
+    assert [c['attempt_id'] for c in cut['clips']] == ['original-entry', 'original-other']
     # Actual decoded source and master audio energies remain nonzero in both placed intervals.
     from tests.lib.test_first_cut import REAL_RUN
-    decoded = REAL_RUN(['ffmpeg', '-v', 'error', '-i', str(root / successor['export']['path']),
+    decoded = REAL_RUN(['ffmpeg', '-v', 'error', '-i', str(root / cut['export']['path']),
                         '-vn', '-f', 'f32le', '-ac', '1', '-ar', '8000', '-'], capture_output=True, check=True)
     import array
     samples = array.array('f', decoded.stdout)
     assert all(sum(x*x for x in samples[start:start+8000]) > 0.1 for start in (0, 16000))
-    # A retained 660Hz source tone survives each segment, rather than only an
+    # A retained 440Hz source tone survives each segment, rather than only an
     # arbitrary nonsilent replacement audio track being present in the master.
     import math
     def tone_energy(segment, freq):
@@ -203,36 +186,32 @@ def test_offline_episode_board_cut_disclosure_mixed_repairs_acceptance(mcp_two, 
                sum(x * math.cos(2*math.pi*freq*i/8000) for i, x in enumerate(segment)) ** 2
     for start in (2000, 18000):
         segment = samples[start:start+4000]
-        assert tone_energy(segment, 660) > 100 * tone_energy(segment, 440)
-    successor_disclosure = entry.record_cut_disclosure(engine, root, [])
-    accepted = approval(root, 'accept-successor')
+        assert tone_energy(segment, 440) > 100 * tone_energy(segment, 660)
+    final_disclosure = disclosure
+    accepted = approval(root, 'accept-originals')
     acceptance = entry.accept_cut(engine, root, accepted_by=accepted['approved_by'],
-                                  evidence=accepted['path'], disclosure=successor_disclosure['path'])
+                                  evidence=accepted['path'], disclosure=final_disclosure['path'])
     # Acceptance's existing exclusive publication contract rejects an identical
     # second append, and that failed append must not claim another observation.
     with pytest.raises(FileExistsError):
         entry.accept_cut(engine, root, accepted_by=accepted['approved_by'],
-                         evidence=accepted['path'], disclosure=successor_disclosure['path'])
+                         evidence=accepted['path'], disclosure=final_disclosure['path'])
     assert len([e for e in read_events(root) if e['event'] == 'first-cut-accepted']) == 1
     assert acceptance['qc_pass'] is False and acceptance['re_encoded'] is False
     assert entry.cut_acceptance_status(engine, root, acceptance['acceptance'])['status'] == 'current'
-    assert entry.repair_status(engine, root, 'episode-mixed')['closed']
-    assert batches.resume_repair_batch(root, 'episode-mixed')['actions'] == []
-    assert controls.generation_usage(root)['per_shot'] == {'entry': 2, 'other': 2}
-    assert len(jobs.list_attempts(root)) == 4 and images.image_usage(root)['total'] == 1
+    assert controls.generation_usage(root)['per_shot'] == {'entry': 1, 'other': 1}
+    assert len(jobs.list_attempts(root)) == 2 and images.image_usage(root)['total'] == 1
     assert not any(c['strict_selected'] for c in draft.first_cut_candidates(root))
     receipt = timing.summarize_project(root)
-    assert len(receipt['first_cuts']) == 2
-    assert {row['attempt_id'] for cut in receipt['first_cuts'] for row in cut['clips']} == \
-           {'original-entry', 'original-other'} | {item['attempt_id'] for item in actions['items']}
+    assert len(receipt['first_cuts']) == 1
+    assert {row['attempt_id'] for item in receipt['first_cuts'] for row in item['clips']} == {'original-entry', 'original-other'}
     assert receipt['backend_render_seconds'] is None
     board_ready = next(p for p in receipt['observations'] if p['event'] == 'board_review_retained')
     first_handoff = next(p for p in receipt['observations'] if p['event'] == 'begin_consumed_before_handoff')
     assert timing.parse_time(board_ready['ts']) <= timing.parse_time(first_handoff['ts'])
     assert {'host_handoff_retention', 'collection', 'local_compose', 'board_review'} <= {r['stage'] for r in receipt['stages']}
     assert any(point['event'] == 'first-cut-accepted' for point in receipt['observations'])
-    assert {row['item_id'] for row in receipt['stages'] if row.get('batch_id') == 'episode-mixed'} == {'entry', 'other'}
-    states = [jobs._load(root, item['attempt_id']) for item in actions['items']]
+    states = [jobs._load(root, 'original-' + sid) for sid in originals]
     for state in states:
         kinds = [row['kind'] for row in state['events']]
         assert kinds.count('begin_consumed_before_handoff') == kinds.count('collected') == 1

@@ -71,6 +71,25 @@ def test_profile_flags_preserve_caller_settings(tmp_path, monkeypatch, operation
         assert "-bf" not in command and "-movflags" not in command
 
 
+def test_compose_fails_when_audio_probe_fails_instead_of_synthesizing_silence(tmp_path, monkeypatch):
+    source = tmp_path / "source.mp4"
+    source.touch()
+    commands = []
+    tool = VideoCompose()
+    monkeypatch.setattr(tool, "run_command", lambda cmd: commands.append(cmd))
+
+    def failed_probe(*args, **kwargs):
+        raise subprocess.CalledProcessError(1, args[0], output="probe could not read source")
+
+    monkeypatch.setattr(subprocess, "check_output", failed_probe)
+    result = tool.execute(_inputs("compose", source, tmp_path / "out.mp4"))
+
+    assert not result.success
+    assert "ffprobe" in result.error.lower()
+    assert "probe could not read source" in result.error
+    assert commands == []
+
+
 def _run(command):
     return subprocess.run(command, check=True, capture_output=True, text=True).stdout
 

@@ -6,9 +6,180 @@ import pytest
 
 from lib import production_draft as draft, production_execution as execution
 from lib.production_provenance import (validate_attempt_provenance,
-                                      validate_creator_repair_source_provenance)
+                                      historical_source_provenance)
 from lib.shot_contract import file_sha256
-from tests.lib import test_production_repair_batches as fixtures
+from tests.lib import test_first_cut_historical_mcp as fixtures
+from tests.integration.test_openart_mcp_autonomy import lifecycle  # noqa: F401
+from tests.lib.test_episode_production_controls import approval
+
+def enable_first_cut(root):
+    from lib import episode_production_controls as controls
+    return controls.record_episode_controls(root, {
+        "max_generations_per_shot": 1, "alternate_repair": "disabled",
+        "access_fallback": False, "first_cut": {"enabled": True},
+    }, evidence=approval(root))
+
+def mcp_compile(root, inputs, sid, rid, template_timing):
+    from lib import production_request as prep, openart_mcp as mcp
+    inputs = copy.deepcopy(inputs)
+    inputs.update(compiled_request_id=rid, preparation_review_id=rid)
+    inputs['governance'] = {'shot_id': sid}
+    authored = prep.compile_provider_prompt(root, sid, provider='openart_mcp', model=inputs['model'])
+    inputs['prompt'] = authored['prompt']
+    profile = mcp.load_profile(inputs['model'], inputs['mode'], require='supported')
+    native = mcp.prepare_native_request(execution._openart_mcp_controls(inputs), profile)
+    timing = copy.deepcopy(template_timing)
+    index = 0 if sid == 'entry' else 1
+    seconds=inputs['native_params']['duration']
+    timing['duration_seconds'] = seconds
+    for window, start, end in zip(timing['action_windows'], (0,1.2), (1.15,1.95)):
+        window.update(source_pointer=window['source_pointer'].replace('/shots/0/', '/shots/'+str(index)+'/'),
+                      start_seconds=start*seconds/2, end_seconds=end*seconds/2)
+    compiled = prep.prepare_compiled_request(inputs, native, profile, coverage=authored['coverage'], timing=timing)
+    review = execution._read(root / 'artifacts/preparation_review-original.json')
+    review.update(review_id=rid, subject_sha256=prep.digest(compiled))
+    (root / ('artifacts/compiled_request-'+rid+'.json')).write_text(json.dumps(compiled))
+    (root / ('artifacts/preparation_review-'+rid+'.json')).write_text(json.dumps(review))
+    return inputs, native
+
+
+@pytest.fixture
+def mcp_two(lifecycle, monkeypatch, media_path):
+    from lib import production_autonomy as pa, production_provenance as provenance
+    from tests.lib.test_production_autonomy import install_existing
+    from tests.lib.test_shot_contract import refresh
+    root, policy, _, base, _, _, jobs = lifecycle
+    monkeypatch.setattr(provenance, '_ALLOW_OPENART_FIXTURE_PROVENANCE', True)
+    contract = execution.load_shot_contract(root)
+    contract['shots'][0]['duration_seconds'] = 2
+    other = copy.deepcopy(contract['shots'][0]); other['id']='other'
+    contract['shots'].append(other); refresh(contract)
+    (root/'artifacts/shot_contract.json').write_text(json.dumps(contract))
+    scenes=execution._read(root/'artifacts/scene_plan.json'); scenes['scenes'][0]['end_seconds']=2
+    next_scene=copy.deepcopy(scenes['scenes'][0]); next_scene.update(id='other',start_seconds=2,end_seconds=4,script_section_id='s2')
+    scenes['scenes'].append(next_scene); (root/'artifacts/scene_plan.json').write_text(json.dumps(scenes))
+    script=execution._read(root/'artifacts/script.json'); script['total_duration_seconds']=4
+    script['sections'][0]['end_seconds']=2
+    section=copy.deepcopy(script['sections'][0]); section.update(id='s2',start_seconds=2,end_seconds=4)
+    script['sections'].append(section); (root/'artifacts/script.json').write_text(json.dumps(script))
+    timing=execution._read(root/'artifacts/compiled_request-original.json')['timing']
+    base['native_params']['duration']=2
+    originals={}
+    for sid in ('entry','other'):
+        candidate=copy.deepcopy(base); candidate['output_path']=str(root/(sid+'.mp4'))
+        originals[sid],_=mcp_compile(root,candidate,sid,'original-'+sid,timing)
+    policy=copy.deepcopy(policy); policy['caps']={'max_total_attempts':4,'max_attempts_per_shot':1,'max_repair_attempts':0}
+    provider=next(p for p in policy['providers'] if p['id']=='openart_mcp')
+    provider['routes']=[{'model':m,'mode':'text2video'} for m in ('pixverseV6','wan3-0')]
+    policy['model_selection_intents']={sid:{'mode':'auto','approved_pool':[
+        {'provider':'openart_mcp','tool':'openart_mcp_video','model':m} for m in ('pixverseV6','wan3-0')]} for sid in originals}
+    policy,_=install_existing(root,policy,templates={sid:execution.planned_request_template(req,project_dir=root) for sid,req in originals.items()})
+    (root/'production_scopes.json').write_text(json.dumps({'version':'1.0','scopes':[]}))
+    enable_first_cut(root)
+    for sid,inputs in originals.items():
+        scope=pa.derive_scope(root,inputs,provider='openart_mcp'); inputs['governance']['scope_id']=scope['id']
+        jobs.prepare(root,attempt_id='original-'+sid,generation_inputs=inputs,authority_fn=execution.prepare_openart_mcp_handoff)
+        jobs.begin(root,'original-'+sid,authority_fn=execution.prepare_openart_mcp_handoff)
+        jobs.receive(root,'original-'+sid,outcome={'historyId':'history-original-'+sid})
+    return root,policy,originals,timing,jobs
+
+
+def mcp_select(root,sid,aid):
+    from tools.analysis.frame_sampler import FrameSampler
+    from lib.shot_contract import selection_digest,UPSTREAM_PREDICATES
+    from tests.integration.test_first_pass_workflow import attestation
+    output=execution.load_attempt_result(root,aid)['output']
+    sampled=FrameSampler().execute({'input_path':output['path'],'strategy':'timestamps','timestamps':[1.9],
+        'output_dir':str(root/('frames-'+aid)),'format':'png'})
+    assert sampled.success,sampled.error
+    frame=sampled.data['frames'][0]['path']
+    selection={'attempt_id':aid,'output':output,'outgoing_frame':{'path':frame,'sha256':file_sha256(frame)}}
+    selection['review']=attestation(selection_digest(selection),UPSTREAM_PREDICATES,execution._read(root/'project.json')['story_revision'])
+    return execution.record_selection(root,sid,selection)
+
+
+def bind_mcp_upstream(root,sid,selection):
+    from lib.shot_contract import review_digest
+    from tests.lib.test_shot_contract import refresh
+    contract=execution.load_shot_contract(root)
+    next(s for s in contract['shots'] if s['id']==sid)['upstream']=[{'shot_id':'entry','attempt_id':selection['attempt_id'],
+        'output_sha256':selection['output']['sha256'],'outgoing_frame_sha256':selection['outgoing_frame']['sha256'],
+        'review_sha256':review_digest(selection['review'])}]
+    refresh(contract);(root/'artifacts/shot_contract.json').write_text(json.dumps(contract))
+
+
+def collect_fixture(root, jobs, aid, source, monkeypatch):
+    from tests.integration.test_openart_mcp_governance import install_fake_download
+    state=jobs.attempt_state(root,aid)
+    jobs.record_status(root,aid,result={'historyId':state['history_id'],'status':'COMPLETED',
+        'resources':[{'id':'resource-'+aid,'mediaType':'video','status':'COMPLETED','url':'https://fixture.invalid/'+aid+'.mp4'}]})
+    install_fake_download(monkeypatch,jobs,source)
+    receipt=jobs.download_original(root,aid)
+    return jobs.collect(root,aid,downloaded_path=receipt['downloaded_path'])
+
+
+@pytest.fixture
+def mcp_dependent(source_project,monkeypatch,media_path):
+    from lib import openart_mcp as mcp,openart_mcp_jobs as jobs,production_autonomy as pa,production_request as prep,production_provenance as provenance
+    from tests.lib.test_production_autonomy import make_policy,install_existing
+    from tests.lib.test_shot_contract import refresh
+    root,assets,_,_=source_project;root=root.resolve()
+    monkeypatch.setattr(mcp,'_ALLOW_FIXTURE_PRODUCTION',True)
+    monkeypatch.setattr(provenance,'_ALLOW_OPENART_FIXTURE_PROVENANCE',True)
+    marker=execution._read(root/'project.json');marker['pipeline_type']='cinematic';(root/'project.json').write_text(json.dumps(marker))
+    contract=execution.load_shot_contract(root)
+    contract['assets']=[a for a in contract['assets'] if a['id'] not in {'voice','motion'}]
+    shot=contract['shots'][0];shot.update(duration_seconds=5,reference_mode='reference_guided')
+    shot['asset_ids']=[a for a in shot['asset_ids'] if a not in {'voice','motion'}]
+    other=copy.deepcopy(shot);other['id']='other';contract['shots'].append(other)
+    refresh(contract);(root/'artifacts/shot_contract.json').write_text(json.dumps(contract))
+    scenes={'version':'1.0','scenes':[{'id':sid,'type':'generated','description':'Synthetic MCP dependency',
+        'start_seconds':n*5,'end_seconds':(n+1)*5,'script_section_id':'s'+str(n+1)} for n,sid in enumerate(('entry','other'))]}
+    script={'version':'1.0','title':'Synthetic MCP dependency','total_duration_seconds':10,
+        'sections':[{'id':'s'+str(n+1),'text':'The patient completes the reviewed action.',
+        'start_seconds':n*5,'end_seconds':(n+1)*5} for n in range(2)]}
+    (root/'artifacts/scene_plan.json').write_text(json.dumps(scenes));(root/'artifacts/script.json').write_text(json.dumps(script))
+    review={'version':'1.0','review_id':'original','reviewer':'Offline source reviewer','status':'pass','subject_sha256':'0'*64,
+        'evidence_kind':'fixture_only','predicates':[{'name':n,'status':'pass','severity':'critical','evidence':'Synthetic source review'} for n in sorted(prep.PREDICATES)]}
+    review['composite_boards']=[{'role':'start_frame','sha256':next(a['sha256'] for a in contract['assets'] if a['id']=='start'),
+        'members':[{k:a[k] for k in ('sha256','role','cast_ids')} for a in contract['assets']]}]
+    (root/'artifacts/preparation_review-original.json').write_text(json.dumps(review))
+    timing={'method':'segmented_estimate','duration_seconds':5,'language':'en','margin_seconds':.05,'rationale':'Synthetic timing',
+        'overlap_policy':'serial','overlap_rationale':'Synthetic timing','segments':[],
+        'action_windows':[{'source_pointer':'/shot_contract/shots/0/'+key,'value_sha256':prep.digest(shot[key]),
+            'start_seconds':start,'end_seconds':end,'rationale':'Synthetic timing'} for key,start,end in [('dominant_action',0,3),('completed_end_state',3,4.95)]]}
+    base={'project_dir':str(root),'model':'minimax-h3','mode':'element2video','operation':'reference_to_video',
+        'native_params':{'duration':5,'resolution':'768P'},'openart_project_id':'fixture-project',
+        'input_assets':[{'role':'reference_image',**assets['start']}]}
+    originals={}
+    for sid in ('entry','other'):
+        candidate={**copy.deepcopy(base),'output_path':str(root/(sid+'.mp4'))}
+        originals[sid],_=mcp_compile(root,candidate,sid,'original-'+sid,timing)
+    contract['shots'][1]['upstream']=[{'shot_id':'entry'}];refresh(contract)
+    (root/'artifacts/shot_contract.json').write_text(json.dumps(contract))
+    policy=make_policy();policy.update(caps={'max_total_attempts':4,'max_attempts_per_shot':1,'max_repair_attempts':0},
+        providers=[{'id':'openart_mcp','billing':'unknown_cost_no_ceiling','exposure_acknowledgement':'no_enforceable_credit_ceiling',
+            'uid_sha256':mcp.account_summary()['uid_sha256'],'project_id':'fixture-project','routes':[{'model':'minimax-h3','mode':'element2video'}]}],
+        locked={'cast':{},'dialogue':{},'sources':[],'story_predicates':[],'controls':{}},checkpoint_stages=[],
+        flex={'duration_s':[],'resolution':[],'references':{'droppable_roles':[],'substitutes':[]}},
+        model_selection_intents={sid:{'mode':'auto','approved_pool':[{'provider':'openart_mcp','tool':'openart_mcp_video','model':'minimax-h3'}]} for sid in originals})
+    policy,_=install_existing(root,policy,templates={sid:execution.planned_request_template(req,project_dir=root) for sid,req in originals.items()})
+    (root/'production_scopes.json').write_text(json.dumps({'version':'1.0','scopes':[]}))
+    enable_first_cut(root)
+    for sid in ('entry','other'):
+        if sid=='other':
+            bind_mcp_upstream(root,'other',execution.load_selected_attempts(root)['entry'])
+        originals[sid],_=mcp_compile(root,originals[sid],sid,'original-'+sid,timing)
+        inputs=originals[sid];scope=pa.derive_scope(root,inputs,provider='openart_mcp');inputs['governance']['scope_id']=scope['id']
+        jobs.prepare(root,attempt_id='original-'+sid,generation_inputs=inputs,authority_fn=execution.prepare_openart_mcp_handoff)
+        jobs.begin(root,'original-'+sid,authority_fn=execution.prepare_openart_mcp_handoff)
+        jobs.receive(root,'original-'+sid,outcome={'historyId':'history-original-'+sid})
+        if sid=='entry':
+            media=real_av_clip(root/'entry-source.mp4',seconds=5);collect_fixture(root,jobs,'original-entry',media,monkeypatch)
+            mcp_select(root,'entry','original-entry')
+    return root,policy,originals,timing,jobs
+
+
 from tests.lib.test_openart_mcp_native import observations, source_project  # noqa: F401
 from tests.integration.test_openart_first_pass_workflow import media_path, real_av_clip  # noqa: F401
 from tests.lib.test_shot_contract import refresh
@@ -72,7 +243,7 @@ def retained(source_project, monkeypatch, media_path, tmp_path):
 
 def check_original(retained, *, historical=True):
     root, revision, _, child, _ = retained
-    validate = validate_creator_repair_source_provenance if historical else validate_attempt_provenance
+    validate = historical_source_provenance if historical else validate_attempt_provenance
     return validate(root, 'original-other', shot_id='other', story_revision=revision,
                     expected_output=child['output'])
 
@@ -128,7 +299,7 @@ def test_historical_applicability_warning_stays_current_on_composed_cut(retained
     root, _, _, child, _ = retained
     change_unrelated(root, 'contract_action')
     cut = draft.compose_first_cut(root)
-    assert cut['status'] == 'incomplete' and cut['export'] is not None
+    assert cut['status'] == 'partial' and cut['export'] is not None
     clip = next(clip for clip in cut['clips'] if clip['shot_id'] == 'other')
     assert clip['attempt_id'] == child['attempt_id']
     assert [finding['name'] for finding in clip['findings']] == ['source_applicability_changed']

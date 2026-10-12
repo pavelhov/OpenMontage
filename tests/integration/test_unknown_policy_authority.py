@@ -194,7 +194,7 @@ def test_policy_account_mismatch_refuses_derive_before_capture(governed):
 
 def test_dispatch_collect_replay_then_next_occurrence(governed):
     g = governed
-    g.prepare(g.inputs); g.activate(caps={'max_total_attempts': 2, 'max_attempts_per_shot': 2, 'max_repair_attempts': 1})
+    g.prepare(g.inputs); g.activate(caps={'max_total_attempts': 2, 'max_attempts_per_shot': 1, 'max_repair_attempts': 0})
     scope = g.derive(g.inputs)
     authorization = read(g.root/f"artifacts/unknown_cost_authorization-{scope['id']}.json")
     assert authorization['approved_by'] == f'policy:{g.sha}' and authorization['count'] == 1
@@ -219,26 +219,25 @@ def test_dispatch_collect_replay_then_next_occurrence(governed):
                                      frozen_openart=execution.load_openart_frozen(request))
     counts = autonomy.root_attempt_counts(g.root, g.policy)
     assert counts['total'] == 1
-    # A same-shot next occurrence is a repair naming a retained failed review of actual output.
+    # Even a retained failed review cannot admit another original for this slot.
     g.next_job()
     nxt = g.prepare(g.fresh_inputs('oa2'))
     with pytest.raises(autonomy.AutonomyError):
-        g.derive(copy.deepcopy(nxt), phase='repair', replaces_attempt_ids=[aid])
+        g.derive(copy.deepcopy(nxt))
     output = execution._state(g.root, request)['output']['sha256']
     execution.record_rejection(g.root, aid, {'review_id': 'fixture-fail', 'reviewer': FIXTURE,
         'story_revision': request['story_revision'], 'subject_sha256': output, 'status': 'fail',
         'predicates': [{'name': 'completed_action', 'status': 'fail', 'severity': 'critical', 'evidence': FIXTURE}]})
-    scope2 = g.derive(nxt, phase='repair', replaces_attempt_ids=[aid])
-    assert scope2['id'] != scope['id'] and nxt['unknown_cost_authorization_id'] == scope2['id']
-    out = g.tool.execute(copy.deepcopy(nxt))
-    assert out.data['billing'] == 'unknown' and g.paid() == 2
-    counts = autonomy.root_attempt_counts(g.root, g.policy)
-    assert counts['total'] == 2 and counts['repair'] == 1
+    before = {path: path.read_bytes() for path in (g.root/'production_attempts').rglob('*') if path.is_file()}
+    with pytest.raises(autonomy.AutonomyError, match='one original request|attempts.*exhausted|generation limit'):
+        g.derive(nxt)
+    assert g.paid() == 1 and autonomy.root_attempt_counts(g.root, g.policy)['total'] == 1
+    assert all(path.read_bytes() == data for path, data in before.items())
 
 
 def test_refused_original_counts_once_and_caps_do_not_reset(governed):
     g = governed
-    g.prepare(g.inputs); g.activate(caps={'max_total_attempts': 2, 'max_attempts_per_shot': 2, 'max_repair_attempts': 1})
+    g.prepare(g.inputs); g.activate(caps={'max_total_attempts': 2, 'max_attempts_per_shot': 1, 'max_repair_attempts': 0})
     g.derive(g.inputs)
     g.mp.setenv('FAKE_REFUSAL', 'insufficient_credit')
     refused = g.tool.execute(copy.deepcopy(g.inputs))
@@ -257,10 +256,10 @@ def test_refused_original_counts_once_and_caps_do_not_reset(governed):
     g.next_job()
     nxt = g.prepare(g.fresh_inputs('oa2'))
     # A refusal is not a reviewed failure: neither a fresh first pass nor an unevidenced repair is authorized.
-    with pytest.raises(autonomy.AutonomyError, match='corrective reroll'):
+    with pytest.raises(autonomy.AutonomyError, match='one original request|attempts.*exhausted|generation limit'):
         g.derive(copy.deepcopy(nxt))
-    with pytest.raises(Exception, match='terminal_failure_invalid|repair'):
-        g.derive(copy.deepcopy(nxt), phase='repair', replaces_attempt_ids=[first])
+    with pytest.raises(Exception, match='one original request|attempts.*exhausted|generation limit'):
+        g.derive(copy.deepcopy(nxt))
     assert not [s for s in read(g.root/'production_scopes.json')['scopes']
                 if 'derived_from_policy' in s and s['id'] != g.inputs['governance']['scope_id']]
     # Deleting retained scope state cannot reset counters: journals/private rows fail closed.

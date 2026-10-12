@@ -550,6 +550,10 @@ def _reviewed_source(root, path, sha):
     assets=[a for a in contract['assets'] if a.get('path') and _inside(root,a['path'])==path]
     if not assets or any(a.get('sha256')!=sha for a in assets):
         _fail('source_unapproved','exact source bytes require current reviewed project assets')
+    from lib.shot_contract import factory_project
+    if factory_project(root):
+        # One-shot factory: exact alias bytes bind; semantic review is report-only.
+        return contract,marker,assets
     for asset in assets:
         review=asset.get('review',{});predicates=review.get('predicates',[])
         names={p['name'] for p in predicates}

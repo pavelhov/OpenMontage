@@ -240,7 +240,7 @@ def _historical_source_packet(project_dir, shot_id, *, provider="openart_cli", n
         check_native_controls=check_native_controls, historical=True)
 
 
-def _creator_repair_source_packet(project_dir, shot_id, *, native, contract, selected,
+def _original_source_packet(project_dir, shot_id, *, native, contract, selected,
                                  script, scene_plan):
     """Source-only projection; provenance must bind these original snapshots.
     Prospective preparation/dispatch never reads caller-supplied source facts.
@@ -371,7 +371,11 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
     for n, row in enumerate(rows):
         row['occurrence_id'] = f'occ-{n:04d}'
     upstream = []
+    from lib.shot_contract import source_upstream_ids
+    sources = source_upstream_ids(contract, shot, root)
     for expected in shot['upstream']:
+        if expected['shot_id'] not in sources:
+            continue  # factory ordering note: no outgoing frame feeds this prompt
         item = selected[expected['shot_id']]
         upstream.append({'shot_id': expected['shot_id'], 'selection_sha256': digest(item),
                          'review_sha256': review_digest(item['review'])})
@@ -461,11 +465,32 @@ def _compile_historical_provider_prompt(project_dir, shot_id, *, provider, nativ
     the caller separately checks retained contract deltas and exact native proof.
     """
     packet = _historical_source_packet(project_dir, shot_id, provider=provider, native=native)
-    return _compile_provider_packet(packet, provider=provider, model=native.get('model'))
+    return _compile_provider_packet(packet, provider=provider, model=native.get('model'), historical=True)
 
 
-def _compile_provider_packet(packet, *, provider, model=None):
+NO_MUSIC_DIRECTION = 'No background music; keep only the native scene sound.\n'
+
+
+def _no_music_default(packet):
+    """Authored shootable packages without a sound direction ask for no added music."""
+    return (packet['binding'].get('prompt_compiler') == SHOOTABLE_COMPILER
+            and 'sound' not in packet['shot'])
+
+
+def historical_prompt_matches(prompt, canonical):
+    """Frozen originals compiled before or after the no-music default both stay readable."""
+    base = canonical['prompt']
+    # Grok's seal strips the trailing newline before the historical canonical is
+    # returned, so the appended direction is restored on its own exact line.
+    body = base.rstrip('\n\r') + '\n'
+    return prompt in {base, base.rstrip('\n\r'), body + NO_MUSIC_DIRECTION,
+                      (body + NO_MUSIC_DIRECTION).rstrip('\n\r')}
+
+
+def _compile_provider_packet(packet, *, provider, model=None, historical=False):
     compiled = _compile_packet(packet, native_pointer='/arguments/prompt' if provider == 'grok_cli' else ('/params/sceneDescription' if provider == 'openart_mcp' and model == 'smart-shot' else '/params/prompt'))
+    if not historical and _no_music_default(packet):
+        compiled['prompt'] += NO_MUSIC_DIRECTION
     if provider == 'grok_cli':
         from tools._grok_cli_media import validate_prompt
         compiled['prompt'] = validate_prompt(compiled['prompt'])
@@ -658,7 +683,7 @@ def prep_builder(provider):
     raise ValueError('provider outside Auto-continue')
 
 
-def prepare_compiled_request(inputs, native, profile, *, coverage, timing, review=None, creator_repair=None):
+def prepare_compiled_request(inputs, native, profile, *, coverage, timing, review=None):
     """Build the compiled sidecar after a retained preview; never judge semantics.
 
     With no ``review``, return the compiled request as before. With a supplied
@@ -674,8 +699,6 @@ def prepare_compiled_request(inputs, native, profile, *, coverage, timing, revie
     value = {'version': '1.0', 'request_sha256': planned_request_digest(inputs, project_dir=root),
              'source_binding': packet['binding'], 'native_binding': _native_binding(native),
              'coverage': copy.deepcopy(coverage), 'timing': copy.deepcopy(timing)}
-    if creator_repair is not None:
-        value['creator_prompt_override'] = _creator_prompt_override(creator_repair, inputs, native, packet)
     _validate_compiled(value, inputs, native, profile, packet)
     if review is None:
         return value
@@ -730,87 +753,44 @@ def _schema(name, value):
         raise ValueError(f'{name}: invalid {path} ({exc.validator})') from None
 
 
+def _validate_historical_prompt_override(marker, prompt, packet):
+    """Pure reader for a retained historical creator prompt: authenticates the
+    frozen marker against the exact submitted prompt and full source occurrences.
+    It grants no dispatch; fresh overrides are refused above."""
+    if (not isinstance(marker, dict) or set(marker) != {'kind', 'creator_repair', 'prompt_sha256', 'source_occurrences_sha256'}
+            or marker['kind'] != 'creator_exact_prompt' or not isinstance(marker['creator_repair'], dict)
+            or marker['prompt_sha256'] != digest(prompt)
+            or marker['source_occurrences_sha256'] != digest(packet['occurrences'])):
+        raise ValueError('historical creator prompt binding or full source occurrences changed')
+
+
 def _dialogue_rows(packet):
-    """Only declared speech text has a literal coverage obligation in an exact
-    creator prompt override; paraphrased visual directions are never trace spans.
-    Full source facts and semantic review remain independently bound."""
+    """Pure retained-history reader: only declared speech text carried a literal
+    coverage obligation in a historical exact creator prompt. Full source facts
+    remain bound by the authenticated marker; this grants no dispatch."""
     return [row for row in packet['occurrences']
             if '/dialogue/' in row['source_pointer'] and row['source_pointer'].endswith('/text')]
 
 
-def creator_prompt_coverage(packet, prompt, *, native_pointer='/params/prompt'):
-    """Trace ordered, nonoverlapping literal dialogue in a creator-authored prompt.
-    This proves text presence only, never speaker identity or semantic coverage."""
-    if not isinstance(prompt, str) or not prompt.strip():
-        raise ValueError('creator prompt override requires exact nonempty prompt')
+def historical_creator_prompt_coverage(compiled, prompt, packet, *, native_pointer):
+    """Authenticate a retained creator prompt and re-derive its ordered literal
+    dialogue trace. Read-only; fresh overrides stay refused by every writer path."""
+    marker = compiled.get('creator_prompt_override')
+    _validate_historical_prompt_override(marker, prompt, packet)
     coverage, cursor = [], 0
     for row in _dialogue_rows(packet):
         fragment = _literal(row['value'])
         start = prompt.find(fragment, cursor)
         if start < 0:
-            raise ValueError('creator prompt override drops or changes ordered dialogue text')
+            raise ValueError('historical creator prompt drops or changes ordered dialogue text')
         end = start + len(fragment)
         coverage.append({key: row[key] for key in ('occurrence_id', 'source_pointer', 'value_sha256')})
         coverage[-1].update(native_pointer=native_pointer, start=start, end=end,
                             fragment_sha256=digest(fragment))
         cursor = end
+    if compiled['coverage'] != coverage:
+        raise ValueError('historical creator prompt coverage changed')
     return coverage
-
-
-def _creator_prompt_override(binding, inputs, native, packet):
-    body = _body(native)
-    field = 'sceneDescription' if native.get('provider') == 'openart_mcp' and native.get('model') == 'smart-shot' else 'prompt'
-    return {'kind': 'creator_exact_prompt', 'creator_repair': copy.deepcopy(binding),
-            'prompt_sha256': digest(body['params'][field]),
-            'source_occurrences_sha256': digest(packet['occurrences'])}
-
-
-def validate_creator_prompt_override(compiled, inputs, native, packet, *, historical=False):
-    """Reprove the exact existing creator item, never a caller-only prompt waiver.
-
-    Full source/current planning/native/reference/timing checks remain owned by
-    the normal preparation path. This helper only authenticates the alternate
-    prompt and its honest literal dialogue trace; it grants no dispatch or pass.
-    Historical source-only consumers explicitly opt into retained intent replay.
-    """
-    from lib import production_repair_batches as batches
-    marker = compiled.get('creator_prompt_override')
-    if not isinstance(marker, dict):
-        raise ValueError('creator prompt override requires its retained exact binding')
-    provider = native.get('provider', 'openart_cli')
-    root = Path(inputs['project_dir']).resolve()
-    shot_id = inputs['governance']['shot_id']
-    binding = marker.get('creator_repair')
-    item = batches.validate_creator_repair_intent(root, binding, shot_id=shot_id, provider=provider,
-        model=inputs.get('model'), replaces_attempt_ids=batches._prompt_override_sources(root, binding),
-        inputs=inputs, historical=historical)
-    if not historical:
-        from lib import production_draft as draft
-        batch = batches._load(root, binding['batch_id'])
-        if draft.first_cut_status(root, batch['cut'])['status'] != 'current':
-            raise ValueError('creator prompt override requires its unchanged current source cut')
-    if not isinstance(item['inputs'].get('prompt'), str) or inputs.get('prompt') != item['inputs']['prompt']:
-        raise ValueError('creator prompt override differs from exact retained prompt')
-    scope_id = inputs['governance'].get('scope_id')
-    if scope_id is not None:
-        scope = batches._scope(root, scope_id)
-        if (scope.get('repair_basis') != 'creator_batch' or scope.get('creator_repair') != binding
-                or scope.get('phase') != 'repair' or scope.get('provider') != provider
-                or scope.get('replaces_attempt_ids') != [item['source_attempt_id']]):
-            raise ValueError('creator prompt override lacks its exact retained repair scope')
-    expected = _creator_prompt_override(binding, inputs, native, packet)
-    if marker != expected:
-        raise ValueError('creator prompt override binding or full source occurrences changed')
-    body = _body(native)
-    field = 'sceneDescription' if provider == 'openart_mcp' and native.get('model') == 'smart-shot' else 'prompt'
-    prompt = body['params'][field]
-    if prompt != item['inputs']['prompt']:
-        raise ValueError('creator prompt override native prompt differs from retained intent')
-    pointer = '/arguments/prompt' if provider == 'grok_cli' else '/params/' + field
-    expected_coverage = creator_prompt_coverage(packet, prompt, native_pointer=pointer)
-    if compiled['coverage'] != expected_coverage:
-        raise ValueError('creator prompt override coverage must trace only exact ordered dialogue text')
-    return item
 
 
 def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=False):
@@ -846,8 +826,9 @@ def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=
     prompt = body['params'][prompt_field]
     override = compiled.get('creator_prompt_override')
     if override is not None:
-        validate_creator_prompt_override(compiled, inputs, native, packet,
-                                         historical=historical)
+        if not historical:
+            raise ValueError('creator prompt overrides are retired; originals use their authored prompt')
+        _validate_historical_prompt_override(override, prompt, packet)
     rows = _dialogue_rows(packet) if override is not None else packet['occurrences']
     coverage = compiled['coverage']
     if len(rows) != len(coverage):
@@ -1187,7 +1168,8 @@ def freeze_preparation(attempt_id, inputs, native, profile):
     return {'snapshot_id': aid, 'snapshot_sha256': hashlib.sha256(raw).hexdigest(), **proof}
 
 
-def _validate_frozen_preparation(request, frozen, project_dir, *, current_required, original_reviews=False):
+def _validate_frozen_preparation(request, frozen, project_dir, *, current_required, original_reviews=False,
+                                 historical=False):
     """Replay the frozen preparation against current source and frozen native body."""
     from tools import _openart_cli as cli
     proof = request['openart']['preparation_snapshot']
@@ -1222,7 +1204,7 @@ def _validate_frozen_preparation(request, frozen, project_dir, *, current_requir
         if any(current['binding'][key] != packet['binding'][key] for key in stable):
             raise ValueError('stale source/reference/review/upstream bindings')
     validate_preparation_evidence(data['compiled'], data['review'], inputs,
-        frozen['native'], frozen['profile'], packet)
+        frozen['native'], frozen['profile'], packet, historical=historical)
     return proof
 
 
@@ -1238,7 +1220,7 @@ def _validate_frozen_preparation_original(request, frozen, project_dir):
     frozen packet. Separate current eligibility readers validate audio successors.
     """
     return _validate_frozen_preparation(request, frozen, project_dir,
-        current_required=True, original_reviews=True)
+        current_required=True, original_reviews=True, historical=True)
 
 
 def validate_frozen_preparation_history(request, frozen, project_dir):
@@ -1247,7 +1229,7 @@ def validate_frozen_preparation_history(request, frozen, project_dir):
     All named evidence, copied asset bytes, compiled content, native/profile proof,
     timing, coverage and preparation predicates remain required.
     """
-    return _validate_frozen_preparation(request, frozen, project_dir, current_required=False)
+    return _validate_frozen_preparation(request, frozen, project_dir, current_required=False, historical=True)
 
 
 # --- Once-authored package preparation (moved from Studio production_session) ---

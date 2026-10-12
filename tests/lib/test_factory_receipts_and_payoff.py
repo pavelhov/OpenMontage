@@ -13,7 +13,7 @@ from lib.shot_contract import file_sha256, PROJECT_PREDICATES, SHOT_PREDICATES, 
 from tests.lib.test_production_images import board_package, reserve, host_receipt, PNG  # noqa: F401
 from tests.lib.test_production_request import neutral_package  # noqa: F401
 from tests.lib.test_production_package_authoring import packages
-from tests.lib.test_production_factory import correction_factory_fixture, retain_factory_board, file_bytes, write
+from tests.lib.test_production_factory import board_factory_fixture, retain_factory_board, file_bytes, write
 from tests.integration.test_first_pass_workflow import attestation
 from tests.integration.test_openart_mcp_autonomy import lifecycle  # noqa: F401
 
@@ -160,7 +160,6 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
     assert 'host_envelope' not in resumed
 
 
-
 def test_host_helper_openart_structured_return_completes_canonical_original(lifecycle):
     """Actual connector wrapper shape, synthetic callback, canonical original."""
     from lib import production_autonomy as autonomy
@@ -260,35 +259,38 @@ def payoff_fixture(package_fixture, *, ancestor=False):
                       output_path='assets/images/candidates/payoff-ancestor.png')
         full['boards']['image_nodes'].append(parent)
         next(n for n in full['boards']['image_nodes'] if n['slot_id'] == 'payoff')['image_dependencies'] = ['payoff-ancestor']
-    correction_factory_fixture((root, full, bind))
+    board_factory_fixture((root, full, bind))
     retain_factory_board(root, 'start')
     return root
 
 
-def test_ready_first_shot_defers_project_review_for_exact_missing_payoff(neutral_package):
+def test_ready_first_shot_has_no_project_review_gate(neutral_package):
     root = payoff_fixture(neutral_package)
     before = file_bytes(root)
     action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('prepare_board_image', 'payoff')
+    assert action['kind'] not in {'review_planning', 'review_board', 'review_selection'}
     assert file_bytes(root) == before
     contract = execution.load_shot_contract(root)
     assert contract['project_review']['status'] == 'unknown'
     retain_factory_board(root, 'payoff')
-    assert execution.next_production_action(root)['kind'] == 'review_planning'
+    assert execution.next_production_action(root)['kind'] == 'prepare_motion'
 
 
-def test_payoff_prepares_only_existing_ancestor_then_payoff(neutral_package):
+def test_prepared_first_shot_proceeds_while_payoff_dependency_graph_stays_ordered(neutral_package):
     root = payoff_fixture(neutral_package, ancestor=True)
     before = file_bytes(root)
     action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('prepare_board_image', 'payoff-ancestor')
+    assert (action['kind'], action['subject']) == ('prepare_motion', 's1')
+    schedule = boards.board_schedule(root, images=images)
+    assert 'payoff-ancestor' in schedule['ready_images'] and 'payoff' not in schedule['ready_images']
     assert file_bytes(root) == before
     retain_factory_board(root, 'payoff-ancestor')
     action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('prepare_board_image', 'payoff')
+    assert (action['kind'], action['subject']) == ('prepare_motion', 's1')
+    assert 'payoff' in boards.board_schedule(root, images=images)['ready_images']
 
 
-def test_payoff_deferral_collects_pending_original_without_reemission(neutral_package):
+def test_ready_motion_preserves_pending_board_original_without_reemission(neutral_package):
     root = payoff_fixture(neutral_package)
     retain_factory_board(root, 'payoff', predicates={'cast_identity': 'fail'})
     prepared = boards.prepare_image_request(root, 'unrelated', images=images)
@@ -297,7 +299,8 @@ def test_payoff_deferral_collects_pending_original_without_reemission(neutral_pa
     images.begin_native_image(root, call['call_id'])
     before = file_bytes(root); usage = images.image_usage(root)
     result = execution.advance(root)
-    assert (result['action']['kind'], result['action']['subject']) == ('receive_native_image', 'existing-original')
+    assert (result['action']['kind'], result['action']['subject']) == ('prepare_motion', 's1')
+    assert images.image_call_status(root, call['call_id'])['state'] == 'submitted'
     assert 'host_envelope' not in result and file_bytes(root) == before and images.image_usage(root) == usage
 
 
@@ -311,14 +314,14 @@ def test_current_project_review_has_no_global_board_gate(neutral_package, shot_r
     write(root, 'artifacts/shot_contract.json', contract)
     before = file_bytes(root)
     action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('prepare_motion' if shot_review_current else 'review_planning', 's1')
+    assert (action['kind'], action['subject']) == ('prepare_motion', 's1')
     assert file_bytes(root) == before
     assert 'payoff' not in boards.load_board_pack(root)['board_bindings']
     assert 'unrelated' not in boards.load_board_pack(root)['board_bindings']
 
 
 @pytest.mark.parametrize('severity', ['critical', 'cosmetic'])
-def test_failed_project_review_not_deferred_or_changed(neutral_package, severity):
+def test_failed_project_review_does_not_add_factory_gate(neutral_package, severity):
     root = payoff_fixture(neutral_package)
     contract = execution.load_shot_contract(root)
     contract['project_review']['status'] = 'fail'
@@ -327,46 +330,7 @@ def test_failed_project_review_not_deferred_or_changed(neutral_package, severity
     write(root, 'artifacts/shot_contract.json', contract)
     before = file_bytes(root)
     action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('review_planning', 's1')
-    assert file_bytes(root) == before
-
-
-def test_planning_reuses_exact_current_project_verdict(neutral_package):
-    root = payoff_fixture(neutral_package)
-    contract = execution.load_shot_contract(root)
-    retained = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='r1')
-    retained['review_id'] = 'SYNTHETIC-retained-project-observation'
-    contract['project_review'] = retained
-    write(root, 'artifacts/shot_contract.json', contract)
-    action = execution.next_production_action(root)
-    assert action['kind'] == 'review_planning'
-    target = attestation(shot_review_subject(contract, 's1'), SHOT_PREDICATES, revision='r1')
-    result = execution.complete_action(root, action, outcome={'shot_review': target})
-    assert result['action']['kind'] == 'prepare_motion' and 'host_envelope' not in result
-    assert execution.load_shot_contract(root)['project_review'] == retained
-    assert images.image_usage(root)['total'] == 1
-
-
-@pytest.mark.parametrize('damage', ['stale', 'revision', 'unknown', 'failed', 'missing_predicate', 'unknown_predicate'])
-def test_planning_omission_requires_actual_current_passing_project(neutral_package, damage):
-    root = payoff_fixture(neutral_package)
-    retain_factory_board(root, 'payoff')  # No unavailable-payoff ordering ambiguity.
-    contract = execution.load_shot_contract(root)
-    retained = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='r1')
-    if damage == 'stale': retained['subject_sha256'] = '0'*64
-    elif damage == 'revision': retained['story_revision'] = 'other-revision'
-    elif damage == 'unknown': retained['status'] = 'unknown'
-    elif damage == 'failed': retained['status'] = 'fail'
-    elif damage == 'missing_predicate': retained['predicates'].pop()
-    elif damage == 'unknown_predicate': retained['predicates'][0]['status'] = 'unknown'
-    contract['project_review'] = retained
-    write(root, 'artifacts/shot_contract.json', contract)
-    action = execution.next_production_action(root)
-    assert action['kind'] == 'review_planning'
-    target = attestation(shot_review_subject(contract, 's1'), SHOT_PREDICATES, revision='r1')
-    before = file_bytes(root)
-    with pytest.raises(ValueError):
-        execution.complete_action(root, action, outcome={'shot_review': target})
+    assert action['kind'] not in {'review_planning', 'review_board', 'review_selection'}
     assert file_bytes(root) == before
 
 
@@ -377,107 +341,23 @@ def pending_board(root, slot, call_id):
     return images.begin_native_image(root, call['call_id'])
 
 
-def test_second_pending_payoff_keeps_first_original_collection_priority(neutral_package):
+def test_ready_motion_keeps_multiple_pending_board_originals_collectable(neutral_package):
     root = payoff_fixture(neutral_package)
     first = pending_board(root, 'unrelated', 'first-original')
     second = pending_board(root, 'payoff', 'payoff-original')
     before = file_bytes(root); usage = images.image_usage(root)
     action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('receive_native_image', 'first-original')
+    assert (action['kind'], action['subject']) == ('prepare_motion', 's1')
     assert execution.advance(root)['action'] == action
     assert file_bytes(root) == before and images.image_usage(root) == usage
-    observed, _ = observation(root, first, name='first-original')
-    result = execution.complete_action(root, action, outcome={'host_receipt': observed})
-    assert 'host_envelope' not in result
-    next_action = execution.next_production_action(root)
-    assert (next_action['kind'], next_action['subject']) == ('receive_native_image', 'payoff-original')
+    observed, pointer = observation(root, first, name='first-original')
+    images.import_native_image(root, 'first-original', host_receipt=pointer)
+    boards.bind_imported_board(root, 'unrelated', 'first-original', images=images)
+    assert images.image_usage(root)['total'] == usage['total']
+    assert images.image_usage(root)['unresolved_originals'] == ['payoff-original']
+    assert images.image_call_status(root, 'first-original')['state'] == 'imported'
+    assert images.image_call_status(root, 'payoff-original')['state'] == 'submitted'
     assert images._call(images._load(root), 'payoff-original')['submitted_arguments'] == second['arguments']
-
-
-def test_scene_review_only_does_not_prioritize_missing_payoff(neutral_package):
-    root = payoff_fixture(neutral_package)
-    contract = execution.load_shot_contract(root)
-    contract['project_review'] = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='r1')
-    write(root, 'artifacts/shot_contract.json', contract)
-    action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('review_planning', 's1')
-
-
-def test_payoff_missing_current_observation_requests_existing_board_review(neutral_package):
-    root = payoff_fixture(neutral_package)
-    envelope = pending_board(root, 'payoff', 'payoff-original')
-    observed, _ = observation(root, envelope, name='payoff-original')
-    images.import_native_image(root, 'payoff-original', host_receipt=observed)
-    boards.bind_imported_board(root, 'payoff', 'payoff-original', images=images)
-    before = file_bytes(root)
-    action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('review_board', 'payoff')
-    assert file_bytes(root) == before
-
-
-def test_failed_payoff_verdict_remains_failed(neutral_package):
-    root = payoff_fixture(neutral_package)
-    _, failed = retain_factory_board(root, 'payoff', predicates={'cast_identity': 'fail'})
-    before = file_bytes(root); usage = images.image_usage(root)
-    action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('prepare_board_correction', 'payoff')
-    assert action['inputs']['failed_predicates'] == ['cast_identity']
-    assert action['binding']['correction_observation']['review'] == failed
-    assert boards._observation(boards.load_board_pack(root), 'payoff', 'payoff_board')['review'] == failed
-    assert boards._review_blockers(boards.load_board_pack(root), 'payoff', 'payoff_board')
-    with pytest.raises(execution.ProductionGovernanceError, match='board correction requires exact producer changes'):
-        execution.complete_action(root, action, outcome={})
-    assert images.image_usage(root) == usage
-    assert file_bytes(root) == before
-
-
-def test_payoff_correction_uses_its_own_action_after_unrelated_failure(neutral_package):
-    root = payoff_fixture(neutral_package)
-    unrelated_source, unrelated_failed = retain_factory_board(
-        root, 'unrelated', predicates={'cast_identity': 'fail'})
-    payoff_source, payoff_failed = retain_factory_board(
-        root, 'payoff', predicates={'cast_identity': 'fail'})
-    pack = boards.load_board_pack(root)
-    assert list(pack['board_bindings']).index('unrelated') < list(pack['board_bindings']).index('payoff')
-    before = file_bytes(root); usage = images.image_usage(root)
-
-    action = execution.next_production_action(root)
-
-    assert (action['kind'], action['subject']) == ('prepare_board_correction', 'payoff')
-    assert action['inputs']['slot_id'] == 'payoff'
-    assert action['inputs']['source'] == payoff_source
-    assert action['binding']['source'] == payoff_source
-    assert action['binding']['correction_observation']['review'] == payoff_failed
-    assert action['binding']['correction_observation']['review'] != unrelated_failed
-    assert action['inputs']['failed_predicates'] == ['cast_identity']
-    retained = boards.load_board_pack(root)
-    assert boards._observation(retained, 'unrelated')['review'] == unrelated_failed
-    assert boards._observation(retained, 'payoff', 'payoff_board')['review'] == payoff_failed
-    assert boards._review_blockers(retained, 'unrelated', boards._roles(retained, 'unrelated')[0])
-    assert boards._review_blockers(retained, 'payoff', 'payoff_board')
-    assert images.image_usage(root) == usage
-    assert file_bytes(root) == before
-
-
-def test_current_unknown_payoff_progress_preserves_unrelated_project_failure(neutral_package):
-    root = payoff_fixture(neutral_package)
-    _, unknown = retain_factory_board(root, 'payoff', predicates={'cast_identity': 'unknown'})
-    contract = execution.load_shot_contract(root)
-    project = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='r1')
-    project['status'] = 'fail'
-    next(p for p in project['predicates'] if p['name'] == 'late_cast').update(status='fail', severity='critical',
-        evidence='SYNTHETIC separate actual project failure; payoff observation remains unknown')
-    contract['project_review'] = project
-    contract['shots'][0]['review'] = attestation(shot_review_subject(contract, 's1'), SHOT_PREDICATES, revision='r1')
-    write(root, 'artifacts/shot_contract.json', contract)
-    before = file_bytes(root)
-    action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('review_board', 'payoff')
-    assert action['inputs']['required_predicates'] == ['cast_identity']
-    assert action['binding']['observations'][0]['review'] == unknown
-    assert execution.load_shot_contract(root)['project_review'] == project
-    assert not execution.validate_shot_contract(contract, project_dir=root, shot_id='s1')['eligible']
-    assert file_bytes(root) == before and images.image_usage(root)['total'] == 2
 
 
 def test_inline_output_collision_preserves_original_receipt_and_media(board_package):
@@ -541,17 +421,6 @@ def test_inline_supplement_preserves_exact_retained_json_fields(board_package, o
     assert file_bytes(root) == before
 
 
-def test_stale_project_review_defers_only_for_declared_payoff(neutral_package):
-    root = payoff_fixture(neutral_package)
-    contract = execution.load_shot_contract(root)
-    contract['project_review'] = attestation('0'*64, PROJECT_PREDICATES, revision='r1')
-    write(root, 'artifacts/shot_contract.json', contract)
-    before = file_bytes(root)
-    action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('prepare_board_image', 'payoff')
-    assert file_bytes(root) == before
-
-
 def test_independent_motion_stays_ahead_of_unrelated_pending_image(neutral_package):
     root = payoff_fixture(neutral_package)
     retain_factory_board(root, 'payoff', predicates={'cast_identity': 'fail'})
@@ -604,74 +473,68 @@ def reserve_overlap_board(root, slot):
     scope = {'id': 'synthetic-image-' + slot, 'status': 'approved', 'approved_by': 'SYNTHETIC fixture',
         'project_id': json.loads((root / 'project.json').read_text())['project_id'], 'story_revision': 'story-1',
         'phase': 'image', 'provider': 'native_imagegen', 'evidence': {k: approval[k] for k in ('path', 'sha256')},
-        'image_allowance': 1, 'allowed_image_routes': ['native_imagegen'],
+        'image_allowance': 2, 'allowed_image_routes': ['native_imagegen'],
         'requests': {slot: prepared['request_sha256']}, 'attempts_per_shot': {slot: 1}}
     scopes['scopes'].append(scope); write(root, 'production_scopes.json', scopes)
     return boards.reserve_board_image(root, slot, scope_id=scope['id'], call_id='synthetic-' + slot, images=images)
 
 
-def test_accepted_pending_openart_overlaps_one_board_lane_then_refreshes_status(lifecycle):
+def test_accepted_pending_original_and_explicit_board_scopes_keep_counts_and_refresh_status(lifecycle):
     root, jobs = pending_openart_with_boards(lifecycle)
     original = jobs.frozen_request(root, 'accepted-original')
     before = file_bytes(root)
     action = execution.next_production_action(root)
     assert (action['kind'], action['subject']) == ('prepare_board_image', 'future1')
     assert file_bytes(root) == before
-    call = reserve_overlap_board(root, 'future1')
-    step = execution.advance(root)
-    assert step['host_envelope']['call_id'] == call['call_id']
-    assert step['action']['kind'] == 'receive_native_image'
-    assert 'host_envelope' not in execution.advance(root)  # same original; no re-emission
-    step = execution.complete_action(root, step['action'], outcome={
-        'host_receipt': host_receipt(root, step['host_envelope'], name='overlap-original')})
-    assert (step['action']['kind'], step['action']['subject']) == ('review_board', 'future1')
-    source = step['action']['inputs']['source']
-    verdict = attestation(source['sha256'], step['action']['inputs']['required_predicates'], revision='story-1')
-    verdict.update(review_id='synthetic-overlap-review', reviewer='SYNTHETIC persistent reviewer')
-    step = execution.complete_action(root, step['action'], outcome={'review': verdict})
+    for slot in ('future1', 'later1'):
+        call = reserve_overlap_board(root, slot)
+        step = execution.advance(root)
+        assert step['host_envelope']['call_id'] == call['call_id']
+        assert step['action']['kind'] == 'receive_native_image'
+        assert 'host_envelope' not in execution.advance(root)
+        step = execution.complete_action(root, step['action'], outcome={
+            'host_receipt': host_receipt(root, step['host_envelope'], name='overlap-' + slot)})
+        assert step['action']['kind'] not in {'review_selection', 'review_board', 'review_planning'}
+        assert slot in boards.load_board_pack(root)['board_bindings']
+        assert jobs.frozen_request(root, 'accepted-original') == original
+    assert images.image_usage(root)['total'] == 2
     assert step['action']['kind'] == 'poll_openart_original'
-    assert 'later1' in boards.board_schedule(root, images=images)['ready_images']
     assert execution.next_production_action(root)['kind'] == 'poll_openart_original'
-    assert jobs.frozen_request(root, 'accepted-original') == original
-    # Another actual pending observation opens one more board opportunity.
     step = execution.complete_action(root, step['action'], outcome={
         'result': {'historyId': 'actual-synthetic-job', 'status': 'RUNNING'}})
-    assert step.get('host_envelope', {}).get('call_id') is None  # no image standing envelope in this manual-scope fixture
+    assert step.get('host_envelope', {}).get('call_id') is None
     assert jobs.resume_original(root, 'accepted-original')['next_action']['action'] == 'poll_original'
-    assert execution.next_production_action(root)['kind'] == 'prepare_board_image'
+    assert execution.next_production_action(root)['kind'] == 'poll_openart_original'
+    assert jobs.frozen_request(root, 'accepted-original') == original
+    assert len(jobs.list_attempts(root)) == 1 and images.image_usage(root)['total'] == 2
 
 
-def test_unaccepted_or_completed_original_preempts_ready_independent_board(lifecycle):
+def test_unaccepted_original_keeps_board_ready_and_completed_original_downloads(lifecycle):
     root, jobs = pending_openart_with_boards(lifecycle, accepted=False)
-    assert execution.next_production_action(root)['kind'] == 'receive_openart_original'
-    jobs.receive(root, 'accepted-original', outcome={'historyId': 'actual-synthetic-job', 'status': 'PENDING'})
+    original = jobs.frozen_request(root, 'accepted-original')
+    before = file_bytes(root)
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('prepare_board_image', 'future1')
+    assert file_bytes(root) == before
+    assert jobs.frozen_request(root, 'accepted-original') == original
+    recovery = jobs.resume_original(root, 'accepted-original')
+    assert recovery['next_action']['action'] == 'blocked_original_host_reply_unavailable'
+    assert recovery['provider_calls'] == 0 and recovery['reservations'] == 0
+    assert len(jobs.list_attempts(root)) == 1 and images.image_usage(root)['total'] == 0
+    jobs.resume_original(root, 'accepted-original', request_sha256=recovery['request_sha256'],
+        outcome={'historyId': 'actual-synthetic-job', 'status': 'PENDING'})
     jobs.record_status(root, 'accepted-original', result={'historyId': 'actual-synthetic-job', 'status': 'COMPLETED',
         'resources': [{'id': 'actual-synthetic-resource', 'mediaType': 'video', 'status': 'COMPLETED',
                        'url': 'https://fixture.invalid/original.mp4'}]})
     assert execution.next_production_action(root)['kind'] == 'download_openart_original'
+    completed = jobs.frozen_request(root, 'accepted-original')
+    assert completed['status'] == 'completed'
+    assert {k: v for k, v in completed.items() if k != 'status'} == {
+        k: v for k, v in original.items() if k != 'status'}
+    assert len(jobs.list_attempts(root)) == 1 and images.image_usage(root)['total'] == 0
 
 
-def test_board_overlap_never_makes_unselected_upstream_motion_eligible(lifecycle):
-    from lib.shot_contract import validate_shot_contract
-    root, _ = pending_openart_with_boards(lifecycle)
-    contract = execution.load_shot_contract(root)
-    future = copy.deepcopy(contract['shots'][0]); future['id'] = 'future'
-    future['upstream'] = [{'shot_id': 'entry'}]
-    contract['shots'].append(future)
-    contract['project_review'] = attestation(project_review_subject(contract), PROJECT_PREDICATES, revision='story-1')
-    for shot in contract['shots']:
-        shot['review'] = attestation(shot_review_subject(contract, shot['id']), SHOT_PREDICATES, revision='story-1')
-    write(root, 'artifacts/shot_contract.json', contract)
-    before = file_bytes(root)
-    action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('prepare_board_image', 'future1')
-    checked = validate_shot_contract(contract, project_dir=root, shot_id='future',
-        story_revision='story-1', selected_upstream=execution.load_selected_attempts(root))
-    assert not checked['eligible'] and any('upstream' in e for e in checked['errors'])
-    assert execution.load_selected_attempts(root) == {} and file_bytes(root) == before
-
-
-def test_collected_original_selection_review_preempts_independent_board(lifecycle, monkeypatch, tmp_path):
+def test_collected_original_advances_without_selection_review(lifecycle, monkeypatch, tmp_path):
     from tests.integration.test_openart_mcp_governance import install_fake_download
     from tests.integration.test_openart_first_pass_workflow import real_av_clip
     root, jobs = pending_openart_with_boards(lifecycle)
@@ -683,7 +546,7 @@ def test_collected_original_selection_review_preempts_independent_board(lifecycl
     downloaded = jobs.download_original(root, 'accepted-original')
     jobs.collect(root, 'accepted-original', downloaded_path=downloaded['downloaded_path'])
     before = file_bytes(root)
-    assert execution.next_production_action(root)['kind'] == 'review_selection'
+    assert execution.next_production_action(root)['kind'] not in {'review_selection', 'review_board', 'review_planning'}
     assert file_bytes(root) == before
 
 
@@ -706,17 +569,24 @@ def test_pending_poll_does_not_hide_a_later_uncertain_original(lifecycle, monkey
 
 
 @pytest.mark.parametrize('status', [None, 'COMPLETED', 'unrecognized'])
-def test_no_pending_status_evidence_keeps_original_poll_first(lifecycle, status):
+def test_unknown_status_keeps_original_recoverable_while_preparing_declared_board(lifecycle, status):
     root, jobs = pending_openart_with_boards(lifecycle, accepted=False)
     reply = {'historyId': 'actual-synthetic-job'}
     if status is not None:
         reply['status'] = status
     jobs.receive(root, 'accepted-original', outcome=reply)
-    assert execution.next_production_action(root)['kind'] == 'poll_openart_original'
+    original = jobs.frozen_request(root, 'accepted-original')
+    before = file_bytes(root)
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('prepare_board_image', 'future1')
+    assert file_bytes(root) == before and images.image_usage(root)['total'] == 0
+    assert jobs.resume_original(root, 'accepted-original')['next_action']['action'] == 'poll_original'
+    assert jobs.frozen_request(root, 'accepted-original') == original
+
 
 
 @pytest.mark.parametrize('invalid', [None, 'not-a-local-time', '2026-10-12T01:02:03'])
-def test_missing_or_invalid_local_status_order_keeps_original_poll_first(lifecycle, invalid):
+def test_invalid_status_timestamp_does_not_mutate_original_or_block_declared_board(lifecycle, invalid):
     root, jobs = pending_openart_with_boards(lifecycle)
     state = jobs._load(root, 'accepted-original')
     event = next(e for e in state['events'] if e['kind'] == 'submission_receipt_retained')
@@ -725,4 +595,10 @@ def test_missing_or_invalid_local_status_order_keeps_original_poll_first(lifecyc
     else:
         event['observed_at'] = invalid
     jobs._save(root, 'accepted-original', state)
-    assert execution.next_production_action(root)['kind'] == 'poll_openart_original'
+    original = jobs.frozen_request(root, 'accepted-original')
+    before = file_bytes(root)
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('prepare_board_image', 'future1')
+    assert file_bytes(root) == before and images.image_usage(root)['total'] == 0
+    assert jobs.resume_original(root, 'accepted-original')['next_action']['action'] == 'poll_original'
+    assert jobs.frozen_request(root, 'accepted-original') == original

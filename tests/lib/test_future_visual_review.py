@@ -149,7 +149,8 @@ def test_future_firstcut_missing_audio_is_diagnostic(production,monkeypatch):
         return ToolResult(success=True,data={'output':inputs['output_path']})
     record=draft.compose_first_cut(root,compose=compose)
     assert record['status']=='complete',record
-    assert record['audio_missing']==['entry']
+    assert 'audio_missing' not in record and 'audio_required' not in record
+    assert record['audio']=='native_source'
     assert record['technical']['has_audio'] is False
 
 

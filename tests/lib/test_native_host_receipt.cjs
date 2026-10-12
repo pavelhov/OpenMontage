@@ -143,7 +143,7 @@ test('saving and completion interruptions recover retained original without paid
   const options = hostOptions(f, async () => { nativeCalls++; return f.observation.result; }, async () => {
     completionCalls++;
     if (completionCalls === 1) throw new Error('interrupted completion');
-    return {status: 'review_board'};
+    return {status: 'host_action'};
   });
   const rpc = f.tools.mcp__node_repl__js;
   f.tools.mcp__node_repl__js = async request => {
@@ -155,7 +155,7 @@ test('saving and completion interruptions recover retained original without paid
   const original = await fs.readFile(f.receiptPath);
   f.tools.mcp__node_repl__js = rpc;
   await assert.rejects(consumeNativeHostAction(f.tools, step, options), /interrupted completion/);
-  assert.deepEqual(await consumeNativeHostAction(f.tools, step, options), {status: 'review_board', provider_calls: null});
+  assert.deepEqual(await consumeNativeHostAction(f.tools, step, options), {status: 'host_action', provider_calls: null});
   assert.deepEqual(await fs.readFile(f.receiptPath), original);
   assert.equal(nativeCalls, 1); assert.equal(completionCalls, 2);
 });
@@ -208,8 +208,8 @@ test('helper is executable in fresh functions.exec style without Node imports or
   const f = await fixture(t);
   const source = await fs.readFile(path.join(__dirname, '../../scripts/native_host_receipt.js'), 'utf8');
   const helper = new Function(source + '; return consumeNativeHostAction;')();
-  const options = hostOptions(f, async () => f.observation.result, async () => ({status: 'review_board'}));
-  assert.deepEqual(await helper(f.tools, imageStep(f), options), {status: 'review_board', provider_calls: null});
+  const options = hostOptions(f, async () => f.observation.result, async () => ({status: 'host_action'}));
+  assert.deepEqual(await helper(f.tools, imageStep(f), options), {status: 'host_action', provider_calls: null});
 });
 test('failed result retention and host-store loss never replay the emitted invocation', async t => {
   const f = await fixture(t), step = imageStep(f);
@@ -274,7 +274,7 @@ test('saved completion is canonical with empty, truncated or chunked stdout and 
 });
 test('saved completion recovery without a session reads the exact saved step after empty stdout', async t => {
   const f = await fixture(t), completionPath = path.join(f.root, 'completed-step.json');
-  const exactStep = {status: 'review_board', action: {kind: 'review_board', subject: 'same'}};
+  const exactStep = {status: 'host_action', action: {kind: 'prepare_motion', subject: 'same'}};
   await fs.writeFile(completionPath, JSON.stringify(exactStep));
   const rpc = f.tools.mcp__node_repl__js;
   f.tools.mcp__node_repl__js = async request => {
@@ -287,7 +287,7 @@ test('saved completion recovery without a session reads the exact saved step aft
 });
 test('emitted recovery code runs repeatedly in one persistent Node REPL context', async t => {
   const f = await fixture(t), completionPath = path.join(f.root, 'completed-step.json');
-  const exactStep = {status: 'review_board', action: {kind: 'review_board', subject: 'same'}};
+  const exactStep = {status: 'host_action', action: {kind: 'prepare_motion', subject: 'same'}};
   await fs.writeFile(completionPath, JSON.stringify(exactStep));
   let captured;
   const server = repl.start({input: new PassThrough(), output: new PassThrough(), terminal: false, prompt: ''});
