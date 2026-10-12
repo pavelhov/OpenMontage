@@ -645,8 +645,8 @@ def reconcile_standing_checkpoint_stages(project_dir, *, expected_policy_sha256)
         raise StandingSetupRequired('checkpoint reconciliation cannot be validated: ' + str(exc)) from exc
 
 
-def _source_batch_changes(previous, candidate):
-    """Only positive max_batches increases; every other setup term stays exact."""
+def _standing_allowance_changes(previous, candidate, *, source_only=False):
+    """Only source batch/total attempt increases; every other term stays exact."""
     if not isinstance(previous, dict) or not isinstance(candidate, dict):
         raise StandingSetupRequired('source batch amendment requires complete standing setups')
     before = copy.deepcopy(previous); after = copy.deepcopy(candidate)
@@ -665,89 +665,139 @@ def _source_batch_changes(previous, candidate):
             changes.append({'provider': old['provider'], 'account': old['account'],
                 'before': old_limit, 'after': new_limit})
         new['max_batches'] = old_limit
+    if not source_only:
+        old_caps, new_caps = before.get('caps'), after.get('caps')
+        if not isinstance(old_caps, dict) or not isinstance(new_caps, dict):
+            raise StandingSetupRequired('standing allowance requires complete retained caps')
+        old_limit, new_limit = old_caps.get('max_total_attempts'), new_caps.get('max_total_attempts')
+        if type(old_limit) is not int or type(new_limit) is not int or new_limit < old_limit or new_limit < 1:
+            raise StandingSetupRequired('standing allowance requires positive nondecreasing max_total_attempts')
+        if new_limit != old_limit:
+            changes.append({'field': 'caps.max_total_attempts', 'before': old_limit, 'after': new_limit})
+        new_caps['max_total_attempts'] = old_limit
     if before != after or not changes:
-        raise StandingSetupRequired('source batch amendment changes only max_batches; no caps, sources, rights or protections')
+        allowed = 'max_batches' if source_only else 'max_batches and max_total_attempts'
+        raise StandingSetupRequired('standing allowance changes only ' + allowed + '; no other caps, sources, rights or protections')
     return changes
 
 
-def effective_standing_setup(root, policy):
-    """Read authenticated max_batches successors without replacing activation bytes.
+def _source_batch_changes(previous, candidate):
+    """Retained source-only records/public diagnostics preserve their exact delta."""
+    return _standing_allowance_changes(previous, candidate, source_only=True)
 
-    The original run command, plan, image envelope, generation caps and all
-    existing scopes keep their original authority. All source admission uses
-    this same cumulative allowance; original collection never needs a new scope.
-    """
+
+def _standing_setup_state(root, policy):
+    """One authenticated chain, including unchanged retained source-only history."""
     root = Path(root)
     basis = policy['activation_basis']
     binding = basis['standing_setup']
     setup = _bound_document(root, binding, 'standing setup')
     path = root / 'production_scopes.json'
-    records = _json(path).get('source_batch_amendments', []) if path.exists() else []
-    if not isinstance(records, list):
-        raise StandingSetupRequired('invalid source batch amendments')
-    if not records:
-        return setup
+    data = _json(path) if path.exists() else {}
+    legacy = data.get('source_batch_amendments', [])
+    records = data.get('standing_allowance_amendments', [])
+    if not isinstance(legacy, list) or not isinstance(records, list):
+        raise StandingSetupRequired('invalid standing allowance amendments')
+    retained_records = []
+    if not legacy and not records:
+        return setup, binding, retained_records
     sha = policy_sha256(policy, retained_baselines(root, policy))
-    for retained in records:
-        record = _bound_document(root, retained, 'source batch amendment')
+    for index, retained in enumerate([*legacy, *records]):
+        record = _bound_document(root, retained, 'standing allowance amendment')
+        source_only = record.get('kind') == 'standing_source_max_batches_amendment'
         if (set(record) != {'version', 'kind', 'policy_sha256', 'predecessor_setup', 'standing_setup', 'changes'}
-                or record['version'] != '1.0' or record['kind'] != 'standing_source_max_batches_amendment'
+                or record['version'] != '1.0'
+                or record['kind'] not in {'standing_source_max_batches_amendment', 'standing_allowance_amendment'}
+                or index < len(legacy) and not source_only
                 or record['policy_sha256'] != sha or record['predecessor_setup'] != binding):
-            raise StandingSetupRequired('source batch amendment predecessor differs from current activation/setup')
-        candidate = _bound_document(root, record['standing_setup'], 'source batch successor setup')
+            raise StandingSetupRequired('standing allowance predecessor differs from current activation/setup')
+        candidate = _bound_document(root, record['standing_setup'], 'standing allowance successor setup')
         _bound_authorization(root, candidate, basis['identity_id'])
-        if _source_batch_changes(setup, candidate) != record['changes']:
-            raise StandingSetupRequired('source batch amendment differs from exact creator setup')
+        if _standing_allowance_changes(setup, candidate, source_only=source_only) != record['changes']:
+            raise StandingSetupRequired('standing allowance differs from exact creator setup')
+        retained_records.append((retained, record))
         setup, binding = candidate, record['standing_setup']
-    return setup
+    return setup, binding, retained_records
+
+
+def effective_standing_setup(root, policy):
+    """Current authenticated allowance; original activation and job bytes stay frozen."""
+    return _standing_setup_state(root, policy)[0]
+
+
+def effective_standing_caps(root, policy):
+    """Only an activated total-cap successor expands the policy's motion ceiling."""
+    caps = copy.deepcopy(policy['caps'])
+    if policy.get('activation_basis'):
+        for _, record in _standing_setup_state(root, policy)[2]:
+            for change in record['changes']:
+                if change.get('field') == 'caps.max_total_attempts':
+                    caps['max_total_attempts'] = change['after']
+    return caps
 
 
 def amend_standing_source_max_batches(project_dir, *, expected_policy_sha256,
                                      expected_setup_sha256, standing_setup):
-    """Append one creator-authenticated max_batches-only standing setup successor.
+    """Compatibility entry for already retained source-only producer references."""
+    return _amend_standing_allowance(project_dir, expected_policy_sha256=expected_policy_sha256,
+        expected_setup_sha256=expected_setup_sha256, standing_setup=standing_setup, source_only=True)
 
-    Can run after generation/selection. Does not rewrite submitted shots,
-    activation, old setup, image envelope, scopes, originals or cumulative usage.
-    Exact replay after further progress is read-only; stale predecessors fail.
+
+def amend_standing_allowance(project_dir, *, expected_policy_sha256,
+                             expected_setup_sha256, standing_setup):
+    """Append exact creator-approved source batch and/or total-attempt increases.
+
+    No other caps, account/route/rights/source/plan/control changes are admitted.
+    Original activation, scopes, envelopes, jobs, selections and counts remain
+    frozen. Merely preparing approval never activates an allowance. Exact replay
+    after progress is read-only; stale or revoked authority fails closed.
     """
+    return _amend_standing_allowance(project_dir, expected_policy_sha256=expected_policy_sha256,
+        expected_setup_sha256=expected_setup_sha256, standing_setup=standing_setup, source_only=False)
+
+
+def _amend_standing_allowance(project_dir, *, expected_policy_sha256,
+                              expected_setup_sha256, standing_setup, source_only):
     from lib import production_execution as execution, production_images as images
     root = Path(project_dir).resolve()
     with execution._lock(root):
         policy, sha, _ = require_active_policy(root)
         if sha != expected_policy_sha256 or not policy.get('activation_basis'):
-            raise StandingSetupRequired('source batch amendment requires exact active predecessor policy SHA')
-        setup = effective_standing_setup(root, policy)
+            raise StandingSetupRequired('standing allowance requires exact active predecessor policy SHA')
+        setup, predecessor, records = _standing_setup_state(root, policy)
         path = root / 'production_scopes.json'
         data = _json(path) if path.exists() else {'version': '1.0', 'scopes': []}
         if data.get('version') != '1.0' or not isinstance(data.get('scopes'), list):
             raise StandingSetupRequired('invalid production scopes record')
-        records = data.get('source_batch_amendments', [])
-        predecessor = policy['activation_basis']['standing_setup']
         if records:
-            latest = _bound_document(root, records[-1], 'source batch amendment')
+            latest_binding, latest = records[-1]
             if (latest['standing_setup'] == standing_setup
                     and latest['predecessor_setup']['sha256'] == expected_setup_sha256):
-                return {'amendment': copy.deepcopy(records[-1]), 'policy_sha256': sha,
+                if source_only and any(c.get('field') == 'caps.max_total_attempts' for c in latest['changes']):
+                    raise StandingSetupRequired('source batch amendment changes only max_batches')
+                return {'amendment': copy.deepcopy(latest_binding), 'policy_sha256': sha,
                     'standing_setup': copy.deepcopy(standing_setup), 'changes': latest['changes'],
                     'replayed': True, 'provider_calls': 0}
-            predecessor = latest['standing_setup']
         if predecessor['sha256'] != expected_setup_sha256:
-            raise StandingSetupRequired('source batch amendment predecessor setup SHA is stale')
-        candidate = _bound_document(root, standing_setup, 'source batch successor setup')
+            raise StandingSetupRequired('standing allowance predecessor setup SHA is stale')
+        candidate = _bound_document(root, standing_setup, 'standing allowance successor setup')
         _bound_authorization(root, candidate, policy['activation_basis']['identity_id'])
-        changes = _source_batch_changes(setup, candidate)
-        record = {'version': '1.0', 'kind': 'standing_source_max_batches_amendment',
+        changes = _standing_allowance_changes(setup, candidate, source_only=source_only)
+        record = {'version': '1.0', 'kind': ('standing_source_max_batches_amendment' if source_only else 'standing_allowance_amendment'),
             'policy_sha256': sha, 'predecessor_setup': copy.deepcopy(predecessor),
             'standing_setup': copy.deepcopy(standing_setup), 'changes': changes}
-        record_path = root / ('approvals/source-max-batches-' + digest(record) + '.json')
+        prefix = 'source-max-batches-' if source_only else 'standing-allowance-'
+        record_path = root / ('approvals/' + prefix + digest(record) + '.json')
         payload = json.dumps(record, indent=2, allow_nan=False).encode()
         if record_path.exists():
             if record_path.read_bytes() != payload:
-                raise StandingSetupRequired('retained source batch amendment changed')
+                raise StandingSetupRequired('retained standing allowance changed')
         else:
             execution._write_new(record_path, record)
         binding = {'path': str(record_path.relative_to(root)), 'sha256': hashlib.sha256(payload).hexdigest()}
-        data.setdefault('source_batch_amendments', []).append(binding)
+        key = ('source_batch_amendments' if source_only and not data.get('standing_allowance_amendments')
+               else 'standing_allowance_amendments')
+        data.setdefault(key, []).append(binding)
         images._write_image_scopes(root, data)
         return {'amendment': binding, 'policy_sha256': sha, 'standing_setup': copy.deepcopy(standing_setup),
             'changes': changes, 'replayed': False, 'provider_calls': 0}
@@ -1996,8 +2046,8 @@ def attempt_counts(attempts, *, outbox_attempt_ids=(), open_scope_attempts=()):
             'unmapped_outbox': unknown}
 
 
-def check_caps(policy, shot_id, counts, phase):
-    caps = policy['caps']
+def check_caps(policy, shot_id, counts, phase, *, root=None):
+    caps = effective_standing_caps(root, policy) if root is not None else policy['caps']
     if counts['unmapped_outbox']:
         raise AutonomyError('caps: unmapped outbox attempt (fail closed)')
     if counts['total'] + 1 > caps['max_total_attempts']:
@@ -2372,7 +2422,7 @@ def validate_derived_scope(root, scope, *, inputs, observation=None):
     elif phase == 'repair':
         _validate_repair_evidence(root, material['shot_id'], scope.get('replaces_attempt_ids'))
     counts = root_attempt_counts(root, policy, exclude_scope_id=scope['id'])
-    check_caps(policy, material['shot_id'], counts, phase)
+    check_caps(policy, material['shot_id'], counts, phase, root=root)
     expected = _scope_record(policy, sha, decision_id, derivation_index=index, phase=phase,
                              replaces_attempt_ids=scope.get('replaces_attempt_ids'), repair_basis=basis, creator_repair=scope.get('creator_repair'), **material)
     if expected != scope:
@@ -2615,7 +2665,7 @@ def derive_scope(root, inputs, *, provider, observation=None, phase='first_pass'
         if repair_basis not in ('critical_review', 'access_fallback', 'creator_batch'):
             raise AutonomyError('unknown repair basis')
         _controls_admission(root, shot_id, provider, inputs, phase, replaces_attempt_ids, repair_basis, creator_repair)
-        check_caps(policy, shot_id, root_attempt_counts(root, policy), phase)
+        check_caps(policy, shot_id, root_attempt_counts(root, policy), phase, root=root)
         index = sum('derived_from_policy' in s for s in scopes)
         if phase == 'repair' and repair_basis == 'access_fallback':
             _validate_access_fallback(root, shot_id, replaces_attempt_ids, provider, inputs.get('model'))
@@ -3123,7 +3173,7 @@ def _append_route_decisions_locked(root, policy, sha, decision_id, shot_id, prov
                 'Chosen eligible exact approved route ' + citation)]
     if provider == 'openart_mcp':
         counts = root_attempt_counts(root, policy)
-        caps = policy['caps']
+        caps = effective_standing_caps(root, policy)
         remaining = {'total': caps['max_total_attempts'] - counts['total'] - 1,
                      'per_shot': caps['max_attempts_per_shot'] - counts['per_shot'].get(shot_id, 0) - 1,
                      'repair': caps['max_repair_attempts'] - counts['repair'] - int(phase == 'repair')}

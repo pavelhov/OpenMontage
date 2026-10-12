@@ -94,13 +94,13 @@ requests or bypass failed reviews. Missing image/source-transfer allowance remai
 a separate authority blocker, even when unrelated motion already completed.
 
 For a creator-authorized increase of an existing standing source-transfer batch
-limit, retain the complete successor setup with its actual creator-message
+limit or cumulative video-attempt limit, retain the complete successor setup with its actual creator-message
 authorization, then use the existing autonomy owner:
 
 ```python
 from lib import production_autonomy as autonomy
 
-receipt = autonomy.amend_standing_source_max_batches(
+receipt = autonomy.amend_standing_allowance(
     project_root,
     expected_policy_sha256=current_policy_sha256,
     expected_setup_sha256=current_effective_setup_sha256,
@@ -109,11 +109,17 @@ receipt = autonomy.amend_standing_source_max_batches(
 )
 ```
 
-This operation changes only declared `source_transfer.max_batches` limits. It
+This operation changes only declared `source_transfer.max_batches` and/or
+`caps.max_total_attempts` limits, and only increases them. It
 preserves the original activation, policy, image envelope, request scopes and
 cumulative usage. It cannot change sources, routes, accounts, billing, file/byte
-limits or media allowances. Resume the same action loop after the validated
+limits, per-shot or repair allowances, or episode controls. Resume the same action loop after the validated
 successor; do not overwrite the original setup or reactivate the episode.
+Proposed setup values do not take effect before this authenticated transition.
+For a terminal access failure, any already-authorized fallback is enabled through
+the existing episode-controls owner; an allowance amendment does not enable it.
+Preserve the failed attempt in the count and collect uncertain originals before
+replacement. A provider's exhausted balance cannot be repaired by resetting counts.
 
 For `review_board` with named missing or unknown predicates, inspect those gaps
 and return a complete scoped successor verdict carrying `retained_predicates`
