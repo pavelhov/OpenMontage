@@ -558,16 +558,7 @@ def _native_binding(native):
     if native.get('provider') == 'openart_mcp':
         from lib.openart_mcp import validate_native_request
         validate_native_request(native)
-        return {'provider': 'openart_mcp', 'transport': native['transport'],
-                'native_controls_sha256': digest(native['body']['params']),
-                'native_body_sha256': native['body_sha256'],
-                'profile_sha256': native['profile_sha256'],
-                'form_sha256': native['form_sha256'],
-                'schema_observation_sha256': native['schema_observation_sha256'],
-                'account_id_sha256': native['account_binding']['uid_sha256'],
-                'account_observation_sha256': native['account_binding']['account_observation_sha256'],
-                'references_sha256': native['source_binding_sha256'],
-                'model': native['model'], 'mode': native['mode'], 'source': native['source']}
+        return _validated_mcp_native_binding(native)
     if native.get('provider') == 'grok_cli':
         return copy.deepcopy(native)
     value = {key: native[key] for key in ('native_controls_sha256', 'native_argv_sha256', 'native_body_sha256',
@@ -575,6 +566,20 @@ def _native_binding(native):
     if 'native_capabilities_sha256' in native:
         value['native_capabilities_sha256'] = native['native_capabilities_sha256']
     return value
+
+
+def _validated_mcp_native_binding(native):
+    """Pure binding projection after a fresh native rebuild in this boundary."""
+    return {'provider': 'openart_mcp', 'transport': native['transport'],
+            'native_controls_sha256': digest(native['body']['params']),
+            'native_body_sha256': native['body_sha256'],
+            'profile_sha256': native['profile_sha256'],
+            'form_sha256': native['form_sha256'],
+            'schema_observation_sha256': native['schema_observation_sha256'],
+            'account_id_sha256': native['account_binding']['uid_sha256'],
+            'account_observation_sha256': native['account_binding']['account_observation_sha256'],
+            'references_sha256': native['source_binding_sha256'],
+            'model': native['model'], 'mode': native['mode'], 'source': native['source']}
 
 
 def mcp_native_settings(native):
@@ -858,7 +863,10 @@ def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=
         raise ValueError('stale source/reference/review/upstream bindings')
     if compiled['request_sha256'] != planned_request_digest(inputs, project_dir=inputs['project_dir']):
         raise ValueError('compiled request changed')
-    if digest(compiled['native_binding']) != digest(_native_binding(native)):
+    # MCP was freshly rebuilt and compared above. Project that same validated
+    # result; other binding callers still own their full native revalidation.
+    binding = _validated_mcp_native_binding(actual_native) if mcp else _native_binding(native)
+    if digest(compiled['native_binding']) != digest(binding):
         raise ValueError('stale native body/controls/version/tier/form/defaults')
     body = _body(native)
     prompt_field = 'sceneDescription' if mcp and native['model'] == 'smart-shot' else 'prompt'

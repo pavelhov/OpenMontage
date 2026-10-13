@@ -140,6 +140,41 @@ def test_wan3_generated_audio_is_not_reference_audio(fixture_observations, tmp_p
     assert 'native_argv_sha256' not in preparation._native_binding(native)
 
 
+def test_compiled_mcp_validation_rebuilds_current_request_once(fixture_observations, tmp_path, monkeypatch):
+    inputs, native = prepare_project(tmp_path / 'single-rebuild')
+    root = Path(inputs['project_dir'])
+    compiled = json.loads((root / 'artifacts/compiled_request-original.json').read_text())
+    profile = mcp.load_profile(inputs['model'], inputs['mode'], require='candidate')
+    packet = preparation.source_packet(root, 'entry', provider='openart_mcp', native=native)
+    from unittest.mock import Mock
+    rebuild = Mock(wraps=mcp.prepare_native_request)
+    monkeypatch.setattr(mcp, 'prepare_native_request', rebuild)
+    preparation._validate_compiled(compiled, inputs, native, profile, packet)
+    assert rebuild.call_count == 1
+
+
+@pytest.mark.parametrize('change', ['native_body', 'compiled_binding'])
+def test_compiled_mcp_validation_still_rejects_changed_bindings(fixture_observations, tmp_path, change):
+    inputs, native = prepare_project(tmp_path / change)
+    root = Path(inputs['project_dir'])
+    compiled = json.loads((root / 'artifacts/compiled_request-original.json').read_text())
+    profile = mcp.load_profile(inputs['model'], inputs['mode'], require='candidate')
+    packet = preparation.source_packet(root, 'entry', provider='openart_mcp', native=native)
+    if change == 'native_body':
+        native['body']['params']['prompt'] += ' changed'
+    else:
+        compiled['native_binding']['native_body_sha256'] = '0' * 64
+    with pytest.raises(ValueError, match='stale native body/controls/version/tier/form/defaults'):
+        preparation._validate_compiled(compiled, inputs, native, profile, packet)
+
+
+def test_standalone_native_binding_rechecks_retained_mcp_request(fixture_observations, tmp_path):
+    _, native = prepare_project(tmp_path / 'standalone-binding')
+    native['body']['params']['prompt'] += ' changed'
+    with pytest.raises(mcp.OpenArtMCPError, match='native_request_changed'):
+        preparation._native_binding(native)
+
+
 @pytest.mark.parametrize('matching', [True, False])
 def test_strict_scope_can_bind_exact_per_request_billing_for_a_batch(fixture_observations, tmp_path, matching):
     inputs, _ = prepare_project(tmp_path / 'batch')
