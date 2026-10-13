@@ -4,9 +4,12 @@ on:
   pull_request:
     branches:
       - main
+      - development
   push:
     branches:
       - main
+      - development
+      - "codex/**"
 
 permissions:
   contents: read
