@@ -664,13 +664,14 @@ def describe_video_inputs(provider, model=None, mode=None, operation=None):
                        'required': list(dict.fromkeys(a.get('required', []) + b.get('required', [])))}
                 return out
             branches = []
-            fields = {'start_frame': 'startFrame', 'end_frame': 'endFrame', 'reference_image': 'visualReferences'}
+            fields = {'start_frame': 'first_frame', 'end_frame': 'last_frame', 'reference_image': 'reference_image'}
             for schema in alternatives(root):
                 props = schema.get('properties', {})
                 roles = {name: role() for name in result['roles']}
-                for name, field in fields.items():
+                for name, provider_role in fields.items():
+                    field = mcp.ROLES[provider_role][0]
                     spec = props.get(field)
-                    cap = profile['native_capabilities']['roles'].get({'start_frame':'first_frame', 'end_frame':'last_frame'}.get(name, name), {})
+                    cap = profile['native_capabilities']['roles'].get(provider_role, {})
                     supported = spec is not None and cap.get('supported') is True
                     spec = spec if isinstance(spec, dict) else {}
                     required = field in schema.get('required', []) and not mcp._validator(spec).is_valid(None)
