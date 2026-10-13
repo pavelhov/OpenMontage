@@ -728,7 +728,9 @@ class TestAgentContextFiles:
         assert "first-cut draft inclusion/acceptance does not relax this gate" in text
         assert "one-shot factory" in text
         assert "recover only the same original job" in text
-        assert "factory has no correction, replacement, route fallback or review-approval loop" in text
+        assert "factory has no correction, replacement, route fallback for video or review-approval loop" in text
+        assert "native images permit only the creator-bound content-policy exception" in text
+        assert "access and unknown failures never authorize fallback" in text
         assert "historical projects keep their recorded authority" in text
         assert "cleanup does not migrate them or authorize new generation" in text
         assert "cosmetic" in contents.lower()
