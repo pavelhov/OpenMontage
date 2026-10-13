@@ -14,11 +14,37 @@ may share prepared boundary-photo bytes when that is what the plan declares; thi
 does not make an unsupported native frame pin available. Unsupported required
 controls block the affected slot before dispatch.
 
-There are no corrective takes, creative revisions, route fallbacks, board
-corrections or extra image generations in this factory. Do not add another producer,
+There are no corrective takes, creative revisions, video route fallbacks or board
+corrections in this factory. The sole image exception is the creator-authorized
+native content-policy fallback described below. Do not add another producer,
 controller, timer, daemon or approval loop. Use the existing producer and current
 project pointers. A new creator-command episode starts through the identity's
 existing `make video` entry; a resume continues that same project's current state.
+
+## Native images and the policy exception
+
+Use native image generation first. An explicit content-policy refusal may use
+one OpenArt image for that same board, prompt and references when the current
+creator command retains `image_policy_fallback` and the standing OpenArt account,
+source permissions and remaining image allowance cover it. Access errors, 403s,
+timeouts, lost replies and unknown failures do not qualify. Both the denied native
+call and fallback count; never retry the fallback or change the scene to obtain
+another attempt. This is an exception in the existing image journal, not an
+alternate production workflow.
+
+`prepare_policy_fallback_image` validates the refusal and returns either the exact
+generation envelope or the missing reference uploads. Transfer only missing files
+through `derive_standing_upload_authority` and the existing OpenArt upload receipt
+helpers with `policy_fallback_call_id`; reuse valid receipts for already uploaded
+sources. Keep the original `generate_image` return with `import_native_image`.
+For an asynchronous result, retain the actual status of that same `historyId`
+and collect its downloaded image through `record_openart_image_collection`.
+Resume the existing producer to promote the board and prepare its video. Never
+rewrite a pending generation return as a completed return.
+
+Retain model forms once in the authorized command; native-success runs need no
+extra fallback discovery or approval. The ordinary path remains native boards,
+one original video per clip, then assembly and factual issue disclosure.
 
 ## Original jobs and delivery
 

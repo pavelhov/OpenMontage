@@ -626,10 +626,13 @@ def prepare_upload(project_dir, *, files, billing_declaration, openart_project_i
         for supplied in files:
             path=_inside(root,supplied)
             if not path.is_file() or Path(supplied).is_symlink(): _fail('source_invalid','regular approved source file required')
-            sha=_sha(path); _approved_source(root,path,sha)
+            sha=_sha(path)
             manifest.append({'path':str(path),'sha256':sha,'type':_media_type(path)})
         if len({r['path'] for r in manifest})!=len(manifest): _fail('source_invalid','duplicate upload source paths are ambiguous')
         authority,authority_sha=_upload_authority(root,manifest,billing_declaration,account,openart_project_id)
+        if not authority.get('derived_from_standing_run', {}).get('policy_fallback'):
+            for row in manifest:
+                _approved_source(root,Path(row['path']),row['sha256'])
         directory=_private_dir(root/'openart_mcp'/'uploads')
         for retained in directory.glob('*.json'):
             if _read(retained).get('authorization_sha256')==authority_sha: _fail('upload_consumed','approved upload batch already consumed; never silently retry')
@@ -657,7 +660,7 @@ def record_upload_receipt(project_dir, *, upload_id, result):
         if retained['frozen_sha256']!=mcp.digest(frozen) or retained['result'] is not None: _fail('upload_receipt_invalid','original upload evidence changed or already retained')
         account=mcp.account_summary()
         if account['uid_sha256']!=frozen['account']['uid_sha256']: _fail('account_changed','upload receipt belongs to a different current account')
-        _, current_authority_sha = _upload_authority(root,frozen['manifest'],frozen['billing_declaration'],account,frozen['project_id'])
+        authority, current_authority_sha = _upload_authority(root,frozen['manifest'],frozen['billing_declaration'],account,frozen['project_id'])
         if current_authority_sha != frozen['authorization_sha256']:
             _fail('upload_authority_invalid', 'source-transfer authority changed after original upload')
         if not isinstance(result,dict) or not isinstance(result.get('projectId'),str) or not result['projectId'] or (frozen['project_id'] is not None and result['projectId']!=frozen['project_id']):
@@ -670,7 +673,8 @@ def record_upload_receipt(project_dir, *, upload_id, result):
                 _fail('source_changed','private approved upload snapshot changed')
             file=Path(source['path'])
             if _sha(file)!=source['sha256']: _fail('source_changed','uploaded source bytes changed')
-            _approved_source(root,file,source['sha256'])
+            if not authority.get('derived_from_standing_run', {}).get('policy_fallback'):
+                _approved_source(root,file,source['sha256'])
             ref=row.get('visualReference',{}) if isinstance(row,dict) else {}
             if row.get('status')!='SUCCESS' or not isinstance(row.get('fileId'),str) or not row['fileId'] or row['fileId'] in file_ids:
                 _fail('upload_receipt_invalid','all ordered original upload results must succeed with unique actual file IDs')
@@ -692,13 +696,27 @@ def record_upload_receipt(project_dir, *, upload_id, result):
         return {'upload_id':uid,'status':'recorded','project_id':result['projectId'],
             'references':[{'upload_id':r['visual_reference']['id'],'reference_id':r['visual_reference']['id'],'receipt_sha256':r['receipt_sha256'],'source_sha256':r['source_sha256'],'source_path':r['source_path'],'type':r['visual_reference']['type']} for r in receipts]}
 
-def resolve_input_asset(project_dir, asset, *, account_binding, openart_project_id=None):
+def resolve_input_asset(project_dir, asset, *, account_binding, openart_project_id=None,
+                        policy_fallback_call_id=None):
     root=_root(project_dir);path=_inside(root,asset['source_path']);sha=_sha(path)
     if asset.get('source_sha256',sha)!=sha:_fail('source_changed','caller source hash differs from actual bytes')
     # The original upload proved transfer eligibility. Native rebuilds recheck
     # current source reviews/bytes and immutable receipts; target-shot eligibility
     # belongs to governed preparation, including historical source-packet replay.
-    _reviewed_source(root,path,sha)
+    if policy_fallback_call_id is None:
+        _reviewed_source(root,path,sha)
+    else:
+        from lib import production_autonomy as autonomy, production_images as images, production_boards as boards
+        try:
+            call=images._call(images._load(root),policy_fallback_call_id)
+            shot=boards.load_board_pack(root)['prompt_pack'][call['slot_id']]['shot_id']
+            _, expected, _=autonomy._standing_upload_material(root,shot_id=shot,provider='openart_mcp',
+                files=[str(path)],account=account_binding,
+                openart_project_id=openart_project_id,policy_fallback_call_id=policy_fallback_call_id)
+            if not any(row['path']==str(path) and row['sha256']==sha for row in expected['files']):
+                _fail('source_unapproved','fallback source differs from the exact denied-call references')
+        except (ValueError,OSError,KeyError,TypeError) as exc:
+            _fail('source_unapproved','current denied-call source-transfer authority invalid: '+str(exc))
     identifier=asset.get('upload_id',asset.get('reference_id'));matches=[]
     store=_state_root(create=False)/'mcp-uploads'
     if store.exists():
@@ -725,9 +743,15 @@ def resolve_input_asset(project_dir, asset, *, account_binding, openart_project_
             or batch['result']['projectId']!=r['project_id']
             or frozen['authorization_sha256']!=r['authorization_sha256']):
         _fail('upload_receipt_invalid','reference differs from the immutable original ordered upload batch')
-    _,authsha=_upload_authority(root,frozen['manifest'],frozen['billing_declaration'],account_binding,frozen['project_id'])
+    authority,authsha=_upload_authority(root,frozen['manifest'],frozen['billing_declaration'],account_binding,frozen['project_id'])
     if authsha!=frozen['authorization_sha256']:
         _fail('upload_authority_invalid','original source-transfer authority changed')
+    if policy_fallback_call_id is not None:
+        original_refs=authority.get('derived_from_standing_run',{}).get('source_binding',{}).get('references',[])
+        needed=expected['derived_from_standing_run']['source_binding']['references'][0]
+        if not any(ref.get('role')==needed['role'] and ref.get('sha256')==sha
+                   and ref.get('path') is not None and _inside(root,ref['path'])==path for ref in original_refs):
+            _fail('upload_authority_invalid','reference receipt does not retain the same exact source role')
     return {'source_path':str(path),'source_sha256':sha,'upload_id':ref['id'],'reference_id':ref['id'],
         'reference_type':ref['type'],'receipt_sha256':r['receipt_sha256'],'visual_reference':copy.deepcopy(ref),
         'upload_project_id':r['project_id'],'upload_authorization_sha256':r['authorization_sha256']}

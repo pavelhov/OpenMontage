@@ -40,10 +40,16 @@
           "minLength": 1
         },
         "route": {
-          "const": "native_imagegen"
+          "enum": [
+            "native_imagegen",
+            "openart_mcp"
+          ]
         },
         "tool_name": {
-          "const": "image_gen.imagegen"
+          "enum": [
+            "image_gen.imagegen",
+            "mcp__codex_apps__openart_openart_generate_image"
+          ]
         },
         "state": {
           "enum": [
@@ -87,7 +93,14 @@
           "$ref": "#/$defs/arguments"
         },
         "submitted_arguments": {
-          "$ref": "#/$defs/arguments"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/arguments"
+            },
+            {
+              "$ref": "#/$defs/openart_image_arguments"
+            }
+          ]
         },
         "output_path": {
           "type": "string",
@@ -110,7 +123,8 @@
                   "imported",
                   "failed",
                   "host_exception",
-                  "supplemental_tool_return"
+                  "supplemental_tool_return",
+                  "collection_status"
                 ]
               },
               "observed_at": {
@@ -212,7 +226,10 @@
               "const": "agent_recorded_host_return"
             },
             "tool_name": {
-              "const": "image_gen.imagegen"
+              "enum": [
+                "image_gen.imagegen",
+                "mcp__codex_apps__openart_openart_generate_image"
+              ]
             },
             "arguments_sha256": {
               "type": "string",
@@ -269,7 +286,8 @@
                 "kind": {
                   "enum": [
                     "data_uri",
-                    "local_artifact"
+                    "local_artifact",
+                    "openart_collection"
                   ]
                 },
                 "field": {
@@ -320,6 +338,89 @@
             "sha256",
             "kind",
             "arguments_sha256"
+          ]
+        },
+        "collection": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "status_receipt": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              },
+              "required": [
+                "path",
+                "sha256"
+              ]
+            },
+            "history_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "resource_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "url": {
+              "type": "string",
+              "minLength": 1
+            },
+            "download_path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "download_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "status_tool_call_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "status_receipt",
+            "history_id"
+          ]
+        },
+        "replaces_policy_denial": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "call_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+            },
+            "receipt_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "form_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "upload_receipt_sha256s": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          },
+          "required": [
+            "call_id",
+            "receipt_sha256",
+            "form_sha256",
+            "upload_receipt_sha256s"
           ]
         },
         "replaces_host_exception": {
@@ -615,6 +716,44 @@
         "board_slots",
         "prepared_at",
         "packet_sha256"
+      ]
+    },
+    "openart_image_arguments": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mode": {
+          "enum": [
+            "text2image",
+            "image2image"
+          ]
+        },
+        "projectId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "params": {
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "prompt"
+          ]
+        }
+      },
+      "required": [
+        "model",
+        "mode",
+        "projectId",
+        "params"
       ]
     },
     "arguments": {

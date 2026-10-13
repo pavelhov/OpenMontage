@@ -137,7 +137,9 @@ are honest blockers. Prepare alternatives but execute only those already approve
 and eligible; otherwise obtain the missing exact approval. In generic pipelines, a
 terminal missing result permits an alternate only when the current manifest and
 retained authority explicitly allow it; never substitute for usable footage. The
-one-shot factory has no route fallback and recovers only the same original job.
+one-shot factory has no video route fallback and recovers only the same original
+job. Its only image exception is an explicitly authorized native content-policy
+fallback under [production-factory.md](docs/production-factory.md).
 
 ## Orchestrator
 
@@ -203,7 +205,10 @@ dispatch, recover only the same original job after interruption, then use the
 existing `deliver_standalone` delivery path. Preserve account, source, route, transfer and
 attempt limits. Assemble every playable original, report defects, and keep evidence
 and certification distinct. The factory has no correction, replacement, route
-fallback or review-approval loop, and adds no timer or orchestration service.
+fallback for video or review-approval loop, and adds no timer or orchestration
+service. Native images permit only the creator-bound content-policy exception in
+[production-factory.md](docs/production-factory.md); access and unknown failures
+never authorize fallback.
 
 Generic manifest pipelines retain their own review and approval requirements.
 Historical projects keep their recorded authority; source-only readers may collect

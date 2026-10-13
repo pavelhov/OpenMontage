@@ -2761,6 +2761,14 @@ def _native_original_action(root, call):
     inputs = {'call_id': call['call_id'], 'original_request_sha256': call['request_sha256'],
               'supplemental_to': (call.get('host_receipt') or {}).get('sha256')}
     reason = 'Retrieve and retain the exact original host return; the begun call is never emitted again.'
+    if call.get('route') == 'openart_mcp' and call['state'] == 'returned' and call.get('host_receipt'):
+        from lib import production_images as images
+        pending = _read(images._bound_file(root, call['host_receipt'], 'retained generate_image return')).get('result') or {}
+        if pending.get('status') in {'PENDING', 'RUNNING'} and isinstance(pending.get('historyId'), str):
+            reason = ('OpenArt policy-fallback image is ' + pending['status'] + '; poll creation_get/creation_wait on this '
+                      'same historyId, download its one image and call record_openart_image_collection. Never generate again.')
+            inputs.update(action='collect_openart_image', history_id=pending['historyId'],
+                          collection_helper='production_images.record_openart_image_collection', reason=reason)
     if unavailable:
         reason = 'Consumed native image raised a host exception without a retained reply; retrieve its exact original return and replay receive. Never begin again.'
         inputs.update(action='blocked_original_host_reply_unavailable', slot_id=call['slot_id'],

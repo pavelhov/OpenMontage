@@ -347,6 +347,44 @@ def _validate_standing_basis(root, policy, baselines, *, check_first_pass_capaci
         raise StandingSetupRequired('standing setup cannot be validated: ' + str(exc)) from exc
 
 
+IMAGE_POLICY_FALLBACK = 'image_policy_fallback'
+
+
+def _image_policy_fallback_term(term):
+    """Shape of the optional creator-bound, run-local OpenArt image exception.
+
+    ``forms`` retains the exact current ``openart_model_form_get`` jsonSchema per
+    admitted mode (text2image for text boards, image2image for reference boards);
+    the creator's command digest binds them. ``params`` are extra form fields the
+    producer chose; prompt and visualReferences always come from the native call.
+    """
+    forms = term.get('forms') if isinstance(term, dict) else None
+    params = term.get('params', {}) if isinstance(term, dict) else None
+    return (isinstance(term, dict) and set(term) - {'params'} == {'provider', 'model', 'forms'}
+            and term['provider'] == 'openart_mcp'
+            and isinstance(term['model'], str) and bool(term['model'].strip())
+            and isinstance(forms, dict) and bool(forms) and set(forms) <= {'text2image', 'image2image'}
+            and all(isinstance(f, dict) and f.get('type') == 'object' for f in forms.values())
+            and isinstance(params, dict) and not {'prompt', 'visualReferences'} & set(params))
+
+
+def standing_image_policy_fallback(root):
+    """``(term, openart_mcp spec)`` from the active run's exact command, else None."""
+    policy, _, _ = require_active_policy(root)
+    basis = policy.get('activation_basis') or {}
+    if not basis.get('run_command'):
+        return None
+    command = _bound_document(root, basis['run_command'], 'run command')
+    term = command.get(IMAGE_POLICY_FALLBACK)
+    if term is None:
+        return None
+    _bound_authorization(root, command, basis.get('identity_id'))
+    spec = _provider_spec(policy, 'openart_mcp')
+    if not _image_policy_fallback_term(term) or not spec:
+        raise StandingSetupRequired('image policy fallback needs its exact term and the standing OpenArt MCP account')
+    return copy.deepcopy(term), copy.deepcopy(spec)
+
+
 def _validate_standing_basis_impl(root, policy, baselines, *, check_first_pass_capacity=True):
     """Validate declared actual message provenance and containment, never invent it."""
     basis = policy.get('activation_basis', {})
@@ -361,8 +399,9 @@ def _validate_standing_basis_impl(root, policy, baselines, *, check_first_pass_c
             or setup.get('version') != '1.0' or setup.get('enabled') is not True
             or setup.get('identity_id') != identity):
         raise StandingSetupRequired('complete enabled one-time identity setup required')
-    if (not isinstance(command, dict) or set(command) != {'version', 'identity_id', 'project_id',
+    if (not isinstance(command, dict) or set(command) - {IMAGE_POLICY_FALLBACK} != {'version', 'identity_id', 'project_id',
             'story_revision', 'command', 'standing_setup_sha256', 'authorization'}
+            or IMAGE_POLICY_FALLBACK in command and not _image_policy_fallback_term(command[IMAGE_POLICY_FALLBACK])
             or command.get('version') != '1.0' or command.get('identity_id') != identity
             or command.get('command') != 'make_video'
             or command.get('standing_setup_sha256') != basis['standing_setup']['sha256']
@@ -1030,7 +1069,77 @@ def _validate_standing_transfer(root, policy, inputs, provider, *, exclude_scope
         raise StandingSetupRequired('retained source transfer batch allowance exhausted')
 
 
-def _standing_upload_material(root, *, shot_id, provider, files, account, openart_project_id=None):
+def _policy_fallback_sources(root, policy, call_id, files, *, shot_id):
+    """Exact denied board-call references under the standing OpenArt MCP transfer term."""
+    from lib import production_images as images, production_boards as boards
+    standing = standing_image_policy_fallback(root)
+    if standing is None:
+        raise StandingSetupRequired('this run command grants no OpenArt image policy fallback')
+    if 'image2image' not in standing[0]['forms']:
+        raise StandingSetupRequired('reference transfer needs the run image2image fallback term')
+    call = images._call(images._load(root), call_id)
+    pack = boards.load_board_pack(root)
+    if pack['prompt_pack'].get(call['slot_id'], {}).get('shot_id') != shot_id:
+        raise StandingSetupRequired('denied board slot differs from the upload consumer shot')
+    images._validate_packet(root, call['packet'])
+    scope = images._scope(root, call['scope_id'])
+    if (digest(scope) != call['scope_sha256'] or not scope.get('derived_from_image_envelope')
+            or scope.get('requests', {}).get(call['slot_id']) != call['request_sha256']
+            or images.image_request_digest(call['packet'], call['slot_id'], call['host_arguments'],
+                output_path=call['output_path']) != call['request_sha256']):
+        raise StandingSetupRequired('denied native request differs from its exact approved source scope')
+    images._validate_derived_image_scope(root, scope, call['packet'], call['slot_id'],
+        call['host_arguments'], call['output_path'])
+    submitted = copy.deepcopy(call['host_arguments'])
+    if submitted.get('referenced_image_paths'):
+        submitted['referenced_image_paths'] = []
+        for ref in call['packet']['references']:
+            snapshot = Path(root) / 'production_images' / call_id / 'inputs' / (ref['sha256'] + Path(ref['path']).suffix)
+            images._bound_file(root, {'path': str(snapshot), 'sha256': ref['sha256']}, 'native source snapshot')
+            submitted['referenced_image_paths'].append(str(snapshot))
+    if submitted != call.get('submitted_arguments') or call['tool_name'] != images.NATIVE_TOOL:
+        raise StandingSetupRequired('denied native invocation differs from its retained source snapshots')
+    receipt_sha = images._policy_denial(root, call)
+    if receipt_sha is None:
+        raise StandingSetupRequired('source transfer needs an explicit native content-policy denial')
+    evidence = call.get('host_receipt') or call['host_exception']
+    observation = images._read(images._bound_file(root, evidence, 'native policy denial'))
+    if (observation.get('tool_name') != images.NATIVE_TOOL or observation.get('arguments') != submitted
+            or call.get('host_exception') and observation.get('call_id') != call_id):
+        raise StandingSetupRequired('native policy denial differs from the original invocation')
+    setup = effective_standing_setup(root, policy)
+    account = setup['provider_accounts'].get('openart_mcp')
+    term = next((t for t in setup['source_transfer'] if t['provider'] == 'openart_mcp' and t['account'] == account), None)
+    if term is None:
+        raise StandingSetupRequired('standing OpenArt MCP source transfer term required')
+    supplied = [str(_inside(root, f)) for f in files]
+    references = [r for r in call['packet']['references'] if str(_inside(root, r['path'])) in supplied]
+    if (len(set(supplied)) != len(supplied)
+            or [str(_inside(root, r['path'])) for r in references] != supplied):
+        raise StandingSetupRequired('upload sources must be an exact unique ordered subset of denied-call references')
+    total = 0
+    retained = images._image_envelope(root, images._read(Path(root) / 'production_scopes.json'))
+    inventory = {ref['id']: ref for ref in retained['definition']['source_inventory']}
+    for ref in references:
+        path = _inside(root, ref['path'])
+        size = path.stat().st_size
+        if (ref['role'] not in term['roles'] or hashlib.sha256(path.read_bytes()).hexdigest() != ref['sha256']
+                or size > term['max_file_bytes']):
+            raise StandingSetupRequired('denied-call reference lies outside the retained transfer term')
+        if ref['sha256'] not in setup['approved_source_sha256']:
+            # The derived-scope validator above proves the exact same-envelope
+            # imported producer bytes for dynamic sources; static inventory is
+            # never admitted merely because it has a transferable role.
+            if not term['generated_board_sources'] or not inventory[ref['id']].get('source_slot_id'):
+                raise StandingSetupRequired('denied-call source is outside approved original/generated board permission')
+        total += size
+    if len(references) > term['max_files'] or total > term['max_batch_bytes']:
+        raise StandingSetupRequired('denied-call references exceed retained transfer limits')
+    return references, {'call_id': call_id, 'receipt_sha256': receipt_sha}
+
+
+def _standing_upload_material(root, *, shot_id, provider, files, account, openart_project_id=None,
+                              policy_fallback_call_id=None):
     """Pure existing-format source-transfer authority from the real standing run."""
     import mimetypes
     from lib import production_execution as execution, production_request as preparation
@@ -1038,6 +1147,8 @@ def _standing_upload_material(root, *, shot_id, provider, files, account, openar
     if not policy.get('activation_basis') or provider not in {'openart_cli', 'openart_mcp'}:
         raise StandingSetupRequired('standing OpenArt source transfer authority required')
     spec = _provider_spec(policy, provider)
+    if spec is None:
+        raise StandingSetupRequired('upload provider has no standing account authority')
     if provider == 'openart_cli':
         expected_account = {'account_id_sha256': spec['account_id_sha256'], 'workspace': spec['workspace']}
         if account != expected_account or openart_project_id is not None:
@@ -1048,16 +1159,27 @@ def _standing_upload_material(root, *, shot_id, provider, files, account, openar
     if (not isinstance(files, list) or not files or any(not isinstance(p, str) for p in files)
             or provider == 'openart_cli' and len(files) != 1):
         raise StandingSetupRequired('exact supported ordered source files required')
-    packet = preparation.source_packet(root, shot_id, provider=provider, check_native_controls=False)
-    consumer_assets = {a['id']: a for a in execution.load_shot_contract(root)['assets']}
+    fallback = None
+    if policy_fallback_call_id is not None:
+        if provider != 'openart_mcp':
+            raise StandingSetupRequired('image policy fallback transfers only through OpenArt MCP')
+        references, fallback = _policy_fallback_sources(root, policy, policy_fallback_call_id, files, shot_id=shot_id)
+        packet = {'binding': {'references': copy.deepcopy(references)}}
+    else:
+        packet = preparation.source_packet(root, shot_id, provider=provider, check_native_controls=False)
+        consumer_assets = {a['id']: a for a in execution.load_shot_contract(root)['assets']}
     manifest, assets = [], []
     for supplied in files:
         path = _inside(root, supplied)
         if Path(supplied).is_symlink() or not path.is_file():
             raise StandingSetupRequired('upload requires regular current consumer source bytes')
         source_sha = hashlib.sha256(path.read_bytes()).hexdigest()
-        matches = [a for a in packet['binding']['references'] if consumer_assets[a['id']].get('path')
-            and _inside(root, consumer_assets[a['id']]['path']) == path and a['sha256'] == source_sha]
+        if fallback:
+            matches = [a for a in packet['binding']['references']
+                       if _inside(root, a['path']) == path and a['sha256'] == source_sha]
+        else:
+            matches = [a for a in packet['binding']['references'] if consumer_assets[a['id']].get('path')
+                and _inside(root, consumer_assets[a['id']]['path']) == path and a['sha256'] == source_sha]
         if not matches:
             raise StandingSetupRequired('upload source is outside exact reviewed consumer binding')
         media_type = (mimetypes.guess_type(str(path))[0] or '').split('/')[0]
@@ -1066,11 +1188,14 @@ def _standing_upload_material(root, *, shot_id, provider, files, account, openar
         manifest.append({'path': str(path), 'sha256': source_sha, 'type': media_type}); assets.append(matches[0])
     if len({r['path'] for r in manifest}) != len(manifest):
         raise StandingSetupRequired('upload source paths must be unique')
-    _validate_standing_transfer(root, policy, {'governance': {'shot_id': shot_id},
-        'reference_image_paths': [r['path'] for r in manifest]}, provider)
+    if not fallback:
+        _validate_standing_transfer(root, policy, {'governance': {'shot_id': shot_id},
+            'reference_image_paths': [r['path'] for r in manifest]}, provider)
     binding = {'policy_sha256': sha, 'decision_id': decision_id, 'shot_id': shot_id,
         'source_binding': packet['binding'], 'account': account, 'files': manifest,
         'openart_project_id': openart_project_id}
+    if fallback:
+        binding['policy_fallback'] = fallback
     upload_id = 'standing-' + digest(binding)[:32]
     approved_by = 'standing_media_authority:' + decision_id
     if provider == 'openart_cli':
@@ -1089,13 +1214,15 @@ def _standing_upload_material(root, *, shot_id, provider, files, account, openar
     return policy, record, name
 
 
-def derive_standing_upload_authority(project_dir, *, shot_id, provider, files, account, openart_project_id=None):
+def derive_standing_upload_authority(project_dir, *, shot_id, provider, files, account, openart_project_id=None,
+                                     policy_fallback_call_id=None):
     """Retain exact legacy-format upload authority; no upload/account discovery call."""
     from lib import production_execution as execution
     root = Path(project_dir).resolve()
     with execution._lock(root):
         policy, record, name = _standing_upload_material(root, shot_id=shot_id, provider=provider,
-            files=files, account=account, openart_project_id=openart_project_id)
+            files=files, account=account, openart_project_id=openart_project_id,
+            policy_fallback_call_id=policy_fallback_call_id)
         path = root / 'artifacts' / name
         if path.exists():
             if _json(path) != record:
@@ -1116,7 +1243,8 @@ def derive_standing_upload_authority(project_dir, *, shot_id, provider, files, a
 def validate_standing_mcp_upload(root, authority, *, files, account, openart_project_id):
     binding = authority.get('derived_from_standing_run', {})
     _, expected, _ = _standing_upload_material(Path(root).resolve(), shot_id=binding['shot_id'], provider='openart_mcp',
-        files=[r['path'] for r in files], account=binding['account'], openart_project_id=openart_project_id)
+        files=[r['path'] for r in files], account=binding['account'], openart_project_id=openart_project_id,
+        policy_fallback_call_id=(binding.get('policy_fallback') or {}).get('call_id'))
     if authority != expected or account.get('uid_sha256') != authority['account_uid_sha256'] or files != authority['files']:
         raise StandingSetupRequired('current upload account/source/run authority differs')
 

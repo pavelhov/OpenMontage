@@ -445,7 +445,7 @@ def _standing_native_transfer(root, retained, packet, *, exclude_call_id=None):
         raise StandingSetupRequired('native transfer exceeds approved batch limit')
     counted = {r['call_id'] for r in image_usage(root)['occurrences'] if r['counted']}
     source_calls = [r for r in _load(root)['calls'] if r['call_id'] in counted
-        and r['call_id'] != exclude_call_id and r['packet'].get('references')]
+        and r['call_id'] != exclude_call_id and r['route'] == NATIVE_ROUTE and r['packet'].get('references')]
     if packet['references'] and len(source_calls) >= term['max_batches']:
         raise StandingSetupRequired('native source batch allowance exhausted')
 
@@ -600,7 +600,7 @@ def image_usage(project_dir):
     occurrences = {}
     for call in _load(root)['calls']:
         occurrences[call['call_id']] = {'call_id':call['call_id'],'slot_id':call['slot_id'],
-            'route':NATIVE_ROUTE,'scope_id':call['scope_id'],'allowance_scope_id':call['scope_id'],
+            'route':call['route'],'scope_id':call['scope_id'],'allowance_scope_id':call['scope_id'],
             'state':call['state'],'counted':call['state'] != 'never_submitted'}
     for path in sorted((root/'production_attempts').glob('*/request.json')):
         request = _read(path)
@@ -859,6 +859,160 @@ def record_native_image_host_exception(project_dir, call_id, *, host_exception):
         return copy.deepcopy(call)
 
 
+OPENART_IMAGE_TOOL = 'mcp__codex_apps__openart_openart_generate_image'
+# Positive refusal phrases only; infrastructure wording never qualifies.
+_POLICY_DENIAL = ('content_policy_violation', 'content policy violation', 'violates our content policy',
+                  'violated our content policy', 'did not follow our content policy',
+                  'does not comply with our content policy', 'rejected by our content policy',
+                  'blocked by our content policy', 'rejected by the safety system', 'rejected by our safety system')
+_NOT_POLICY = ('403', 'forbidden', 'timeout', 'timed out', 'unavailable', 'access denied')
+
+
+def _refusal_text(value):
+    """Only the actual error/refusal fields: code, error, message, type and tool
+    text blocks. Echoed arguments, prompts and metadata never qualify."""
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return [value]
+        return _refusal_text(parsed) if isinstance(parsed, dict) else [value]
+    if not isinstance(value, dict):
+        return []
+    texts = []
+    for key in ('code', 'error', 'message', 'type'):
+        field = value.get(key)
+        if isinstance(field, (str, dict)):
+            texts += _refusal_text(field)
+    content = value.get('content')
+    if isinstance(content, str):
+        texts += _refusal_text(content)
+    elif isinstance(content, list):
+        for b in content:
+            if isinstance(b, dict) and b.get('type') == 'text' and isinstance(b.get('text'), str):
+                texts += _refusal_text(b['text'])
+    return texts
+
+
+def _policy_denial(root, call):
+    """Retained receipt sha only for an explicit native content-policy refusal.
+
+    Reads the original's retained isError return or raised host exception.
+    Access/403/timeout/unavailable/unknown failures never qualify.
+    """
+    if call['route'] != NATIVE_ROUTE or call.get('output'):
+        return None
+    if call['state'] == 'failed' and call.get('host_receipt'):
+        evidence = call['host_receipt']
+        texts = _refusal_text(_read(_bound_file(root, evidence, 'retained host return')).get('result'))
+    elif call['state'] == 'uncertain' and call.get('host_exception') and not call.get('host_receipt'):
+        evidence = call['host_exception']
+        texts = _refusal_text(_read(_bound_file(root, evidence, 'retained host exception')).get('exception'))
+    else:
+        return None
+    text = '\n'.join(texts).lower()
+    if not any(term in text for term in _POLICY_DENIAL) or any(term in text for term in _NOT_POLICY):
+        return None
+    return evidence['sha256']
+
+
+def prepare_policy_fallback_image(project_dir, call_id, *, account):
+    """One OpenArt image envelope for a native explicit content-policy denial.
+
+    Requires this run command's explicit ``image_policy_fallback`` term (model
+    plus its retained current forms), the standing OpenArt MCP account/project,
+    the same native prompt and remaining episode image allowance. Reference
+    boards use image2image with the same source files, transferred through the
+    existing standing upload authority and receipts: until each source has one
+    retained receipt this returns ``upload_required`` and records nothing. The
+    denied original stays retained and counted; the replacement counts once and
+    imports through import_native_image.
+    """
+    from lib import production_autonomy as autonomy, production_boards as boards
+    from lib import openart_mcp as mcp, openart_mcp_jobs as jobs
+    root, marker = _root(project_dir)
+    with _ex()._lock(root):
+        standing = autonomy.standing_image_policy_fallback(root)
+        if standing is None:
+            raise ValueError('this run command grants no OpenArt image policy fallback')
+        term, spec = standing
+        if not isinstance(account, dict) or account.get('uid_sha256') != spec['uid_sha256']:
+            raise ValueError('OpenArt account differs from the standing setup')
+        value = _load(root); original = _call(value, call_id)
+        if any((c.get('replaces_policy_denial') or {}).get('call_id') == call_id for c in value['calls']):
+            raise ValueError('policy-denied image already has its one fallback')
+        receipt_sha = _policy_denial(root, original)
+        if receipt_sha is None:
+            raise ValueError('only an explicit native content-policy denial admits the OpenArt image fallback')
+        # The denied original must still be the current exact request.
+        _validate_packet(root, original['packet'])
+        scope = _scope(root, original['scope_id'])
+        if (digest(scope) != original['scope_sha256']
+                or original['slot_id'] not in boards.load_board_pack(root)['prompt_pack']
+                or image_request_digest(original['packet'], original['slot_id'], original['host_arguments'],
+                    output_path=original['output_path']) != original['request_sha256']
+                or original['submitted_arguments'].get('prompt') != original['host_arguments'].get('prompt')):
+            raise ValueError('policy-denied original no longer matches its retained current request')
+        limit = scope.get('image_allowance')
+        used = image_usage(root)['total']
+        if type(limit) is not int or used >= limit:
+            raise ValueError('approved episode image allowance exhausted')
+        sources = [str(_ex()._inside(p, root)) for p in original['host_arguments'].get('referenced_image_paths', [])]
+        mode = 'image2image' if sources else 'text2image'
+        form = term['forms'].get(mode)
+        if form is None:
+            raise ValueError('run fallback term retains no current OpenArt ' + mode + ' form')
+        params = {**copy.deepcopy(term.get('params', {})), 'prompt': original['host_arguments']['prompt']}
+        # The user approved just that one image: never a multi-image request.
+        if params.get('imageCount', 1) != 1:
+            raise ValueError('policy fallback generates exactly one image (imageCount 1)')
+        if 'imageCount' in form.get('properties', {}):
+            params['imageCount'] = 1
+        receipts = []
+        if sources:
+            refs, missing = [], []
+            for source in sources:
+                try:
+                    bound = jobs.resolve_input_asset(root, {'source_path': source},
+                        account_binding={'uid_sha256': spec['uid_sha256']}, openart_project_id=spec['project_id'],
+                        policy_fallback_call_id=call_id)
+                except mcp.OpenArtMCPError as exc:
+                    if exc.kind != 'upload_reference_unavailable':
+                        raise ValueError('reference source transfer invalid: ' + exc.message) from exc
+                    missing.append(source); continue
+                # Only the bound reference identity; auxiliary thumbnails stay on the receipt.
+                refs.append(mcp._project_reference({k: bound['visual_reference'][k] for k in
+                    ('type', 'id', 'url', 'label') if k in bound['visual_reference']},
+                    form['properties']['visualReferences']['items']))
+                receipts.append(bound['receipt_sha256'])
+            if missing:
+                return {'upload_required': {'shot_id': boards.load_board_pack(root)['prompt_pack'][original['slot_id']]['shot_id'],
+                    'provider': 'openart_mcp', 'files': missing, 'account': {'uid_sha256': spec['uid_sha256']},
+                    'openart_project_id': spec['project_id'], 'policy_fallback_call_id': call_id}, 'provider_calls': 0}
+            params['visualReferences'] = refs
+        errors = list(mcp._validator(form).iter_errors(params))
+        if errors:
+            raise ValueError('fallback params violate the retained current form: ' + errors[0].message)
+        arguments = {'model': term['model'], 'mode': mode, 'projectId': spec['project_id'], 'params': params}
+        call = {'call_id': 'openart-' + uuid.uuid4().hex, 'slot_id': original['slot_id'],
+            'route': 'openart_mcp', 'tool_name': OPENART_IMAGE_TOOL, 'state': 'submitted',
+            'project_id': marker['project_id'], 'story_revision': marker['story_revision'],
+            **{k: copy.deepcopy(original[k]) for k in ('scope_id', 'scope_sha256', 'scope_attempt_index',
+                'request_sha256', 'packet', 'host_arguments')},
+            # Distinct file: a late authentic original keeps its own bytes.
+            'output_path': str(Path(original['output_path']).with_name(
+                Path(original['output_path']).stem + '-policy-fallback' + Path(original['output_path']).suffix)),
+            'submitted_arguments': arguments,
+            'replaces_policy_denial': {'call_id': call_id, 'receipt_sha256': receipt_sha,
+                'form_sha256': digest(form), 'upload_receipt_sha256s': receipts},
+            'events': []}
+        _event(call, 'reserved', used=used, limit=limit)
+        _event(call, 'submitted', arguments_sha256=digest(arguments))
+        value['calls'].append(call); _write(root, value)
+        return {'call_id': call['call_id'], 'tool_name': OPENART_IMAGE_TOOL,
+                'arguments': copy.deepcopy(arguments), 'arguments_sha256': digest(arguments)}
+
+
 def release_unsubmitted_image(project_dir, call_id, *, reason):
     """Close only a reservation whose canonical host envelope was never emitted.
 
@@ -944,7 +1098,7 @@ def import_native_image(project_dir, call_id, *, host_receipt, supplemental_to=N
     with _ex()._lock(root):
         value = _load(root); call = _call(value,call_id)
         if ('submitted_arguments' not in call
-                or receipt.get('tool_name') != NATIVE_TOOL
+                or receipt.get('tool_name') != call['tool_name']
                 or canonical_json(receipt.get('arguments')) != canonical_json(call['submitted_arguments'])):
             raise ValueError('host return tool or exact submitted arguments differ')
         if inline:
@@ -1019,7 +1173,7 @@ def import_native_image(project_dir, call_id, *, host_receipt, supplemental_to=N
                 raise ValueError('retained original host return differs')
             if not preserved_receipt.exists(): preserved_receipt.write_bytes(raw); preserved_receipt.chmod(0o444)
             call['host_receipt'] = {'path':str(preserved_receipt.relative_to(root)),'sha256':host_receipt['sha256']}
-            call['provenance'] = {'kind':'agent_recorded_host_return','tool_name':NATIVE_TOOL,
+            call['provenance'] = {'kind':'agent_recorded_host_return','tool_name':call['tool_name'],
                 'arguments_sha256':digest(call['submitted_arguments']), 'receipt_sha256':host_receipt['sha256']}
             if receipt.get('tool_call_id'):
                 call['provenance']['host_tool_call_id'] = receipt['tool_call_id']
@@ -1031,6 +1185,11 @@ def import_native_image(project_dir, call_id, *, host_receipt, supplemental_to=N
             call['state'] = 'failed'
             call['error'] = detail if isinstance(detail,str) else json.dumps(detail,ensure_ascii=False)
             _event(call,'failed',error=call['error']); _write(root,value)
+            return copy.deepcopy(call)
+        if call['route'] == 'openart_mcp' and isinstance(result,dict) and isinstance(result.get('historyId'),str) \
+                and result['historyId'].strip() and result.get('status') in {'PENDING','RUNNING'}:
+            # Asynchronous creation: stays counted and returned until the same
+            # historyId is collected by record_openart_image_collection.
             return copy.deepcopy(call)
         try:
             original,source,media_type = _original_image(result)
@@ -1052,4 +1211,111 @@ def import_native_image(project_dir, call_id, *, host_receipt, supplemental_to=N
         call['output'] = {'path':str(target.relative_to(root)),'preserved_path':str(preserved.relative_to(root)),
             'sha256':sha,'media_type':media_type,'source':source}
         call['state'] = 'imported'; _event(call,'imported',output_sha256=sha); _write(root,value)
+        return copy.deepcopy(call)
+
+
+OPENART_STATUS_TOOLS = ('mcp__codex_apps__openart_openart_creation_get', 'mcp__codex_apps__openart_openart_creation_wait')
+
+
+def record_openart_image_collection(project_dir, call_id, *, status_receipt, download=None):
+    """Import a policy fallback's bytes from the SAME original OpenArt history.
+
+    status_receipt is the actual observed {tool_name, arguments, result,
+    optional tool_call_id} of creation_get/creation_wait for the original
+    generate_image historyId; download is {path, sha256, resource_id, url} for
+    the file fetched from that terminal resource. The original generate_image
+    receipt stays the call's host_receipt; nothing is regenerated.
+    """
+    root,_ = _root(project_dir)
+    if (not isinstance(status_receipt,dict) or not {'tool_name','arguments','result'} <= set(status_receipt)
+            or set(status_receipt) - {'tool_name','arguments','result','tool_call_id'}
+            or status_receipt['tool_name'] not in OPENART_STATUS_TOOLS):
+        raise ValueError('collection requires the actual OpenArt creation status receipt')
+    if download is not None and (not isinstance(download,dict) or set(download) != {'path','sha256','resource_id','url'}):
+        raise ValueError('collection requires an exact download receipt')
+    raw = json.dumps(status_receipt, ensure_ascii=False, sort_keys=True, separators=(',',':'), allow_nan=False).encode()
+    with _ex()._lock(root):
+        value = _load(root); call = _call(value,call_id)
+        if call['route'] != 'openart_mcp' or not call.get('host_receipt'):
+            raise ValueError('collection applies only to a returned OpenArt policy fallback')
+        if call['state'] in {'imported','failed'} and call.get('collection'):
+            bound = call['collection']
+            if (bound['status_receipt']['sha256'] != hashlib.sha256(raw).hexdigest()
+                    or (call['state'] == 'failed') != (download is None)
+                    or (call['state'] == 'imported' and (bound.get('resource_id'),bound.get('url'),
+                        bound.get('download_path'),bound.get('download_sha256')) != (download['resource_id'],
+                        download['url'],str(Path(download['path']).expanduser()),download['sha256']))):
+                raise ValueError('image call already binds a different collection')
+            _bound_file(root,call['host_receipt'],'retained generate_image return')
+            _bound_file(root,bound['status_receipt'],'retained collection status')
+            if call['state'] == 'imported':
+                for key in ('path','preserved_path'):
+                    _bound_file(root,{'path':call['output'][key],'sha256':call['output']['sha256']},'imported image')
+            return copy.deepcopy(call)
+        if call['state'] != 'returned':
+            raise ValueError('collection requires a returned pending OpenArt image call')
+        history = _read(_bound_file(root,call['host_receipt'],'retained generate_image return')).get('result') or {}
+        history_id = history.get('historyId')
+        result = status_receipt['result']
+        if (not isinstance(history_id,str) or not history_id.strip()
+                or status_receipt['arguments'] != {'historyId':history_id}
+                or not isinstance(result,dict) or result.get('historyId') != history_id):
+            raise ValueError('collection status must be for the exact original historyId')
+        directory = root/'production_images'/call_id
+        status_path = directory/'collection-status.json'
+        if status_path.exists() and status_path.read_bytes() != raw:
+            raise ValueError('retained collection status differs')
+        receipt_sha = hashlib.sha256(raw).hexdigest()
+        if result.get('status') in {'FAILED','CANCELLED','CANCELED'}:
+            if download is not None:
+                raise ValueError('terminal failed creation has no downloadable resource')
+            # Terminal provider failure: the image stays consumed; never retried.
+            if not status_path.exists(): status_path.write_bytes(raw); status_path.chmod(0o444)
+            call['collection'] = {'status_receipt':{'path':str(status_path.relative_to(root)),'sha256':receipt_sha},
+                'history_id':history_id}
+            if status_receipt.get('tool_call_id'):
+                call['collection']['status_tool_call_id'] = status_receipt['tool_call_id']
+            _event(call,'collection_status',receipt_sha256=receipt_sha)
+            call['state'] = 'failed'; call['error'] = 'OpenArt image creation ' + result['status']
+            _event(call,'failed',error=call['error']); _write(root,value)
+            return copy.deepcopy(call)
+        if result.get('status') != 'COMPLETED' or result.get('warning'):
+            raise ValueError('original OpenArt image creation is not COMPLETED')
+        if download is None:
+            raise ValueError('collection requires an exact download receipt')
+        rows = result.get('resources')
+        images = [r for r in rows if isinstance(r,dict) and r.get('mediaType') == 'image'] if isinstance(rows,list) else []
+        if (not isinstance(rows,list) or len(rows) != 1 or len(images) != 1
+                or str(images[0].get('status','COMPLETED')).upper() not in {'COMPLETED','SUCCESS','SUCCEEDED'}
+                or images[0].get('id') != download['resource_id'] or not images[0].get('url')
+                or images[0]['url'] != download['url']):
+            raise ValueError('terminal status must hold exactly the one downloaded image resource')
+        path = Path(download['path']).expanduser()
+        if not path.is_absolute() or not path.is_file() or file_sha256(path) != download['sha256']:
+            raise ValueError('downloaded image bytes differ from the download receipt')
+        original = path.read_bytes()
+        from PIL import Image
+        with Image.open(io.BytesIO(original)) as image:
+            media_type = Image.MIME.get(image.format); image.verify()
+        if media_type not in {'image/png','image/jpeg','image/webp','image/gif'}:
+            raise ValueError('downloaded resource is not a supported image')
+        target = _ex()._inside(call['output_path'],root); preserved = directory/('output'+target.suffix)
+        for out in (preserved,target):
+            if out.exists() and out.read_bytes() != original:
+                raise ValueError('image import would overwrite different retained bytes')
+        if not status_path.exists(): status_path.write_bytes(raw); status_path.chmod(0o444)
+        for out in (preserved,target):
+            out.parent.mkdir(parents=True,exist_ok=True)
+            if not out.exists(): out.write_bytes(original)
+        preserved.chmod(0o444)
+        call['collection'] = {'status_receipt':{'path':str(status_path.relative_to(root)),'sha256':receipt_sha},
+            'history_id':history_id, 'resource_id':download['resource_id'], 'url':download['url'],
+            'download_path':str(path), 'download_sha256':download['sha256']}
+        if status_receipt.get('tool_call_id'):
+            call['collection']['status_tool_call_id'] = status_receipt['tool_call_id']
+        _event(call,'collection_status',receipt_sha256=receipt_sha)
+        call['output'] = {'path':str(target.relative_to(root)),'preserved_path':str(preserved.relative_to(root)),
+            'sha256':download['sha256'],'media_type':media_type,
+            'source':{'kind':'openart_collection','field':'resources','path':str(path)}}
+        call['state'] = 'imported'; _event(call,'imported',output_sha256=download['sha256']); _write(root,value)
         return copy.deepcopy(call)

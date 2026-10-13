@@ -2182,13 +2182,17 @@ def file_sha256_of(path):
     return hashlib.sha256(open(path, 'rb').read()).hexdigest()
 
 
-def board_factory_fixture(neutral_package, *, image_allowance=8, required_start=(), extra_start_role=False):
+def board_factory_fixture(neutral_package, *, image_allowance=8, required_start=(), extra_start_role=False,
+                          image_policy_fallback=None, text_only_boards=False):
     """Activated synthetic board run; every host return below is fixture bytes."""
     root, package, bind = neutral_package
     package = prospective_package(package)
     next(n for n in package['boards']['image_nodes'] if n['slot_id'] == 'start')['required_predicates'] += list(required_start)
     if extra_start_role:
         package['boards']['shots'][0]['roles'].append({'asset_id': 'start', 'role': 'end_frame'})
+    if text_only_boards:
+        for node in package['boards']['image_nodes']:
+            node['reference_ids'], node['image_dependencies'] = [], []
     request.prepare_package(root, bind(package))
     marker = json.loads((root / 'project.json').read_text())
     marker.update(identity_id='fixture-identity', pipeline_type='cinematic')
@@ -2205,6 +2209,13 @@ def board_factory_fixture(neutral_package, *, image_allowance=8, required_start=
     policy = make_policy(project_id=contract['project_id'], story_revision='r1',
         locked={'cast': {}, 'dialogue': {}, 'sources': [], 'story_predicates': [], 'controls': {}})
     accounts = {'grok_cli': 'fixture-grok', 'openart_cli': 'fixture-cli', 'native_imagegen': 'fixture-native'}
+    if image_policy_fallback is not None:
+        # Same standing MCP video account; the image model lives only in the run term.
+        policy['providers'].append({'id': 'openart_mcp', 'billing': 'unknown_cost_no_ceiling',
+            'exposure_acknowledgement': 'no_enforceable_credit_ceiling',
+            'uid_sha256': request.digest('fixture-mcp-account'), 'project_id': 'fixture-mcp',
+            'routes': [{'model': 'byte-plus-seedance-2-mini', 'mode': 'image2video'}]})
+        accounts['openart_mcp'] = 'fixture-mcp-account'
     setup = {'version': '1.0', 'identity_id': 'fixture-identity', 'enabled': True,
         'providers': policy['providers'], 'provider_accounts': {k: v for k, v in accounts.items() if k != 'native_imagegen'},
         'caps': policy['caps'], 'checkpoint_stages': policy['checkpoint_stages'], 'flex': policy['flex'],
@@ -2218,7 +2229,8 @@ def board_factory_fixture(neutral_package, *, image_allowance=8, required_start=
     standing = creator_fixture(root, 'standing-boards', setup)
     command = creator_fixture(root, 'command-boards', {'version': '1.0', 'identity_id': 'fixture-identity',
         'project_id': contract['project_id'], 'story_revision': 'r1', 'command': 'make_video',
-        'standing_setup_sha256': standing['sha256']})
+        'standing_setup_sha256': standing['sha256'],
+        **({'image_policy_fallback': image_policy_fallback} if image_policy_fallback is not None else {})})
     pa.activate_standing_run(root, policy=policy, baselines=baselines,
         standing_setup=standing, run_command=command, identity_id='fixture-identity')
     images.activate_standing_image_envelope(root)

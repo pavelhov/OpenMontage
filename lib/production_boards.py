@@ -704,6 +704,13 @@ def _imported_board_gate(root, pack, slot_id, call_id, *, images):
     """
     result = images.image_call_status(root, call_id)
     prepared = pack["image_packets"].get(slot_id)
+    # A late authentic original never displaces its imported policy fallback.
+    for occurrence in images.image_usage(root)["occurrences"]:
+        if occurrence["route"] == "openart_mcp" and occurrence["call_id"] != call_id:
+            fallback = images.image_call_status(root, occurrence["call_id"])
+            if ((fallback.get("replaces_policy_denial") or {}).get("call_id") == call_id
+                    and fallback.get("state") == "imported" and fallback.get("slot_id") == slot_id):
+                return "successor", fallback
     if prepared and result["request_sha256"] == prepared["request_sha256"]:
         return "current", None
     linked_lane = False
