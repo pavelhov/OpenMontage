@@ -9,10 +9,30 @@ projects. Generic pipelines keep their own stage, review, approval and route rul
 
 The producer writes one complete plan, prepares its declared images, requests one
 video per planned slot, collects those original jobs and assembles the playable
-results in story order. Each clip uses its declared image input. Adjacent shots
+results in story order. Each clip uses every declared supported image input. Adjacent shots
 may share prepared boundary-photo bytes when that is what the plan declares; this
 does not make an unsupported native frame pin available. Unsupported required
 controls block the affected slot before dispatch.
+
+Before image prompt authoring, query
+`registry.describe_video_inputs(provider, model=None, mode=None, operation=None)`
+for the exact selected route. The read-only answer describes start/end pins, timed
+middle frames and untimed references, requiredness, known limits, timing rules and
+exact native schema/readiness provenance. Missing maxima remain explicitly unknown.
+Declare useful images only; optional capacity is not a requirement to fill.
+
+The compact package supports optional shot `roles` entries with `asset_id`,
+canonical `role` (`start_frame`, `end_frame`, `timed_keyframe` or `reference_image`)
+and `time_seconds` for a `timed_keyframe`. Explicit roles replace
+the default local-board consumers. Reuse an existing asset ID to share a boundary
+between shots without a second image generation; a shot consuming existing nodes
+may have `boards: []`. A semantic payoff board is a literal end pin only through
+an explicit `end_frame` consumer. Source identity references remain distinct from
+native reference consumers. `build_video_request_templates(package, settings)`
+derives native requests from these bindings and rejects unsupported roles/settings
+before image attempts. Keep one authored plan and no duplicate binding manifest.
+Legacy start-only inputs and retained requests keep their original interpretation
+and bytes.
 
 There are no corrective takes, creative revisions, video route fallbacks or board
 corrections in this factory. The sole image exception is the creator-authorized
@@ -23,7 +43,7 @@ existing `make video` entry; a resume continues that same project's current stat
 
 ## Native images and the policy exception
 
-Use native image generation first. An explicit content-policy refusal may use
+Use native Codex image generation first. An explicit content-policy refusal may use
 one OpenArt image for that same board, prompt and references when the current
 creator command retains `image_policy_fallback` and the standing OpenArt account,
 source permissions and remaining image allowance cover it. Access errors, 403s,
