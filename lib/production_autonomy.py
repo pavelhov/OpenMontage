@@ -450,6 +450,23 @@ def _validate_standing_basis_impl(root, policy, baselines, *, check_first_pass_c
                        for key in ('max_files', 'max_file_bytes', 'max_batch_bytes', 'max_batches'))):
             raise StandingSetupRequired('source transfer needs roles and positive file/batch limits')
         for baseline in baselines.values():
+            if check_first_pass_capacity:
+                from lib import production_execution as execution
+                def source_count(value, key=None):
+                    # Match _paths occurrence counting: shared bytes submitted
+                    # in two native fields consume two file slots, even before
+                    # declared board/upstream bytes have been produced.
+                    if key == 'input_assets':
+                        return len(value)
+                    if key in execution.INPUT_PATH_KEYS:
+                        return sum(source_count(item, key) for item in value) if isinstance(value, list) else 1
+                    if isinstance(value, dict):
+                        return sum(source_count(item, name) for name, item in value.items())
+                    if isinstance(value, list):
+                        return sum(source_count(item) for item in value)
+                    return 0
+                if source_count(execution._clean(baseline['planned_request_template']['inputs'])) > term['max_files']:
+                    raise StandingSetupRequired('planned source batch exceeds retained transfer max_files limit')
             for asset in baseline['projection']['assets']:
                 if asset.get('upstream_source'):
                     if not term['generated_board_sources']:

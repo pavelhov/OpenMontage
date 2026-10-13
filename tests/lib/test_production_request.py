@@ -1296,6 +1296,110 @@ def test_shared_timed_image_keeps_each_consumers_timestamp(neutral_package):
     with pytest.raises(ValueError, match='source/time'): execution._check_motion_inputs(contract, 's2', inputs, root)
 
 
+@pytest.mark.parametrize('primary_role', ['reference_image', 'timed_keyframe'])
+@pytest.mark.parametrize('defect', [None, 'missing', 'wrong_field', 'wrong_hash'])
+def test_explicit_endpoint_validates_consumer_instead_of_primary_role(neutral_package, primary_role, defect):
+    from tests.lib.test_production_package_authoring import packages
+    from lib import production_execution as execution
+    root, base, bind = neutral_package
+    package, _ = packages(base)
+    first = package['shots'][0]
+    node = copy.deepcopy(first['boards'][0]); node.update(slot_id='native-end', role=primary_role)
+    if primary_role == 'timed_keyframe': node['time_seconds'] = 2
+    first['boards'].append(node)
+    first['roles'] = [{'asset_id':'s1-start', 'role':'start_frame'}, {'asset_id':'native-end', 'role':'end_frame'}]
+    request.prepare_package(root, bind(package))
+    contract = execution.load_shot_contract(root)
+    for asset in contract['assets']:
+        path = root / ('assets/' + asset['id'] + '.png'); path.write_bytes(asset['id'].encode())
+        asset.update(path=str(path.relative_to(root)), sha256=file_sha256(path))
+    inputs = {'duration':first['duration_seconds'], 'operation':'image_to_video',
+              'image_path':str(root/'assets/s1-start.png'), 'last_image_path':str(root/'assets/native-end.png')}
+    if defect == 'missing': inputs.pop('last_image_path')
+    elif defect == 'wrong_field': inputs['reference_image_paths'] = [inputs.pop('last_image_path')]
+    elif defect == 'wrong_hash': inputs['last_image_path'] = inputs['image_path']
+    if defect:
+        with pytest.raises(ValueError, match='end_frame native-end'):
+            execution._check_motion_inputs(contract, 's1', inputs, root)
+    else:
+        execution._check_motion_inputs(contract, 's1', inputs, root)
+
+
+@pytest.mark.parametrize('defect', [None, 'missing_start', 'missing_end', 'wrong_start', 'wrong_end', 'missing_cast', 'wrong_cast', 'operation'])
+def test_explicit_native_pin_pair_preserves_exact_identity_carrier_conditions(neutral_package, defect):
+    from tests.lib.test_production_package_authoring import packages
+    from lib import production_execution as execution
+    root, base, bind = neutral_package
+    package, _ = packages(base)
+    first = package['shots'][0]
+    node = copy.deepcopy(first['boards'][0]); node.update(slot_id='native-end', role='reference_image')
+    first['boards'].append(node)
+    first['roles'] = [{'asset_id':'s1-start', 'role':'start_frame'}, {'asset_id':'native-end', 'role':'end_frame'}]
+    request.prepare_package(root, bind(package))
+    contract = execution.load_shot_contract(root)
+    contract['shots'][0]['cast_ids'] = ['actor']
+    contract['assets'].append({'id':'actor', 'role':'identity_reference', 'cast_ids':['actor']})
+    for asset in contract['assets']:
+        path = root / ('assets/' + asset['id'] + '.png'); path.write_bytes(asset['id'].encode())
+        asset.update(path=str(path.relative_to(root)), sha256=file_sha256(path), cast_ids=['actor'])
+    inputs = {'duration':first['duration_seconds'], 'operation':'first_last_frame',
+              'first_frame':str(root/'assets/s1-start.png'), 'last_frame':str(root/'assets/native-end.png')}
+    if defect in {'missing_start','missing_end'}: inputs.pop('first_frame' if defect == 'missing_start' else 'last_frame')
+    elif defect in {'wrong_start','wrong_end'}: inputs['first_frame' if defect == 'wrong_start' else 'last_frame'] = str(root/'assets/actor.png')
+    elif defect in {'missing_cast','wrong_cast'}:
+        next(a for a in contract['assets'] if a['id'] == 's1-start')['cast_ids'] = [] if defect == 'missing_cast' else ['other']
+    elif defect == 'operation': inputs['operation'] = 'reference_to_video'
+    if defect:
+        with pytest.raises(ValueError, match='submitted inputs omit or change'):
+            execution._check_motion_inputs(contract, 's1', inputs, root)
+    else:
+        execution._check_motion_inputs(contract, 's1', inputs, root)
+
+
+def test_primary_timed_board_projects_only_timed_consumers_time(neutral_package, monkeypatch):
+    from tests.lib.test_production_package_authoring import packages
+    from lib import production_execution as execution, shot_contract
+    root, base, bind = neutral_package
+    package, _ = packages(base)
+    first = package['shots'][0]
+    first['boards'][0].update(role='timed_keyframe', time_seconds=2)
+    first['roles'] = [{'asset_id':'s1-start','role':'start_frame'},
+                      {'asset_id':'s1-start','role':'timed_keyframe','time_seconds':1}]
+    request.prepare_package(root, bind(package))
+    contract = execution.load_shot_contract(root)
+    for asset in contract['assets']:
+        path = root / ('assets/' + asset['id'] + '.png'); path.write_bytes(asset['id'].encode())
+        asset.update(path=str(path.relative_to(root)), sha256=file_sha256(path), review=copy.deepcopy(contract['project_review']))
+        asset['review']['subject_sha256'] = asset['sha256']
+    write(root/'artifacts/shot_contract.json', contract)
+    monkeypatch.setattr(request, 'validate_shot_contract', lambda *a, **kw: {'eligible':True,'errors':[]})
+    monkeypatch.setattr(shot_contract, '_validate_original_shot_contract', lambda *a, **kw: {'eligible':True,'errors':[]})
+    monkeypatch.setattr(shot_contract, 'frame_conditioned_start', lambda *a: {'asset_id':'s1-start', 'sha256':contract['assets'][0]['sha256'], 'path':str(root/'assets/s1-start.png')})
+    packet = request.source_packet(root, 's1', provider='grok_cli', check_native_controls=False)
+    refs = [row for row in packet['binding']['references'] if row['id'] == 's1-start']
+    assert {row['role']:row.get('time_seconds') for row in refs} == {'start_frame':None, 'timed_keyframe':1}
+    replay = request._historical_source_packet(root, 's1', provider='grok_cli', check_native_controls=False,
+        reference_bindings=packet['binding']['references'])
+    assert replay['binding']['references'] == packet['binding']['references']
+
+
+@pytest.mark.parametrize('guided', [False, True])
+def test_legacy_board_consumers_retain_semantic_endpoint_behavior(neutral_package, guided):
+    from lib import production_execution as execution
+    from tests.lib.test_production_factory import prospective_package
+    root, package, bind = neutral_package
+    request.prepare_package(root, bind(prospective_package(package)))
+    contract = execution.load_shot_contract(root)
+    for asset in contract['assets']:
+        path = root / ('assets/' + asset['id'] + '.png'); path.write_bytes(asset['id'].encode())
+        asset.update(path=str(path.relative_to(root)), sha256=file_sha256(path))
+    if guided: contract['reference_mode'] = 'reference_guided'
+    inputs = {'duration':3, 'operation':'reference_to_video' if guided else 'image_to_video',
+              **({'reference_image_paths':[str(root/'assets/start.png')]} if guided
+                 else {'image_path':str(root/'assets/start.png')})}
+    execution._check_motion_inputs(contract, 's1', inputs, root)
+
+
 def test_compact_guided_payoff_stays_semantic_without_native_consumer(neutral_package, monkeypatch):
     from tests.lib.test_production_package_authoring import packages
     from tests.lib.test_production_images import PNG

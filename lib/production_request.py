@@ -311,6 +311,8 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
     # All contract review bindings are retained: review prose is outside contract_digest.
     consumer_assets = (sorted((asset for asset in contract['assets'] if asset['id'] in needed_assets), key=lambda a: a['id'])
                        if shot_local(contract) else contract['assets'])
+    native_consumers = None
+    compact_source = False
     for ai, asset in enumerate(consumer_assets):
         if asset['id'] not in needed_assets:
             continue
@@ -326,19 +328,27 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
         # in the contract; project exact role/time into this shot's source packet.
         if not historical and shot_local(contract) and (root / 'artifacts/board_preparation.json').exists():
             from lib import production_boards as boards
-            spec = boards.load_board_pack(root)['specification']
-            binding = boards.load_board_pack(root).get('package_binding')
-            compact_source = False
-            if binding:
-                from lib import production_images as images
-                authored = json.loads(images._bound_file(root, binding, 'production package').read_text())
-                compact_source = authored.get('authoring_form') == COMPACT_AUTHORING_FORM
-            consumers = [r for row in spec['shots'] if row['shot_id'] == shot_id for r in row['roles']
-                         if r['asset_id'] == asset['id'] and r['role'] in NATIVE_BOARD_ROLES]
+            # Validate the shared plan once per packet; every asset still gets
+            # its own current-byte and review binding above.
+            if native_consumers is None:
+                pack = boards.load_board_pack(root)
+                binding = pack.get('package_binding')
+                if binding:
+                    from lib import production_images as images
+                    authored = json.loads(images._bound_file(root, binding, 'production package').read_text())
+                    compact_source = authored.get('authoring_form') == COMPACT_AUTHORING_FORM
+                native_consumers = {}
+                for row in pack['specification']['shots']:
+                    if row['shot_id'] == shot_id:
+                        for consumer in row['roles']:
+                            if consumer['role'] in NATIVE_BOARD_ROLES:
+                                native_consumers.setdefault(consumer['asset_id'], []).append(consumer)
+            consumers = native_consumers.get(asset['id'], [])
             if consumers and not (asset['role'] == 'payoff_board' and len(consumers) == 1 and consumers[0]['role'] == 'start_frame'):
+                consumer_reference = {key: value for key, value in reference.items() if key != 'time_seconds'}
                 for consumer in consumers:
-                    refs.append({**reference, 'role': consumer['role'],
-                                 **({'time_seconds': consumer['time_seconds']} if 'time_seconds' in consumer else {}),
+                    refs.append({**consumer_reference, 'role': consumer['role'],
+                                 **({'time_seconds': consumer['time_seconds']} if consumer['role'] == 'timed_keyframe' else {}),
                                  **({'native_required': True} if compact_source and consumer['role'] == 'end_frame' else {})})
             else:
                 if compact_source and asset['role'] == 'payoff_board' and not consumers:

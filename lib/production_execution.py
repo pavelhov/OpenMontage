@@ -652,13 +652,25 @@ def _check_motion_inputs(contract, shot_id, inputs, root, *, policy_composite=Fa
                  'reference_video': {'reference_video_paths','reference_video_path'},
                  'reference_audio': {'reference_audio_paths','reference_audio_path'},
                  'timed_keyframe': {'image'}}
+    from lib import production_boards as boards, production_request as preparation
+    consumers, compact_source = [], False
+    if (root / boards.ARTIFACT).exists():
+        pack = boards.load_board_pack(root)
+        consumers = [role for row in pack['specification']['shots']
+                     if row['shot_id'] == shot_id for role in row['roles']]
+        if pack.get('package_binding'):
+            from lib import production_images as images
+            authored = json.loads(images._bound_file(root, pack['package_binding'], 'production package').read_text())
+            compact_source = authored.get('authoring_form') == preparation.COMPACT_AUTHORING_FORM
     guided = shot.get('reference_mode', contract.get('reference_mode')) == 'reference_guided'
     # Eligibility has already validated these boards' bytes, cast-identity
     # reviews and upstream provenance. Only an exact native pair can carry
     # identity in place of auxiliary reference submissions on a boarded route.
     local_assets = [assets[aid] for aid in shot['asset_ids']]
     pin_boards = {
-        role: [a for a in local_assets if a['role'] == role]
+        role: [a for a in local_assets if any(c['asset_id'] == a['id'] and c['role'] == role for c in consumers)
+               or not any(c['asset_id'] == a['id'] and c['role'] in preparation.NATIVE_BOARD_ROLES for c in consumers)
+               and a['role'] == role]
         for role in ('start_frame', 'end_frame')
     }
     reviewed_pin_pair = not guided and inputs.get('operation') == 'first_last_frame'
@@ -671,6 +683,20 @@ def _check_motion_inputs(contract, shot_id, inputs, root, *, policy_composite=Fa
                                and set(a['cast_ids']).intersection(shot['cast_ids']))
     for asset_id in submitted_asset_ids:
         asset = assets[asset_id]
+        native_consumers = [role for role in consumers if role['asset_id'] == asset_id
+                            and role['role'] in preparation.NATIVE_BOARD_ROLES]
+        if native_consumers:
+            for consumer in native_consumers:
+                role = consumer['role']
+                if guided and not compact_source and role in {'start_frame', 'end_frame'}:
+                    continue  # Legacy guided boards are reviewed semantic targets.
+                if role == 'end_frame' and not compact_source and not (
+                        inputs.get('operation') == 'first_last_frame' or inputs.get('endpoint_requirement_id')
+                        or inputs.get('last_frame') or inputs.get('last_image_path')):
+                    continue  # Legacy ending targets retain their optional native pin.
+                if not any(key in role_keys[role] and digest == asset['sha256'] for key, digest in actual):
+                    _fail(f'shot {shot_id}: submitted inputs omit or change {role} {asset_id}')
+            continue
         keys = role_keys.get(asset['role'])
         if shot.get('frame_input', {}).get('asset_id') == asset_id:
             keys = role_keys['start_frame']
@@ -689,11 +715,6 @@ def _check_motion_inputs(contract, shot_id, inputs, root, *, policy_composite=Fa
             keys = None  # exact reviewed native start/end pins carry the declared cast
         if keys and not any(key in keys and digest == asset['sha256'] for key, digest in actual):
             _fail(f'shot {shot_id}: submitted inputs omit or change {asset["role"]} {asset_id}')
-    from lib import production_boards as boards
-    consumers = []
-    if (root / boards.ARTIFACT).exists():
-        consumers = [role for row in boards.load_board_pack(root)['specification']['shots']
-                     if row['shot_id'] == shot_id for role in row['roles']]
     for asset_id in shot['asset_ids']:
         asset = assets[asset_id]
         times = [role['time_seconds'] for role in consumers if role['asset_id'] == asset_id and role['role'] == 'timed_keyframe']

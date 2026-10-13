@@ -84,6 +84,71 @@ def test_standing_activation_exact_replay_and_current_creator_bytes(tmp_path):
     assert not list(tmp_path.glob('**/*checkpoint*'))
 
 
+@pytest.mark.parametrize('source', ['static', 'board', 'input_assets'])
+@pytest.mark.parametrize('limit', [1, 2])
+def test_standing_source_file_capacity_counts_native_binding_occurrences_before_writes(tmp_path, source, limit):
+    kwargs = standing_fixture(tmp_path)
+    path = str(tmp_path/'assets/start.svg')
+    inputs = {'duration':8, 'image_path':path, 'last_image_path':path}
+    if source == 'board':
+        inputs = {'duration':8, 'image_path':{'$board':{'asset_id':'start'}},
+                  'keyframes':[{'image':{'$board':{'asset_id':'start'}}, 'timestamp_s':2}]}
+    elif source == 'input_assets':
+        inputs = {'duration':8, 'input_assets':[{'role':role, 'source_path':path} for role in ('first_frame','last_frame')]}
+    kwargs['baselines']['entry']['planned_request_template'] = execution.planned_request_template(inputs, project_dir=tmp_path)
+    setup = json.loads((tmp_path/kwargs['standing_setup']['path']).read_text()); setup.pop('authorization')
+    for term in setup['source_transfer']: term['max_files'] = limit
+    kwargs['standing_setup'] = creator_fixture(tmp_path, 'standing', setup)
+    command = json.loads((tmp_path/kwargs['run_command']['path']).read_text()); command.pop('authorization')
+    command['standing_setup_sha256'] = kwargs['standing_setup']['sha256']
+    kwargs['run_command'] = creator_fixture(tmp_path, 'command', command)
+    with execution._lock(tmp_path): pass
+    before = file_bytes(tmp_path)
+    if limit == 1:
+        with pytest.raises(pa.StandingSetupRequired, match='planned source batch.*max_files'):
+            pa.activate_standing_run(tmp_path, **kwargs)
+        assert file_bytes(tmp_path) == before
+        assert images.image_usage(tmp_path)['total'] == 0
+        assert pa.root_attempt_counts(tmp_path, kwargs['policy'])['total'] == 0
+    else:
+        result = pa.activate_standing_run(tmp_path, **kwargs)
+        before = file_bytes(tmp_path)
+        assert pa.activate_standing_run(tmp_path, **kwargs) == dict(result, replayed=True)
+        assert file_bytes(tmp_path) == before
+
+
+@pytest.mark.parametrize('lock', ['sources', 'cast'])
+def test_semantic_only_payoff_cannot_satisfy_explicit_source_or_cast_lock(tmp_path, lock):
+    kwargs = standing_fixture(tmp_path)
+    contract = execution.load_shot_contract(tmp_path)
+    contract['shots'][0]['asset_ids'].append(contract['payoff_asset_id'])
+    contract['shots'][0]['review']['subject_sha256'] = shot_review_subject(contract, 'entry')
+    write(tmp_path, 'artifacts/shot_contract.json', contract)
+    kwargs['baselines']['entry']['projection'] = pa.current_projection(tmp_path, 'entry')
+    kwargs['baselines']['entry']['approval_plan_sha256'] = execution.approval_plan_digest(contract, 'entry')
+    pa.activate_standing_run(tmp_path, **kwargs)
+    policy, _, _ = pa.require_active_policy(tmp_path)
+    assets = kwargs['baselines']['entry']['projection']['assets']
+    payoff = next(a for a in assets if a['role'] == 'payoff_board')
+    if lock == 'sources': policy['locked']['sources'] = [payoff['sha256']]
+    else: policy['locked']['cast'] = {'patient': [{key:payoff[key] for key in ('sha256','role')}]}
+    content = pa.evidence_content(policy, kwargs['baselines'])
+    sha = pa.digest(content)
+    policy['evidence'] = write(tmp_path, 'approvals/autonomy-policy-' + sha + '.json', content)
+    inputs = {'duration':8, 'input_assets':[{'role':{'start_frame':'first_frame', 'end_frame':'last_frame',
+                'identity_reference':'reference_image'}[a['role']], 'source_path':str(tmp_path/a['path'])}
+                for a in assets if a['id'] != payoff['id']]}
+    # The full canonical preparation path already tests the semantic-only
+    # marker. Exercise the lock boundary directly with rooted retained bytes.
+    compiled = {'source_binding':{'references':[{'id':payoff['id'], 'role':'payoff_board',
+        'sha256':payoff['sha256'], 'native_required':False}]}}
+    before = file_bytes(tmp_path)
+    with pytest.raises(pa.AutonomyError, match='locked source/cast payoff|explicit cast lock'):
+        pa._root_lock_proof(tmp_path, 'entry', inputs=inputs, native={}, profile={},
+            historical={'policy':policy, 'policy_sha256':sha, 'compiled':compiled, 'review':{}})
+    assert file_bytes(tmp_path) == before
+
+
 def standing_controls_fixture(root, controls):
     """Explicit controls in the exact synthetic creator-approved setup."""
     kwargs = standing_fixture(root)
