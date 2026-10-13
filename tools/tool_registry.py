@@ -475,6 +475,11 @@ class ToolRegistry:
         """Get a tool by name."""
         return self._tools.get(name)
 
+    def describe_video_inputs(self, provider, model=None, mode=None, operation=None):
+        """Exact selected-route guidance, without full catalog discovery or mutation."""
+        from lib.video_model_selection import describe_video_inputs
+        return describe_video_inputs(provider, model=model, mode=mode, operation=operation)
+
     def list_all(self) -> list[str]:
         """List all registered tool names."""
         return list(self._tools.keys())

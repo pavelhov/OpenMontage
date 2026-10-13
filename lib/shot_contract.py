@@ -158,7 +158,7 @@ def frame_conditioned_start(contract: dict, shot: dict, project_dir) -> dict:
         raise ValueError("frame-conditioned treatment needs exact starting frame_input")
     aid = frame["asset_id"]
     assets = [a for a in contract["assets"] if a["id"] == aid and aid in shot["asset_ids"]]
-    if len(assets) != 1 or assets[0]["role"] not in {"start_frame", "payoff_board"}:
+    if len(assets) != 1:
         raise ValueError("frame_input must name one canonical consumer start/payoff asset")
     asset = assets[0]
     if set(asset["cast_ids"]) != set(shot["cast_ids"]):
@@ -652,8 +652,19 @@ def _validate_shot_contract(
     for role in ("start_frame", "end_frame"):
         if not reference_free and not (shot_local(contract) and (reference_guided or frame_conditioned)) and sum(a["role"] == role for a in local_assets) != 1:
             errors.append(f"shots.{shot_id}.asset_ids: require exactly one {role}")
+    timed_consumers = []
+    if any(asset['role'] == 'timed_keyframe' for asset in local_assets) and (root / 'artifacts/board_preparation.json').exists():
+        from lib import production_boards as boards
+        timed_consumers = [role for row in boards.load_board_pack(root)['specification']['shots']
+                           if row['shot_id'] == shot_id for role in row['roles']]
     for asset in local_assets:
-        if asset["role"] == "timed_keyframe" and not (0 < asset.get("time_seconds", -1) < shot["duration_seconds"]):
+        if asset['role'] != 'timed_keyframe':
+            continue
+        consumers = [role for role in timed_consumers if role['asset_id'] == asset['id']]
+        times = [role.get('time_seconds', asset.get('time_seconds', -1)) for role in consumers if role['role'] == 'timed_keyframe']
+        if not consumers:
+            times = [asset.get('time_seconds', -1)]
+        if any(not 0 < timestamp < shot['duration_seconds'] for timestamp in times):
             errors.append(f"assets.{asset['id']}.time_seconds: keyframe must be inside shot duration")
     if shot["endpoint_completion"] not in allowed_endpoints:
         errors.append(f"shots.{shot_id}.endpoint_completion: completed endpoint required")

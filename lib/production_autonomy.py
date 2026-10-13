@@ -2262,7 +2262,8 @@ def _historical_current_preparation(root, inputs, native, profile, historical_re
         compiled = preparation._read(Path(root), 'compiled_request-' + preparation._id(inputs['compiled_request_id']) + '.json')
         review = preparation._read(Path(root), 'preparation_review-' + preparation._id(inputs['preparation_review_id']) + '.json')
         packet = preparation._historical_source_packet(root, inputs['governance']['shot_id'],
-                                                       provider=native.get('provider', 'openart_cli'), native=native)
+                                                       provider=native.get('provider', 'openart_cli'), native=native,
+                                                       reference_bindings=compiled['source_binding']['references'])
         return preparation.validate_preparation_evidence(compiled, review, inputs, native, profile, packet,
                                                          historical=historical_replay)
     except (ValueError, KeyError) as exc:
@@ -2411,6 +2412,15 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
         locked_cast = (asset['id'] == projection.get('payoff_asset_id') or
                        bool(set(asset.get('cast_ids', [])) & set(projection['implicit_cast_ids'])))
         if not locked_cast and asset['sha256'] not in policy['locked']['sources']:
+            continue
+        semantic_target = any(row['id'] == asset['id'] and row['role'] == 'payoff_board'
+            and row['sha256'] == asset['sha256'] and row.get('native_required') is False
+            for row in compiled['source_binding']['references'])
+        if semantic_target and asset['role'] == 'payoff_board' and asset['sha256'] not in policy['locked']['sources']:
+            # The validated compact package keeps this target in protected
+            # semantics/source bytes without declaring a native image consumer.
+            # Explicit source/cast locks below retain their normal obligations.
+            proof['cast'].append([asset['id'], asset['sha256'], 'semantic_target'])
             continue
         if frame is not None and asset['role'] == 'end_frame' and (asset['sha256'], asset['role']) not in frozen:
             # Reviewed endpoint targets remain protected planning/preparation
@@ -3747,6 +3757,12 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider, *, policy_c
             for index, item in enumerate(value):
                 if not isinstance(item, dict) or item.get('role') not in names or not item.get('source_path'):
                     raise AutonomyError('retained input_assets requires explicit role and source_path')
+                if isinstance(item['source_path'], dict) and '$board' in item['source_path']:
+                    source = resolve(item['source_path'], pointer + '/' + str(index) + '/source_path', names[item['role']])
+                    if 'source_sha256' in item and item['source_sha256'] != source['sha256']:
+                        raise AutonomyError('retained canonical board source hash differs')
+                    rows.append({**copy.deepcopy(item), 'source_path': source, 'source_sha256': source['sha256']})
+                    continue
                 record = next(assets, None)
                 if (record is None or record['role'] != names[item['role']]
                         or _inside(root, record['path']) != _inside(root, item['source_path'])

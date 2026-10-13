@@ -229,7 +229,7 @@ def source_packet(project_dir, shot_id, *, provider="openart_cli", native=None, 
         check_native_controls=check_native_controls, historical=False)
 
 
-def _historical_source_packet(project_dir, shot_id, *, provider="openart_cli", native=None, check_native_controls=True):
+def _historical_source_packet(project_dir, shot_id, *, provider="openart_cli", native=None, check_native_controls=True, reference_bindings=None):
     """Reconstruct current original source facts for retained authority replay.
 
     Callers must independently bind this projection to their trusted retained
@@ -237,21 +237,21 @@ def _historical_source_packet(project_dir, shot_id, *, provider="openart_cli", n
     follows from this packet; prospective readers always use ``source_packet``.
     """
     return _source_packet(project_dir, shot_id, provider=provider, native=native,
-        check_native_controls=check_native_controls, historical=True)
+        check_native_controls=check_native_controls, historical=True, reference_bindings=reference_bindings)
 
 
 def _original_source_packet(project_dir, shot_id, *, native, contract, selected,
-                                 script, scene_plan):
+                                 script, scene_plan, reference_bindings=None):
     """Source-only projection; provenance must bind these original snapshots.
     Prospective preparation/dispatch never reads caller-supplied source facts.
     """
     return _source_packet(project_dir, shot_id, provider='openart_mcp', native=native,
         check_native_controls=True, historical=True, original_sources=(contract, selected),
-        original_artifacts=(script, scene_plan))
+        original_artifacts=(script, scene_plan), reference_bindings=reference_bindings)
 
 
 def _source_packet(project_dir, shot_id, *, provider, native, check_native_controls, historical,
-                   original_sources=None, original_artifacts=None):
+                   original_sources=None, original_artifacts=None, reference_bindings=None):
     from lib.production_execution import approval_plan_digest, load_selected_attempts
     root = Path(project_dir).resolve()
     contract = _read(root, 'shot_contract.json')
@@ -317,8 +317,35 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
         path = (root / asset['path']).resolve()
         if file_sha256(path) != asset['sha256']:
             raise ValueError('reference bytes changed')
-        refs.append({'id': asset['id'], 'role': asset['role'], 'cast_ids': asset['cast_ids'],
-                     'sha256': asset['sha256'], 'review_sha256': review_digest(asset['review'])})
+        reference = {'id': asset['id'], 'role': asset['role'], 'cast_ids': asset['cast_ids'],
+                     'sha256': asset['sha256'], 'review_sha256': review_digest(asset['review'])}
+        if 'time_seconds' in asset and not historical:
+            reference['time_seconds'] = asset['time_seconds']
+        # Consumer meaning may differ from an immutable board's primary story
+        # role (a shared ending becomes the next start). Keep primary semantics
+        # in the contract; project exact role/time into this shot's source packet.
+        if not historical and shot_local(contract) and (root / 'artifacts/board_preparation.json').exists():
+            from lib import production_boards as boards
+            spec = boards.load_board_pack(root)['specification']
+            binding = boards.load_board_pack(root).get('package_binding')
+            compact_source = False
+            if binding:
+                from lib import production_images as images
+                authored = json.loads(images._bound_file(root, binding, 'production package').read_text())
+                compact_source = authored.get('authoring_form') == COMPACT_AUTHORING_FORM
+            consumers = [r for row in spec['shots'] if row['shot_id'] == shot_id for r in row['roles']
+                         if r['asset_id'] == asset['id'] and r['role'] in NATIVE_BOARD_ROLES]
+            if consumers and not (asset['role'] == 'payoff_board' and len(consumers) == 1 and consumers[0]['role'] == 'start_frame'):
+                for consumer in consumers:
+                    refs.append({**reference, 'role': consumer['role'],
+                                 **({'time_seconds': consumer['time_seconds']} if 'time_seconds' in consumer else {}),
+                                 **({'native_required': True} if compact_source and consumer['role'] == 'end_frame' else {})})
+            else:
+                if compact_source and asset['role'] == 'payoff_board' and not consumers:
+                    reference['native_required'] = False
+                refs.append(reference)
+        else:
+            refs.append(reference)
         if not shootable and (asset['id'] in shot['asset_ids'] or asset['id'] == payoff_id or asset['role'] == 'identity_reference'):
             for key in ('id', 'role', 'cast_ids'):
                 pointer = ('/shot_contract/assets/by_id/' + asset['id'].replace('~', '~0').replace('/', '~1')
@@ -326,6 +353,8 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
                 rows.extend(_leaf(asset[key], pointer + '/' + key))
     scene_plan = original_artifacts[1] if original_artifacts is not None else _read(root, 'scene_plan.json')
     _schema('scene_plan', scene_plan)
+    if historical and reference_bindings is not None:
+        refs = _replay_reference_projection(root, shot_id, scene_plan, refs, reference_bindings, contract)
     from lib.production_execution import _artifact_path
     manifest_path = _artifact_path(root, 'asset_manifest.json')
     manifest = _read(root, 'asset_manifest.json') if manifest_path.exists() else None
@@ -859,13 +888,13 @@ def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=
     elif grok:
         refs = packet['binding']['references']
         frame = packet['binding'].get('frame_input')
-        start_refs = [r for r in refs if (r['id'] == frame['asset_id'] if frame else r['role'] == 'start_frame') and r['id'] in packet['shot']['asset_ids']]
+        start_refs = [r for r in refs if (r['id'] == frame['asset_id'] and r['role'] in {'start_frame', 'payoff_board'} if frame else r['role'] == 'start_frame') and r['id'] in packet['shot']['asset_ids']]
         submitted = native['request']['input_assets']
         if len(start_refs) != 1 or not any(r['role'] == 'first_frame' and r['sha256'] == start_refs[0]['sha256'] for r in submitted):
             raise ValueError('Grok native request must carry approved start board')
         if frame:
             from lib.production_execution import _artifact_path
-            _validate_frame_native(packet, native, submitted=[{'role': a['role'], 'source_sha256': a['sha256'], 'source_path': a['path']} for a in submitted])
+            _validate_frame_native(packet, native, submitted=[{'role': a['role'], 'source_sha256': a['sha256'], 'source_path': a['path'], **({'timestamp_s': a['timestamp_s']} if 'timestamp_s' in a else {})} for a in submitted])
             root = Path(inputs['project_dir']).resolve()
             manifest_path = _artifact_path(root, 'asset_manifest.json')
             _check_frame_hard_inputs(packet, native, _read(root, 'scene_plan.json'),
@@ -944,13 +973,16 @@ def _validate_frame_native(packet, native, *, submitted=None):
             or Path(starts[0].get('source_path', '')).resolve() != Path(frame['path']).resolve()):
         raise ValueError('frame-conditioned request needs exactly one approved starting image')
     mapping = {'end_frame': 'last_frame', 'reference_image': 'reference_image',
-               'reference_video': 'reference_video', 'reference_audio': 'reference_audio'}
-    approved = {('first_frame', frame['sha256'])} | {(mapping[r['role']], r['sha256']) for r in refs if r['role'] in mapping}
-    if any((a.get('role'), a.get('source_sha256')) not in approved for a in submitted):
+               'reference_video': 'reference_video', 'reference_audio': 'reference_audio', 'timed_keyframe': 'timed_keyframe'}
+    submitted = [{**a, 'role': {'reference': 'reference_image', 'keyframe': 'timed_keyframe'}.get(a.get('role'), a.get('role')),
+                  **({'time_seconds': a['timestamp_s']} if 'timestamp_s' in a else {})} for a in submitted]
+    approved = {('first_frame', frame['sha256'], None)} | {(mapping[r['role']], r['sha256'], r.get('time_seconds') if r['role'] == 'timed_keyframe' else None) for r in refs if r['role'] in mapping}
+    if any((a.get('role'), a.get('source_sha256'), a.get('time_seconds') if a.get('role') == 'timed_keyframe' else None) not in approved for a in submitted):
         raise ValueError('frame-conditioned native role/source is not an approved consumer asset')
     for ref in refs:
-        if ref['role'] in {'reference_image', 'reference_video', 'reference_audio'} and not any(
-                a.get('role') == mapping[ref['role']] and a.get('source_sha256') == ref['sha256'] for a in submitted):
+        if (ref['role'] in {'reference_image', 'reference_video', 'reference_audio', 'timed_keyframe'} or ref.get('native_required')) and not any(
+                a.get('role') == mapping[ref['role']] and a.get('source_sha256') == ref['sha256']
+                and (ref['role'] != 'timed_keyframe' or a.get('time_seconds') == ref.get('time_seconds')) for a in submitted):
             raise ValueError('frame-conditioned request omits separately required native reference ' + ref['role'])
 
 
@@ -1001,6 +1033,10 @@ def validate_openart_asset_roles(packet, native):
             if (asset.get('role'), asset.get('source_sha256')) not in approved:
                 raise ValueError('OpenArt guided native role/source is not an approved shot asset')
         for ref in refs:
+            if ref.get('native_required') is False:
+                continue
+            if ref['role'] == 'identity_reference' and ref['id'] not in packet['shot']['asset_ids'] and packet['binding'].get('reference_mode') == 'reference_guided':
+                continue
             if ref['role'] in {'start_frame', 'end_frame'}:
                 continue  # reviewed composition targets, no implicit temporal pin
             if ref['role'] in role_options and not any(asset.get('role') in role_options[ref['role']]
@@ -1199,7 +1235,8 @@ def _validate_frozen_preparation(request, frozen, project_dir, *, current_requir
     packet = data['source_packet']
     if current_required:
         reconstruct = _historical_source_packet if original_reviews else source_packet
-        current = reconstruct(project_dir, request['shot_id'], native=frozen['native'])
+        current = reconstruct(project_dir, request['shot_id'], native=frozen['native'],
+            **({'reference_bindings': packet['binding']['references']} if original_reviews else {}))
         stable = set(packet['binding']) - {'contract_sha256', 'reviews_sha256'}
         if any(current['binding'][key] != packet['binding'][key] for key in stable):
             raise ValueError('stale source/reference/review/upstream bindings')
@@ -1286,17 +1323,19 @@ def _expand_compact_package(package):
                     'required_predicates', 'transparent_background', 'cast_ids'}
     for shot in authored:
         if (not isinstance(shot, dict) or not required_shot <= set(shot)
-                or set(shot) - required_shot - {'pinned_initial_frame', 'pinned_final_frame', 'camera', 'sound'}):
+                or set(shot) - required_shot - {'pinned_initial_frame', 'pinned_final_frame', 'camera', 'sound', 'roles'}):
             raise ValueError('compact shot needs explicit content, motion, boards and dependencies')
         sid = shot['id']
         if (not isinstance(sid, str) or not sid.strip() or Path(sid).name != sid
                 or sid in ('.', '..') or '/' in sid or '\\' in sid):
             raise ValueError('unsafe compact shot ID')
         motion = shot['motion']
-        if (not isinstance(motion, dict) or set(motion) != required_motion
-                or motion['reference_mode'] != 'frame_conditioned'):
+        if (not isinstance(motion, dict) or set(motion) - required_motion
+                or not required_motion - {'frame_input'} <= set(motion)
+                or motion['reference_mode'] not in {'frame_conditioned', 'reference_guided'}
+                or (motion['reference_mode'] == 'frame_conditioned') != ('frame_input' in motion)):
             raise ValueError('compact motion needs explicit frame_conditioned treatment and all semantics')
-        if not isinstance(shot['boards'], list) or not shot['boards']:
+        if not isinstance(shot['boards'], list) or (not shot['boards'] and not shot.get('roles')):
             raise ValueError('compact shot needs authored boards')
         deps = shot['video_dependencies']
         if (not isinstance(deps, list) or any(not isinstance(dep, str) or not dep.strip() for dep in deps)
@@ -1305,7 +1344,7 @@ def _expand_compact_package(package):
         roles = []
         for board in shot['boards']:
             if (not isinstance(board, dict) or not board_fields <= set(board)
-                    or set(board) - board_fields - {'upstream_source'}):
+                    or set(board) - board_fields - {'upstream_source', 'time_seconds'}):
                 raise ValueError('compact board requires exact authored prompt, role and source declarations')
             if 'upstream_source' in board:
                 source = board['upstream_source']
@@ -1326,22 +1365,34 @@ def _expand_compact_package(package):
             if (not isinstance(slot, str) or not slot.strip() or Path(slot).name != slot
                     or slot in ('.', '..') or '/' in slot or '\\' in slot):
                 raise ValueError('unsafe compact board slot ID')
-            nodes.append({k: copy.deepcopy(v) for k, v in board.items() if k != 'cast_ids'})
+            nodes.append({k: copy.deepcopy(v) for k, v in board.items() if k not in {'cast_ids', 'time_seconds'}})
             nodes[-1].update(shot_id=sid, output_path='assets/images/candidates/' + slot + '.png')
             roles.append({'asset_id': slot, 'role': ('start_frame'
-                if motion['frame_input'] == {'asset_id': slot, 'role': 'start_frame'} else board['role'])})
-            assets.append({'id': slot, 'role': board['role'], 'cast_ids': copy.deepcopy(board['cast_ids'])})
+                if motion.get('frame_input') == {'asset_id': slot, 'role': 'start_frame'} else board['role']),
+                **({'time_seconds': board['time_seconds']} if 'time_seconds' in board else {})})
+            assets.append({'id': slot, 'role': board['role'], 'cast_ids': copy.deepcopy(board['cast_ids']),
+                **({'time_seconds': board['time_seconds']} if 'time_seconds' in board else {})})
             if 'upstream_source' in board:
                 assets[-1]['upstream_source'] = copy.deepcopy(board['upstream_source'])
+        if 'roles' in shot:
+            roles = copy.deepcopy(shot['roles'])
+        _validate_consumer_roles(roles)
         mappings.append({'shot_id': sid, 'roles': roles,
                          'video_dependencies': copy.deepcopy(shot['video_dependencies'])})
         contracts.append({'id': sid, **copy.deepcopy(motion),
-            'asset_ids': [r['asset_id'] for r in roles],
+            'asset_ids': list(dict.fromkeys(r['asset_id'] for r in roles)),
             'upstream': [{'shot_id': dep} for dep in shot['video_dependencies']],
             'review': unknown(sid, SHOT_PREDICATES)})
-        clean = {k: copy.deepcopy(v) for k, v in shot.items() if k not in {'boards', 'video_dependencies'}}
+        clean = {k: copy.deepcopy(v) for k, v in shot.items() if k not in {'boards', 'video_dependencies', 'roles'}}
         clean['motion'] = {k: v for k, v in clean['motion'].items() if k not in {'reference_mode', 'frame_input'}}
         shots.append(clean)
+    for asset in assets:
+        if asset['role'] == 'timed_keyframe' and 'time_seconds' not in asset:
+            consumers = [r for mapping in mappings for r in mapping['roles']
+                         if r['asset_id'] == asset['id'] and r['role'] == 'timed_keyframe']
+            if not consumers:
+                raise ValueError('timed board needs exact consumer time_seconds')
+            asset['time_seconds'] = consumers[0]['time_seconds']
     shared_roles = []
     if not isinstance(header['references'], list):
         raise ValueError('compact references must be an explicit list')
@@ -1704,3 +1755,196 @@ def prepare_package(project_dir, package_binding):
             for name in ('script', 'scene_plan', 'asset_manifest')],
         'motion_projection': projection,
         'motion_preflight': PACKAGE_PREFLIGHT}
+
+
+NATIVE_BOARD_ROLES = {'start_frame', 'end_frame', 'timed_keyframe', 'reference_image'}
+
+
+def _validate_consumer_roles(roles, *, require_timing=True):
+    if not isinstance(roles, list):
+        raise ValueError('consumer roles must be an ordered list')
+    seen = set()
+    for row in roles:
+        if (not isinstance(row, dict) or set(row) - {'asset_id', 'role', 'time_seconds'}
+                or not {'asset_id', 'role'} <= set(row) or not isinstance(row['asset_id'], str)
+                or not row['asset_id'].strip() or not isinstance(row['role'], str) or not row['role'].strip()):
+            raise ValueError('consumer requires exact asset_id, role and optional time_seconds')
+        key = (row['asset_id'], row['role'])
+        if key in seen:
+            raise ValueError('duplicate consumer asset/role')
+        seen.add(key)
+        if ('time_seconds' in row and row['role'] != 'timed_keyframe') or (require_timing and row['role'] == 'timed_keyframe' and 'time_seconds' not in row):
+            raise ValueError('time_seconds belongs to every timed_keyframe consumer only')
+        if 'time_seconds' in row:
+            _number(row['time_seconds'], 'consumer time_seconds')
+
+
+def build_video_request_templates(package, settings):
+    """Derive exact native inputs from existing board consumers, before image jobs.
+
+    Returns plain per-shot inputs with canonical $board sources. This pure
+    authoring projection grants no account, source-transfer or attempt authority.
+    Existing production preparation resolves/hashes/uploads those same sources.
+    """
+    from tools.tool_registry import registry
+    if not isinstance(settings, dict) or set(settings) - {'provider', 'preferred_provider', 'allowed_providers', 'model', 'mode', 'operation', 'resolution', 'aspect_ratio', 'native_params', 'allow_unknown_cost', 'timeout_seconds', 'openart_project_id'}:
+        raise ValueError('unsupported selected video setting')
+    package = _expand_compact_package(package) if 'authoring_form' in package or 'compact' in package else copy.deepcopy(package)
+    spec = package['boards']
+    nodes = {n['slot_id']: n for n in spec['image_nodes']}
+    references = {r['id']: r for r in spec['references']}
+    if len(nodes) != len(spec['image_nodes']) or len(references) != len(spec['references']) or nodes.keys() & references.keys():
+        raise ValueError('duplicate declared board source')
+    provider = settings.get('provider', settings.get('preferred_provider'))
+    if settings.get('preferred_provider', provider) != provider or settings.get('allowed_providers', [provider]) != [provider]:
+        raise ValueError('selected provider constraints conflict')
+    caps = registry.describe_video_inputs(provider, model=settings.get('model'),
+        mode=settings.get('mode'), operation=settings.get('operation'))
+    if caps['status'] != 'available':
+        raise ValueError('selected video inputs unavailable: ' + str(caps['blockers']))
+    mappings = {s['shot_id']: s for s in spec['shots']}
+    if len(mappings) != len(spec['shots']) or [s['id'] for s in package['shots']] != list(mappings):
+        raise ValueError('authored shots and native consumer mappings differ')
+    result = {}
+    for shot in package['shots']:
+        roles = copy.deepcopy(mappings[shot['id']]['roles'])
+        _validate_consumer_roles(roles)
+        if any(row['asset_id'] not in nodes and row['asset_id'] not in references for row in roles):
+            raise ValueError('unknown board role source')
+        if any(row['role'] not in NATIVE_BOARD_ROLES | {'identity_reference', 'identity', 'payoff_board', 'observed_outgoing_frame', 'voice_reference', 'reference_video', 'reference_audio'} for row in roles):
+            raise ValueError('unknown authored consumer role')
+        declared = [r for r in roles if r['role'] in NATIVE_BOARD_ROLES]
+        if any(r['role'] in {'reference_video', 'reference_audio'} for r in roles):
+            raise ValueError('selected image compiler cannot silently omit declared native media roles')
+        if provider == 'grok_cli' and not declared:
+            raise ValueError('Grok native operation requires at least one declared image consumer')
+        branches = caps['branches'] or [{'roles': caps['roles'], 'settings': caps['settings']}]
+        fits = []
+        for branch in branches:
+            valid = True
+            for role_name, capability in branch['roles'].items():
+                count = sum(r['role'] == role_name for r in declared)
+                if count and not capability['supported'] or capability['required'] and count < max(1, capability['minimum']) or count and count < capability['minimum'] or capability['maximum'] is not None and count > capability['maximum']:
+                    valid = False
+            if valid:
+                fits.append(branch)
+        if not fits:
+            raise ValueError('declared consumer roles are unsupported or violate exact native limits/branch')
+        duration = shot['duration_seconds']
+        for key, value in [('duration', duration), *[(k, settings[k]) for k in ('resolution', 'aspect_ratio') if k in settings]]:
+            schema = caps['settings'].get(key)
+            if schema is None:
+                schemas = [branch['settings'].get(key) for branch in fits]
+                if not any(schema is not None and Draft202012Validator(schema).is_valid(value) for schema in schemas):
+                    raise ValueError('unsupported selected native setting: ' + key)
+            elif not Draft202012Validator(schema).is_valid(value):
+                raise ValueError('unsupported selected native setting: ' + key)
+        timed = [r for r in declared if r['role'] == 'timed_keyframe']
+        timing = caps['roles']['timed_keyframe'].get('timing') or {}
+        last = None
+        for row in timed:
+            timestamp = row['time_seconds']
+            if not 0 < timestamp < duration or last is not None and timestamp - last < timing.get('minimum_spacing_seconds', 0):
+                raise ValueError('timed keyframe must be inside duration, increasing and correctly spaced')
+            last = timestamp
+        native = {k: copy.deepcopy(v) for k, v in settings.items() if k != 'provider' and not (provider == 'openart_mcp' and k in {'preferred_provider', 'allowed_providers'})}
+        native['duration'] = duration
+        native['operation'] = caps['operation']
+        def source(row):
+            return {'$board': {'asset_id': row['asset_id']}}
+        if caps['provider'] == 'grok_cli':
+            for role_name, field in (('start_frame', 'image_path'), ('end_frame', 'last_image_path')):
+                consumers = [r for r in declared if r['role'] == role_name]
+                if consumers:
+                    native[field] = source(consumers[0])
+            if timed:
+                native['keyframes'] = [{'image': source(row), 'timestamp_s': row['time_seconds']} for row in timed]
+            refs = [source(r) for r in declared if r['role'] == 'reference_image']
+            if refs:
+                native['reference_image_paths'] = refs
+        else:
+            from lib import openart_mcp as mcp
+            mapping = {'start_frame': 'first_frame', 'end_frame': 'last_frame', 'reference_image': 'reference_image'}
+            if len(declared) == 1 and declared[0]['role'] == 'start_frame':
+                native['image_path'] = source(declared[0])  # preserve the legacy start-only input layout
+            else:
+                native['input_assets'] = [{'role': mapping[row['role']], 'source_path': source(row)} for row in declared]
+            if native['operation'] == 'first_last_frame' and not {'start_frame', 'end_frame'} <= {r['role'] for r in declared}:
+                raise ValueError('first_last_frame requires explicit start/end consumers')
+            root = caps['root_schema']; props = mcp._properties(root)
+            params = copy.deepcopy(settings.get('native_params', {}))
+            if not isinstance(params, dict) or set(params) & {field for field, _ in mcp.ROLES.values()}:
+                raise ValueError('native media requires declared source-bound roles')
+            for key, field in (('duration', 'videoDuration' if 'videoDuration' in props else 'duration'),
+                               ('resolution', 'videoResolution' if 'videoResolution' in props else 'resolution'),
+                               ('aspect_ratio', 'videoAspectRatio' if 'videoAspectRatio' in props else 'aspectRatio')):
+                if key == 'duration' or key in settings:
+                    value = duration if key == 'duration' else settings[key]
+                    if field in params and params[field] != value:
+                        raise ValueError('conflicting native/public setting ' + key)
+                    params[field] = value
+            params['sceneDescription' if 'sceneDescription' in props else 'prompt'] = shot['action']
+            for row in declared:
+                field = caps['roles'][row['role']]['native_field']
+                schema = props[field]
+                ref = mcp._project_reference({'id': 'planned-source', 'type': 'image', 'url': 'https://planned.invalid/source.png', 'label': 'planned source'}, schema.get('items', schema))
+                if field == 'visualReferences':
+                    params.setdefault(field, []).append(ref)
+                else:
+                    params[field] = ref
+            errors = list(mcp._validator(root).iter_errors(params))
+            if errors:
+                raise ValueError('native settings/roles violate exact selected form: ' + errors[0].message)
+            if 'videoCount' in params and (type(params['videoCount']) is not int or params['videoCount'] != 1):
+                raise ValueError('one governed shot requires videoCount exactly one')
+        result[shot['id']] = native
+    return result
+
+
+def _replay_reference_projection(root, shot_id, scene_plan, references, retained, contract):
+    """Reconstruct saved consumer metadata from exact original package semantics.
+
+    The retained row selects the old/new representation only. Source bytes,
+    cast and review hashes are independently rebuilt; roles/times must be in
+    the original hash-bound package. Older packets remain byte-identical.
+    """
+    original = {row['id']: row for row in references}
+    if {row['id'] for row in retained} != set(original):
+        raise ValueError('retained source reference IDs differ from canonical original')
+    binding = scene_plan.get('metadata', {}).get('package')
+    consumers, compact = [], False
+    if binding:
+        from lib import production_images as images
+        package = json.loads(images._bound_file(root, binding, 'original production package').read_text())
+        compact = package.get('authoring_form') == COMPACT_AUTHORING_FORM
+        spec = _expand_compact_package(package)['boards'] if compact else package['boards']
+        consumers = [role for shot in spec['shots'] if shot['shot_id'] == shot_id for role in shot['roles']]
+    assets = {asset['id']: asset for asset in contract['assets']}
+    output = []
+    for saved in retained:
+        base = original[saved['id']]
+        if any(saved.get(key) != base[key] for key in ('cast_ids', 'sha256', 'review_sha256')):
+            raise ValueError('retained source reference bytes/cast/review differ')
+        declared = [role for role in consumers if role['asset_id'] == saved['id'] and role['role'] == saved['role']]
+        if saved['role'] != base['role'] and not declared:
+            raise ValueError('retained native role lacks exact original consumer declaration')
+        row = {**base, 'role': saved['role']}
+        if 'time_seconds' in saved:
+            timestamp = saved['time_seconds']
+            declared_times = [role['time_seconds'] for role in declared if 'time_seconds' in role]
+            if (saved['role'] != 'timed_keyframe' or (timestamp not in declared_times if declared_times
+                    else assets[saved['id']].get('time_seconds') != timestamp)):
+                raise ValueError('retained keyframe time differs from original declaration')
+            row['time_seconds'] = timestamp
+        if 'native_required' in saved:
+            required = saved['native_required']
+            native_consumers = [role for role in consumers if role['asset_id'] == saved['id'] and role['role'] in NATIVE_BOARD_ROLES]
+            if (not compact or type(required) is not bool
+                    or required and (saved['role'] != 'end_frame' or not declared)
+                    or not required and (saved['role'] != 'payoff_board' or native_consumers)):
+                raise ValueError('retained native requirement differs from original compact consumer')
+            row['native_required'] = required
+        if set(saved) != set(row):
+            raise ValueError('retained reference fields differ from supported original projection')
+        output.append(row)
+    return output

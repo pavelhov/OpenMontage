@@ -95,6 +95,13 @@
               "review_sha256": {
                 "type": "string",
                 "pattern": "^[a-f0-9]{64}$"
+              },
+              "time_seconds": {
+                "type": "number",
+                "exclusiveMinimum": 0
+              },
+              "native_required": {
+                "type": "boolean"
               }
             }
           }

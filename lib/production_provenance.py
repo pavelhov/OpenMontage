@@ -894,7 +894,7 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
             and scope.get('story_revision') == story_revision, 'current scope identity/approval differs')
     evidence = execution._inside(scope['evidence']['path'], root)
     require(file_sha256(evidence) == scope['evidence']['sha256'], 'approval evidence bytes differ')
-    source = None if _historical_source else preparation._historical_source_packet(root, shot_id, provider='openart_mcp', native=native)
+    source = None
     profile = connector.load_profile(native['model'], native['mode'], require='candidate' if retained['purpose'] == 'qualification' else 'qualified')
     # Historical preparation is replayed against its original immutable source
     # packet. Later upstream observations may change the global contract hash;
@@ -916,6 +916,9 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
     frozen_contract = frozen_artifact('shot_contract')
     current_contract = execution.load_shot_contract(root)
     packet = snapshot['source_packet']
+    if not _historical_source:
+        source = preparation._historical_source_packet(root, shot_id, provider='openart_mcp', native=native,
+            reference_bindings=packet['binding']['references'])
     frozen_shots = [item for item in frozen_contract['shots'] if item['id'] == shot_id]
     require(len(frozen_shots) == 1 and frozen_shots[0] == packet['shot'], 'frozen source shot differs')
     from lib.shot_contract import shot_local, shot_review_subject
@@ -997,7 +1000,7 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
                     'current MCP static reference review/bytes changed')
         source = preparation._original_source_packet(root, shot_id, native=native,
             contract=frozen_contract, selected=historical_selected,
-            script=frozen_script, scene_plan=frozen_scene_plan)
+            script=frozen_script, scene_plan=frozen_scene_plan, reference_bindings=packet['binding']['references'])
     require(preparation.digest(snapshot['scope']) == authority['scope_sha256'], 'frozen scope differs')
     stable = set(packet['binding']) - {'contract_sha256', 'reviews_sha256'}
     require(set(source['binding']) == set(packet['binding'])

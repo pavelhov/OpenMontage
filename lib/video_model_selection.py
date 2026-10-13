@@ -601,3 +601,97 @@ def request_delta(original, proposed):
     return {key: {"before": deepcopy(original.get(key)), "after": deepcopy(proposed.get(key))}
             for key in sorted(set(original) | set(proposed))
             if key not in ignored and original.get(key) != proposed.get(key)}
+
+
+def describe_video_inputs(provider, model=None, mode=None, operation=None):
+    """Read one exact route's native image contract; never refresh or authorize it."""
+    result = {'provider': provider, 'tool': None, 'model': model, 'model_policy': 'exact',
+              'mode': mode, 'operation': operation, 'status': 'unavailable', 'roles': {},
+              'settings': {}, 'branches': [], 'root_schema': None, 'readiness': {},
+              'provenance': {}, 'blockers': [], 'authority': 'none'}
+    def role(supported=False, required=False, native_field=None, minimum=0, maximum=None, timing=None):
+        return {'supported': supported, 'required': required, 'native_field': native_field,
+                'minimum': minimum, 'maximum': maximum,
+                'maximum_status': 'known' if maximum is not None else 'unknown', 'timing': timing}
+    result['roles'] = {name: role() for name in ('start_frame', 'end_frame', 'timed_keyframe', 'reference_image')}
+    try:
+        if provider == 'grok_cli':
+            from tools.video.grok_cli_video import GrokCLIVideo, _PINNED_FRAME_OPERATIONS
+            from tools._grok_cli_media import MODEL_PROVENANCE, FRAME_PIN_MIN_CLI_VERSION, MIN_CLI_VERSION
+            if model is not None or mode is not None:
+                raise ValueError('Grok CLI media model/mode is managed and unreported; no selection is exposed')
+            operation = operation or 'image_to_video'
+            if operation not in {'image_to_video', *_PINNED_FRAME_OPERATIONS}:
+                raise ValueError('unsupported Grok CLI operation')
+            props = GrokCLIVideo.input_schema['properties']
+            pinned = operation in _PINNED_FRAME_OPERATIONS
+            result.update(tool=GrokCLIVideo.name, operation=operation, model_policy='cli_managed_unreported')
+            result['roles']['start_frame'] = role(True, operation != 'reference_to_video', 'first_frame' if pinned else 'image', int(operation != 'reference_to_video'), 1)
+            result['roles']['end_frame'] = role(pinned, operation == 'first_last_frame', 'last_frame', int(operation == 'first_last_frame'), 1 if pinned else 0)
+            result['roles']['timed_keyframe'] = role(pinned, False, 'keyframes', 0, props['keyframes']['maxItems'] if pinned else 0,
+                {'field': 'timestamp_s', 'strictly_inside_duration': True, 'strictly_increasing': True, 'minimum_spacing_seconds': 1 / 3})
+            result['roles']['reference_image'] = role(pinned, False, 'images', 0, props['reference_image_paths']['maxItems'] if pinned else 0)
+            result['settings'] = {key: deepcopy(props[key]) for key in ('duration', 'resolution', 'aspect_ratio')}
+            if not pinned:
+                result['settings']['duration'] = {'type': 'integer', 'enum': [6, 10]}
+                result['settings'].pop('aspect_ratio')
+            result['provenance'] = {**MODEL_PROVENANCE, 'adapter_version': GrokCLIVideo.version,
+                                    'minimum_cli_version': FRAME_PIN_MIN_CLI_VERSION if pinned else MIN_CLI_VERSION}
+            result['readiness'] = {'status': 'dispatch_checked_separately', 'production_ready': None}
+        elif provider == 'openart_mcp':
+            from lib import openart_mcp as mcp
+            if not model or not mode:
+                raise ValueError('exact OpenArt model and mode required')
+            profile = mcp.load_profile(model, mode, require='supported')
+            expected = mcp.OPERATIONS.get(mode)
+            operation = operation or expected
+            if operation != expected and not (mode == 'image2video' and operation == 'first_last_frame'):
+                raise ValueError('operation differs from exact OpenArt mode')
+            root = deepcopy(profile['native_capabilities']['root_schema'])
+            # Keep alternatives separate. The root is retained intact for final
+            # validation; the overview never combines alternative native fields.
+            def alternatives(schema):
+                base = {k: deepcopy(v) for k, v in schema.items() if k not in {'oneOf', 'anyOf', 'allOf'}}
+                rows = [base]
+                for child in schema.get('allOf', []):
+                    rows = [merge(a, b) for a in rows for b in alternatives(child)]
+                for keyword in ('oneOf', 'anyOf'):
+                    if keyword in schema:
+                        rows = [merge(a, b) for a in rows for child in schema[keyword] for b in alternatives(child)]
+                return rows
+            def merge(a, b):
+                out = {**a, **b, 'properties': {**a.get('properties', {}), **b.get('properties', {})},
+                       'required': list(dict.fromkeys(a.get('required', []) + b.get('required', [])))}
+                return out
+            branches = []
+            fields = {'start_frame': 'startFrame', 'end_frame': 'endFrame', 'reference_image': 'visualReferences'}
+            for schema in alternatives(root):
+                props = schema.get('properties', {})
+                roles = {name: role() for name in result['roles']}
+                for name, field in fields.items():
+                    spec = props.get(field)
+                    cap = profile['native_capabilities']['roles'].get({'start_frame':'first_frame', 'end_frame':'last_frame'}.get(name, name), {})
+                    supported = spec is not None and cap.get('supported') is True
+                    spec = spec if isinstance(spec, dict) else {}
+                    required = field in schema.get('required', []) and not mcp._validator(spec).is_valid(None)
+                    minimum = spec.get('minItems', 0) if field == 'visualReferences' else int(required)
+                    maximum = spec.get('maxItems') if field == 'visualReferences' else (1 if supported else 0)
+                    roles[name] = role(supported, required, field, minimum, maximum)
+                branches.append({'roles': roles, 'settings': {key: deepcopy(props[native]) for key, native in
+                    (('duration', 'videoDuration' if 'videoDuration' in props else 'duration'), ('resolution', 'videoResolution' if 'videoResolution' in props else 'resolution'), ('aspect_ratio', 'videoAspectRatio' if 'videoAspectRatio' in props else 'aspectRatio')) if native in props}, 'schema': schema})
+            result.update(tool='openart_mcp_video', operation=operation, root_schema=root, branches=branches)
+            for name in result['roles']:
+                supported = [b['roles'][name] for b in branches if b['roles'][name]['supported']]
+                if supported:
+                    result['roles'][name] = deepcopy(supported[0])
+                    result['roles'][name]['required'] = all(b['roles'][name]['required'] for b in branches)
+                    result['roles'][name]['branches'] = [i for i, b in enumerate(branches) if b['roles'][name]['supported']]
+            result['settings'] = deepcopy(branches[0]['settings']) if len(branches) == 1 else {}
+            result['readiness'] = deepcopy(profile.get('readiness', {'production_ready': profile.get('production_ready')}))
+            result['provenance'] = {key: deepcopy(profile.get(key)) for key in ('profile_sha256', 'form_sha256', 'schema_observation_sha256', 'account_uid_sha256', 'source', 'observation_provenance')}
+        else:
+            raise ValueError('selected provider has no factory image-input descriptor')
+        result['status'] = 'available'
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        result['blockers'] = [{'code': getattr(exc, 'kind', 'selected_route_unavailable'), 'message': str(exc)}]
+    return result

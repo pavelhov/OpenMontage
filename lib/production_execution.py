@@ -197,6 +197,13 @@ def _paths(inputs, root, visitor, *, allow_upstream=False):
             for item in value:
                 if not isinstance(item, dict) or item.get('role') not in names or not item.get('source_path'):
                     _fail('input_assets requires an explicit supported role and local source_path')
+                if allow_upstream and isinstance(item['source_path'], dict) and '$board' in item['source_path']:
+                    from lib.shot_contract import shot_local
+                    if not shot_local(load_shot_contract(root)):
+                        _fail('declared board inputs require prospective shot-local planning')
+                    _board_binding(item['source_path'])
+                    result.append(copy.deepcopy(item))
+                    continue
                 source = _inside(item['source_path'], root)
                 if not source.is_file():
                     _fail('input_assets source bytes missing from role binding')
@@ -643,7 +650,8 @@ def _check_motion_inputs(contract, shot_id, inputs, root, *, policy_composite=Fa
                  'identity_reference': {'reference_image_paths','images'},
                  'reference_image': {'reference_image_paths','images'},
                  'reference_video': {'reference_video_paths','reference_video_path'},
-                 'reference_audio': {'reference_audio_paths','reference_audio_path'}}
+                 'reference_audio': {'reference_audio_paths','reference_audio_path'},
+                 'timed_keyframe': {'image'}}
     guided = shot.get('reference_mode', contract.get('reference_mode')) == 'reference_guided'
     # Eligibility has already validated these boards' bytes, cast-identity
     # reviews and upstream provenance. Only an exact native pair can carry
@@ -664,9 +672,11 @@ def _check_motion_inputs(contract, shot_id, inputs, root, *, policy_composite=Fa
     for asset_id in submitted_asset_ids:
         asset = assets[asset_id]
         keys = role_keys.get(asset['role'])
+        if shot.get('frame_input', {}).get('asset_id') == asset_id:
+            keys = role_keys['start_frame']
         if guided and asset['role'] in {'start_frame', 'end_frame'}:
             keys = None  # explicit reviewed targets; required native pins validate at preparation
-        if asset['role'] == 'end_frame' and not (
+        if asset['role'] == 'end_frame' and shot.get('frame_input', {}).get('asset_id') != asset_id and not (
                 inputs.get('operation') == 'first_last_frame' or inputs.get('endpoint_requirement_id')
                 or inputs.get('last_frame') or inputs.get('last_image_path')):
             keys = None  # reviewed ending target; canonical required native pins validate separately
@@ -679,6 +689,21 @@ def _check_motion_inputs(contract, shot_id, inputs, root, *, policy_composite=Fa
             keys = None  # exact reviewed native start/end pins carry the declared cast
         if keys and not any(key in keys and digest == asset['sha256'] for key, digest in actual):
             _fail(f'shot {shot_id}: submitted inputs omit or change {asset["role"]} {asset_id}')
+    from lib import production_boards as boards
+    consumers = []
+    if (root / boards.ARTIFACT).exists():
+        consumers = [role for row in boards.load_board_pack(root)['specification']['shots']
+                     if row['shot_id'] == shot_id for role in row['roles']]
+    for asset_id in shot['asset_ids']:
+        asset = assets[asset_id]
+        times = [role['time_seconds'] for role in consumers if role['asset_id'] == asset_id and role['role'] == 'timed_keyframe']
+        if not times and asset['role'] == 'timed_keyframe' and not any(role['asset_id'] == asset_id for role in consumers):
+            times = [asset.get('time_seconds')]
+        if any(not any(
+                isinstance(frame, dict) and frame.get('timestamp_s') == timestamp
+                and isinstance(frame.get('image'), str) and _input_sha256(_inside(frame['image'], root)) == asset['sha256']
+                for frame in inputs.get('keyframes', [])) for timestamp in times):
+            _fail('submitted timed keyframe source/time differs from shot contract')
     approved_hashes = {assets[item]['sha256'] for item in submitted_asset_ids}
     if any(digest not in approved_hashes for key, digest in actual):
         _fail('submitted inputs contain an unapproved asset')

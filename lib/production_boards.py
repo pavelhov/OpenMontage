@@ -227,6 +227,9 @@ def _validate_spec(root, spec):
         visited.add(slot)
     for slot in nodes:
         visit(slot)
+    from lib.production_request import _validate_consumer_roles
+    for shot in spec['shots']:
+        _validate_consumer_roles(shot['roles'], require_timing=False)
     declarations = spec.get("shared_roles", []) + [role for shot in spec["shots"] for role in shot["roles"]]
     if any(role["asset_id"] not in nodes and role["asset_id"] not in references for role in declarations):
         raise ValueError("unknown board role source")
@@ -323,7 +326,7 @@ def _validate_spec(root, spec):
                         or frame["asset_id"] not in shot["asset_ids"]):
                     raise ValueError("frame-conditioned motion needs one exact existing consumer starting role")
                 starting = next(a for a in assets if a["id"] == frame["asset_id"])
-                if starting["role"] not in {"start_frame", "payoff_board"} or set(starting["cast_ids"]) != set(shot["cast_ids"]):
+                if set(starting["cast_ids"]) != set(shot["cast_ids"]):
                     raise ValueError("frame-conditioned starting composition needs exact declared cast")
             elif "frame_input" in shot:
                 raise ValueError("frame_input requires explicit frame_conditioned treatment")
@@ -362,6 +365,13 @@ def _motion_template_for_plan(spec, plan):
         if key in template and template[key] != plan["metadata"][key]:
             raise ValueError("motion template has a stale " + key + " binding")
         template[key] = plan["metadata"][key]
+    for asset in template['assets']:
+        if asset['role'] == 'timed_keyframe' and 'time_seconds' not in asset:
+            consumers = [role for shot in spec['shots'] for role in shot['roles']
+                         if role['asset_id'] == asset['id'] and role['role'] == 'timed_keyframe']
+            if not consumers:
+                raise ValueError('timed board requires an explicit timed consumer')
+            asset['time_seconds'] = consumers[0]['time_seconds']
     cards = plan.get("metadata", {}).get("visual_development", {}).get("shot_cards", {})
     for shot, scene in zip(template["shots"], plan["scenes"]):
         values = {"dominant_action": scene["description"],

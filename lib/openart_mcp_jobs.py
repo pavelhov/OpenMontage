@@ -391,12 +391,26 @@ def _capture_evidence(root,inputs,native,authority):
     if subject != packet['binding']['contract_sha256']:
         _fail('evidence_changed','contract changed while capturing reference evidence')
     reference_hashes={}
+    consumer_roles = []
+    board_path = root / 'artifacts/board_preparation.json'
+    if board_path.exists():
+        from lib import production_boards as boards
+        pack = boards.load_board_pack(root)
+        consumer_roles = [role for shot in pack['specification']['shots']
+                          if shot['shot_id'] == authority['shot_id'] for role in shot['roles']]
+        if pack.get('package_binding'):
+            from lib import production_images as images
+            paths.append(images._bound_file(root, pack['package_binding'], 'production package'))
     for row in packet['binding'].get('references',[]):
         matches=[asset for asset in contract['assets'] if asset['id']==row['id']]
         if len(matches)!=1:
             _fail('evidence_changed','source reference asset missing or ambiguous')
         asset=matches[0];path=_inside(root,asset['path'])
-        if (any(asset[key]!=row[key] for key in ('role','cast_ids','sha256'))
+        role_bound = asset['role'] == row['role'] or any(
+            role['asset_id'] == asset['id'] and role['role'] == row['role']
+            and ('time_seconds' not in row or role.get('time_seconds') == row['time_seconds'])
+            for role in consumer_roles)
+        if (not role_bound or any(asset[key]!=row[key] for key in ('cast_ids','sha256'))
                 or review_digest(asset['review'])!=row['review_sha256']
                 or not path.is_file() or file_sha256(path)!=row['sha256']):
             _fail('evidence_changed','source reference binding or bytes changed')

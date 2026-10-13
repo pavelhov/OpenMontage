@@ -1155,3 +1155,181 @@ def test_shootable_tamper_is_detected(tmp_path, field):
     rereviewed = request.compile_prompt(root, 'entry')  # re-reviewed edit binds a new contract digest
     assert rereviewed['source_binding']['contract_sha256'] != original['source_binding']['contract_sha256']
     assert rereviewed['prompt'] != original['prompt']
+
+
+def test_compact_native_templates_preserve_timed_and_shared_consumers(neutral_package):
+    from tests.lib.test_production_package_authoring import packages
+    root, base, bind = neutral_package
+    compact, _ = packages(base)
+    first, second = compact['shots']
+    first['duration_seconds'] = second['duration_seconds'] = 6
+    boundary = copy.deepcopy(first['boards'][0]); boundary.update(slot_id='boundary', role='end_frame')
+    middle = copy.deepcopy(first['boards'][0]); middle.update(slot_id='middle', role='timed_keyframe', time_seconds=2)
+    first['boards'] += [boundary, middle]
+    first['roles'] = [{'asset_id': 's1-start', 'role': 'start_frame'},
+                      {'asset_id': 'boundary', 'role': 'end_frame'},
+                      {'asset_id': 'middle', 'role': 'timed_keyframe', 'time_seconds': 2}]
+    second['motion']['frame_input'] = {'asset_id': 'boundary', 'role': 'start_frame'}
+    second['roles'] = [{'asset_id': 'boundary', 'role': 'start_frame'}]
+    expanded = request._expand_compact_package(compact)
+    assert len(expanded['boards']['image_nodes']) == 4
+    assert expanded['boards']['shots'][0]['roles'][-1]['time_seconds'] == 2
+    templates = request.build_video_request_templates(compact, {'provider': 'grok_cli', 'operation': 'reference_to_video', 'resolution': '720p'})
+    assert templates['s1']['last_image_path'] == templates['s2']['image_path'] == {'$board': {'asset_id': 'boundary'}}
+    assert templates['s1']['keyframes'] == [{'image': {'$board': {'asset_id': 'middle'}}, 'timestamp_s': 2}]
+    request.compile_package(root, bind(compact))
+
+
+@pytest.mark.parametrize('defect', [None, 'missing_end', 'end_role', 'end_hash', 'missing_middle', 'middle_time', 'extra_middle_time'])
+def test_native_consumers_bind_exact_end_and_timed_sources(tmp_path, defect):
+    from tests.lib.test_production_images import PNG
+    from lib.shot_contract import file_sha256
+    from tools.video.grok_cli_video import build_native_video_request
+    paths = []
+    for index in range(7):
+        path = tmp_path / (str(index) + '.png'); path.write_bytes(PNG)
+        paths.append(str(path))
+    inputs = {'prompt': 'SYNTHETIC exact declared native roles', 'duration': 6, 'resolution': '720p',
+              'operation': 'first_last_frame', 'image_path': paths[0], 'last_image_path': paths[1],
+              'keyframes': [{'image': paths[i+2], 'timestamp_s': i+1} for i in range(4)],
+              'reference_image_paths': [paths[6]]}
+    native = {'provider': 'grok_cli', 'request': build_native_video_request(inputs, adapter_version='SYNTHETIC')}
+    submitted = [{'role': a['role'], 'source_path': a['path'], 'source_sha256': a['sha256'],
+                  **({'timestamp_s': a['timestamp_s']} if 'timestamp_s' in a else {})}
+                 for a in native['request']['input_assets']]
+    # Unique source hashes are not required: one image can intentionally serve
+    # different declared times/roles. Membership must still bind role and time.
+    refs = [{'id': 'end', 'role': 'end_frame', 'sha256': file_sha256(paths[1]), 'native_required': True},
+            *[{'id': 'middle'+str(i), 'role': 'timed_keyframe', 'sha256': file_sha256(paths[i+2]), 'time_seconds': i+1} for i in range(4)],
+            {'id': 'ref', 'role': 'reference_image', 'sha256': file_sha256(paths[6])}]
+    packet = {'binding': {'references': refs, 'frame_input': {'asset_id': 'start', 'sha256': file_sha256(paths[0]), 'path': paths[0]}}}
+    if defect == 'missing_end': submitted = [a for a in submitted if a['role'] != 'last_frame']
+    if defect == 'end_role': next(a for a in submitted if a['role'] == 'last_frame')['role'] = 'reference'
+    if defect == 'end_hash': next(a for a in submitted if a['role'] == 'last_frame')['source_sha256'] = 'f'*64
+    if defect == 'missing_middle': submitted = [a for a in submitted if a.get('timestamp_s') != 2]
+    if defect == 'middle_time': next(a for a in submitted if a.get('timestamp_s') == 2)['timestamp_s'] = 2.5
+    if defect == 'extra_middle_time': submitted.append({'role': 'keyframe', 'source_path': paths[2], 'source_sha256': file_sha256(paths[2]), 'timestamp_s': 2.5})
+    if defect:
+        with pytest.raises(ValueError): request._validate_frame_native(packet, native, submitted=submitted)
+    else:
+        request._validate_frame_native(packet, native, submitted=submitted)
+        assert native['request']['arguments']['keyframes'] == [{'image': paths[i+2], 'timestamp_s': i+1} for i in range(4)]
+        assert native['request']['arguments']['images'] == [paths[6]]
+
+
+def test_openart_planning_retains_nested_board_sources(neutral_package):
+    from tests.lib.test_production_package_authoring import packages
+    from lib import production_execution as execution
+    root, base, bind = neutral_package
+    package, _ = packages(base)
+    request.prepare_package(root, bind(package))
+    inputs = {'duration': 6, 'input_assets': [{'role': 'first_frame', 'source_path': {'$board': {'asset_id': 's1-start'}}}]}
+    template = execution.planned_request_template(inputs, project_dir=root)
+    assert template == {'inputs': inputs, 'static_input_assets': []}
+    before = {p: p.read_bytes() for p in root.rglob('*') if p.is_file()}
+    with pytest.raises(ValueError): execution.approved_request_digest(template, project_dir=root)
+    assert {p: p.read_bytes() for p in root.rglob('*') if p.is_file()} == before
+
+
+@pytest.mark.parametrize('defect', [None, 'role', 'time', 'hash', 'omitted'])
+def test_original_reference_projection_preserves_old_and_new_bytes(neutral_package, defect):
+    from tests.lib.test_production_package_authoring import packages
+    root, base, bind = neutral_package
+    package, _ = packages(base)
+    package['shots'][0]['roles'] = [{'asset_id': 's1-start', 'role': 'reference_image'}]
+    binding = bind(package)
+    scene = {'metadata': {'package': binding}}
+    original = [{'id': 's1-start', 'role': 'start_frame', 'cast_ids': [], 'sha256': 'a'*64, 'review_sha256': 'b'*64}]
+    contract = {'assets': [{'id': 's1-start', 'role': 'start_frame'}]}
+    legacy = copy.deepcopy(original)
+    assert request._replay_reference_projection(root, 's1', scene, original, legacy, contract) == legacy
+    saved = copy.deepcopy(original); saved[0]['role'] = 'reference_image'
+    if defect == 'role': saved[0]['role'] = 'end_frame'
+    if defect == 'time': saved[0]['time_seconds'] = 2
+    if defect == 'hash': saved[0]['sha256'] = 'c'*64
+    if defect == 'omitted': saved = []
+    if defect:
+        with pytest.raises(ValueError): request._replay_reference_projection(root, 's1', scene, original, saved, contract)
+    else:
+        assert request._replay_reference_projection(root, 's1', scene, original, saved, contract) == saved
+
+
+@pytest.mark.parametrize('field,changed', [('role', 'reference_image'), ('time_seconds', 3), ('native_required', True)])
+def test_retained_consumer_metadata_cannot_expand_original_package(neutral_package, field, changed):
+    from tests.lib.test_production_package_authoring import packages
+    root, base, bind = neutral_package
+    package, _ = packages(base)
+    package['shots'][0]['roles'] = [{'asset_id': 's1-start', 'role': 'timed_keyframe', 'time_seconds': 2}]
+    original = [{'id': 's1-start', 'role': 'start_frame', 'cast_ids': [], 'sha256': 'a'*64, 'review_sha256': 'b'*64}]
+    saved = [{**original[0], 'role': 'timed_keyframe', 'time_seconds': 2}]
+    scene = {'metadata': {'package': bind(package)}}
+    contract = {'assets': [{'id': 's1-start', 'role': 'start_frame'}]}
+    assert request._replay_reference_projection(root, 's1', scene, original, saved, contract) == saved
+    saved[0][field] = changed
+    with pytest.raises(ValueError): request._replay_reference_projection(root, 's1', scene, original, saved, contract)
+
+
+def test_shared_timed_image_keeps_each_consumers_timestamp(neutral_package):
+    from tests.lib.test_production_package_authoring import packages
+    from tests.lib.test_production_images import PNG
+    from lib import production_execution as execution
+    root, base, bind = neutral_package
+    package, _ = packages(base)
+    first, second = package['shots']; first['duration_seconds'] = 6; second['duration_seconds'] = 2
+    node = copy.deepcopy(first['boards'][0]); node.update(slot_id='shared-middle', role='timed_keyframe')
+    first['boards'].append(node)
+    first['roles'] = [{'asset_id':'s1-start','role':'start_frame'}, {'asset_id':'shared-middle','role':'timed_keyframe','time_seconds':3}]
+    second['roles'] = [{'asset_id':'s2-start','role':'start_frame'}, {'asset_id':'shared-middle','role':'timed_keyframe','time_seconds':1}]
+    templates = request.build_video_request_templates(package, {'provider':'grok_cli','operation':'reference_to_video','resolution':'720p'})
+    assert templates['s1']['keyframes'][0]['timestamp_s'] == 3
+    assert templates['s2']['keyframes'][0]['timestamp_s'] == 1
+    request.prepare_package(root, bind(package))
+    contract = execution.load_shot_contract(root)
+    for asset in contract['assets']:
+        path = root / ('assets/' + asset['id'] + '.png'); path.write_bytes(PNG)
+        asset.update(path=str(path.relative_to(root)), sha256=hashlib.sha256(PNG).hexdigest())
+    assert next(a for a in contract['assets'] if a['id'] == 'shared-middle')['time_seconds'] == 3
+    inputs = {'duration':2, 'operation':'reference_to_video', 'image_path':str(root/'assets/s2-start.png'),
+              'keyframes':[{'image':str(root/'assets/shared-middle.png'),'timestamp_s':1}]}
+    execution._check_motion_inputs(contract, 's2', inputs, root)
+    inputs['keyframes'][0]['timestamp_s'] = 3
+    with pytest.raises(ValueError, match='source/time'): execution._check_motion_inputs(contract, 's2', inputs, root)
+
+
+def test_compact_guided_payoff_stays_semantic_without_native_consumer(neutral_package, monkeypatch):
+    from tests.lib.test_production_package_authoring import packages
+    from tests.lib.test_production_images import PNG
+    from lib import production_execution as execution
+    root, base, bind = neutral_package
+    package, _ = packages(base)
+    for shot in package['shots']:
+        shot['motion']['reference_mode'] = 'reference_guided'; shot['motion'].pop('frame_input')
+    package['shots'][0]['roles'] = [{'asset_id':'s1-start','role':'reference_image'}, {'asset_id':'s2-start','role':'payoff_board'}]
+    package['shots'][1]['roles'] = [{'asset_id':'s1-start','role':'reference_image'}, {'asset_id':'s2-start','role':'payoff_board'}]
+    request.prepare_package(root, bind(package))
+    contract = execution.load_shot_contract(root)
+    for asset in contract['assets']:
+        path = root / ('assets/' + asset['id'] + '.png'); path.write_bytes(PNG)
+        asset.update(path=str(path.relative_to(root)), sha256=hashlib.sha256(PNG).hexdigest())
+    write(root/'artifacts/shot_contract.json', contract)
+    for asset in contract['assets']:
+        asset['review'] = copy.deepcopy(contract['project_review'])
+        asset['review']['subject_sha256'] = asset['sha256']
+    write(root/'artifacts/shot_contract.json', contract)
+    monkeypatch.setattr(request, 'validate_shot_contract', lambda *a, **kw: {'eligible':True,'errors':[]})
+    from lib import shot_contract
+    monkeypatch.setattr(shot_contract, '_validate_original_shot_contract', lambda *a, **kw: {'eligible':True,'errors':[]})
+    packet = request.source_packet(root, 's1', provider='openart_mcp', check_native_controls=False)
+    payoff = next(r for r in packet['binding']['references'] if r['id'] == 's2-start')
+    assert payoff['role'] == 'payoff_board' and payoff['native_required'] is False
+    native = {'provider':'openart_mcp', 'mode':'element2video', 'input_assets':[{'role':'reference_image', 'source_sha256':contract['assets'][0]['sha256']}]}
+    request.validate_openart_asset_roles(packet, native)
+    replay = request._historical_source_packet(root, 's1', provider='openart_mcp', check_native_controls=False,
+        reference_bindings=packet['binding']['references'])
+    assert replay['binding']['references'] == packet['binding']['references']
+    package['shots'][0]['roles'].append({'asset_id':'s2-start','role':'end_frame'})
+    changed = bind(package)
+    scene = {'metadata':{'package':changed}}
+    original = [{k:v for k,v in payoff.items() if k != 'native_required'}]
+    with pytest.raises(ValueError, match='native requirement'):
+        request._replay_reference_projection(root, 's1', scene, original, [payoff], contract)
