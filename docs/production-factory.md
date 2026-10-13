@@ -9,7 +9,11 @@ projects. Generic pipelines keep their own stage, review, approval and route rul
 
 The producer writes one complete plan, prepares its declared images, requests one
 video per planned slot, collects those original jobs and assembles the playable
-results in story order. Each clip uses every declared supported image input. Adjacent shots
+results in story order. Follow the action returned by `make_video`, `advance` or
+`complete_action` immediately: once a clip's declared images are ready, prepare
+and dispatch it before unrelated boards, then prepare other images while originals
+render. Do not wait for every episode image before the first video request.
+Each clip uses every declared supported image input. Adjacent shots
 may share prepared boundary-photo bytes when that is what the plan declares; this
 does not make an unsupported native frame pin available. Unsupported required
 controls block the affected slot before dispatch.
