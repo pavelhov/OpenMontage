@@ -96,6 +96,114 @@ def test_actual_compile_policy_prepare_begin_at_single_attempt_cap(lifecycle):
         pa.derive_scope(root, inputs, provider='openart_mcp')
 
 
+def selector_frame_fixture(neutral_package, monkeypatch, *, retained_selector=False):
+    from lib import openart_mcp as mcp, openart_mcp_jobs as jobs
+    from tests.lib.test_production_factory import prepared_frame_shapes, write
+    activate = pa.activate_standing_run
+    def activate_selector_templates(root, **kwargs):
+        # Author the isolated fixture's canonical roles before genuine activation.
+        for index, baseline in enumerate(kwargs['baselines'].values()):
+            template = copy.deepcopy(baseline['planned_request_template']['inputs'])
+            source = template.pop('image_path')
+            template['input_assets'] = [{'role': 'first_frame', 'source_path': source,
+                **({'upload_id': 'frame-ready-' + str(index)} if retained_selector else {})}]
+            baseline['planned_request_template'] = execution.planned_request_template(template, project_dir=root)
+        return activate(root, **kwargs)
+    monkeypatch.setattr(pa, 'activate_standing_run', activate_selector_templates)
+    root, prepared = prepared_frame_shapes(neutral_package, monkeypatch, 'openart_mcp', public_layout=True)
+    monkeypatch.setattr(mcp, '_ALLOW_FIXTURE_PRODUCTION', True)
+    inputs, native, profile, compiled, review = prepared['s1']
+    inputs = copy.deepcopy(inputs)
+    inputs['input_assets'] = [{'role': 'first_frame', 'source_path': inputs.pop('image_path'),
+        'upload_id': native['input_assets'][0]['upload_id']}]
+    authority = json.loads((root / 'artifacts/openart_mcp_upload_authorization-frame-fixture.json').read_text())
+    authority['files'] = authority['files'][:1]
+    write(root, 'artifacts/openart_mcp_upload_authorization-selector-duplicate.json', authority)
+    duplicate = jobs.prepare_upload(root, files=[inputs['input_assets'][0]['source_path']],
+        billing_declaration={'upload_authorization_id': 'selector-duplicate'}, openart_project_id='fixture-project')
+    jobs.record_upload_receipt(root, upload_id=duplicate['upload_id'], result={
+        'projectId': 'fixture-project', 'results': [{'fileId': 'SYNTHETIC-duplicate-file', 'status': 'SUCCESS',
+            'visualReference': {'id': 'SYNTHETIC-distinct-reference', 'type': 'image',
+                'url': 'https://fixture.example.test/distinct', 'label': 'SYNTHETIC duplicate',
+                'imageUrl': 'https://fixture.example.test/distinct',
+                'thumbnailUrl': 'https://fixture.example.test/distinct', 'metadata': {'fixture_only': True}}}]})
+    policy, sha, _ = pa.require_active_policy(root)
+    return root, policy, sha, (inputs, native, profile, compiled, review)
+
+
+@pytest.mark.parametrize('selector', ['upload_id', 'reference_id'])
+def test_runtime_receipt_selector_enters_exact_frame_scope_and_original(
+        neutral_package, monkeypatch, guided_observations, selector):
+    from lib import openart_mcp_jobs as jobs
+    root, policy, sha, (inputs, native, profile, compiled, _) = selector_frame_fixture(neutral_package, monkeypatch)
+    inputs = copy.deepcopy(inputs)
+    receipt = native['input_assets'][0]['receipt_sha256']
+    inputs['input_assets'][0].pop('upload_id')
+    with pytest.raises(ValueError, match='upload_reference_unavailable'):
+        preparation.prep_builder('openart_mcp')(inputs, profile)
+    inputs['input_assets'][0][selector] = receipt
+    native = preparation.prep_builder('openart_mcp')(inputs, profile)
+    compiled = preparation.prepare_compiled_request(inputs, native, profile,
+        coverage=compiled['coverage'], timing=compiled['timing'])
+    (root / 'artifacts/compiled_request-frame-s1.json').write_text(json.dumps(compiled))
+    review_path = root / 'artifacts/preparation_review-frame-s1.json'
+    review = json.loads(review_path.read_text()); review['subject_sha256'] = preparation.digest(compiled)
+    review_path.write_text(json.dumps(review))
+    retained = project_file_bytes(root)
+    scope = pa.derive_scope(root, inputs, provider='openart_mcp')
+    inputs['governance']['scope_id'] = scope['id']
+    jobs.prepare(root, attempt_id='runtime-selector', generation_inputs=inputs,
+                 authority_fn=execution.prepare_openart_mcp_handoff)
+    envelope = jobs.begin(root, 'runtime-selector', authority_fn=execution.prepare_openart_mcp_handoff)
+    assert envelope['arguments'] == native['body']
+    assert jobs.frozen_request(root, 'runtime-selector')['native']['input_assets'][0]['receipt_sha256'] == receipt
+    assert scope['derived_from_policy']['policy_sha256'] == sha
+    assert pa.root_attempt_counts(root, policy)['total'] == 1
+    assert all((root / name).read_bytes() == raw for name, raw in retained.items()
+               if name.startswith(('openart_mcp/uploads/', 'artifacts/autonomy_policy', 'approvals/')))
+
+
+@pytest.mark.parametrize('change', ['unknown_receipt', 'conflicting_alias', 'wrong_source', 'wrong_hash',
+    'same_bytes_wrong_path', 'wrong_role', 'extra_field', 'extra_row'])
+def test_runtime_receipt_selector_cannot_expand_source_or_native_authority(
+        neutral_package, monkeypatch, guided_observations, change):
+    root, _, _, (inputs, native, profile, _, _) = selector_frame_fixture(neutral_package, monkeypatch)
+    inputs = copy.deepcopy(inputs)
+    row = inputs['input_assets'][0]
+    row['upload_id'] = native['input_assets'][0]['receipt_sha256']
+    if change == 'unknown_receipt': row['upload_id'] = '0' * 64
+    elif change == 'conflicting_alias': row['reference_id'] = 'different-reference'
+    elif change == 'wrong_source': row['source_path'] = str(root / 'assets/images/not-the-approved-frame.png')
+    elif change == 'wrong_hash': row['source_sha256'] = '0' * 64
+    elif change == 'same_bytes_wrong_path':
+        path = root / 'assets/images/SYNTHETIC-unapproved-copy.png'
+        path.write_bytes(Path(row['source_path']).read_bytes())
+        row['source_path'] = str(path)
+    elif change == 'wrong_role': row['role'] = 'last_frame'
+    elif change == 'extra_row': inputs['input_assets'].append(copy.deepcopy(row))
+    else: row['unapproved_control'] = True
+    frozen = project_file_bytes(root)
+    with pytest.raises((ValueError, OSError)):
+        native = preparation.prep_builder('openart_mcp')(inputs, profile)
+        pa.derive_scope(root, inputs, provider='openart_mcp')
+    assert project_file_bytes(root) == frozen
+
+
+def test_runtime_receipt_selector_preserves_explicit_retained_selector(
+        neutral_package, monkeypatch, guided_observations):
+    root, policy, _, (inputs, native, _, _, _) = selector_frame_fixture(
+        neutral_package, monkeypatch, retained_selector=True)
+    # The native ID and receipt hash name the same exact reference, but an old
+    # explicit template selector stays a literal lock rather than dynamic input.
+    pa._validate_request_delta(root, policy, 's1', inputs, 'openart_mcp')
+    inputs = copy.deepcopy(inputs)
+    inputs['input_assets'][0]['upload_id'] = native['input_assets'][0]['receipt_sha256']
+    frozen = project_file_bytes(root)
+    with pytest.raises(pa.AutonomyError, match='/input_assets/0/upload_id'):
+        pa._validate_request_delta(root, policy, 's1', inputs, 'openart_mcp')
+    assert project_file_bytes(root) == frozen
+
+
 def project_admission_fixture(lifecycle, *, retained_project=...):
     """Synthetic fresh authority with exact native project omitted from layout.
 

@@ -3898,6 +3898,13 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider, *, policy_c
             if digest(old) == digest(new):
                 position += 1
                 continue
+            # Unplanned receipt selectors bind an approved source at preparation;
+            # preserve explicit retained selectors and freshly validate receipts.
+            without_selector = lambda row: {k: v for k, v in row.items() if k not in {'upload_id', 'reference_id'}}
+            if (not {'upload_id', 'reference_id'}.intersection(old)
+                    and isinstance(new, dict) and without_selector(old) == without_selector(new)):
+                position += 1
+                continue
             old_sha = old.get('source_sha256')
             roles = role_for(old_sha)
             new_sha = new.get('source_sha256') if isinstance(new, dict) else None
