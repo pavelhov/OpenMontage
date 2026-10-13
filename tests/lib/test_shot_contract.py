@@ -218,6 +218,103 @@ def test_valid_transformation_and_visible_dialogue(package):
     assert not check(package)["eligible"]
 
 
+@pytest.mark.parametrize("factory", [False, True])
+@pytest.mark.parametrize("matching_wording", [False, True])
+def test_transformation_invariant_wording_is_report_only_for_factory(
+    package, monkeypatch, factory, matching_wording,
+):
+    from lib import shot_contract
+    monkeypatch.setattr(shot_contract, "factory_project", lambda root: factory)
+    contract, _ = package
+    shot = contract["shots"][0]
+    shot["prop_body_invariants"] = [
+        "Same continuous red wool strand.", "Tung intact body and face.",
+    ]
+    preserved = list(shot["prop_body_invariants"]) if matching_wording else [
+        "Preserve one continuous red wool strand throughout the action.",
+        "Keep Tung's body and facial features intact while he pulls the wool.",
+    ]
+    shot["allowed_transformations"] = [{
+        "id": "unravel", "description": "The wool unravels as Tung pulls.",
+        "preserved_invariants": preserved,
+    }]
+    shot["transition"] = {
+        "type": "transformation", "transformation_id": "unravel",
+        "rationale": "The transformation is the authored action.",
+    }
+    refresh(contract)
+    before = copy.deepcopy(contract)
+    digest = contract_digest(contract)
+
+    result = check(package)
+
+    assert result["eligible"] is (factory or matching_wording), result
+    if matching_wording:
+        assert result["errors"] == [] and result["warnings"] == []
+    elif factory:
+        assert result["errors"] == []
+        assert len(result["warnings"]) == 1
+        assert "prop/body invariants" in result["warnings"][0]
+        assert "semantic preservation not verified" in result["warnings"][0]
+    else:
+        assert result["warnings"] == []
+        assert result["errors"] == [
+            "shots.entry.allowed_transformations: must preserve prop/body invariants",
+        ]
+    assert contract == before
+    assert contract_digest(contract) == digest
+
+
+@pytest.mark.parametrize("failure,error_contains", [
+    ("unknown_transformation", "unapproved transformation"),
+    ("duplicate_transformation", "duplicate id"),
+    ("wrong_transition_type", "transformation_id requires transformation type"),
+    ("undeclared_dialogue_speaker", "undeclared speaker"),
+    ("dialogue_timing", "invalid timing"),
+    ("duration", "duration_seconds"),
+    ("source_bytes", "input bytes changed"),
+])
+def test_factory_wording_warning_does_not_relax_factual_checks(
+    package, monkeypatch, failure, error_contains,
+):
+    from lib import shot_contract
+    monkeypatch.setattr(shot_contract, "factory_project", lambda root: True)
+    contract, root = package
+    shot = contract["shots"][0]
+    shot["allowed_transformations"] = [{
+        "id": "stretch", "description": "Stretch patient while crawling",
+        "preserved_invariants": ["Different authored preservation wording."],
+    }]
+    shot["transition"] = {
+        "type": "transformation", "transformation_id": "stretch",
+        "rationale": "Stretch supports the action.",
+    }
+    if failure == "unknown_transformation":
+        shot["transition"]["transformation_id"] = "undeclared"
+    elif failure == "duplicate_transformation":
+        duplicate = copy.deepcopy(shot["allowed_transformations"][0])
+        duplicate["description"] = "Another transformation with the same id."
+        shot["allowed_transformations"].append(duplicate)
+    elif failure == "wrong_transition_type":
+        shot["transition"]["type"] = "hard_cut"
+    elif failure in {"undeclared_dialogue_speaker", "dialogue_timing"}:
+        shot["dialogue"] = [{
+            "speaker_id": "undeclared" if failure == "undeclared_dialogue_speaker" else "patient",
+            "source": "offscreen", "text": "I am going in.",
+            "start_seconds": 0.5, "end_seconds": 10 if failure == "dialogue_timing" else 2,
+        }]
+    elif failure == "duration":
+        shot["duration_seconds"] = 0
+    else:
+        (root / contract["assets"][0]["path"]).write_bytes(b"changed source bytes")
+    refresh(contract)
+
+    result = check(package)
+
+    assert not result["eligible"], result
+    assert any(error_contains in error for error in result["errors"]), result
+
+
 def test_upstream_must_precede_dependent_shot(package):
     selected = dependency(package)
     package[0]["shots"].reverse()

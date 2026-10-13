@@ -680,7 +680,11 @@ def _validate_shot_contract(
         errors.append(f"shots.{shot_id}.transition: transformation_id requires transformation type")
     for transformation in transformations.values():
         if not set(shot["prop_body_invariants"]).issubset(transformation["preserved_invariants"]):
-            errors.append(f"shots.{shot_id}.allowed_transformations: must preserve prop/body invariants")
+            message = f"shots.{shot_id}.allowed_transformations: must preserve prop/body invariants"
+            if report_only:
+                warnings.append(message + " (report-only wording mismatch; semantic preservation not verified)")
+            else:
+                errors.append(message)
     check_review(shot.get("review"), shot_review_subject(contract, shot_id), SHOT_PREDICATES, f"shots.{shot_id}.review", gating=not report_only)
 
     for binding in shot["upstream"]:
