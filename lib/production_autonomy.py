@@ -2371,6 +2371,30 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
     # A retained historical payload is always genuine replay; otherwise only an
     # explicit retained-collection caller opts in (never policy_context alone).
     historical_replay = historical is not None or bool(historical_replay)
+    if retained_lock_digest is not None and not _legacy_frame:
+        if historical is None and policy_context is None:
+            raise AutonomyError('legacy lock replay requires retained historical authority')
+        # Most originals carry the modern proof. Validate it once before trying
+        # the historical frame interpretation, preserving exact legacy recovery.
+        error = None
+        try:
+            current = _root_lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile,
+                historical=historical, policy_context=policy_context, historical_replay=historical_replay)
+        except (ValueError, KeyError, OSError) as exc:
+            current, error = None, exc
+        if current == retained_lock_digest:
+            return current
+        try:
+            legacy = _root_lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile,
+                historical=historical, policy_context=policy_context, historical_replay=historical_replay,
+                _legacy_frame=True)
+        except (ValueError, KeyError, OSError):
+            legacy = None
+        if legacy == retained_lock_digest:
+            return legacy
+        if error is not None:
+            raise error
+        return current
     if historical is None and policy_context is None:
         policy, sha, _ = require_active_policy(root, shot_id=shot_id)
     elif historical is None:
@@ -2392,17 +2416,6 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
         review = _json(_artifact_path(Path(root), 'preparation_review-' + preparation._id(inputs['preparation_review_id']) + '.json'))
     else:
         compiled, review = historical['compiled'], historical['review']
-    if retained_lock_digest is not None and not _legacy_frame:
-        if historical is None and policy_context is None:
-            raise AutonomyError('legacy lock replay requires retained historical authority')
-        try:
-            legacy = _root_lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile,
-                historical=historical, policy_context=policy_context, historical_replay=historical_replay,
-                _legacy_frame=True)
-        except (ValueError, KeyError):
-            legacy = None
-        if legacy == retained_lock_digest:
-            return legacy
     actual = []
     def record(role, path):
         matched = [a for a in projection['assets'] if a.get('path') and _inside(root, a['path']) == path]

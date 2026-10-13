@@ -2625,12 +2625,18 @@ def prepared_frame_shapes(neutral_package, monkeypatch, provider, *, public_layo
 def test_four_sparse_frame_shapes_prepare_normal_native_and_compiled_evidence_offline(neutral_package, monkeypatch, guided_observations, provider):
     root, prepared = prepared_frame_shapes(neutral_package, monkeypatch, provider)
     policy, sha, _ = pa.require_active_policy(root)
+    from unittest.mock import patch
     for sid, (inputs, native, profile, compiled, review) in prepared.items():
         current = pa.lock_proof(root, sid, inputs=inputs, native=native, profile=profile)
-        # Newly admitted proofs replay against their exact retained digest too.
-        assert pa._root_lock_proof(root, sid, inputs=inputs, native=native, profile=profile,
-            historical={'policy': policy, 'policy_sha256': sha, 'compiled': compiled, 'review': review},
-            retained_lock_digest=current) == current
+        # A matching modern proof needs one complete fresh traversal. Legacy
+        # compatibility must not repeat source/prompt validation on this path.
+        with patch.object(request, '_compile_historical_provider_prompt',
+                wraps=request._compile_historical_provider_prompt) as canonical, patch.object(
+                pa, '_materialized_projection', wraps=pa._materialized_projection) as sources:
+            assert pa._root_lock_proof(root, sid, inputs=inputs, native=native, profile=profile,
+                historical={'policy': policy, 'policy_sha256': sha, 'compiled': compiled, 'review': review},
+                retained_lock_digest=current) == current
+            assert canonical.call_count == sources.call_count == 1
 
 
 @pytest.mark.parametrize('defect', ['target_bytes', 'target_review', 'start_role', 'same_bytes_wrong_path',
@@ -2644,6 +2650,7 @@ def test_frame_target_and_carrier_admission_remains_exact(neutral_package, monke
     assets = {a['id']: a for a in contract['assets']}
     policy, sha, _ = pa.require_active_policy(root)
     baselines = pa.retained_baselines(root, policy)
+    retained_lock = pa.lock_proof(root, 's1', inputs=inputs, native=native, profile=profile)
     if defect == 'target_bytes':
         (root / assets['end']['path']).write_bytes(b'SYNTHETIC changed endpoint target')
     elif defect == 'target_review':
@@ -2712,10 +2719,21 @@ def test_frame_target_and_carrier_admission_remains_exact(neutral_package, monke
     before = file_bytes(root)
     with pytest.raises((ValueError, KeyError, OSError)):
         pa.lock_proof(root, 's1', inputs=inputs, native=native, profile=profile)
+    historical = {'policy': policy, 'policy_sha256': sha, 'compiled': compiled, 'review': review}
+    if defect == 'target_review':
+        # Source-only recovery authenticates the retained review; a changed
+        # current planning observation blocks new admission, not the original.
+        assert pa._root_lock_proof(root, 's1', inputs=inputs, native=native, profile=profile,
+            historical=historical, retained_lock_digest=retained_lock) == retained_lock
+    else:
+        with pytest.raises((ValueError, KeyError, OSError)):
+            pa._root_lock_proof(root, 's1', inputs=inputs, native=native, profile=profile,
+                historical=historical, retained_lock_digest=retained_lock)
     assert file_bytes(root) == before
 
 
-def test_legacy_frame_proof_replays_only_exact_retained_digest(neutral_package, monkeypatch):
+@pytest.mark.parametrize('missing_snapshot', [False, True])
+def test_legacy_frame_proof_replays_only_exact_retained_digest(neutral_package, monkeypatch, missing_snapshot):
     root, prepared = prepared_frame_shapes(neutral_package, monkeypatch, 'grok_cli')
     inputs, native, profile, compiled, review = prepared['s1']
     contract = execution.load_shot_contract(root)
@@ -2727,10 +2745,20 @@ def test_legacy_frame_proof_replays_only_exact_retained_digest(neutral_package, 
     # same row cannot authorize a new request or an arbitrary replay digest.
     legacy = pa._root_lock_proof(root, 's1', inputs=inputs, native=native, profile=profile,
         historical=historical, _legacy_frame=True)
+    if missing_snapshot:
+        from lib import production_boards as boards
+        pack = boards.load_board_pack(root)
+        call = images._call(images._load(root), pack['board_bindings']['start']['call_id'])
+        Path(call['submitted_arguments']['referenced_image_paths'][0]).unlink()
+        # The shared legacy proof still validates current/preserved board bytes
+        # and source authority; only modern carrier membership reads this file.
+        assert pa._root_lock_proof(root, 's1', inputs=inputs, native=native, profile=profile,
+            historical=historical, _legacy_frame=True) == legacy
     before = file_bytes(root)
     assert pa._root_lock_proof(root, 's1', inputs=inputs, native=native, profile=profile,
         historical=historical, retained_lock_digest=legacy) == legacy
-    with pytest.raises(pa.AutonomyError, match='actual generated carrier input'):
+    with pytest.raises(FileNotFoundError if missing_snapshot else pa.AutonomyError,
+            match=None if missing_snapshot else 'actual generated carrier input'):
         pa._root_lock_proof(root, 's1', inputs=inputs, native=native, profile=profile,
             historical=historical, retained_lock_digest='0'*64)
     assert file_bytes(root) == before
