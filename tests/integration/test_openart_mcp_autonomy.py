@@ -131,18 +131,21 @@ def selector_frame_fixture(neutral_package, monkeypatch, *, retained_selector=Fa
     return root, policy, sha, (inputs, native, profile, compiled, review)
 
 
-@pytest.mark.parametrize('selector', ['upload_id', 'reference_id'])
+@pytest.mark.parametrize('selector,identifier', [('upload_id', 'native_id'), ('reference_id', 'receipt_sha256')])
 def test_runtime_receipt_selector_enters_exact_frame_scope_and_original(
-        neutral_package, monkeypatch, guided_observations, selector):
+        neutral_package, monkeypatch, guided_observations, selector, identifier):
     from lib import openart_mcp_jobs as jobs
     root, policy, sha, (inputs, native, profile, compiled, _) = selector_frame_fixture(neutral_package, monkeypatch)
     inputs = copy.deepcopy(inputs)
     receipt = native['input_assets'][0]['receipt_sha256']
+    expected_body = copy.deepcopy(native['body'])
+    native_id = native['input_assets'][0]['upload_id']
     inputs['input_assets'][0].pop('upload_id')
     with pytest.raises(ValueError, match='upload_reference_unavailable'):
         preparation.prep_builder('openart_mcp')(inputs, profile)
-    inputs['input_assets'][0][selector] = receipt
+    inputs['input_assets'][0][selector] = native_id if identifier == 'native_id' else receipt
     native = preparation.prep_builder('openart_mcp')(inputs, profile)
+    assert native['body'] == expected_body
     compiled = preparation.prepare_compiled_request(inputs, native, profile,
         coverage=compiled['coverage'], timing=compiled['timing'])
     (root / 'artifacts/compiled_request-frame-s1.json').write_text(json.dumps(compiled))
