@@ -848,7 +848,8 @@ def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=
     if mcp:
         from lib.openart_mcp import prepare_native_request
         from lib.production_execution import _openart_mcp_controls
-        actual_native = prepare_native_request(_openart_mcp_controls(inputs), profile)
+        actual_native = prepare_native_request(_openart_mcp_controls(inputs), profile,
+            **({'_retained_input_assets': native['input_assets']} if historical else {}))
     elif grok:
         actual_native = prepare_grok_native(inputs, {'cli_version': native['cli_version'], 'grok_path': native['grok_path']})
     else:

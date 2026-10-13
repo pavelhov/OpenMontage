@@ -206,6 +206,56 @@ def test_all_45_native_builders_use_canonical_ready_source_receipts(source_proje
             assert native['body']['params']['environmentReferenceImageUrl']=='https://fixture.example.test/1'
 
 
+def source_only_native_after_second_upload(source_project):
+    from lib import openart_mcp_jobs as jobs
+    root,assets,_,result=source_project
+    profile=mcp.load_profile('fal-h3-max','image2video',require='candidate')
+    params=minimum(profile['form']['jsonSchema'])
+    for field,_ in mcp.ROLES.values():params.pop(field,None)
+    controls={'project_dir':str(root),'model':profile['model'],'mode':profile['mode'],
+        'native_params':params,'openart_project_id':'fixture-project',
+        'input_assets':[{'role':role,'source_path':assets[name]['source_path']}
+            for role,name in [('first_frame','start'),('last_frame','end')]]}
+    native=mcp.prepare_native_request(controls,profile)
+    authority=json.loads((root/'artifacts/openart_mcp_upload_authorization-fixture.json').read_text())
+    authority['files']=authority['files'][:1]
+    (root/'artifacts/openart_mcp_upload_authorization-duplicate.json').write_text(json.dumps(authority))
+    duplicate=jobs.prepare_upload(root,files=[assets['start']['source_path']],
+        billing_declaration={'upload_authorization_id':'duplicate'},openart_project_id='fixture-project')
+    row=copy.deepcopy(result['results'][0]);row['fileId']='SYNTHETIC-second-file'
+    row['visualReference'].update(id='SYNTHETIC-second-native-reference',url='https://fixture.example.test/second',
+        imageUrl='https://fixture.example.test/second',thumbnailUrl='https://fixture.example.test/second')
+    jobs.record_upload_receipt(root,upload_id=duplicate['upload_id'],result={'projectId':'fixture-project','results':[row]})
+    return root,controls,native,profile
+
+
+def test_retained_source_only_native_uses_original_receipts_after_second_upload(source_project):
+    root,controls,native,profile=source_only_native_after_second_upload(source_project)
+    before={str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()}
+    assert mcp.validate_native_request(native,profile)==native
+    assert native['controls']==controls and all('upload_id' not in row for row in controls['input_assets'])
+    with pytest.raises(mcp.OpenArtMCPError,match='upload_reference_unavailable'):
+        mcp.prepare_native_request(controls,profile)
+    assert {str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()}==before
+
+
+@pytest.mark.parametrize('change',['path','receipt','order','profile','authority','explicit_selector'])
+def test_retained_receipt_pins_keep_source_native_profile_and_authority_checks(source_project,change):
+    root,_,native,profile=source_only_native_after_second_upload(source_project)
+    if change=='path':native['controls']['input_assets'][0]['source_path']=native['input_assets'][1]['source_path']
+    elif change=='receipt':
+        duplicate=next(json.loads(p.read_text()) for p in (root/'openart_mcp/uploads').glob('*.json')
+            if len(json.loads(p.read_text())['receipt_sha256s'])==1)
+        native['input_assets'][0]['receipt_sha256']=duplicate['receipt_sha256s'][0]
+    elif change=='order':native['input_assets'].reverse()
+    elif change=='profile':profile['form_sha256']='0'*64
+    elif change=='authority':(root/'upload-approval.txt').write_text('SYNTHETIC changed approval')
+    else:native['controls']['input_assets'][0]['upload_id']='SYNTHETIC-second-native-reference'
+    before={str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()}
+    with pytest.raises(ValueError):mcp.validate_native_request(native,profile)
+    assert {str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()}==before
+
+
 def alias_source_contract(root, *, independent_shot=False):
     """Synthetic payoff/end roles share one file, as an intentional physical alias."""
     contract=json.loads((root/'artifacts/shot_contract.json').read_text())

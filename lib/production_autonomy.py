@@ -2654,7 +2654,7 @@ def _scope_record(policy, sha, decision_id, *, shot_id, provider, request_digest
     return scope
 
 
-def _prepare_mcp_policy_native(root, policy, shot_id, inputs):
+def _prepare_mcp_policy_native(root, policy, shot_id, inputs, *, _retained_input_assets=None):
     """Qualified connector evidence is separate from CLI account and preview proof."""
     from lib import openart_mcp as mcp, production_execution as execution
     spec = _provider_spec(policy, 'openart_mcp')
@@ -2663,7 +2663,8 @@ def _prepare_mcp_policy_native(root, policy, shot_id, inputs):
     if not _intent_allows(policy, shot_id, 'openart_mcp', inputs.get('model')):
         raise AutonomyError('MCP route violates retained model selection intent')
     profile = mcp.load_profile(inputs.get('model'), inputs.get('mode'), require='supported')
-    native = mcp.prepare_native_request(execution._openart_mcp_controls(inputs), profile)
+    native = mcp.prepare_native_request(execution._openart_mcp_controls(inputs), profile,
+        **({'_retained_input_assets': _retained_input_assets} if _retained_input_assets is not None else {}))
     # The builder validates this fresh request; retained native requests are
     # rebuilt and compared at their later preparation/dispatch boundaries.
     _validate_mcp_policy_binding(spec, native, profile)
@@ -2757,7 +2758,8 @@ def _validate_retained_packet_policy_mcp_attempt(root, scope, *, inputs, native,
             and execution.approval_plan_digest(_original_contract,
                 inputs['governance']['shot_id'] if scope.get('planning_mode') == 'shot_local_v1' else None) != scope['approval_plan_sha256']):
         raise AutonomyError('historical MCP original planning differs from retained scope')
-    current_profile, current_native = _prepare_mcp_policy_native(root, policy, shot_id, inputs)
+    current_profile, current_native = _prepare_mcp_policy_native(root, policy, shot_id, inputs,
+        _retained_input_assets=native['input_assets'])
     if digest(current_native) != digest(native) or digest(current_profile) != digest(profile):
         raise AutonomyError('historical MCP native/account/form/source evidence changed')
     locks = _root_lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile,

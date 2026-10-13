@@ -96,9 +96,25 @@ def test_actual_compile_policy_prepare_begin_at_single_attempt_cap(lifecycle):
         pa.derive_scope(root, inputs, provider='openart_mcp')
 
 
+def duplicate_frame_source_upload(root,source_path):
+    from lib import openart_mcp_jobs as jobs
+    from tests.lib.test_production_factory import write
+    authority=json.loads((root/'artifacts/openart_mcp_upload_authorization-frame-fixture.json').read_text())
+    authority['files']=authority['files'][:1]
+    write(root,'artifacts/openart_mcp_upload_authorization-selector-duplicate.json',authority)
+    duplicate=jobs.prepare_upload(root,files=[source_path],
+        billing_declaration={'upload_authorization_id':'selector-duplicate'},openart_project_id='fixture-project')
+    jobs.record_upload_receipt(root,upload_id=duplicate['upload_id'],result={
+        'projectId':'fixture-project','results':[{'fileId':'SYNTHETIC-duplicate-file','status':'SUCCESS',
+            'visualReference':{'id':'SYNTHETIC-distinct-reference','type':'image',
+                'url':'https://fixture.example.test/distinct','label':'SYNTHETIC duplicate',
+                'imageUrl':'https://fixture.example.test/distinct',
+                'thumbnailUrl':'https://fixture.example.test/distinct','metadata':{'fixture_only':True}}}]})
+
+
 def selector_frame_fixture(neutral_package, monkeypatch, *, retained_selector=False):
-    from lib import openart_mcp as mcp, openart_mcp_jobs as jobs
-    from tests.lib.test_production_factory import prepared_frame_shapes, write
+    from lib import openart_mcp as mcp
+    from tests.lib.test_production_factory import prepared_frame_shapes
     activate = pa.activate_standing_run
     def activate_selector_templates(root, **kwargs):
         # Author the isolated fixture's canonical roles before genuine activation.
@@ -116,17 +132,7 @@ def selector_frame_fixture(neutral_package, monkeypatch, *, retained_selector=Fa
     inputs = copy.deepcopy(inputs)
     inputs['input_assets'] = [{'role': 'first_frame', 'source_path': inputs.pop('image_path'),
         'upload_id': native['input_assets'][0]['upload_id']}]
-    authority = json.loads((root / 'artifacts/openart_mcp_upload_authorization-frame-fixture.json').read_text())
-    authority['files'] = authority['files'][:1]
-    write(root, 'artifacts/openart_mcp_upload_authorization-selector-duplicate.json', authority)
-    duplicate = jobs.prepare_upload(root, files=[inputs['input_assets'][0]['source_path']],
-        billing_declaration={'upload_authorization_id': 'selector-duplicate'}, openart_project_id='fixture-project')
-    jobs.record_upload_receipt(root, upload_id=duplicate['upload_id'], result={
-        'projectId': 'fixture-project', 'results': [{'fileId': 'SYNTHETIC-duplicate-file', 'status': 'SUCCESS',
-            'visualReference': {'id': 'SYNTHETIC-distinct-reference', 'type': 'image',
-                'url': 'https://fixture.example.test/distinct', 'label': 'SYNTHETIC duplicate',
-                'imageUrl': 'https://fixture.example.test/distinct',
-                'thumbnailUrl': 'https://fixture.example.test/distinct', 'metadata': {'fixture_only': True}}}]})
+    duplicate_frame_source_upload(root,inputs['input_assets'][0]['source_path'])
     policy, sha, _ = pa.require_active_policy(root)
     return root, policy, sha, (inputs, native, profile, compiled, review)
 
@@ -205,6 +211,45 @@ def test_runtime_receipt_selector_preserves_explicit_retained_selector(
     with pytest.raises(pa.AutonomyError, match='/input_assets/0/upload_id'):
         pa._validate_request_delta(root, policy, 's1', inputs, 'openart_mcp')
     assert project_file_bytes(root) == frozen
+
+
+def test_historical_source_only_compilation_reuses_frozen_receipt_after_second_upload(
+        neutral_package, monkeypatch, guided_observations):
+    root, _, _, (inputs,native,profile,compiled,review)=selector_frame_fixture(neutral_package,monkeypatch)
+    inputs=copy.deepcopy(inputs)
+    inputs['image_path']=inputs.pop('input_assets')[0]['source_path']
+    packet=preparation.source_packet(root,'s1',provider='openart_mcp',native=native)
+    before=project_file_bytes(root)
+    preparation.validate_preparation_evidence(compiled,review,inputs,native,profile,packet,historical=True)
+    with pytest.raises(ValueError,match='upload_reference_unavailable'):
+        preparation.validate_preparation_evidence(compiled,review,inputs,native,profile,packet)
+    assert project_file_bytes(root)==before
+
+
+def test_retained_policy_original_replays_exact_source_only_native_after_second_upload(
+        neutral_package,monkeypatch,guided_observations):
+    from lib import openart_mcp as mcp,openart_mcp_jobs as jobs
+    from tests.lib.test_production_factory import prepared_frame_shapes
+    monkeypatch.setattr(mcp,'_ALLOW_FIXTURE_PRODUCTION',True)
+    root,prepared=prepared_frame_shapes(neutral_package,monkeypatch,'openart_mcp',public_layout=True)
+    inputs,native,profile,compiled,review=prepared['s1']
+    scope=pa.derive_scope(root,inputs,provider='openart_mcp')
+    inputs['governance']['scope_id']=scope['id']
+    jobs.prepare(root,attempt_id='historical-source-only',generation_inputs=inputs,
+        authority_fn=execution.prepare_openart_mcp_handoff)
+    jobs.begin(root,'historical-source-only',authority_fn=execution.prepare_openart_mcp_handoff)
+    frozen=jobs.frozen_request(root,'historical-source-only')
+    native=frozen['native']
+    profile=mcp.load_profile(inputs['model'],inputs['mode'],require='supported')
+    duplicate_frame_source_upload(root,inputs['image_path'])
+    before=project_file_bytes(root)
+    result=pa._validate_retained_packet_policy_mcp_attempt(root,scope,inputs=inputs,native=native,profile=profile,
+        compiled=compiled,review=review,selected={},authority=frozen['authority']['billing'],
+        _original_contract=execution.load_shot_contract(root))
+    assert result==frozen['authority']['billing']
+    with pytest.raises(ValueError,match='upload_reference_unavailable'):
+        preparation.prep_builder('openart_mcp')(inputs,profile)
+    assert project_file_bytes(root)==before
 
 
 def project_admission_fixture(lifecycle, *, retained_project=...):

@@ -347,7 +347,37 @@ def first_cut_candidates(project_dir):
     revision = marker['story_revision']
     contract = execution.load_shot_contract(root)
     selected = execution.load_selected_attempts(root)
-    attempts = [a for a in execution._attempts(root) if a.get('story_revision') == revision]
+    try:
+        attempts = execution._attempts(root)
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        # Diagnostic enumeration alone may isolate an invalid MCP original.
+        # Raw frozen identity only locates its gap; it never admits its media
+        # or replaces the fail-closed authority/counter enumeration.
+        from lib import openart_mcp_jobs as jobs
+        attempts = [execution._read(path) for path in sorted((root / 'production_attempts').glob('*/request.json'))]
+        for path in sorted((root / 'openart_mcp' / 'attempts').glob('*/state.json')):
+            try:
+                raw = execution._read(path)
+            except (OSError, ValueError):
+                continue  # An unreadable identity cannot locate a shot gap.
+            error = None
+            try:
+                raw = jobs._load(root, path.parent.name)
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                error = str(exc)[:200]
+            try:
+                authority = raw['frozen']['authority']
+                shot_id, story_revision = authority['shot_id'], authority['scope']['story_revision']
+                index = authority.get('scope_attempt_index', 0)
+                if not isinstance(shot_id, str) or not isinstance(story_revision, str):
+                    continue
+            except (KeyError, TypeError, AttributeError):
+                continue  # Malformed diagnostic identity never admits media.
+            attempts.append({'provider': 'openart_mcp', 'attempt_id': path.parent.name,
+                'shot_id': shot_id, 'story_revision': story_revision,
+                'scope_attempt_index': index if isinstance(index, int) else 0,
+                **({'unplayable_evidence': error} if error is not None else {})})
+    attempts = [a for a in attempts if a.get('story_revision') == revision]
     from lib.shot_contract import factory_project
     factory = factory_project(root)
     rows, by_shot = [], {}
@@ -367,6 +397,9 @@ def first_cut_candidates(project_dir):
         states = []
         if row is None:
             for attempt in own:
+                if attempt.get('unplayable_evidence'):
+                    states.append('unplayable:' + attempt['unplayable_evidence'])
+                    continue
                 try:
                     state = execution.load_attempt_result(root, attempt['attempt_id'])
                 except execution.ProductionGovernanceError:

@@ -280,7 +280,7 @@ def _project_reference(raw, schema):
             return projected
     _fail('reference_invalid', 'ready connector reference does not satisfy native media schema')
 
-def prepare_native_request(controls, profile):
+def prepare_native_request(controls, profile, *, _retained_input_assets=None):
     _check_profile(profile)
     if not isinstance(controls, dict) or controls.get('model') != profile['model'] or controls.get('mode') != profile['mode']:
         _fail('profile_changed', 'controls differ from exact profile model/mode')
@@ -316,8 +316,10 @@ def prepare_native_request(controls, profile):
             assets.append({'role':role,'source_path':controls[legacy]})
     if controls.get('operation') == 'first_last_frame' and (profile['mode'] != 'image2video' or not {'first_frame','last_frame'} <= {a.get('role') for a in assets}):
         _fail('missing_frame', 'first_last_frame requires both source-bound frame roles')
+    if _retained_input_assets is not None and (not isinstance(_retained_input_assets,list) or len(_retained_input_assets)!=len(assets)):
+        _fail('native_request_changed','retained input asset occurrence count changed')
     bound = []
-    for asset in assets:
+    for index,asset in enumerate(assets):
         if not isinstance(asset,dict) or set(asset) - {'role','source_path','source_sha256','upload_id','reference_id'}:
             _fail('input_asset_invalid','unsupported input asset fields')
         role = asset.get('role'); capability = profile['native_capabilities']['roles'].get(role,{})
@@ -327,7 +329,18 @@ def prepare_native_request(controls, profile):
             _fail('control_conflict','upload and reference IDs conflict')
         if 'reference_id' in asset: asset['upload_id'] = asset.pop('reference_id')
         from lib import openart_mcp_jobs as jobs
-        binding = copy.deepcopy(jobs.resolve_input_asset(controls.get('project_dir'), asset, account_binding=account,
+        resolver_asset=copy.deepcopy(asset)
+        if _retained_input_assets is not None:
+            retained=_retained_input_assets[index]
+            path=jobs._inside(Path(controls['project_dir']).resolve(),asset['source_path'])
+            if (not isinstance(retained,dict) or retained.get('role')!=role
+                    or retained.get('source_path')!=str(path) or retained.get('source_sha256')!=jobs._sha(path)
+                    or asset.get('source_sha256',retained['source_sha256'])!=retained['source_sha256']
+                    or not isinstance(retained.get('receipt_sha256'),str) or len(retained['receipt_sha256'])!=64):
+                _fail('native_request_changed','retained input role/path/hash/order changed')
+            if 'upload_id' not in resolver_asset:
+                resolver_asset['upload_id']=retained['receipt_sha256']
+        binding = copy.deepcopy(jobs.resolve_input_asset(controls.get('project_dir'), resolver_asset, account_binding=account,
             openart_project_id=controls.get('openart_project_id')))
         raw = binding.pop('visual_reference')
         field,kind = ROLES[role]
@@ -367,7 +380,7 @@ def validate_native_request(native, profile=None):
     profile = profile or load_profile(native.get('model'),native.get('mode'),require='candidate')
     if profile['profile_sha256'] != native.get('profile_sha256'):
         profile = load_profile(native.get('model'),native.get('mode'),require='supported')
-    expected = prepare_native_request(native.get('controls',{}),profile)
+    expected = prepare_native_request(native.get('controls',{}),profile,_retained_input_assets=native.get('input_assets'))
     if digest(expected) != digest(native): _fail('native_request_changed','source-bound native connector request changed')
     return copy.deepcopy(native)
 

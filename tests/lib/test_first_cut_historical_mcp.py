@@ -375,6 +375,36 @@ def test_historical_preview_rejects_relevant_or_frozen_evidence_drift(retained, 
     assert candidate['status'] == 'missing'
 
 
+@pytest.mark.parametrize('damage',['authority','missing_index','missing_identity','malformed_json','malformed_structure'])
+def test_invalid_mcp_receipt_is_draft_gap_while_other_original_stays_playable(retained,damage):
+    from lib.openart_mcp import digest
+    root, _, jobs, _, _ = retained
+    path=jobs._path(root,'original-other')
+    state=execution._read(path)
+    state['frozen']['authority']['billing']['policy_sha256']='0'*64
+    if damage=='missing_index':state['frozen']['authority'].pop('scope_attempt_index')
+    elif damage=='missing_identity':state['frozen']['authority'].pop('shot_id')
+    state['frozen_sha256']=digest(state['frozen'])
+    state['authority_sha256']=digest(state['frozen']['authority'])
+    save(path,state)
+    if damage in ('malformed_json','malformed_structure'):
+        path.chmod(0o600)
+        path.write_text('SYNTHETIC invalid JSON' if damage=='malformed_json' else 'null')
+        path.chmod(0o400)
+    before={str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()}
+    with pytest.raises((ValueError,TypeError)):
+        jobs._load(root,'original-other')
+    with pytest.raises((ValueError,TypeError)):
+        execution._attempts(root)
+    rows={row['shot_id']:row for row in draft.first_cut_candidates(root)}
+    assert rows['entry']['status']=='candidate'
+    assert rows['other']['status']=='missing'
+    if damage in ('authority','missing_index'):
+        assert rows['other']['reason']=='unplayable'
+        assert 'original_reply_mismatch' in rows['other']['detail']['error']
+    assert before=={str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()}
+
+
 def materialize_unrelated_assets(root):
     contract = execution.load_shot_contract(root)
     board = next(asset for asset in contract["assets"] if asset["id"] == "unrelated-board")
