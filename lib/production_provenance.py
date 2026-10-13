@@ -874,7 +874,9 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
     require(retained.get('provenance') == 'agent_recorded_connector' and retained.get('attempt_id') == attempt_id,
             'original connector evidence missing')
     native, authority, inputs = retained['native'], retained['authority'], retained['generation_inputs']
-    connector.validate_native_request(native)
+    # The mandatory compiled-preparation proof below freshly rebuilds this
+    # native request and compares its full digest, including retained controls,
+    # ordered sources, account and profile. Do not rebuild it a second time here.
     require(native['source'] == 'real' or _ALLOW_OPENART_FIXTURE_PROVENANCE, 'fixture-only connector evidence cannot certify live production')
     require(authority['provider'] == native['provider'] == 'openart_mcp'
             and authority['shot_id'] == shot_id, 'exact provider/shot differs')

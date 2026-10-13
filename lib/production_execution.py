@@ -771,6 +771,24 @@ def _openart_mcp_controls(inputs):
     result.pop('attempt_id', None)
     if inputs.get('project_dir'):
         result['project_dir'] = str(Path(inputs['project_dir']).resolve())
+    # Existing root upload selectors bind exact local frame aliases. Preserve
+    # governed input layout; project only the native builder's ordered role rows.
+    selectors = {'image_path': ('first_frame', 'image_upload_id'),
+                 'last_image_path': ('last_frame', 'end_image_upload_id')}
+    if any(selector in result for _, selector in selectors.values()):
+        assets = copy.deepcopy(result.get('input_assets', []))
+        for field, (role, selector) in selectors.items():
+            if selector in result and field not in result:
+                _fail('OpenArt MCP upload selector requires its exact local ' + field)
+            if field not in result:
+                continue
+            if any(asset.get('role') == role for asset in assets):
+                _fail('duplicate OpenArt MCP frame alias and canonical role')
+            asset = {'role': role, 'source_path': result.pop(field)}
+            if selector in result:
+                asset['upload_id'] = result.pop(selector)
+            assets.append(asset)
+        result['input_assets'] = assets
     return result
 
 
@@ -3079,7 +3097,6 @@ def next_production_action(project_dir):
         return board_action
     if motion_action is not None:
         return motion_action
-    candidates = first_cut_candidates(root)
     # Declared images whose one original is consumed (failed/uncertain with no
     # bytes) can leave zero submittable clips; that closes out incomplete.
     consumed_images = any(row['counted'] for row in images.image_usage(root)['occurrences'])
@@ -3093,6 +3110,7 @@ def next_production_action(project_dir):
         if current.get('status') == 'current':
             return action('complete', 'cut', {'first_cut': {'path': cut['path'], 'sha256': cut['sha256']}},
                           inputs=dict(current, recoverable_originals=recoverable_originals))
+    candidates = first_cut_candidates(root)
     return action('compose_cut', 'cut', {'selections_sha256': _digest(selected),
         'contract_sha256': contract_digest(contract), 'candidates_sha256': _digest(candidates)},
         inputs={'candidates': candidates, 'blocked_shots': blocked_shots, 'recoverable_originals': recoverable_originals},
@@ -3261,11 +3279,53 @@ def draft_motion_preparation(project_dir, action, *, output_path=None, compiled_
     result = {'action_id': current['action_id'], 'shot_id': sid, 'provider': provider, 'inputs': inputs,
             'frames': frames, 'coverage': authored['coverage'], 'source_binding': authored['source_binding'],
             'missing': missing, 'provider_calls': 0}
-    if provider == 'openart_mcp' and frames:
+    if provider == 'openart_mcp' and (frames or inputs.get('input_assets')
+            or any(key in inputs for key in ('image_path', 'first_frame', 'reference_image_path', 'last_image_path', 'last_frame'))):
+        from lib import openart_mcp_jobs as jobs
+        # Exact retained uploads are source evidence, not new transfers. Preserve
+        # role/order/template bytes and bind only the ordinary receipt selector.
+        # Existing root aliases stay in governed inputs and use their established
+        # upload selector; the native projection retains ordinary role ordering.
+        files = list(dict.fromkeys(str(_inside(frame['path'], root)) for frame in frames))
+        reused = []
+        normalized = _openart_controls(inputs)
+        for field, selector in (('image_path', 'image_upload_id'), ('last_image_path', 'end_image_upload_id')):
+            if field not in normalized:
+                continue
+            asset = {'source_path': normalized[field]}
+            if selector in inputs:
+                asset['upload_id'] = inputs[selector]
+            bound = jobs.reuse_uploaded_input_asset(root, asset,
+                account_binding={'uid_sha256': spec['uid_sha256']},
+                openart_project_id=inputs.get('openart_project_id'))
+            path = str(_inside(normalized[field], root))
+            if bound is None:
+                if path not in files:
+                    files.append(path)
+            else:
+                inputs.setdefault(selector, bound['receipt_sha256'])
+                if path in files:
+                    files.remove(path)
+                reused.append({key: bound[key] for key in ('source_path', 'source_sha256', 'receipt_sha256')})
+        for asset in inputs.get('input_assets', []):
+            path = str(_inside(asset['source_path'], root))
+            bound = jobs.reuse_uploaded_input_asset(root, asset,
+                account_binding={'uid_sha256': spec['uid_sha256']},
+                openart_project_id=inputs.get('openart_project_id'))
+            if bound is None:
+                if path not in files:
+                    files.append(path)
+            else:
+                if not {'upload_id', 'reference_id'}.intersection(asset):
+                    asset['upload_id'] = bound['receipt_sha256']
+                if path in files:
+                    files.remove(path)
+                reused.append({key: bound[key] for key in ('source_path', 'source_sha256', 'receipt_sha256')})
         result['upload_authority_kwargs'] = {'shot_id': sid, 'provider': provider,
-            'files': list(dict.fromkeys(str(_inside(frame['path'], root)) for frame in frames)),
+            'files': files,
             'account': {'uid_sha256': spec['uid_sha256']},
             'openart_project_id': inputs.get('openart_project_id')}
+        result['reused_uploads'] = reused
     return result
 
 

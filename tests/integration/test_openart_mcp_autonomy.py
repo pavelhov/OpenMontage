@@ -529,9 +529,45 @@ def test_actual_policy_original_collection_provenance_and_unknown_cost_report(li
     from lib import production_provenance as provenance
     monkeypatch.setattr(provenance, '_ALLOW_OPENART_FIXTURE_PROVENANCE', True)
     expected = {'path': inputs['output_path'], 'sha256': hashlib.sha256(downloaded.read_bytes()).hexdigest()}
+    from lib import openart_mcp as mcp
+    original_prepare = mcp.prepare_native_request
+    native_checks = []
+    def prepare(*args, **kwargs):
+        native_checks.append(copy.deepcopy(args[0]))
+        return original_prepare(*args, **kwargs)
+    monkeypatch.setattr(mcp, 'prepare_native_request', prepare)
     result = provenance.validate_attempt_provenance(root, 'policy-original', shot_id='entry',
         story_revision=policy['story_revision'], expected_output=expected)
     assert result['result']['status'] == 'generated'
+    # Compiled preparation and policy authority each retain their fresh rebuild;
+    # provenance must not rebuild the same native request once more beforehand.
+    assert len(native_checks) == 2
+    native_checks.clear()
+    assert provenance.historical_source_provenance(root, 'policy-original', shot_id='entry',
+        story_revision=policy['story_revision'], expected_output=expected)['historical_source_only']
+    assert len(native_checks) == 2
+    retained = jobs.provenance_record(root, 'policy-original')
+    for change in ('controls', 'body', 'account', 'profile'):
+        changed = copy.deepcopy(retained)
+        native = changed['native']
+        if change == 'controls':
+            native['controls']['prompt'] += ' SYNTHETIC changed control'
+        elif change == 'body':
+            native['body']['params']['duration'] = 2
+            native['body_sha256'] = mcp.digest(native['body'])
+            changed['authority']['native_body_sha256'] = native['body_sha256']
+        elif change == 'account':
+            native['account_binding']['uid_sha256'] = 'a' * 64
+            changed['authority']['account_uid_sha256'] = 'a' * 64
+        else:
+            native['profile_sha256'] = 'a' * 64
+        # The journal stays unchanged. This isolated seam proves the later
+        # full native comparison rejects drift even beyond journal integrity.
+        with monkeypatch.context() as patch:
+            patch.setattr(jobs, 'provenance_record', lambda *a: changed)
+            with pytest.raises(execution.ProductionGovernanceError, match='stale native body/controls/version/tier/form/defaults'):
+                provenance.validate_attempt_provenance(root, 'policy-original', shot_id='entry',
+                    story_revision=policy['story_revision'], expected_output=expected)
     from lib.production_autonomy_report import _mcp_policy_rows
     rows, exposure, snapshot = _mcp_policy_rows(root, policy, sha)
     assert rows[0]['status'] == 'generated'

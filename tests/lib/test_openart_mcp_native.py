@@ -239,6 +239,113 @@ def test_retained_source_only_native_uses_original_receipts_after_second_upload(
     assert {str(p):p.read_bytes() for p in root.rglob('*') if p.is_file()}==before
 
 
+def test_reuse_uploaded_source_pins_one_exact_valid_original_without_transfer(source_project):
+    from lib import openart_mcp_jobs as jobs
+    root, controls, _, profile = source_only_native_after_second_upload(source_project)
+    before = {str(p): p.read_bytes() for p in root.rglob('*') if p.is_file()}
+    source = controls['input_assets'][0]
+    bound = jobs.reuse_uploaded_input_asset(root, source, account_binding=mcp.account_summary(),
+        openart_project_id='fixture-project')
+    assert bound['source_path'] == source['source_path']
+    pinned = {**source, 'upload_id': bound['receipt_sha256']}
+    controls['input_assets'][0] = pinned
+    native = mcp.prepare_native_request(controls, profile)
+    assert native['input_assets'][0]['receipt_sha256'] == bound['receipt_sha256']
+    assert jobs.reuse_uploaded_input_asset(root, source, account_binding=mcp.account_summary(),
+        openart_project_id='fixture-project') == bound
+    assert jobs.reuse_uploaded_input_asset(root, source, account_binding={'uid_sha256': '0'*64},
+        openart_project_id='fixture-project') is None
+    assert jobs.reuse_uploaded_input_asset(root, source, account_binding=mcp.account_summary(),
+        openart_project_id='different-project') is None
+    assert {str(p): p.read_bytes() for p in root.rglob('*') if p.is_file()} == before
+
+
+@pytest.mark.parametrize('start_alias', ['image_path', 'first_frame', 'reference_image_path'])
+@pytest.mark.parametrize('end_alias', ['last_image_path', 'last_frame'])
+@pytest.mark.parametrize('pin_roles', ['start', 'end', 'both'])
+def test_existing_root_frame_selectors_project_exact_ordered_native_inputs(source_project, start_alias, end_alias, pin_roles):
+    from lib import openart_mcp_jobs as jobs, production_execution as execution
+    root, assets, _, _ = source_project
+    profile = mcp.load_profile('byte-plus-seedance-2-mini', 'image2video', require='candidate')
+    inputs = {'project_dir': str(root), 'model': profile['model'], 'mode': profile['mode'],
+        'openart_project_id': 'fixture-project', start_alias: assets['start']['source_path'],
+        end_alias: assets['end']['source_path'], 'prompt': 'SYNTHETIC frame selector test', 'duration': 6}
+    for name, selector in [('start', 'image_upload_id'), ('end', 'end_image_upload_id')]:
+        if pin_roles in {name, 'both'}:
+            bound = jobs.reuse_uploaded_input_asset(root, {'source_path': assets[name]['source_path']},
+                account_binding=mcp.account_summary(), openart_project_id='fixture-project')
+            inputs[selector] = bound['receipt_sha256']
+    before = copy.deepcopy(inputs)
+    controls = execution._openart_mcp_controls(inputs)
+    assert [row['role'] for row in controls['input_assets']] == ['first_frame', 'last_frame']
+    assert not {'image_upload_id', 'end_image_upload_id', 'image_path', 'last_image_path'} & controls.keys()
+    native = mcp.prepare_native_request(controls, profile)
+    assert [row['role'] for row in native['input_assets']] == ['first_frame', 'last_frame']
+    assert [row['source_path'] for row in native['input_assets']] == [assets['start']['source_path'], assets['end']['source_path']]
+    assert inputs == before
+    if 'end_image_upload_id' in inputs:
+        wrong = dict(inputs, end_image_upload_id=assets['start']['upload_id'])
+        with pytest.raises(mcp.OpenArtMCPError, match='upload_reference_unavailable'):
+            mcp.prepare_native_request(execution._openart_mcp_controls(wrong), profile)
+
+
+@pytest.mark.parametrize('selector', ['image_upload_id', 'end_image_upload_id'])
+def test_mcp_root_selector_cannot_replace_retained_explicit_receipt_for_same_bytes(source_project, monkeypatch, selector):
+    from lib import production_autonomy as autonomy, production_execution as execution
+    root, _, _, profile = source_only_native_after_second_upload(source_project)
+    # Both IDs are genuine recorded originals for the same exact local source.
+    source = str(root/'assets/start.svg')
+    inputs = {'project_dir': str(root), 'model': profile['model'], 'mode': profile['mode'],
+        'openart_project_id': 'fixture-project', 'image_path': source, 'last_image_path': source,
+        'image_upload_id': 'fixture-ready-0', 'end_image_upload_id': 'fixture-ready-0',
+        'native_params': minimum(profile['form']['jsonSchema'])}
+    for field, _ in mcp.ROLES.values():
+        inputs['native_params'].pop(field, None)
+    original = {**inputs, selector: 'fixture-ready-0'}
+    replacement = {**inputs, selector: 'SYNTHETIC-second-native-reference'}
+    first = mcp.prepare_native_request(execution._openart_mcp_controls(original), profile)
+    second = mcp.prepare_native_request(execution._openart_mcp_controls(replacement), profile)
+    assert [row['source_sha256'] for row in first['input_assets']] == [row['source_sha256'] for row in second['input_assets']]
+    # Isolate the comparator's retained selector check without rewriting any
+    # project authority. Native receipt/source validity above uses real owners.
+    monkeypatch.setattr(autonomy, 'retained_baselines', lambda *args: {
+        'entry': {'planned_request_template': {'inputs': original}}})
+    with pytest.raises(autonomy.AutonomyError, match='differs from retained explicit selector'):
+        autonomy._validate_request_delta(root, {}, 'entry', replacement, 'openart_mcp',
+            policy_context=('SYNTHETIC policy binding', 'SYNTHETIC decision'))
+    if selector == 'image_upload_id':
+        omitted = copy.deepcopy(original)
+        omitted.pop(selector)
+        with pytest.raises(autonomy.AutonomyError, match='differs from retained explicit selector'):
+            autonomy._validate_request_delta(root, {}, 'entry', omitted, 'openart_mcp',
+                policy_context=('SYNTHETIC policy binding', 'SYNTHETIC decision'))
+
+
+@pytest.mark.parametrize('batch_status', ['consumed_awaiting_original_receipt', 'recorded'])
+def test_reuse_uploaded_source_does_not_hide_changed_authority_or_uncertain_original(source_project, batch_status):
+    from lib import openart_mcp_jobs as jobs
+    root, assets, prepared, _ = source_project
+    source = {'source_path': assets['start']['source_path']}
+    authority = root/'artifacts/openart_mcp_upload_authorization-fixture.json'
+    original = authority.read_bytes()
+    authority.write_text('{}')
+    with pytest.raises(mcp.OpenArtMCPError, match='upload_authority_invalid'):
+        jobs.reuse_uploaded_input_asset(root, source, account_binding=mcp.account_summary(),
+            openart_project_id='fixture-project')
+    authority.write_bytes(original)
+    batch_path = root/'openart_mcp/uploads'/(prepared['upload_id']+'.json')
+    batch = json.loads(batch_path.read_text())
+    for sha in batch['receipt_sha256s']:
+        (jobs._state_root()/'mcp-uploads'/(sha+'.json')).unlink()
+    batch.update(status=batch_status)
+    if batch_status=='consumed_awaiting_original_receipt':
+        batch['result']=None
+    batch_path.write_text(json.dumps(batch))
+    with pytest.raises(mcp.OpenArtMCPError, match='upload_uncertain'):
+        jobs.reuse_uploaded_input_asset(root, source, account_binding=mcp.account_summary(),
+            openart_project_id='fixture-project')
+
+
 @pytest.mark.parametrize('change',['path','receipt','order','profile','authority','explicit_selector'])
 def test_retained_receipt_pins_keep_source_native_profile_and_authority_checks(source_project,change):
     root,_,native,profile=source_only_native_after_second_upload(source_project)

@@ -385,6 +385,14 @@ def standing_image_policy_fallback(root):
     return copy.deepcopy(term), copy.deepcopy(spec)
 
 
+def _validate_standing_source_role(source, transfer, provider):
+    """The same explicit source-role permission for prospective and retained work."""
+    if source['role'] not in transfer['roles']:
+        raise StandingSetupRequired('source role outside transport permission: asset '
+            + str(source['id']) + ', role ' + source['role'] + ', provider ' + provider
+            + '; permitted roles: ' + ', '.join(transfer['roles']))
+
+
 def _validate_standing_basis_impl(root, policy, baselines, *, check_first_pass_capacity=True):
     """Validate declared actual message provenance and containment, never invent it."""
     basis = policy.get('activation_basis', {})
@@ -472,8 +480,7 @@ def _validate_standing_basis_impl(root, policy, baselines, *, check_first_pass_c
                     if not term['generated_board_sources']:
                         raise StandingSetupRequired('selected run-generated source transfer is not permitted')
                     continue
-                if asset['role'] not in term['roles']:
-                    raise StandingSetupRequired('source role outside transport permission')
+                _validate_standing_source_role(asset, term, provider['id'])
                 if asset.get('preparation_pending'):
                     if not term['generated_board_sources']:
                         raise StandingSetupRequired('declared generated board transfer not permitted')
@@ -3742,6 +3749,21 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider, *, policy_c
         raise AutonomyError('hosting_provider is not the canonical host for the policy route')
     routing = {'model', 'mode', 'operation', 'image_upload_id', 'preferred_provider', 'allowed_providers',
                'preferred_tool', 'hosting_provider'}
+    if provider == 'openart_mcp' and ('image_upload_id' in actual or 'image_upload_id' in baseline):
+        if not any(field in actual for field in ('image_path', 'first_frame', 'reference_image_path')):
+            raise AutonomyError('MCP start upload selector requires its exact local start-frame alias')
+        if ('image_upload_id' in baseline
+                and baseline['image_upload_id'] != actual.get('image_upload_id')):
+            raise AutonomyError('MCP start upload selector differs from retained explicit selector')
+    if provider == 'openart_mcp' and 'end_image_upload_id' in actual:
+        if not any(field in actual for field in ('last_image_path', 'last_frame')):
+            raise AutonomyError('MCP end upload selector requires its exact local end-frame alias')
+        if ('end_image_upload_id' in baseline
+                and baseline['end_image_upload_id'] != actual['end_image_upload_id']):
+            raise AutonomyError('MCP end upload selector differs from retained explicit selector')
+        # The ordinary source comparator below retains the exact root occurrence,
+        # role and current hash; native preparation validates this receipt pin.
+        routing.add('end_image_upload_id')
     plumbing = {'output_path', 'cli_session_id', 'timeout_seconds', 'cwd', 'allow_unknown_cost',
                 'native_dry_run_receipt_id', 'native_dry_run_receipt_sha256'}
     assets = iter(template['static_input_assets'])

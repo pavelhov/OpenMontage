@@ -352,7 +352,7 @@ def _image_envelope(root, data):
 def _standing_image_definition(root, policy, *, check_first_pass_capacity=True, retained_pack=None):
     """Derive exact board slots under real setup/command media authority."""
     from lib import production_boards as boards
-    from lib.production_autonomy import _bound_document, StandingSetupRequired
+    from lib.production_autonomy import _bound_document, StandingSetupRequired, _validate_standing_source_role
     pack = boards.load_board_pack(root) if retained_pack is None else retained_pack
     setup = _bound_document(root, policy['activation_basis']['standing_setup'], 'standing setup')
     terms = setup.get('native_images', {})
@@ -389,8 +389,7 @@ def _standing_image_definition(root, policy, *, check_first_pass_capacity=True, 
                 for key in ('max_files', 'max_file_bytes', 'max_batch_bytes', 'max_batches'))):
         raise StandingSetupRequired('standing native transfer needs exact roles and positive file/batch limits')
     for source in inventory:
-        if source['role'] not in transfer['roles']:
-            raise StandingSetupRequired('native image source role exceeds standing transfer permission')
+        _validate_standing_source_role(source, transfer, NATIVE_ROUTE)
         if source.get('source_slot_id'):
             if not transfer['generated_board_sources']:
                 raise StandingSetupRequired('run-generated native image source transfer not authorized')

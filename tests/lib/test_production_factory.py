@@ -1751,6 +1751,65 @@ def test_current_first_cut_requires_complete_technical_master(p, monkeypatch, cu
     assert execution.advance(p.root)['status'] == 'ready_to_compose'
 
 
+@pytest.mark.parametrize('cut_state', ['current', 'stale_export', 'stale_source', 'missing'])
+def test_next_action_validates_candidates_once_for_current_cut(p, monkeypatch, cut_state):
+    from lib import production_draft as draft
+    from tools.base_tool import ToolResult
+    for shot in p.contract['shots']:
+        if shot['upstream']:
+            p.bind_upstream(shot['id'])
+        result = p.generate(shot['id'])
+        assert result.success
+        p.select(shot['id'], result)
+
+    def compose(inputs):
+        Path(inputs['output_path']).write_bytes(b'SYNTHETIC retained export')
+        return ToolResult(success=True)
+
+    cut = draft.compose_first_cut(p.root, compose=compose)
+    assert cut['status'] in execution.FIRST_CUT_TERMINAL
+    if cut_state == 'stale_export':
+        (p.root / cut['export']['path']).write_bytes(b'SYNTHETIC changed export')
+    elif cut_state == 'stale_source':
+        (p.root / cut['clips'][0]['output']['path']).write_bytes(b'SYNTHETIC changed source')
+    elif cut_state == 'missing':
+        Path(cut['path']).unlink()
+    candidate_calls = []
+    original = draft.first_cut_candidates
+    def candidates(root):
+        rows = original(root)
+        candidate_calls.append(rows)
+        return rows
+    monkeypatch.setattr(draft, 'first_cut_candidates', candidates)
+    before = file_bytes(p.root)
+    action = execution.next_production_action(p.root)
+    assert file_bytes(p.root) == before
+    assert len(candidate_calls) == 1
+    if cut_state == 'current':
+        assert action['kind'] == 'complete'
+    else:
+        assert action['kind'] == 'compose_cut'
+        assert action['inputs']['candidates'] == candidate_calls[0]
+        if cut_state == 'stale_source':
+            assert candidate_calls[0][0]['status'] == 'missing'
+            assert candidate_calls[0][0]['reason'] == 'unplayable'
+
+
+def test_next_action_preserves_prerequisite_block_without_candidate_work(p, monkeypatch):
+    from lib import production_draft as draft
+    monkeypatch.setattr(execution, 'validate_shot_contract', lambda *a, **kw: {
+        'eligible': False, 'errors': ['SYNTHETIC missing prerequisite']})
+    def unexpected_candidates(root):
+        pytest.fail('Blocked prerequisites do not require candidate enumeration')
+    monkeypatch.setattr(draft, 'first_cut_candidates', unexpected_candidates)
+    before = file_bytes(p.root)
+    action = execution.next_production_action(p.root)
+    assert action['kind'] == 'blocked' and action['subject'] == 'prerequisites'
+    assert action['inputs']['blocked_shots'] == {
+        shot['id']: ['SYNTHETIC missing prerequisite'] for shot in p.contract['shots']}
+    assert file_bytes(p.root) == before
+
+
 def upload_standing_fixture(root, *, provider, max_batches=1, uid_sha256=None):
     kwargs = standing_fixture(root)
     setup = json.loads((root / kwargs['standing_setup']['path']).read_text()); setup.pop('authorization')

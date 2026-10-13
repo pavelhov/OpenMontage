@@ -894,6 +894,50 @@ def record_upload_receipt(project_dir, *, upload_id, result):
         return {'upload_id':uid,'status':'recorded','project_id':result['projectId'],
             'references':[{'upload_id':r['visual_reference']['id'],'reference_id':r['visual_reference']['id'],'receipt_sha256':r['receipt_sha256'],'source_sha256':r['source_sha256'],'source_path':r['source_path'],'type':r['visual_reference']['type']} for r in receipts]}
 
+def reuse_uploaded_input_asset(project_dir, asset, *, account_binding, openart_project_id):
+    """Read-only exact receipt discovery for fresh preparation; never transfer.
+
+    Explicit selectors retain their meaning. Otherwise choose a stable receipt
+    SHA from exact project/path/current-byte/account matches and validate it with
+    the ordinary resolver, including original batch and upload authority. A
+    consumed upload with no receipt requires original recovery, never reupload.
+    """
+    root = _root(project_dir); path = _inside(root, asset['source_path']); sha = _sha(path)
+    if asset.get('source_sha256', sha) != sha:
+        _fail('source_changed', 'caller source hash differs from actual bytes')
+    if {'upload_id', 'reference_id'}.intersection(asset):
+        return resolve_input_asset(root, asset, account_binding=account_binding,
+            openart_project_id=openart_project_id)
+    if not isinstance(openart_project_id, str) or not openart_project_id:
+        _fail('upload_reference_unavailable', 'receipt reuse requires an exact OpenArt project')
+    store = _state_root(create=False) / 'mcp-uploads'
+    candidates = []
+    if store.exists():
+        for item in store.glob('*.json'):
+            receipt = _read(item)
+            if (receipt.get('project_root') == str(root) and receipt.get('source_path') == str(path)
+                    and receipt.get('source_sha256') == sha
+                    and receipt.get('account_uid_sha256') == account_binding['uid_sha256']
+                    and receipt.get('project_id') == openart_project_id):
+                candidates.append(receipt['receipt_sha256'])
+    if candidates:
+        return resolve_input_asset(root, {**asset, 'upload_id': sorted(candidates)[0]},
+            account_binding=account_binding, openart_project_id=openart_project_id)
+    directory = root / 'openart_mcp' / 'uploads'
+    if directory.exists():
+        for item in directory.glob('*.json'):
+            batch = _read(item); frozen = batch.get('frozen', {})
+            if (frozen.get('root') == str(root)
+                    and frozen.get('account', {}).get('uid_sha256') == account_binding['uid_sha256']
+                    and frozen.get('project_id') == openart_project_id
+                    and any(row.get('path') == str(path) and row.get('sha256') == sha
+                            for row in frozen.get('manifest', []))):
+                _fail('upload_uncertain', 'exact source upload already consumed as ' + str(batch.get('upload_id', item.stem))
+                    + '; recover its original receipt from ' + str(item)
+                    + (' (recorded original result retained)' if batch.get('result') is not None else ' (original result unresolved)'))
+    return None
+
+
 def resolve_input_asset(project_dir, asset, *, account_binding, openart_project_id=None,
                         policy_fallback_call_id=None):
     root=_root(project_dir);path=_inside(root,asset['source_path']);sha=_sha(path)

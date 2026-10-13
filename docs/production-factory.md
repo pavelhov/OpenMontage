@@ -42,6 +42,57 @@ before image attempts. Keep one authored plan and no duplicate binding manifest.
 Legacy start-only inputs and retained requests keep their original interpretation
 and bytes.
 
+### Preparation handoff
+
+Use `draft_motion_preparation(project, action)` for the current `prepare_motion`
+action. It supplies the retained prompt/coverage, exact native roles, stable
+sidecar IDs and source-transfer arguments. For OpenArt `input_assets` and supported
+root frame aliases, it validates and pins existing uploads by receipt SHA; shared boundary bytes are
+transferred once. `upload_authority_kwargs.files` contains only missing sources.
+Do not copy all `frames` into another upload batch.
+
+```python
+draft = execution.draft_motion_preparation(project, action)
+args = draft['upload_authority_kwargs']
+if args['files']:
+    authority = autonomy.derive_standing_upload_authority(project, **args)
+    upload = jobs.prepare_upload(project, files=args['files'],
+        billing_declaration={'upload_authorization_id': authority['upload_id']},
+        openart_project_id=args['openart_project_id'])
+    # Invoke upload['tool'] with upload['arguments'] exactly once in the host.
+    # Pass the actual returned structured payload, retaining the raw response.
+    jobs.record_upload_receipt(project, upload_id=upload['upload_id'], result=actual_result)
+    draft = execution.draft_motion_preparation(project, action)
+```
+
+An empty `files` list skips both authority derivation and upload. The helper's
+returned key is `upload_id`; the billing declaration's key is
+`upload_authorization_id`. Missing receipt cache for a consumed or recorded batch
+names its original upload ID and retained batch file; recover that original
+instead of transferring the sources again. Root frame inputs retain their
+governed path layout and use the existing `image_upload_id`/`end_image_upload_id`
+selectors. Only the native control projection converts them into ordered
+first/last frame rows. Historical frozen requests remain unchanged.
+
+Pass `draft['inputs']` to `prep_builder(draft['provider'])` with the exact selected
+profile. Supply the producer's timing estimate and actual preparation judgment
+to `prepare_compiled_request(..., coverage=draft['coverage'], timing=timing,
+review=judgment)`. Its returned bound review fills the canonical review ID,
+subject hash and authenticated generated-carrier membership. Retain those two
+returned sidecars under the IDs already in `draft['inputs']`; do not hand-copy
+their binding fields or turn unknown/failed observations into passes. Then
+complete the same action with those inputs and provider.
+
+For native image returns, load the existing
+[`scripts/native_host_receipt.js`](../scripts/native_host_receipt.js) in the agent
+host and use `consumeNativeHostAction` with the exact emitted envelope and actual
+tool callback. It retains the actual observation before saving/completion. Its
+`saveNativeHostReceipt` verifies the local cached image against the original data
+URL and writes the full receipt atomically through a small Node RPC. Never embed
+the multi-megabyte image data URL in a shell or Node script. Keep the receipt path
+fixed per original and carry the helper's exact next action; lost saving or
+completion replies recover the retained original without another image call.
+
 There are no corrective takes, creative revisions, video route fallbacks or board
 corrections in this factory. The sole image exception is the creator-authorized
 native content-policy fallback described below. Do not add another producer,
