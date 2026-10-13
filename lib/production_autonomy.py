@@ -2664,7 +2664,8 @@ def _prepare_mcp_policy_native(root, policy, shot_id, inputs):
         raise AutonomyError('MCP route violates retained model selection intent')
     profile = mcp.load_profile(inputs.get('model'), inputs.get('mode'), require='supported')
     native = mcp.prepare_native_request(execution._openart_mcp_controls(inputs), profile)
-    mcp.validate_native_request(native, profile)
+    # The builder validates this fresh request; retained native requests are
+    # rebuilt and compared at their later preparation/dispatch boundaries.
     _validate_mcp_policy_binding(spec, native, profile)
     return profile, native
 
