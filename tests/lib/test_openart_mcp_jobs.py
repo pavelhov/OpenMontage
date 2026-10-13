@@ -40,6 +40,154 @@ def test_receive_identical_original_is_idempotent_and_missing_id_uncertain(fixtu
     with pytest.raises(ValueError):jobs.record_status(root,'one',result={'historyId':'original','status':'COMPLETED','capabilityId':'wrong:mode'})
 
 
+def duplicate_consumed_fixture(root, *, wrong_receipt=False, relative_output=False):
+    """Isolated serialized legacy consumed-attempt fixture, never production edits."""
+    state=copy.deepcopy(jobs._load(root,'one'));state['attempt_id']='two'
+    state['status']='uncertain';state['receipt']=None;state.pop('receipt_sha256',None)
+    state['status_observations']=[];state['events']=[]
+    # The full-get correction boundary has explicit, frozen native format locks.
+    state['frozen']['native']['body']['params']['aspectRatio']='9:16'
+    state['frozen']['native']['body']['projectId']='fixture-project'
+    if relative_output:state['frozen']['generation_inputs']['output_path']='assets/SYNTHETIC-existing.mp4'
+    state['begin_envelope']['arguments']=copy.deepcopy(state['frozen']['native']['body'])
+    state['frozen_sha256']=mcp.digest(state['frozen'])
+    jobs._event(state,'begin_consumed_before_handoff',envelope_sha256=mcp.digest(state['begin_envelope']))
+    jobs._save(root,'two',state)
+    if wrong_receipt:
+        outcome={'historyId':'owned-original','status':'PENDING'}
+        reply={'attempt_id':'two','frozen_sha256':state['frozen_sha256'],
+            'request_sha256':state['frozen']['authority']['request_sha256'],
+            'begin_envelope_sha256':mcp.digest(state['begin_envelope']),
+            'outcome':outcome,'outcome_sha256':mcp.digest(outcome)}
+        jobs._write(jobs._path(root,'two').parent/'original-host-reply.json',reply)
+        state.update(status='submitted',receipt=outcome,receipt_sha256=mcp.digest(outcome))
+        jobs._save(root,'two',state)
+    return state
+
+
+def exact_get(state,history='actual-original'):
+    native=state['frozen']['native'];params=native['body']['params']
+    return {'historyId':history,'status':'RUNNING','projectId':native['body']['projectId'],
+        'capabilityId':native['model']+':'+native['mode'],
+        'prompt':params.get('sceneDescription',params.get('prompt'))+'\n',
+        'resolution':params['resolution'],'aspectRatio':params['aspectRatio'],'inputImages':[]}
+
+
+def retained_bytes(root):
+    return {str(p.relative_to(root)):p.read_bytes() for p in root.rglob('*') if p.is_file()}
+
+
+def test_original_history_cannot_belong_to_two_consumed_attempts(fixture_observations,tmp_path):
+    root,_,_=begun(tmp_path);jobs.receive(root,'one',outcome={'historyId':'owned-original'})
+    state=duplicate_consumed_fixture(root)
+    before=retained_bytes(root)
+    with pytest.raises(ValueError,match='original_history_reused'):
+        jobs.resume_original(root,'two',outcome={'historyId':'owned-original'},
+            request_sha256=state['frozen']['authority']['request_sha256'])
+    assert retained_bytes(root)==before
+
+
+def test_receive_available_metadata_rejects_stale_prompt_before_writes(fixture_observations,tmp_path):
+    root,_,_=begun(tmp_path);before=retained_bytes(root)
+    with pytest.raises(ValueError,match='original_identity_mismatch'):
+        jobs.receive(root,'one',outcome={'historyId':'foreign','prompt':'another shot'})
+    assert retained_bytes(root)==before
+
+
+def test_resume_audits_wrong_cross_attempt_receipt_without_resubmitting(fixture_observations,tmp_path):
+    root,_,_=begun(tmp_path);jobs.receive(root,'one',outcome={'historyId':'owned-original'})
+    state=duplicate_consumed_fixture(root,wrong_receipt=True);old=retained_bytes(root)
+    actual=exact_get(state);digest=state['frozen']['authority']['request_sha256']
+    recovered=jobs.resume_original(root,'two',outcome=actual,request_sha256=digest,correct_receipt=True)
+    assert recovered['history_id']=='actual-original'
+    assert jobs.poll_args(root,'two')['arguments']=={'historyId':'actual-original'}
+    assert (root/'openart_mcp/attempts/two/original-host-reply.json').read_bytes()==old['openart_mcp/attempts/two/original-host-reply.json']
+    assert jobs._load(root,'two')['frozen']==state['frozen']
+    assert len(jobs.list_attempts(root))==2
+    assert jobs.resume_original(root,'two',outcome=actual,request_sha256=digest,correct_receipt=True)==recovered
+    with pytest.raises(ValueError):jobs.begin(root,'two',authority_fn=execution.prepare_openart_mcp_handoff)
+
+
+@pytest.mark.parametrize('change',['missing_prompt','missing_capability','missing_images','missing_resolution',
+    'different_prompt','different_project','different_aspect','different_model','observed','output','relative_output','unowned','late_owner'])
+def test_wrong_receipt_correction_requires_untouched_original_and_actual_binding(fixture_observations,tmp_path,change):
+    root,_,_=begun(tmp_path);jobs.receive(root,'one',outcome={'historyId':'owned-original'})
+    state=duplicate_consumed_fixture(root,wrong_receipt=True,relative_output=change=='relative_output');actual=exact_get(state)
+    if change.startswith('missing_'):
+        actual.pop({'missing_prompt':'prompt','missing_capability':'capabilityId','missing_images':'inputImages','missing_resolution':'resolution'}[change])
+    elif change=='different_prompt':actual['prompt']='another shot'
+    elif change=='different_project':actual['projectId']='another-project'
+    elif change=='different_aspect':actual['aspectRatio']='16:9'
+    elif change=='different_model':actual['capabilityId']='another:model'
+    elif change=='observed':state['status_observations']=[{'historyId':'owned-original','status':'PENDING'}];jobs._save(root,'two',state)
+    elif change=='output':state['output']={'path':'SYNTHETIC-existing-output'};jobs._save(root,'two',state)
+    elif change=='relative_output':
+        path=root/state['frozen']['generation_inputs']['output_path'];path.parent.mkdir(exist_ok=True)
+        path.write_bytes(b'SYNTHETIC existing original bytes')
+    elif change=='unowned':
+        original=jobs._load(root,'one');original['receipt']={'historyId':'other'};original['receipt_sha256']=mcp.digest(original['receipt'])
+        (jobs._path(root,'one').parent/'original-host-reply.json').unlink();jobs._save(root,'one',original)
+    else:
+        original=jobs._load(root,'one');original['events'][-1]['observed_at']='2099-01-01T00:00:00+00:00';jobs._save(root,'one',original)
+    before=retained_bytes(root)
+    with pytest.raises(ValueError):
+        jobs.resume_original(root,'two',outcome=actual,request_sha256=state['frozen']['authority']['request_sha256'],correct_receipt=True)
+    assert retained_bytes(root)==before
+
+
+@pytest.mark.parametrize('change',['proof','old_reply','remove_pointer','receipt'])
+def test_corrected_receipt_independent_proof_tamper_fails_on_load(fixture_observations,tmp_path,change):
+    root,_,_=begun(tmp_path);jobs.receive(root,'one',outcome={'historyId':'owned-original'})
+    state=duplicate_consumed_fixture(root,wrong_receipt=True);actual=exact_get(state)
+    jobs.resume_original(root,'two',outcome=actual,request_sha256=state['frozen']['authority']['request_sha256'],correct_receipt=True)
+    if change in {'proof','old_reply'}:
+        path=jobs._path(root,'two').parent/('receipt-correction.json' if change=='proof' else 'original-host-reply.json')
+        data=jobs._read(path);data['outcome']['prompt']='tampered';jobs._write(path,data)
+    else:
+        data=jobs._load(root,'two')
+        if change=='remove_pointer':data.pop('receipt_correction_sha256')
+        else:data['receipt']['historyId']='swapped';data['receipt_sha256']=mcp.digest(data['receipt'])
+        jobs._save(root,'two',data)
+    before=retained_bytes(root)
+    with pytest.raises(ValueError):jobs.resume_original(root,'two')
+    assert retained_bytes(root)==before
+
+
+def test_correct_receipt_crash_replays_exact_audit_without_polling_wrong_id(fixture_observations,tmp_path,monkeypatch):
+    root,_,_=begun(tmp_path);jobs.receive(root,'one',outcome={'historyId':'owned-original'})
+    state=duplicate_consumed_fixture(root,wrong_receipt=True);actual=exact_get(state)
+    digest=state['frozen']['authority']['request_sha256'];save=jobs._save
+    def interrupt(root,aid,state):
+        if state.get('receipt_correction_sha256'):raise KeyboardInterrupt()
+        return save(root,aid,state)
+    with monkeypatch.context() as crash:
+        crash.setattr(jobs,'_save',interrupt)
+        with pytest.raises(KeyboardInterrupt):jobs.resume_original(root,'two',outcome=actual,request_sha256=digest,correct_receipt=True)
+    before=retained_bytes(root);guide=jobs.resume_original(root,'two')
+    assert guide['next_action']['action']=='correct_original_receipt'
+    with pytest.raises(ValueError,match='original_correction_pending'):jobs.poll_args(root,'two')
+    with pytest.raises(ValueError,match='original_correction_pending'):
+        jobs.record_status(root,'two',result={'historyId':'owned-original','status':'PENDING'})
+    with pytest.raises(ValueError,match='original_correction_pending'):jobs.download_original(root,'two')
+    assert retained_bytes(root)==before
+    assert jobs.resume_original(root,'two',outcome=guide['next_action']['outcome'],request_sha256=digest,correct_receipt=True)['history_id']=='actual-original'
+
+
+@pytest.mark.parametrize('change',[None,'url','role','order','extra'])
+def test_returned_frame_metadata_preserves_frozen_order_and_urls(fixture_observations,tmp_path,change):
+    root,_,_=begun(tmp_path);state=duplicate_consumed_fixture(root)
+    params=state['frozen']['native']['body']['params']
+    params.update(startFrame={'url':'https://fixture.invalid/start.png'},endFrame={'url':'https://fixture.invalid/end.png'})
+    actual=exact_get(state);actual['inputImages']=[{'role':'start','url':params['startFrame']['url']},{'role':'end','url':params['endFrame']['url']}]
+    if change=='url':actual['inputImages'][0]['url']='https://fixture.invalid/other.png'
+    elif change=='role':actual['inputImages'][0]['role']='end'
+    elif change=='order':actual['inputImages'].reverse()
+    elif change=='extra':actual['inputImages'].append(actual['inputImages'][0])
+    if change is None:jobs._validate_original_metadata(state,actual,require_binding=True)
+    else:
+        with pytest.raises(ValueError,match='original_identity_mismatch'):jobs._validate_original_metadata(state,actual,require_binding=True)
+
+
 @pytest.mark.parametrize('resources,extra',[
     ([{'id':'v','mediaType':'video','url':'https://fixture.invalid/v.mp4'},{'id':'v2','mediaType':'video','url':'https://fixture.invalid/v2.mp4'}],{}),
     ([{'id':'v','mediaType':'video','url':'https://fixture.invalid/v.mp4'},{'id':'i','mediaType':'image','url':'','status':'FAILED'}],{}),

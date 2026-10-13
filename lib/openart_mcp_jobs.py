@@ -98,13 +98,131 @@ def _load(root, aid):
         _fail('state_invalid', 'frozen connector original changed')
     if state.get('receipt') is not None and state.get('receipt_sha256') != mcp.digest(state['receipt']):
         _fail('state_invalid', 'original receipt changed')
+    reply_path=_path(root,aid).parent/'original-host-reply.json'
+    if reply_path.exists():
+        reply=_read(reply_path)
+        if (reply.get('attempt_id')!=aid or reply.get('frozen_sha256')!=state['frozen_sha256']
+                or reply.get('request_sha256')!=frozen['authority']['request_sha256']
+                or reply.get('begin_envelope_sha256')!=mcp.digest(state['begin_envelope'])
+                or reply.get('outcome_sha256')!=mcp.digest(reply.get('outcome'))
+                or state.get('receipt') is not None and not state.get('receipt_correction_sha256')
+                    and state['receipt_sha256']!=reply.get('outcome_sha256')):
+            _fail('original_reply_mismatch','original receipt differs from immutable retained host reply')
     if state.get('download_receipt'):
         retained_download = _read(_path(root, aid).parent/'download-receipt.json')
         if mcp.digest(retained_download) != state.get('download_receipt_sha256') or mcp.digest(state['download_receipt']) != mcp.digest(retained_download):
             _fail('download_changed','original download receipt differs from retained independent byte proof')
+    if state.get('receipt_correction_sha256') is not None:
+        correction=_read(_path(root,aid).parent/'receipt-correction.json')
+        _check_receipt_correction(root,state,correction)
+        if (mcp.digest(correction)!=state['receipt_correction_sha256']
+                or mcp.digest(state['receipt'])!=correction['outcome_sha256']):
+            _fail('original_reply_mismatch','audited original receipt correction changed')
     return state
 
 def _save(root, aid, state): _write(_path(root, aid), state)
+
+def _validate_original_metadata(state,result,*,require_binding=False):
+    """Compare actual returned fields; an audited correction needs full proof."""
+    native=state['frozen']['native'];body=native['body'];params=body['params']
+    expected={'projectId':body.get('projectId'),'capabilityId':native['model']+':'+native['mode'],
+        'model':native['model'],'mode':native['mode'],
+        'resolution':params.get('videoResolution',params.get('resolution')),
+        'aspectRatio':params.get('videoAspectRatio',params.get('aspectRatio'))}
+    if require_binding and any(key not in result or expected[key] is None
+            for key in ('projectId','capabilityId','resolution','aspectRatio')):
+        _fail('original_binding_unavailable','full actual project/capability/format evidence required for correction')
+    if require_binding and result.get('status') not in {'PENDING','RUNNING',*TERMINAL}:
+        _fail('original_binding_unavailable','recognized actual creation status required for correction')
+    for key,value in expected.items():
+        if key in result and value is not None and result[key]!=value:
+            _fail('original_identity_mismatch','returned '+key+' contradicts the original native request')
+    prompt=params.get('sceneDescription',params.get('prompt'))
+    if 'prompt' in result or require_binding:
+        if not isinstance(result.get('prompt'),str) or not isinstance(prompt,str):
+            _fail('original_binding_unavailable','actual prompt evidence required')
+        if result['prompt'].strip()!=prompt.strip():
+            _fail('original_identity_mismatch','returned prompt contradicts the original native request')
+    if 'inputImages' in result or require_binding:
+        # The existing factory's frame routes have exact ordered start/end URLs.
+        # Other media roles have no established full-get projection here.
+        if any(row['role'] not in {'first_frame','last_frame'} for row in native.get('input_assets',[])):
+            if require_binding:_fail('original_binding_unavailable','complete returned media-role proof unavailable')
+            return
+        frames=[{'role':role,'url':params[field]['url']} for field,role in
+            (('startFrame','start'),('endFrame','end')) if field in params]
+        rows=result.get('inputImages')
+        if not isinstance(rows,list) or any(not isinstance(row,dict) or not {'role','url'}<=set(row) for row in rows):
+            _fail('original_binding_unavailable','actual ordered input image evidence required')
+        if [{'role':row.get('role'),'url':row.get('url')} for row in rows]!=frames:
+            _fail('original_identity_mismatch','returned ordered frame URLs contradict the original native request')
+    for key,value in params.items():
+        if key not in {'prompt','sceneDescription','resolution','aspectRatio','videoResolution','videoAspectRatio'} and key in result and result[key]!=value:
+            _fail('original_identity_mismatch','returned '+key+' contradicts original native controls')
+
+def _history_owners(root,history,exclude):
+    owners=[]
+    for path in sorted((root/'openart_mcp'/'attempts').glob('*/state.json')):
+        aid=path.parent.name
+        if aid==exclude:continue
+        state=_load(root,aid);receipts=[state.get('receipt'),*state['status_observations']]
+        reply_path=path.parent/'original-host-reply.json'
+        if reply_path.exists() and not state.get('receipt_correction_sha256'):
+            reply=_read(reply_path)
+            if (reply.get('attempt_id')!=aid or reply.get('frozen_sha256')!=state['frozen_sha256']
+                    or reply.get('request_sha256')!=state['frozen']['authority']['request_sha256']
+                    or reply.get('begin_envelope_sha256')!=mcp.digest(state['begin_envelope'])
+                    or mcp.digest(reply.get('outcome'))!=reply.get('outcome_sha256')):
+                _fail('original_reply_mismatch','other retained original host reply changed')
+            receipts.append(reply.get('outcome'))
+        correction_path=path.parent/'receipt-correction.json'
+        if correction_path.exists():
+            correction=_read(correction_path);_check_receipt_correction(root,state,correction)
+            receipts.append(correction['outcome'])
+        if any(receipt and receipt.get('historyId')==history for receipt in receipts):
+            owners.append({'attempt_id':aid,'frozen_sha256':state['frozen_sha256'],
+                'receipt_sha256':state.get('receipt_sha256')})
+    return owners
+
+def _check_receipt_correction(root,state,correction):
+    reply=_read(_path(root,state['attempt_id']).parent/'original-host-reply.json')
+    if (correction.get('attempt_id')!=state['attempt_id']
+            or correction.get('frozen_sha256')!=state['frozen_sha256']
+            or correction.get('request_sha256')!=state['frozen']['authority']['request_sha256']
+            or correction.get('begin_envelope_sha256')!=mcp.digest(state['begin_envelope'])
+            or correction.get('original_host_reply_sha256')!=mcp.digest(reply)
+            or reply.get('attempt_id')!=state['attempt_id']
+            or reply.get('frozen_sha256')!=state['frozen_sha256']
+            or reply.get('request_sha256')!=correction.get('request_sha256')
+            or reply.get('begin_envelope_sha256')!=correction.get('begin_envelope_sha256')
+            or reply.get('outcome_sha256')!=correction.get('original_receipt_sha256')
+            or correction.get('original_receipt_sha256')!=mcp.digest(correction.get('original_receipt'))
+            or mcp.digest(reply.get('outcome'))!=correction.get('original_receipt_sha256')
+            or correction.get('outcome_sha256')!=mcp.digest(correction.get('outcome'))
+            or correction.get('kind')!='wrong_cross_attempt_receipt_correction'
+            or not correction.get('original_owners')
+            or correction.get('target_begin_event_sha256') not in {mcp.digest(e) for e in state['events'] if e['kind']=='begin_consumed_before_handoff'}):
+        _fail('original_reply_mismatch','audited correction differs from immutable original evidence')
+    for owner in correction['original_owners']:
+        if owner['attempt_id']==state['attempt_id']:
+            _fail('original_reply_mismatch','correction cannot claim its own wrong receipt')
+        if _read(_path(root,_id(owner['attempt_id']))).get('receipt_correction_sha256'):
+            _fail('original_reply_mismatch','foreign original ownership must be uncorrected')
+        original=_load(root,_id(owner['attempt_id']))
+        receipt=original.get('receipt')
+        if (owner['attempt_id']==state['attempt_id'] or original.get('receipt_correction_sha256')
+                or original['frozen_sha256']!=owner['frozen_sha256'] or not receipt
+                or mcp.digest(receipt)!=owner['receipt_sha256']
+                or receipt.get('historyId')!=correction['original_receipt'].get('historyId')):
+            _fail('original_reply_mismatch','wrong original history ownership proof changed')
+        events=[e for e in original['events'] if e['kind']=='submission_receipt_retained' and e.get('history_id')==receipt['historyId']]
+        begins=[e for e in state['events'] if e['kind']=='begin_consumed_before_handoff']
+        if (not events or len(begins)!=1 or mcp.digest(events[0])!=owner.get('submission_event_sha256')
+                or begins[0].get('envelope_sha256')!=mcp.digest(state['begin_envelope'])
+                or datetime.fromisoformat(events[0]['observed_at'])>=datetime.fromisoformat(begins[0]['observed_at'])):
+            _fail('original_reply_mismatch','foreign original was not retained before target begin')
+        _validate_original_metadata(original,receipt)
+    _validate_original_metadata(state,correction['outcome'],require_binding=True)
 
 def _authority(inputs, aid, fn):
     if not callable(fn): _fail('authority_invalid', 'rooted authority callback required')
@@ -172,6 +290,9 @@ def receive(project_dir, attempt_id, *, outcome=None, error=None):
         if error is not None or not isinstance(outcome, dict) or not isinstance(outcome.get('historyId'), str) or not outcome.get('historyId'):
             state['status']='uncertain'; _event(state, 'uncertain', error=str(error) if error is not None else 'missing original historyId')
         else:
+            if _history_owners(root,outcome['historyId'],aid):
+                _fail('original_history_reused','original historyId already belongs to another retained attempt')
+            _validate_original_metadata(state,outcome)
             # Retain the exact original host reply before updating state. On a
             # receive interruption the same reply can be replayed without begin.
             reply = {'attempt_id': aid, 'frozen_sha256': state['frozen_sha256'],
@@ -188,7 +309,7 @@ def receive(project_dir, attempt_id, *, outcome=None, error=None):
         _save(root, aid, state)
         return attempt_state(root, aid)
 
-def resume_original(project_dir, attempt_id, *, outcome=None, request_sha256=None):
+def resume_original(project_dir, attempt_id, *, outcome=None, request_sha256=None, correct_receipt=False):
     """Inspect the original handoff, or replay its exact retrievable host reply.
 
     No plain inspection writes, connector calls, polling, new reservations or
@@ -196,6 +317,56 @@ def resume_original(project_dir, attempt_id, *, outcome=None, request_sha256=Non
     original host response for this exact frozen handoff, never a replacement.
     """
     root = _root(project_dir); aid = _id(attempt_id)
+    if correct_receipt:
+        with _lock(root):
+            state=_load(root,aid);original_request=state['frozen']['authority']['request_sha256']
+            if request_sha256!=original_request or not isinstance(outcome,dict) or not isinstance(outcome.get('historyId'),str) or not outcome['historyId']:
+                _fail('original_request_mismatch','correction requires exact original request and actual history')
+            if state.get('receipt_correction_sha256'):
+                if mcp.digest(outcome)!=state['receipt_sha256']:
+                    _fail('receipt_exists','audited correction cannot be replaced')
+                return attempt_state(root,aid)
+            if (state['status']!='submitted' or not state['receipt'] or state['status_observations']
+                    or state.get('download_receipt') or state.get('output')
+                    or any(p.name.startswith(('download','output')) or p.suffix=='.part' for p in _path(root,aid).parent.iterdir())
+                    or _inside(root,state['frozen']['generation_inputs'].get('output_path','')).is_file()):
+                _fail('original_correction_unavailable','correction requires an untouched consumed original with no observation or media')
+            owners=_history_owners(root,state['receipt']['historyId'],aid)
+            if not owners:
+                _fail('original_correction_unavailable','old history must demonstrably belong to another retained original')
+            if _history_owners(root,outcome['historyId'],aid):
+                _fail('original_history_reused','corrected history already belongs to another retained attempt')
+            _validate_original_metadata(state,outcome,require_binding=True)
+            reply_path=_path(root,aid).parent/'original-host-reply.json'
+            reply=_read(reply_path)
+            for owner in owners:
+                original=_load(root,owner['attempt_id'])
+                events=[e for e in original['events'] if e['kind']=='submission_receipt_retained' and e.get('history_id')==state['receipt']['historyId']]
+                if not events:_fail('original_correction_unavailable','foreign original submission evidence unavailable')
+                owner['submission_event_sha256']=mcp.digest(events[0])
+            begins=[e for e in state['events'] if e['kind']=='begin_consumed_before_handoff']
+            if len(begins)!=1:_fail('original_correction_unavailable','exact target begin observation required')
+            params=state['frozen']['native']['body']['params']
+            correction={'version':'1.0','kind':'wrong_cross_attempt_receipt_correction','attempt_id':aid,
+                'frozen_sha256':state['frozen_sha256'],'request_sha256':original_request,
+                'begin_envelope_sha256':mcp.digest(state['begin_envelope']),
+                'target_begin_event_sha256':mcp.digest(begins[0]),
+                'original_host_reply_sha256':mcp.digest(reply),'original_receipt':copy.deepcopy(state['receipt']),
+                'original_receipt_sha256':state['receipt_sha256'],'original_owners':owners,
+                'outcome':copy.deepcopy(outcome),'outcome_sha256':mcp.digest(outcome),
+                'unavailable_native_controls':sorted(k for k in params if k not in outcome and k not in
+                    {'prompt','sceneDescription','resolution','aspectRatio','videoResolution','videoAspectRatio','startFrame','endFrame'})}
+            _check_receipt_correction(root,state,correction)
+            correction_path=_path(root,aid).parent/'receipt-correction.json'
+            if correction_path.exists():
+                if _read(correction_path)!=correction:_fail('receipt_exists','retained correction evidence cannot be replaced')
+            else:_write(correction_path,correction)
+            state.update(receipt=copy.deepcopy(outcome),receipt_sha256=mcp.digest(outcome),
+                receipt_correction_sha256=mcp.digest(correction))
+            _event(state,'wrong_cross_attempt_receipt_corrected',old_history_id=correction['original_receipt']['historyId'],
+                history_id=outcome['historyId'],correction_sha256=state['receipt_correction_sha256'])
+            _save(root,aid,state)
+            return attempt_state(root,aid)
     state = _load(root, aid)
     original_request = state['frozen']['authority']['request_sha256']
     if request_sha256 is not None and request_sha256 != original_request:
@@ -210,6 +381,17 @@ def resume_original(project_dir, attempt_id, *, outcome=None, request_sha256=Non
                 or not isinstance(reply.get('outcome'), dict)
                 or reply.get('outcome_sha256') != mcp.digest(reply['outcome'])):
             _fail('original_reply_mismatch', 'retained host reply differs from exact original handoff')
+    if state.get('receipt_correction_sha256'):
+        correction=_read(_path(root,aid).parent/'receipt-correction.json')
+        reply={**reply,'outcome':correction['outcome'],'outcome_sha256':correction['outcome_sha256']}
+    elif (_path(root,aid).parent/'receipt-correction.json').exists():
+        correction=_read(_path(root,aid).parent/'receipt-correction.json')
+        _check_receipt_correction(root,state,correction)
+        if outcome is not None:
+            _fail('original_correction_pending','replay audited correction explicitly with correct_receipt=True')
+        return {**attempt_state(root,aid),'request_sha256':original_request,'provider_calls':0,'reservations':0,
+            'next_action':{'action':'correct_original_receipt','function':'lib.openart_mcp_jobs.resume_original',
+                'attempt_id':aid,'request_sha256':original_request,'correct_receipt':True,'outcome':copy.deepcopy(correction['outcome'])}}
     if outcome is not None:
         if request_sha256 != original_request:
             _fail('original_request_mismatch', 'original reply replay requires exact request digest')
@@ -239,6 +421,8 @@ def resume_original(project_dir, attempt_id, *, outcome=None, request_sha256=Non
 
 def poll_args(project_dir, attempt_id):
     state = _load(project_dir, _id(attempt_id))
+    if (_path(project_dir,attempt_id).parent/'receipt-correction.json').exists() and not state.get('receipt_correction_sha256'):
+        _fail('original_correction_pending','replay audited correction before polling any original')
     if state['receipt'] is None: _fail('original_uncertain', 'original historyId unavailable; never replace it')
     return {'tool':'mcp__codex_apps__openart_openart_creation_get', 'arguments':{'historyId':state['receipt']['historyId']}}
 
@@ -246,14 +430,12 @@ def record_status(project_dir, attempt_id, *, result):
     root = _root(project_dir); aid = _id(attempt_id)
     with _lock(root):
         state = _load(root, aid); receipt = state['receipt']
+        if (_path(root,aid).parent/'receipt-correction.json').exists() and not state.get('receipt_correction_sha256'):
+            _fail('original_correction_pending','replay audited correction before recording original status')
         if not receipt or not isinstance(result, dict) or result.get('historyId') != receipt['historyId']:
             _fail('original_id_mismatch', 'status must be for the exact original historyId')
         if result.get('status') not in {'PENDING','RUNNING',*TERMINAL}: _fail('status_invalid', 'unrecognized original creation status')
-        native = state['frozen']['native']
-        if (result.get('capabilityId') is not None and result['capabilityId'] != native['model'] + ':' + native['mode']
-                or result.get('model') is not None and result['model'] != native['model']
-                or result.get('mode') is not None and result['mode'] != native['mode']):
-            _fail('original_identity_mismatch', 'returned model/mode contradicts the original native request')
+        _validate_original_metadata(state,result)
         previous = state['status_observations']
         if previous and previous[-1]['status'] in TERMINAL:
             if mcp.digest(previous[-1]) != mcp.digest(result): _fail('terminal_changed', 'terminal original status cannot be replaced')
@@ -362,7 +544,9 @@ def provenance_record(project_dir, attempt_id):
     return {**copy.deepcopy(s['frozen']), 'provenance':'agent_recorded_connector','attempt_id':s['attempt_id'],
         'begin_envelope':copy.deepcopy(s['begin_envelope']),'receipt':copy.deepcopy(s['receipt']),
         'status_observations':copy.deepcopy(s['status_observations']), 'output':copy.deepcopy(s['output']),
-        'download_receipt':copy.deepcopy(s.get('download_receipt')), 'download_receipt_sha256':s.get('download_receipt_sha256')}
+        'download_receipt':copy.deepcopy(s.get('download_receipt')), 'download_receipt_sha256':s.get('download_receipt_sha256'),
+        **({'receipt_correction':_read(_path(project_dir,attempt_id).parent/'receipt-correction.json'),
+            'receipt_correction_sha256':s['receipt_correction_sha256']} if s.get('receipt_correction_sha256') else {})}
 
 def terminal_failure_record(project_dir, attempt_id):
     s=_load(project_dir, _id(attempt_id)); terminal=_terminal(s, {'FAILED','CANCELLED'})
@@ -775,6 +959,8 @@ def download_original(project_dir, attempt_id):
     root=_root(project_dir);aid=_id(attempt_id)
     with _lock(root):
         state=_load(root,aid)
+        if (_path(root,aid).parent/'receipt-correction.json').exists() and not state.get('receipt_correction_sha256'):
+            _fail('original_correction_pending','replay audited correction before downloading any original')
         if state['status']!='completed':_fail('original_not_completed','only completed original resource can be downloaded')
         terminal=_terminal(state,{'COMPLETED'})
         resource=_video_resource(terminal);url=resource['url']

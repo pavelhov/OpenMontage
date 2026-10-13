@@ -15,7 +15,8 @@ and dispatch it before unrelated boards, then prepare other images while origina
 render. Do not wait for every episode image before the first video request.
 Retain each full host response directly with the existing receipt helper; surface
 only its ID, saved path and status. Do not print encoded media or repeat full
-receipt/status inventories between actions.
+receipt/status inventories between actions. Save each reply under its attempt ID
+and check that the write succeeded before importing it.
 Each clip uses every declared supported image input. Adjacent shots
 may share prepared boundary-photo bytes when that is what the plan declares; this
 does not make an unsupported native frame pin available. Unsupported required
