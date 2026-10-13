@@ -2844,6 +2844,7 @@ def next_production_action(project_dir):
     board_action = None
     board_actions = {}
     motion_action = None
+    ready_original_action = None
     uncertain_cli_actions = []
     recoverable_originals = []
     image_calls = []
@@ -2943,8 +2944,11 @@ def next_production_action(project_dir):
             binding = {'attempt_id': aid, 'request_sha256': state['request_sha256'],
                        'state_sha256': _digest(state)}
             if kind:
-                remember_motion(action(kind, aid, binding, inputs=operation,
-                    host=kind in {'poll_openart_original'}))
+                candidate = action(kind, aid, binding, inputs=operation,
+                    host=kind in {'poll_openart_original'})
+                if kind == 'begin_openart_original' and ready_original_action is None:
+                    ready_original_action = candidate
+                remember_motion(candidate)
                 continue
             if operation['action'] == 'blocked_original_host_reply_unavailable':
                 # No receipt and no retained reply: the original stays counted
@@ -2979,6 +2983,11 @@ def next_production_action(project_dir):
             # original's exact ID/count instead of a generic planning block.
             return recoverable_originals[0]
         return action('blocked', 'planning', {}, reason='Canonical authored planning is missing; no trusted derived source is available.')
+    # Hand off an already prepared exact request before asking the producer to
+    # prepare another shot. begin still revalidates current source and authority
+    # and owns the once-only envelope; pending originals retain their ordering.
+    if ready_original_action is not None:
+        return ready_original_action
     # Ready independent shots dispatch first: a running or uncertain original
     # stays recoverable and is never resubmitted, but cannot hold other clips.
     marker = _read(root / 'project.json')
@@ -3115,6 +3124,8 @@ def draft_motion_preparation(project_dir, action, *, output_path=None, compiled_
     Projects the active policy's retained ``planned_request_template`` inputs,
     resolves declared ``$board``/``$upstream`` frame occurrences to their actual
     current bytes, and attaches the existing ``compile_provider_prompt`` preview.
+    Exact connector model/mode inputs infer their approved OpenArt route and
+    receive stable administrative IDs, account-project and upload-authority args.
     It writes nothing, reserves/uploads nothing and makes no review, timing or
     provider judgment. The returned ``inputs``/``provider`` are an ordinary
     draft for ``prep_builder``/``prepare_compiled_request``/``complete_action``;
@@ -3136,6 +3147,15 @@ def draft_motion_preparation(project_dir, action, *, output_path=None, compiled_
     template = retained['planned_request_template']['inputs']
     routes = template.get('allowed_providers') or ([template['preferred_provider']] if template.get('preferred_provider') else [])
     named = template.get('preferred_provider', routes[0] if len(routes) == 1 else None)
+    # Connector-native compact inputs name their exact model/mode rather than
+    # carrying selector-only provider fields. Infer only that retained route;
+    # ambiguous/generic inputs still require the producer's explicit provider.
+    if not routes and template.get('model') and template.get('mode'):
+        spec = autonomy._provider_spec(policy, 'openart_mcp')
+        route = {'model': template['model'], 'mode': template['mode']}
+        if (spec is not None and route in spec.get('routes', [])
+                and autonomy._intent_allows(policy, sid, 'openart_mcp', template['model'])):
+            named, routes = 'openart_mcp', ['openart_mcp']
     if routes and (provider is not None and provider != named):
         _fail('motion draft provider differs from retained request template route')
     provider = named if routes else provider
@@ -3168,15 +3188,31 @@ def draft_motion_preparation(project_dir, action, *, output_path=None, compiled_
     authored = compile_provider_prompt(root, sid, provider=provider,
         **({'model': inputs.get('model')} if provider == 'openart_mcp' else {}))
     inputs.update(project_dir=str(root), governance={'shot_id': sid}, prompt=authored['prompt'])
+    if provider == 'openart_mcp':
+        # Administrative names are deterministic for this exact action. Native
+        # upload receipts and preparation judgment remain their existing owners.
+        record_id = 'motion-' + current['action_id'][:24]
+        inputs.setdefault('output_path', str(_inside('assets/video/' + record_id + '.mp4', root)))
+        inputs.setdefault('compiled_request_id', record_id)
+        inputs.setdefault('preparation_review_id', record_id)
+        spec = autonomy._provider_spec(policy, provider)
+        if spec.get('project_id') is not None:
+            inputs.setdefault('openart_project_id', spec['project_id'])
     if output_path is not None:
         inputs['output_path'] = str(_inside(output_path, root))
     for name, value in (('compiled_request_id', compiled_request_id), ('preparation_review_id', preparation_review_id)):
         if value is not None:
             inputs[name] = _id(value)
     missing = [k for k in ('output_path', 'compiled_request_id', 'preparation_review_id') if k not in inputs]
-    return {'action_id': current['action_id'], 'shot_id': sid, 'provider': provider, 'inputs': inputs,
+    result = {'action_id': current['action_id'], 'shot_id': sid, 'provider': provider, 'inputs': inputs,
             'frames': frames, 'coverage': authored['coverage'], 'source_binding': authored['source_binding'],
             'missing': missing, 'provider_calls': 0}
+    if provider == 'openart_mcp' and frames:
+        result['upload_authority_kwargs'] = {'shot_id': sid, 'provider': provider,
+            'files': list(dict.fromkeys(str(_inside(frame['path'], root)) for frame in frames)),
+            'account': {'uid_sha256': spec['uid_sha256']},
+            'openart_project_id': inputs.get('openart_project_id')}
+    return result
 
 
 def complete_action(project_dir, action, *, outcome):
