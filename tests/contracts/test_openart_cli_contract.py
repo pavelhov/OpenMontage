@@ -311,7 +311,7 @@ def test_real_pre_submit_form_and_preview_publish_production_model_without_resul
     assert not (tmp / "paid").exists()
 
 
-def test_actual_full_profile_catalog_reads_reference_receipts(governed, monkeypatch):
+def test_actual_full_profile_catalog_reads_reference_receipts(governed, monkeypatch, request):
     from lib import openart_dispatch as dispatch  # noqa: F401
     root, inputs, profile, tmp = governed
     # Real fake-CLI chain: original qualification job, then first-result promotion.
@@ -324,6 +324,14 @@ def test_actual_full_profile_catalog_reads_reference_receipts(governed, monkeypa
     # Profiles keep reference-only receipts, never parsed blobs.
     assert all(set(e) == {"kind", "receipt_id", "receipt_sha256"} for e in full["captured_receipts"])
     state = openart_jobs.cli.state_dir(create=False)
+    # Establish and retain SQLite's read-side WAL/SHM bookkeeping before measuring
+    # catalog reads. A mode=ro reader may create these files on Linux; holding its
+    # transaction open also prevents last-reader cleanup during the assertion.
+    db = sqlite3.connect((state / "credits" / "ledger.sqlite3").as_uri() + "?mode=ro", uri=True)
+    request.addfinalizer(db.close)
+    db.execute("PRAGMA query_only=ON")
+    db.execute("BEGIN")
+    db.execute("SELECT count(*) FROM sqlite_schema").fetchone()
     before, calls_before = _tree(state), (tmp / "calls").read_text()
 
     def forbidden(*a, **k):
