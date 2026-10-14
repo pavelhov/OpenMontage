@@ -68,6 +68,53 @@ test('multi-MB observation is persisted losslessly through one tiny RPC and rema
   assert.deepEqual(Buffer.from(JSON.parse(raw).result.image_url.split(',')[1], 'base64'), f.image);
   assert.ok(JSON.stringify(saved).length < 500);
 });
+test('optional bridge clocks separate host work and Node persistence without changing the original', async t => {
+  const f = await fixture(t), events = [];
+  let clock = 1000;
+  t.mock.method(Date, 'now', () => ++clock);
+  const options = hostOptions(f, async () => f.observation.result, async () => ({status: 'host_action'}));
+  options.observeTiming = event => events.push(event);
+  assert.deepEqual(await consumeNativeHostAction(f.tools, imageStep(f), options),
+    {status: 'host_action', provider_calls: null});
+  assert.deepEqual(events.map(event => event.stage), ['native_return', 'retention_start', 'retention_end',
+    'receipt_prepare_start', 'receipt_prepare_end', 'receipt_rpc_start', 'receipt_rpc_end',
+    'node_receipt', 'completion_start', 'completion_end']);
+  assert.ok(events.every(event => event.subject === 'original-call' && Number.isSafeInteger(event.at_ms)));
+  const node = events.find(event => event.stage === 'node_receipt').clocks;
+  assert.deepEqual(Object.keys(node), ['start', 'image_read_end', 'image_hash_end', 'write_start', 'write_end', 'sync_end']);
+  assert.ok(Object.values(node).every(Number.isSafeInteger));
+  assert.deepEqual(Object.values(node), Object.values(node).slice().sort((a, b) => a - b));
+  const original = JSON.parse(await fs.readFile(f.receiptPath));
+  assert.equal(original.result.image_url, f.observation.result.image_url);
+  assert.ok(!('timing' in original));
+  assert.equal(f.calls.length, 2);
+  assert.ok(f.calls.every(request => request.code.length < 5000));
+});
+test('diagnostic observer failure does not interrupt original retention or completion', async t => {
+  const f = await fixture(t);
+  const options = hostOptions(f, async () => f.observation.result, async () => ({status: 'host_action'}));
+  options.observeTiming = () => { throw new Error('diagnostic sink unavailable'); };
+  assert.deepEqual(await consumeNativeHostAction(f.tools, imageStep(f), options),
+    {status: 'host_action', provider_calls: null});
+  assert.equal(JSON.parse(await fs.readFile(f.receiptPath)).result.image_url, f.observation.result.image_url);
+});
+test('receipt diagnostics preserve exact bytes and missing RPC replies leave unmatched clocks', async t => {
+  const f = await fixture(t), events = [];
+  const original = await saveNativeHostReceipt(f.tools, f.observation, f.receiptPath);
+  assert.deepEqual(Object.keys(JSON.parse(original.content[0].text)), ['path', 'bytes', 'sha256']);
+  const before = await fs.readFile(f.receiptPath);
+  await saveNativeHostReceipt(f.tools, f.observation, f.receiptPath, event => events.push(event));
+  assert.deepEqual(await fs.readFile(f.receiptPath), before);
+  assert.ok(events.some(event => event.stage === 'node_receipt'));
+  events.length = 0;
+  const rpc = f.tools.mcp__node_repl__js;
+  f.tools.mcp__node_repl__js = async request => { await rpc(request); throw new Error('reply lost'); };
+  await assert.rejects(saveNativeHostReceipt(f.tools, f.observation, f.receiptPath,
+    event => events.push(event)), /reply lost/);
+  assert.deepEqual(events.map(event => event.stage),
+    ['receipt_prepare_start', 'receipt_prepare_end', 'receipt_rpc_start']);
+  assert.deepEqual(await fs.readFile(f.receiptPath), before);
+});
 test('lost save response resumes the same original without another host call or receipt overwrite', async t => {
   const f = await fixture(t), rpc = f.tools.mcp__node_repl__js;
   f.tools.mcp__node_repl__js = async request => { await rpc(request); throw new Error('lost response'); };

@@ -47,7 +47,14 @@ function nativeImageURLSha256(text) {
   return hash.map(word => (word >>> 0).toString(16).padStart(8, '0')).join('');
 }
 
-async function saveNativeHostReceipt(tools, observedReceipt, receiptPath) {
+function observeNativeHostTiming(observer, stage, details = {}) {
+  if (typeof observer !== 'function') return;
+  // Diagnostics never change original ownership, persistence or completion.
+  try { observer({stage, at_ms: Date.now(), ...details}); } catch (_) {}
+}
+
+async function saveNativeHostReceipt(tools, observedReceipt, receiptPath, observeTiming) {
+  observeNativeHostTiming(observeTiming, 'receipt_prepare_start');
   const url = observedReceipt?.tool_name === 'image_gen.imagegen' ? observedReceipt?.result?.image_url : undefined;
   const match = typeof url === 'string' && /^data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/]*={0,2})$/.exec(url);
   const hint = observedReceipt?.result?.output_hint;
@@ -60,10 +67,13 @@ async function saveNativeHostReceipt(tools, observedReceipt, receiptPath) {
   if (metadata.length > 65536) throw new Error('Unexpected large native metadata; retain original observation');
   const imageRestore = match ? `
     const url = ${JSON.stringify('data:' + match[1] + ';base64,')} + (await fs.readFile(${JSON.stringify(pathMatch[1])})).toString('base64');
+    if (clocks) clocks.image_read_end = Date.now();
     if (url.length !== ${url.length} || crypto.createHash('sha256').update(url).digest('hex') !== ${JSON.stringify(nativeImageURLSha256(url))})
       throw new Error('Cached image differs from actual native return');
+    if (clocks) clocks.image_hash_end = Date.now();
     snapshot.result.image_url = url;` : '';
   const code = `await (async () => {
+    const clocks = ${typeof observeTiming === 'function'} ? {start: Date.now()} : null;
     const fs = await import('node:fs/promises');
     const crypto = await import('node:crypto');
     const snapshot = JSON.parse(${JSON.stringify(metadata)});
@@ -71,7 +81,9 @@ async function saveNativeHostReceipt(tools, observedReceipt, receiptPath) {
     const raw = JSON.stringify(snapshot), receiptPath = ${JSON.stringify(receiptPath)};
     const temporary = receiptPath + '.tmp-' + crypto.randomUUID();
     try {
+      if (clocks) clocks.write_start = Date.now();
       await fs.writeFile(temporary, raw, {flag: 'wx', mode: 0o600});
+      if (clocks) clocks.write_end = Date.now();
       const file = await fs.open(temporary, 'r');
       try { await file.sync(); } finally { await file.close(); }
       try { await fs.link(temporary, receiptPath); }
@@ -80,9 +92,22 @@ async function saveNativeHostReceipt(tools, observedReceipt, receiptPath) {
     } finally { await fs.rm(temporary, {force: true}); }
     const parent = await fs.open(receiptPath.slice(0, receiptPath.lastIndexOf('/')) || '/', 'r');
     try { await parent.sync(); } finally { await parent.close(); }
-    nodeRepl.write(JSON.stringify({path: receiptPath, bytes: Buffer.byteLength(raw), sha256: crypto.createHash('sha256').update(raw).digest('hex')}));
+    if (clocks) clocks.sync_end = Date.now();
+    nodeRepl.write(JSON.stringify({path: receiptPath, bytes: Buffer.byteLength(raw), sha256: crypto.createHash('sha256').update(raw).digest('hex'), ...(clocks ? {clocks} : {})}));
   })();`;
+  observeNativeHostTiming(observeTiming, 'receipt_prepare_end');
+  observeNativeHostTiming(observeTiming, 'receipt_rpc_start');
   const saved = await tools.mcp__node_repl__js({code, title: 'Save actual native host receipt', timeout_ms: 30000});
+  observeNativeHostTiming(observeTiming, 'receipt_rpc_end');
+  if (typeof observeTiming === 'function') {
+    for (const block of saved?.content || []) {
+      if (block.type !== 'text') continue;
+      try {
+        const clocks = JSON.parse(block.text)?.clocks;
+        if (clocks) observeNativeHostTiming(observeTiming, 'node_receipt', {clocks});
+      } catch (_) {}
+    }
+  }
   if (saved.isError) throw new Error('Receipt saving failed; retain original observation and collect it without regeneration');
   return saved;
 }
@@ -142,6 +167,8 @@ async function consumeNativeHostAction(tools, step, options) {
   if (typeof receiptPath !== 'string' || !receiptPath.startsWith('/'))
     throw new Error('An absolute receipt path is required before native invocation');
   const key = 'native-host:' + action.subject;
+  const timing = typeof options.observeTiming === 'function'
+    ? event => options.observeTiming({...event, subject: action.subject}) : undefined;
   let observed = await getObservation(key);
   if (observed?.invocation_pending)
     throw new Error('Native invocation already attempted; collect original without replaying its envelope');
@@ -161,20 +188,25 @@ async function consumeNativeHostAction(tools, step, options) {
     let result, raised, didRaise = false;
     try { result = await nativeTool.invoke(actualArguments); }
     catch (error) { raised = error; didRaise = true; }
+    observeNativeHostTiming(timing, 'native_return', {raised: didRaise});
     observed = {tool_name: nativeTool.tool_name, arguments: argumentsSnapshot};
     if (didRaise) {
       observed.call_id = action.subject;
       observed.exception = {message: String(raised?.message ?? raised), type: String(raised?.name || typeof raised)};
     } else observed.result = result;
     // Retain the actual return before any saving/completion RPC can be interrupted.
+    observeNativeHostTiming(timing, 'retention_start');
     await retainObservation(key, observed);
+    observeNativeHostTiming(timing, 'retention_end');
   }
   if (observed.tool_name !== toolName
       || JSON.stringify(observed.arguments) !== JSON.stringify(envelope.arguments))
     throw new Error('Retained original invocation differs from emitted envelope');
-  const receipt = nativeHostReceiptBinding(await saveNativeHostReceipt(tools, observed, receiptPath));
+  const receipt = nativeHostReceiptBinding(await saveNativeHostReceipt(tools, observed, receiptPath, timing));
   const complete = async outcome => {
+    observeNativeHostTiming(timing, 'completion_start');
     const next = await completeAction(action, outcome);
+    observeNativeHostTiming(timing, 'completion_end');
     // Engine metadata counts its completion mechanics, not the actual host job.
     // Preserve the exact next action/envelope while keeping job exposure unknown.
     return {...next, provider_calls: null};

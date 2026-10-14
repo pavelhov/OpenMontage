@@ -103,6 +103,13 @@ URL and writes the full receipt atomically through a small Node RPC. Never embed
 the multi-megabyte image data URL in a shell or Node script. Keep the receipt path
 fixed per original and carry the helper's exact next action; lost saving or
 completion replies recover the retained original without another image call.
+For bridge diagnosis, optionally pass a synchronous `observeTiming: event => ...`
+callback to `consumeNativeHostAction`. It receives local timestamps for native
+return, retention, receipt preparation, receipt RPC and completion, plus Node
+read/hash/write/sync clocks through that same RPC. Keep these observations outside
+the canonical receipt. Missing or unmatched clocks remain unknown; RPC wall time
+includes host dispatch and return, and clocks do not establish a speed improvement.
+Observer exceptions do not change original recovery or completion.
 
 There are no corrective takes, creative revisions, video route fallbacks or board
 corrections in this factory. The sole image exception is the creator-authorized
