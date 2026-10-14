@@ -435,7 +435,11 @@ def test_mini_exact_project_enters_full_frame_scope_reusing_retained_upload(neut
     uploads = {name: raw for name, raw in project_file_bytes(root).items() if name.startswith('openart_mcp/uploads/')}
     assert len(list((root / 'openart_mcp/uploads').glob('*.json'))) == 1
     frozen = project_file_bytes(root)
-    pa._scope_material(root, inputs, 'openart_mcp')
+    from unittest.mock import patch
+    with patch.object(preparation, 'validate_preparation', wraps=preparation.validate_preparation) as checked:
+        material = pa._scope_material(root, inputs, 'openart_mcp')[3]
+        assert checked.call_count == 1
+    assert material['compiled_request_sha256'] == preparation.digest(compiled)
     assert project_file_bytes(root) == frozen
     scope = pa.derive_scope(root, inputs, provider='openart_mcp')
     inputs['governance']['scope_id'] = scope['id']
@@ -479,7 +483,14 @@ def test_actual_native_aspect_ratio_satisfies_exact_public_control_lock(lifecycl
         pa.lock_proof(root, 'entry', inputs=inputs, native=native, profile=profile)
 
 
-@pytest.mark.parametrize('change', ['revoke', 'native_type', 'body_hash'])
+@pytest.mark.parametrize('context', ['historical', 'policy_context'])
+def test_scope_preparation_output_requires_fresh_context(context):
+    with pytest.raises(pa.AutonomyError, match='fresh rooted preparation'):
+        pa._root_lock_proof(None, 'entry', inputs={}, native={}, profile={},
+            _return_preparation=True, **{context: {}})
+
+
+@pytest.mark.parametrize('change', ['revoke', 'native_type', 'body_hash', 'review'])
 def test_actual_policy_begin_rechecks_revoke_and_native_types(lifecycle, change):
     root, _, _, inputs, _, _, jobs = lifecycle
     jobs.prepare(root, attempt_id='policy-original', generation_inputs=inputs,
@@ -493,6 +504,13 @@ def test_actual_policy_begin_rechecks_revoke_and_native_types(lifecycle, change)
         path = root / 'artifacts/compiled_request-original.json'
         data = json.loads(path.read_text())
         data['native_binding']['native_body_sha256'] = '0' * 64
+        path.write_text(json.dumps(data))
+    elif change == 'review':
+        # A successful earlier preparation must not survive changed evidence
+        # at the separate dispatch boundary.
+        path = root / 'artifacts/preparation_review-original.json'
+        data = json.loads(path.read_text())
+        data['subject_sha256'] = '0' * 64
         path.write_text(json.dumps(data))
     else:
         path = root / 'production_scopes.json'

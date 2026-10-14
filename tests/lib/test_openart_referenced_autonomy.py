@@ -69,7 +69,8 @@ def seam(tmp_path, monkeypatch):
     monkeypatch.setattr(credit, 'get_retained_unknown_evidence', lambda *a: {
         'account_id_sha256': H('acct'), 'workspace': credit.UNOBSERVED_WORKSPACE})
     monkeypatch.setattr(preparation, 'validate_preparation', lambda *a: {'compiled_sha256': H('compiled')})
-    monkeypatch.setattr(pa, 'lock_proof', lambda *a, **kw: H('locks'))
+    monkeypatch.setattr(pa, '_root_lock_proof', lambda *a, **kw: (H('locks'),
+        {'compiled_sha256': H('compiled')}) if kw.get('_return_preparation') else H('locks'))
     monkeypatch.setattr(execution, 'load_selected_attempts', lambda _: {'prior': {}})
     from tools import tool_registry
     monkeypatch.setattr(tool_registry, '_openart_route', lambda _: openart_row(model='pixverseV6', mode='image2video'))

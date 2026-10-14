@@ -504,7 +504,8 @@ def test_approved_delivery_portrait_enters_real_scope_derivation(tmp_path, monke
         monkeypatch.setattr(pa, '_prepare_mcp_policy_native', lambda *a: ({}, {}))
         monkeypatch.setattr(pa, '_mcp_policy_terms', lambda *a: {'synthetic_fixture': True})
     monkeypatch.setattr(request, 'validate_preparation', lambda *a: {'compiled_sha256': request.digest('synthetic')})
-    monkeypatch.setattr(pa, 'lock_proof', lambda *a, **kw: request.digest('synthetic'))
+    monkeypatch.setattr(pa, '_root_lock_proof', lambda *a, **kw: (request.digest('synthetic'),
+        {'compiled_sha256': request.digest('synthetic')}) if kw.get('_return_preparation') else request.digest('synthetic'))
     frozen = file_bytes(tmp_path)
     scope = pa.derive_scope(tmp_path, inputs, provider=provider,
         observation={'cli_version': '1.0.34', 'grok_path': '/synthetic/grok'})
@@ -691,7 +692,8 @@ def test_standing_policy_proposal_delivery_enters_real_scope_derivation(tmp_path
     # Native/preparation/semantic readiness is a separate fixture boundary;
     # standing activation and canonical proposal checkpoint admission are real.
     monkeypatch.setattr(request, 'validate_preparation', lambda *a: {'compiled_sha256': request.digest('synthetic')})
-    monkeypatch.setattr(pa, 'lock_proof', lambda *a, **kw: request.digest('synthetic'))
+    monkeypatch.setattr(pa, '_root_lock_proof', lambda *a, **kw: (request.digest('synthetic'),
+        {'compiled_sha256': request.digest('synthetic')}) if kw.get('_return_preparation') else request.digest('synthetic'))
     before = file_bytes(root)
     scope = pa.derive_scope(root, inputs, provider='grok_cli',
         observation={'cli_version': '1.0.34', 'grok_path': '/synthetic/grok'})
@@ -775,9 +777,9 @@ def test_standing_delivery_original_proof_survives_current_proposal_and_revocati
     _, _, inputs = standing_proposal_delivery_fixture(root)
     observation = {'cli_version': '1.0.34', 'grok_path': '/synthetic/grok'}
     monkeypatch.setattr(request, 'validate_preparation', lambda *a: {'compiled_sha256': request.digest('synthetic')})
-    monkeypatch.setattr(pa, 'lock_proof', lambda *a, **kw: request.digest('synthetic'))
     monkeypatch.setattr(pa, '_historical_current_preparation', lambda *a: {'compiled_sha256': request.digest('synthetic')})
-    monkeypatch.setattr(pa, '_root_lock_proof', lambda *a, **kw: request.digest('synthetic'))
+    monkeypatch.setattr(pa, '_root_lock_proof', lambda *a, **kw: (request.digest('synthetic'),
+        {'compiled_sha256': request.digest('synthetic')}) if kw.get('_return_preparation') else request.digest('synthetic'))
     scope = pa.derive_scope(root, inputs, provider='grok_cli', observation=observation)
     pa.validate_derived_scope(root, scope, inputs=inputs, observation=observation)
     refresh_fixture_proposal(root, lambda p: p['metadata']['delivery'].update(profile='generic_hd'))
@@ -874,7 +876,10 @@ def test_standing_delivery_complete_grok_preparation_and_scope_replay(tmp_path):
             'evidence': 'SYNTHETIC software fixture only'} for p in sorted(request.PREDICATES)]})
     request.validate_preparation(inputs, native, {'source': 'real'})
     before = file_bytes(root)
-    scope = pa.derive_scope(root, inputs, provider='grok_cli', observation=observation)
+    from unittest.mock import patch
+    with patch.object(request, 'validate_preparation', wraps=request.validate_preparation) as checked:
+        scope = pa.derive_scope(root, inputs, provider='grok_cli', observation=observation)
+        assert checked.call_count == 1
     pa.validate_derived_scope(root, scope, inputs=inputs, observation=observation)
     assert scope['derived_from_policy']['compiled_request_sha256'] == request.digest(compiled)
     assert all((root / path).read_bytes() == raw for path, raw in before.items()

@@ -2364,8 +2364,11 @@ def _frame_carrier_members(root, frame, projection, composites):
 
 
 def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None, policy_context=None,
-                     retained_lock_digest=None, historical_replay=False, _legacy_frame=False):
-    """Derive locks from rooted actual submitted bytes and named preparation evidence."""
+                     retained_lock_digest=None, historical_replay=False, _legacy_frame=False,
+                     _return_preparation=False):
+    """Derive locks; fresh scope material may also consume the validated preparation result."""
+    if _return_preparation and (historical is not None or policy_context is not None):
+        raise AutonomyError('preparation result sharing requires fresh rooted preparation')
     from lib import production_request as preparation
     from lib.production_execution import _paths, _clean, _artifact_path
     # A retained historical payload is always genuine replay; otherwise only an
@@ -2409,7 +2412,7 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
     contract_delta(root, shot_id, current_projection(root, shot_id), policy=policy)
     if historical is None:
         if policy_context is None:
-            preparation.validate_preparation(inputs, native, profile)
+            preparation_result = preparation.validate_preparation(inputs, native, profile)
         else:
             _historical_current_preparation(root, inputs, native, profile, historical_replay)
         compiled = _json(_artifact_path(Path(root), 'compiled_request-' + preparation._id(inputs['compiled_request_id']) + '.json'))
@@ -2557,7 +2560,7 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
         if ('value' in lock and (digest(value) != digest(lock['value']) if provider == 'openart_mcp' else value != lock['value'])) or ('value_sha256' in lock and content_sha != lock['value_sha256']):
             raise AutonomyError(f'native locked control differs: {name}')
         proof['controls'][name] = digest(value)
-    return digest(proof)
+    return (digest(proof), preparation_result) if _return_preparation else digest(proof)
 
 
 # ---------------------------------------------------------------- caps
@@ -2899,8 +2902,10 @@ def _scope_material(root, inputs, provider, observation=None, *, derived_unknown
     else:
         raise AutonomyError('route outside subscription CLI policy')
     if historical_scope is None:
-        proof = preparation.validate_preparation(inputs, native, profile)
-        locks = lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile)
+        # The root proof validates this exact preparation; consume its result
+        # within this invocation instead of rebuilding the same native twice.
+        locks, proof = _root_lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile,
+            _return_preparation=True)
     else:
         proof = _historical_current_preparation(root, inputs, native, profile, True)
         locks = _root_lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile,

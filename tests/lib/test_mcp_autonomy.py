@@ -89,6 +89,8 @@ def seam(tmp_path, monkeypatch):
     # This synthetic seam fakes both active and retained-authority rooted proof.
     # The actual lifecycle tests below keep the real compiled/lock validation.
     def fixture_lock_proof(*args, **kwargs):
+        if kwargs.get('_return_preparation'):
+            return H('fixture locks'), {'compiled_sha256': H('fixture compiled')}
         return H('fixture locks')
     monkeypatch.setattr(pa, 'lock_proof', fixture_lock_proof)
     monkeypatch.setattr(pa, '_root_lock_proof', fixture_lock_proof)
