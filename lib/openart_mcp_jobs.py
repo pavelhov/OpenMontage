@@ -851,11 +851,90 @@ def prepare_upload(project_dir, *, files, billing_declaration, openart_project_i
             'frozen':frozen,'frozen_sha256':mcp.digest(frozen),'authorization_sha256':authority_sha,'result':None})
         return {'upload_id':uid,**envelope,'billing':{'kind':'unknown_upload_cost','enforceable_credit_ceiling':False,'delayed_charges_unknown':True},'generation_enabled':False}
 
+def _validate_upload_retry(root, batch, receipt=None):
+    retry = batch.get('transport_retry')
+    if 'transport_retry' in batch:
+        if (not isinstance(retry, dict) or retry.get('source_transfer_invocation') != 2
+                or retry.get('state') not in {'reserved_awaiting_receipt', 'recorded'}
+                or (batch.get('status') == 'recorded') != (retry['state'] == 'recorded')
+                or _sha(_inside(root, retry['observed_error']['path'])) != retry['observed_error']['sha256']
+                or batch.get('status') == 'recorded' and (retry['state'] != 'recorded'
+                    or batch.get('result_provenance') != 'actual_source_transport_retry')):
+            _fail('upload_receipt_invalid', 'reserved source retry error evidence changed')
+    if receipt is not None and (('source_transfer_invocation' in receipt) != (retry is not None)
+            or retry is not None and (receipt.get('source_transfer_invocation') != 2
+                or receipt.get('result_provenance') != 'actual_source_transport_retry')):
+        _fail('upload_receipt_invalid', 'source retry receipt differs from retained invocation')
+
+
+def retry_upload_after_transport_error(project_dir, *, upload_id, observed_error):
+    """Reserve one same-envelope source retry after an evidenced HTTP send error.
+
+    This neither proves the first transfer absent nor promises backend dedup.
+    The extra invocation consumes standing transfer allowance before handoff.
+    """
+    from lib import production_autonomy as autonomy, production_execution as execution
+    root = _root(project_dir); uid = _id(upload_id)
+    with execution._lock(root), _lock(root):
+        path = root/'openart_mcp/uploads'/(uid+'.json')
+        retained = _read(path); frozen = retained['frozen']
+        if 'transport_retry' in retained:
+            _fail('upload_consumed', 'source transport retry already reserved; recover its actual receipt')
+        if (retained.get('upload_id') != uid or retained.get('status') != 'consumed_awaiting_original_receipt'
+                or retained.get('result') is not None or retained['frozen_sha256'] != mcp.digest(frozen)
+                or frozen['root'] != str(root)):
+            _fail('upload_receipt_invalid', 'exact unresolved frozen upload required')
+        evidence = _inside(root, observed_error['path'])
+        if _sha(evidence) != observed_error['sha256']:
+            _fail('upload_retry_invalid', 'observed transport error bytes changed')
+        observation = json.loads(evidence.read_text()); error = observation.get('result', {})
+        content = error.get('content', []) if isinstance(error, dict) else []
+        text = '\n'.join(row.get('text', '') for row in content if isinstance(row, dict) and row.get('type') == 'text')
+        envelope = frozen['envelope']
+        if (observation.get('tool_name') != envelope['tool'] or observation.get('arguments') != envelope['arguments']
+                or envelope['tool'] != 'mcp__codex_apps__openart_openart_upload_import'
+                or error.get('isError') is not True or set(error) != {'isError', 'content'}
+                or not content or any(not isinstance(row, dict) or row.get('type') != 'text' for row in content)
+                or not all(term in text for term in ('Transport send error', 'HTTP request failed',
+                    'error sending request for url'))
+                or any(term in text.lower() for term in ('denied', 'policy', 'rejected', 'forbidden', 'unauthorized', 'permission', '401', '403'))):
+            _fail('upload_retry_invalid', 'only the exact source-upload HTTP send failure permits this retry')
+        account = mcp.account_summary()
+        if account['uid_sha256'] != frozen['account']['uid_sha256']:
+            _fail('account_changed', 'source retry account changed')
+        authority, sha = _upload_authority(root, frozen['manifest'], frozen['billing_declaration'], account, frozen['project_id'])
+        binding = authority.get('derived_from_standing_run')
+        if (not binding or sha != frozen['authorization_sha256'] or sha != retained['authorization_sha256']
+                or not frozen['project_id'] or envelope['arguments'] != {'files': [s['path'] for s in frozen['source_snapshots']],
+                    'projectId': frozen['project_id']}):
+            _fail('upload_authority_invalid', 'source retry requires unchanged standing account/project authority')
+        if len(frozen['source_snapshots']) != len(frozen['manifest']):
+            _fail('source_changed', 'ordered upload snapshots changed')
+        for source, snapshot in zip(frozen['manifest'], frozen['source_snapshots']):
+            if (snapshot['sha256'] != source['sha256'] or _sha(_inside(root, snapshot['path'])) != source['sha256']
+                    or _sha(_inside(root, source['path'])) != source['sha256']):
+                _fail('source_changed', 'source retry bytes or snapshot changed')
+            _approved_source(root, _inside(root, source['path']), source['sha256'])
+        policy, _, _ = autonomy.require_active_policy(root, shot_id=binding['shot_id'])
+        setup = autonomy.effective_standing_setup(root, policy)
+        term = next(t for t in setup['source_transfer'] if t['provider'] == 'openart_mcp'
+            and t['account'] == setup['provider_accounts']['openart_mcp'])
+        if autonomy._standing_upload_batch_count(root, 'openart_mcp') >= term['max_batches']:
+            _fail('upload_consumed', 'standing source transfer batch allowance exhausted')
+        retained['transport_retry'] = {'source_transfer_invocation': 2, 'state': 'reserved_awaiting_receipt',
+            'observed_error': copy.deepcopy(observed_error), 'original_outcome': 'uncertain_transport_error'}
+        _write(path, retained)
+        return {'upload_id': uid, **copy.deepcopy(envelope), 'source_transfer_invocation': 2,
+            'generation_enabled': False, 'billing': {'kind': 'unknown_upload_cost', 'enforceable_credit_ceiling': False,
+                'delayed_charges_unknown': True}}
+
+
 def record_upload_receipt(project_dir, *, upload_id, result):
     root=_root(project_dir); uid=_id(upload_id)
     with _lock(root):
         path=root/'openart_mcp'/'uploads'/(uid+'.json'); retained=_read(path); frozen=retained['frozen']
         if retained['frozen_sha256']!=mcp.digest(frozen) or retained['result'] is not None: _fail('upload_receipt_invalid','original upload evidence changed or already retained')
+        _validate_upload_retry(root, retained)
         account=mcp.account_summary()
         if account['uid_sha256']!=frozen['account']['uid_sha256']: _fail('account_changed','upload receipt belongs to a different current account')
         authority, current_authority_sha = _upload_authority(root,frozen['manifest'],frozen['billing_declaration'],account,frozen['project_id'])
@@ -884,14 +963,21 @@ def record_upload_receipt(project_dir, *, upload_id, result):
                 'project_id':result['projectId'],'requested_project_id':frozen['project_id'],'upload_batch_id':uid,
                 'source_index':len(receipts),'raw_result':copy.deepcopy(row),'visual_reference':copy.deepcopy(ref),
                 'authorization_sha256':frozen['authorization_sha256'],'source': 'fixture' if str(account.get('classification','')).startswith('synthetic_fixture') else 'real'}
+            if 'transport_retry' in retained:
+                receipt['source_transfer_invocation'] = 2
+                receipt['result_provenance'] = 'actual_source_transport_retry'
             receipt_sha=mcp.digest(receipt);receipt['receipt_sha256']=receipt_sha
             receipts.append(receipt)
         # Validate the whole batch before publishing any reference binding.
         store=_private_dir(_state_root()/'mcp-uploads')
         for receipt in receipts:_write(store/(receipt['receipt_sha256']+'.json'),receipt)
         retained.update(status='recorded',result=copy.deepcopy(result),result_sha256=mcp.digest(result),receipt_sha256s=[r['receipt_sha256'] for r in receipts])
+        if 'transport_retry' in retained:
+            retained['transport_retry']['state'] = 'recorded'
+            retained['result_provenance'] = 'actual_source_transport_retry'
         _write(path,retained)
         return {'upload_id':uid,'status':'recorded','project_id':result['projectId'],
+            **({'source_transfer_invocation': 2} if 'transport_retry' in retained else {}),
             'references':[{'upload_id':r['visual_reference']['id'],'reference_id':r['visual_reference']['id'],'receipt_sha256':r['receipt_sha256'],'source_sha256':r['source_sha256'],'source_path':r['source_path'],'type':r['visual_reference']['type']} for r in receipts]}
 
 def reuse_uploaded_input_asset(project_dir, asset, *, account_binding, openart_project_id):
@@ -972,6 +1058,7 @@ def resolve_input_asset(project_dir, asset, *, account_binding, openart_project_
     if len(matches)!=1:_fail('upload_reference_unavailable','exact approved source/account/project requires one retained actual upload reference')
     r=matches[0];ref=r['visual_reference']
     batch=_read(root/'openart_mcp'/'uploads'/(_id(r['upload_batch_id'])+'.json'))
+    _validate_upload_retry(root, batch, r)
     frozen=batch['frozen']; index=r['source_index']
     if (batch.get('status')!='recorded' or batch['frozen_sha256']!=mcp.digest(frozen)
             or batch.get('result_sha256')!=mcp.digest(batch.get('result'))

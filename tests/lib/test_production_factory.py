@@ -1948,6 +1948,117 @@ def test_mcp_standing_upload_final_batch_original_receipt_and_account_revalidati
             openart_project_id=args['openart_project_id'])
 
 
+def retryable_upload_fixture(root, max_batches=2):
+    from lib import openart_mcp as mcp, openart_mcp_jobs as jobs
+    root.mkdir()
+    account = mcp.account_summary()
+    upload_standing_fixture(root, provider='openart_mcp', max_batches=max_batches, uid_sha256=account['uid_sha256'])
+    args = dict(shot_id='entry', provider='openart_mcp', files=[str(root / 'assets/start.svg')],
+        account={'uid_sha256': account['uid_sha256']}, openart_project_id='fixture-openart-project')
+    authority = pa.derive_standing_upload_authority(root, **args)
+    upload = jobs.prepare_upload(root, files=args['files'],
+        billing_declaration={'upload_authorization_id': authority['upload_id']}, openart_project_id=args['openart_project_id'])
+    error = write(root, 'notes/SYNTHETIC-upload-send-error.json', {'tool_name': upload['tool'],
+        'arguments': upload['arguments'], 'result': {'isError': True, 'content': [{'type':'text',
+            'text':'Transport send error: Client error: HTTP request failed: error sending request for url (https://chatgpt.com/backend-api/ps/mcp)'}]}})
+    return args, upload, error
+
+
+def test_upload_transport_retry_reserves_same_envelope_once_and_counts_allowance(tmp_path, fixture_observations):
+    from lib import openart_mcp_jobs as jobs
+    root = tmp_path / 'retry-upload'; args, upload, error = retryable_upload_fixture(root)
+    retried = jobs.retry_upload_after_transport_error(root, upload_id=upload['upload_id'], observed_error=error)
+    assert retried['arguments'] == upload['arguments'] and retried['tool'] == upload['tool']
+    assert retried['upload_id'] == upload['upload_id'] and retried['source_transfer_invocation'] == 2
+    assert retried['generation_enabled'] is False
+    assert len(list((root/'openart_mcp/uploads').glob('*.json'))) == 1
+    with pytest.raises(ValueError, match='already reserved'):
+        jobs.retry_upload_after_transport_error(root, upload_id=upload['upload_id'], observed_error=error)
+    with pytest.raises(pa.StandingSetupRequired, match='upload batch allowance exhausted'):
+        pa.derive_standing_upload_authority(root, **dict(args, files=[str(root/'assets/end.svg')]))
+    result = {'projectId':args['openart_project_id'], 'results':[{'fileId':'SYNTHETIC-retry-file',
+        'status':'SUCCESS', 'visualReference':{'id':'SYNTHETIC-retry-ref','type':'image',
+        'url':'https://fixture.invalid/retry.svg','metadata':{}}}]}
+    recorded = jobs.record_upload_receipt(root, upload_id=upload['upload_id'], result=result)
+    assert recorded['source_transfer_invocation'] == 2
+    batch = json.loads((root/'openart_mcp/uploads'/(upload['upload_id']+'.json')).read_text())
+    assert batch['transport_retry']['observed_error'] == error
+    assert batch['transport_retry']['original_outcome'] == 'uncertain_transport_error'
+    assert batch['result_provenance'] == 'actual_source_transport_retry'
+    from lib import openart_mcp as mcp
+    bound = jobs.reuse_uploaded_input_asset(root, {'source_path': args['files'][0]},
+        account_binding=mcp.account_summary(), openart_project_id=args['openart_project_id'])
+    assert bound['upload_id'] == 'SYNTHETIC-retry-ref'
+    assert not list((root/'openart_mcp/attempts').glob('*'))
+
+
+def test_upload_retry_receipt_keeps_bound_first_error_bytes(tmp_path, fixture_observations):
+    from lib import openart_mcp_jobs as jobs
+    root=tmp_path/'retry-upload'; args,upload,error=retryable_upload_fixture(root)
+    jobs.retry_upload_after_transport_error(root,upload_id=upload['upload_id'],observed_error=error)
+    (root/error['path']).write_text('{}')
+    before=file_bytes(root)
+    with pytest.raises(ValueError,match='error evidence changed'):
+        jobs.record_upload_receipt(root,upload_id=upload['upload_id'],result={})
+    assert file_bytes(root)==before
+
+
+@pytest.mark.parametrize('change', ['delete_marker', 'error_bytes', 'state', 'provenance'])
+def test_recorded_upload_retry_requires_retained_invocation_in_resolver_and_counter(tmp_path, fixture_observations, change):
+    from lib import openart_mcp as mcp, openart_mcp_jobs as jobs
+    root=tmp_path/'retry-upload';args,upload,error=retryable_upload_fixture(root)
+    jobs.retry_upload_after_transport_error(root,upload_id=upload['upload_id'],observed_error=error)
+    jobs.record_upload_receipt(root,upload_id=upload['upload_id'],result={
+        'projectId':args['openart_project_id'],'results':[{'fileId':'SYNTHETIC-retry',
+        'status':'SUCCESS','visualReference':{'id':'SYNTHETIC-ref','type':'image',
+        'url':'https://fixture.invalid/retry.svg','metadata':{}}}]})
+    assert pa._standing_upload_batch_count(root,'openart_mcp')==2
+    path=root/'openart_mcp/uploads'/(upload['upload_id']+'.json');batch=json.loads(path.read_text())
+    if change=='delete_marker':batch.pop('transport_retry')
+    elif change=='error_bytes':(root/error['path']).write_text('{}')
+    elif change=='state':batch['transport_retry']['state']='reserved_awaiting_receipt'
+    else:batch['result_provenance']='original_recovered_receipt'
+    jobs._write(path,batch)
+    before=file_bytes(root)
+    with pytest.raises(ValueError):
+        jobs.reuse_uploaded_input_asset(root,{'source_path':args['files'][0]},
+            account_binding=mcp.account_summary(),openart_project_id=args['openart_project_id'])
+    with pytest.raises(ValueError):pa._standing_upload_batch_count(root,'openart_mcp')
+    assert file_bytes(root)==before
+
+
+@pytest.mark.parametrize('defect', ['unknown_error', 'denial', 'generation_result', 'source', 'snapshot',
+    'account', 'project', 'allowance', 'standalone'])
+def test_upload_transport_retry_refuses_other_errors_or_changed_authority(tmp_path, fixture_observations, monkeypatch, defect):
+    from lib import openart_mcp as mcp, openart_mcp_jobs as jobs
+    root = tmp_path / 'retry-upload'; args, upload, error = retryable_upload_fixture(root, max_batches=1 if defect=='allowance' else 2)
+    batch_path = root/'openart_mcp/uploads'/(upload['upload_id']+'.json')
+    batch = json.loads(batch_path.read_text())
+    if defect in {'unknown_error','denial','generation_result'}:
+        value = json.loads((root/error['path']).read_text())
+        if defect=='unknown_error': value['result']['content'][0]['text']='timeout without original receipt'
+        elif defect=='denial': value['result']['content'][0]['text']+=' ACCESS_DENIED policy rejection'
+        else: value['result']['structuredContent']={'historyId':'foreign-generation'}
+        error = write(root,error['path'],value)
+    elif defect=='source': Path(args['files'][0]).write_bytes(b'SYNTHETIC changed source')
+    elif defect=='snapshot': Path(upload['arguments']['files'][0]).write_bytes(b'SYNTHETIC changed snapshot')
+    elif defect=='account':
+        monkeypatch.setattr(mcp,'account_summary',lambda:{'uid_sha256':'f'*64})
+    elif defect=='project':
+        value=json.loads((root/error['path']).read_text());value['arguments']['projectId']='foreign'
+        error=write(root,error['path'],value)
+    elif defect=='standalone':
+        path=next((root/'artifacts').glob('openart_mcp_upload_authorization-*.json'))
+        path.chmod(0o600)
+        value=json.loads(path.read_text());value.pop('derived_from_standing_run');path.write_text(json.dumps(value))
+        batch['frozen']['authorization_sha256']=mcp.digest(value);batch['authorization_sha256']=mcp.digest(value)
+        batch['frozen_sha256']=mcp.digest(batch['frozen']);batch_path.write_text(json.dumps(batch))
+    before=file_bytes(root)
+    with pytest.raises(ValueError):
+        jobs.retry_upload_after_transport_error(root,upload_id=upload['upload_id'],observed_error=error)
+    assert file_bytes(root)==before
+
+
 @pytest.mark.parametrize('unrelated', [False, True])
 def test_standing_mcp_zero_source_prepare_then_begin_at_final_media_slot(lifecycle, monkeypatch, tmp_path, unrelated):
     root, policy, _, inputs, _, _, jobs = lifecycle

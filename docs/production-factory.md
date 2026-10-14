@@ -74,6 +74,17 @@ governed path layout and use the existing `image_upload_id`/`end_image_upload_id
 selectors. Only the native control projection converts them into ordered
 first/last frame rows. Historical frozen requests remain unchanged.
 
+For an actual source-upload HTTP send failure, `jobs.retry_upload_after_transport_error`
+accepts the retained upload ID and `observed_error={'path': ..., 'sha256': ...}`
+binding the saved full host response. It reserves one extra source-transfer
+invocation against remaining standing `max_batches` before returning the same
+snapshot paths and Project envelope. Invoke that returned envelope once, then
+record the actual result with the same upload ID. The first outcome stays
+uncertain; the second receipt is labeled a transport retry, with no claim of
+backend deduplication. Unbound errors, access/policy denials, standalone one-batch
+authority, exhausted allowance, and another retry remain blocked. This grants
+no image or video generation retry.
+
 Pass `draft['inputs']` to `prep_builder(draft['provider'])` with the exact selected
 profile. Supply the producer's timing estimate and actual preparation judgment
 to `prepare_compiled_request(..., coverage=draft['coverage'], timing=timing,

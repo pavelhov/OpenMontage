@@ -1237,6 +1237,26 @@ def _standing_upload_material(root, *, shot_id, provider, files, account, openar
     return policy, record, name
 
 
+def _standing_upload_batch_count(root, provider):
+    prefix = 'upload_approval-' if provider == 'openart_cli' else 'openart_mcp_upload_authorization-'
+    count = len(list((Path(root) / 'artifacts').glob(prefix + '*.json')))
+    if provider == 'openart_mcp':
+        from lib import openart_mcp_jobs as jobs
+        for path in (Path(root) / 'openart_mcp/uploads').glob('*.json'):
+            batch = _json(path)
+            if 'transport_retry' in batch:
+                jobs._validate_upload_retry(Path(root), batch)
+                count += 1
+        for path in (jobs._state_root(create=False) / 'mcp-uploads').glob('*.json'):
+            receipt = _json(path)
+            if receipt.get('project_root') == str(Path(root).resolve()) and 'source_transfer_invocation' in receipt:
+                if receipt.get('receipt_sha256') != jobs.mcp.digest({k:v for k,v in receipt.items() if k!='receipt_sha256'}):
+                    raise StandingSetupRequired('source retry receipt digest changed')
+                batch = _json(Path(root) / 'openart_mcp/uploads' / (jobs._id(receipt['upload_batch_id']) + '.json'))
+                jobs._validate_upload_retry(Path(root), batch, receipt)
+    return count
+
+
 def derive_standing_upload_authority(project_dir, *, shot_id, provider, files, account, openart_project_id=None,
                                      policy_fallback_call_id=None):
     """Retain exact legacy-format upload authority; no upload/account discovery call."""
@@ -1256,7 +1276,7 @@ def derive_standing_upload_authority(project_dir, *, shot_id, provider, files, a
         term = next(t for t in setup['source_transfer'] if t['provider'] == provider
             and t['account'] == setup['provider_accounts'][provider])
         prefix = 'upload_approval-' if provider == 'openart_cli' else 'openart_mcp_upload_authorization-'
-        if len(list((root / 'artifacts').glob(prefix + '*.json'))) >= term['max_batches']:
+        if _standing_upload_batch_count(root, provider) >= term['max_batches']:
             raise StandingSetupRequired('retained upload batch allowance exhausted')
         execution._write_new(path, record)
         return {'upload_id': name.removeprefix(prefix).removesuffix('.json'), 'authority': record,
