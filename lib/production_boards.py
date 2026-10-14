@@ -59,20 +59,34 @@ def _current(root, binding):
 
 
 def _binding_current(root, pack, asset_id, visiting=None):
-    binding = pack["board_bindings"].get(asset_id)
-    if not binding or not _current(root, binding):
-        return False
-    visiting = set(visiting or ())
-    if asset_id in visiting:
-        return False
-    visiting.add(asset_id)
-    for source_id, expected in binding.get("source_bindings", {}).items():
-        source = pack["board_bindings"].get(source_id)
-        if not source or any(source.get(key) != expected[key] for key in ("path", "sha256")):
+    return _bindings_current(root, pack, [asset_id], visiting=visiting)[asset_id]
+
+
+def _bindings_current(root, pack, asset_ids, *, visiting=None):
+    """Validate one loaded graph synchronously, sharing completed ancestors only.
+
+    Nothing is retained beyond this call or supplied as a caller proof. Each
+    independent validation/dispatch starts a new walk of the actual bytes.
+    """
+    completed = {}
+    def visit(asset_id, ancestors):
+        if asset_id in completed:
+            return completed[asset_id]
+        binding = pack["board_bindings"].get(asset_id)
+        if not binding or not _current(root, binding):
             return False
-        if not _binding_current(root, pack, source_id, visiting):
+        if asset_id in ancestors:
             return False
-    return True
+        ancestors = ancestors | {asset_id}
+        for source_id, expected in binding.get("source_bindings", {}).items():
+            source = pack["board_bindings"].get(source_id)
+            if not source or any(source.get(key) != expected[key] for key in ("path", "sha256")):
+                return False
+            if not visit(source_id, ancestors):
+                return False
+        completed[asset_id] = True
+        return True
+    return {asset_id: visit(asset_id, set(visiting or ())) for asset_id in asset_ids}
 
 
 def load_board_pack(project_dir):

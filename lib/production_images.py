@@ -367,8 +367,9 @@ def _standing_image_definition(root, policy, *, check_first_pass_capacity=True, 
     counted_slots = {row['slot_id'] for row in usage['occurrences'] if row['counted']}
     # Upstream reuse slots bind actual selected outgoing frames; never image work.
     image_nodes = [node for node in pack['specification']['image_nodes'] if 'upstream_source' not in node]
+    current = boards._bindings_current(root, pack, [node['slot_id'] for node in image_nodes])
     missing = [node for node in image_nodes
-        if not boards._binding_current(root, pack, node['slot_id']) and node['slot_id'] not in counted_slots]
+        if not current[node['slot_id']] and node['slot_id'] not in counted_slots]
     if check_first_pass_capacity and usage['total'] + len(missing) > terms['image_allowance']:
         raise StandingSetupRequired('fixed native image allowance cannot cover retained usage plus missing first-pass boards')
     spec = pack['specification']
