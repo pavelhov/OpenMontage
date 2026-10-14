@@ -502,24 +502,49 @@ def _content_text(value: Any) -> str:
     return ""
 
 
-def _normalize_sealed_argument_value(value: Any) -> Any:
-    """Ignore ASCII boundary whitespace in the top-level prompt only.
+def _strict_local_image_path(value: str) -> Path | None:
+    path = Path(value)
+    if not path.is_absolute():
+        return None
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return resolved if resolved.is_file() else None
 
-    CLI transport may trim prompt boundaries. Internal text, Unicode whitespace,
-    asset paths, all other strings and every nonprompt control remain exact.
-    """
-    if isinstance(value, dict):
-        return {
-            key: item.strip(" \t\n\r\v\f") if key == "prompt" and isinstance(item, str) else item
-            for key, item in value.items()
-        }
-    return value
+
+def _sealed_prompt_boundary_only(observed: Any, expected: dict[str, Any]) -> bool:
+    if (not isinstance(observed, dict) or set(observed) != set(expected)
+            or not isinstance(observed.get("prompt"), str)
+            or not isinstance(expected.get("prompt"), str)
+            or observed["prompt"] == expected["prompt"]
+            or observed["prompt"].strip(" \t\n\r\v\f") != expected["prompt"].strip(" \t\n\r\v\f")):
+        return False
+    return all(observed[key] == expected[key] for key in expected if key != "prompt")
+
+
+def _sealed_image_path_alias(observed: Any, expected: dict[str, Any]) -> bool:
+    if not isinstance(observed, dict) or set(observed) != set(expected):
+        return False
+    for key in ("image", "first_frame"):
+        if (isinstance(observed.get(key), str) and isinstance(expected.get(key), str)
+                and observed[key] != expected[key]
+                and all(observed[field] == expected[field] for field in expected if field != key)):
+            observed_path = _strict_local_image_path(observed[key])
+            expected_path = _strict_local_image_path(expected[key])
+            if observed_path is not None and observed_path == expected_path:
+                return True
+    return False
 
 
 def _sealed_arguments_match(observed: Any, expected: dict[str, Any]) -> bool:
     if not isinstance(observed, dict):
         return False
-    return _normalize_sealed_argument_value(observed) == _normalize_sealed_argument_value(expected)
+    return (
+        observed == expected
+        or _sealed_prompt_boundary_only(observed, expected)
+        or _sealed_image_path_alias(observed, expected)
+    )
 
 
 def _parse_stream(

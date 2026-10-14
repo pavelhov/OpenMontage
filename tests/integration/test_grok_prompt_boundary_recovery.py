@@ -60,6 +60,82 @@ def collect(rejected, **kwargs):
     return execution.collect_original_grok_prompt_boundary(p.root, aid, request_sha256=request['request_sha256'], **kwargs)
 
 
+@pytest.fixture
+def image_path_alias_rejected(production, monkeypatch):
+    p = production
+    inputs = copy.deepcopy(p.inputs['entry'])
+    inputs.pop('preferred_provider', None); inputs.pop('allowed_providers', None)
+    inputs['cwd'] = str(p.root)
+    p.scope['requests']['entry'] = execution.planned_request_digest(inputs, project_dir=p.root)
+    p.persist_scope()
+
+    def transport(argv, **kwargs):
+        result = p.transport(argv, **kwargs)
+        if '--prompt-file' not in argv: return result
+        events = [json.loads(line) for line in result.stdout.splitlines()]
+        aid = events[-1]['sessionId']
+        arguments = events[0]['rawInput']
+        field = 'image' if 'image' in arguments else 'first_frame'
+        canonical = Path(arguments[field])
+        arguments[field] = str(p.root / 'assets' / 'video' / '..' / '..' /
+            'production_attempts' / aid / 'inputs' / canonical.name)
+        folder = p.transport.original_sessions[aid]['artifact'].parent.parent
+        original_log(folder, aid, events, 'updates')
+        return subprocess.CompletedProcess(argv, 0, '\n'.join(json.dumps(event) for event in events), '')
+
+    with monkeypatch.context() as old:
+        old.setattr('tools._grok_cli_media._run_process', transport)
+        old.setattr('tools._grok_cli_media._sealed_arguments_match', lambda actual, expected: actual == expected)
+        result = p.cli.execute(inputs)
+    aid = result.data['production_attempt_id']
+    directory = p.root / 'production_attempts' / aid
+    request = read(directory / 'request.json')
+    assert not result.success and 'changed the sealed media-tool arguments' in result.error
+    assert execution.load_attempt_result(p.root, aid)['status'] == 'failed'
+    assert len(p.transport.native_requests) == 1
+    frozen = {name: (directory / name).read_bytes() for name in ('request.json', 'raw_result.json', 'result.json')}
+    return p, aid, directory, request, frozen
+
+
+def test_original_collection_recovers_exact_local_image_path_alias(image_path_alias_rejected):
+    p, aid, directory, request, frozen = image_path_alias_rejected
+    recovered = collect(image_path_alias_rejected, dry_run=False)
+    assert recovered.success and recovered.data['production_attempt_id'] == aid
+    assert recovered.data['original_session_recovery']['mode'] == 'sealed_image_path_equivalence'
+    assert execution.load_attempt_result(p.root, aid)['status'] == 'generated'
+    assert len(p.transport.native_requests) == len(execution._attempts(p.root)) == 1
+    for name, raw in frozen.items(): assert (directory / name).read_bytes() == raw
+
+
+@pytest.mark.parametrize('change', ['different_path', 'missing_path', 'prompt', 'control'])
+def test_original_collection_rejects_non_equivalent_image_path_alias(image_path_alias_rejected, change):
+    p, aid, directory, request, _ = image_path_alias_rejected
+    folder = p.transport.original_sessions[aid]['artifact'].parent.parent
+    path = folder / 'updates.jsonl'
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    call = rows[0]['params']['update']
+    arguments = call['rawInput']
+    field = 'image' if 'image' in arguments else 'first_frame'
+    if change == 'different_path':
+        other = directory / 'inputs' / 'other.png'
+        source = Path(request['input_assets'][0]['path'])
+        other.write_bytes(source.read_bytes())
+        arguments[field] = str(other)
+    elif change == 'missing_path':
+        arguments[field] = str(directory / 'inputs' / 'missing.png')
+    elif change == 'prompt':
+        call['rawInput']['prompt'] += ' changed'
+    else:
+        call['rawInput']['duration'] += 1
+    path.write_text('\n'.join(json.dumps(row) for row in rows))
+    with pytest.raises((execution.ProductionGovernanceError, GrokCLIContractError, ValueError)):
+        collect(image_path_alias_rejected, dry_run=False)
+    assert execution.load_attempt_result(p.root, aid)['status'] == 'failed'
+    assert not Path(request['submitted_inputs']['output_path']).exists()
+    assert not (directory / 'reconciliation.json').exists()
+    assert len(p.transport.native_requests) == len(execution._attempts(p.root)) == 1
+
+
 def test_original_collection_dry_run_and_append_only_recovery(rejected):
     p, aid, directory, request, frozen = rejected
     scopes = (p.root/'production_scopes.json').read_bytes()

@@ -1985,7 +1985,8 @@ def _grok_prompt_boundary_original(root, request, *, allow_pending=False, origin
     """Qualify an uncertain original or historical prompt rejection from native logs."""
     from urllib.parse import quote
     from tools._grok_cli_media import (retained_grok_session_stream, _parse_stream,
-        _trusted_session_artifact, _sealed_arguments_match, _probe_artifact, _validate_media_contract,
+        _trusted_session_artifact, _sealed_arguments_match, _sealed_prompt_boundary_only,
+        _sealed_image_path_alias, _probe_artifact, _validate_media_contract,
         GrokCLIContractError)
     directory = root / 'production_attempts' / request['attempt_id']
     state = _read(directory / 'result.json') if original_download_only else _state(root, request)
@@ -2045,9 +2046,11 @@ def _grok_prompt_boundary_original(root, request, *, allow_pending=False, origin
     if len(calls) != 1:
         _fail('original prompt recovery requires exactly one native call')
     observed = calls[0].get('rawInput')
-    if (not isinstance(observed, dict) or (boundary and observed.get('prompt') == expected.get('prompt'))
+    image_path_alias = _sealed_image_path_alias(observed, expected)
+    prompt_boundary_only = _sealed_prompt_boundary_only(observed, expected)
+    if (not isinstance(observed, dict) or boundary and not (prompt_boundary_only or image_path_alias)
             or not _sealed_arguments_match(observed, expected)):
-        _fail('original protocol change is not prompt-only ASCII boundary whitespace')
+        _fail('original protocol change is not prompt-boundary whitespace or an equivalent sealed image path')
     if download_failure:
         if launch is None:
             _fail('original download recovery requires retained prelaunch evidence')
@@ -2111,7 +2114,9 @@ def _grok_prompt_boundary_original(root, request, *, allow_pending=False, origin
         native = build_native_video_request(submitted, adapter_version=version, provider='grok_cli')
         receipt = dict(native['receipt'], cli_version=(launch or {}).get('cli_version'), session_id=request['cli_session_id'],
                        dispatch_status='uncertain', submission_evidence='unconfirmed')
-    proof = {'version':'1.0', 'mode':'prompt_boundary_ascii_whitespace' if boundary else 'uncertain_original_session', 'session_id':session_id,
+    recovery_mode = ('sealed_image_path_equivalence' if boundary and image_path_alias else
+                     'prompt_boundary_ascii_whitespace' if boundary else 'uncertain_original_session')
+    proof = {'version':'1.0', 'mode':recovery_mode, 'session_id':session_id,
              'updates_sha256':updates_sha256, 'session_directory':str(session_directory),
              'source_sha256':source_sha256, 'media_metadata':metadata,
              'original_sha256':{name:file_sha256(directory / name) for name in ('request.json','raw_result.json','result.json','grok_launch.json') if (directory / name).exists()}}

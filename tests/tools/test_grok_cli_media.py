@@ -1505,6 +1505,27 @@ def test_sealed_prompt_ascii_boundaries_only_are_equivalent(boundary):
     assert _sealed_arguments_match({'prompt':'action'}, {'prompt':boundary+'action'+boundary})
 
 
+def test_sealed_image_path_alias_requires_same_existing_local_file(tmp_path):
+    from tools._grok_cli_media import _sealed_arguments_match
+    image = tmp_path / 'source.png'; image.write_bytes(b'fixture image')
+    alias_dir = tmp_path / 'alias'; alias_dir.mkdir()
+    alias = str(alias_dir / '..' / 'source.png')
+    expected = {'prompt':'exact prompt', 'duration':10, 'image':str(image)}
+    observed = {**expected, 'image':alias}
+    assert _sealed_arguments_match(observed, expected)
+
+    first_frame_expected = {'prompt':'exact prompt', 'duration':10, 'first_frame':str(image)}
+    first_frame_observed = {**first_frame_expected, 'first_frame':alias}
+    assert _sealed_arguments_match(first_frame_observed, first_frame_expected)
+
+    other = tmp_path / 'other.png'; other.write_bytes(image.read_bytes())
+    assert not _sealed_arguments_match({**expected, 'image':str(other)}, expected)
+    assert not _sealed_arguments_match({**expected, 'image':str(tmp_path / 'missing.png')}, expected)
+    assert not _sealed_arguments_match({**observed, 'prompt':'changed'}, expected)
+    assert not _sealed_arguments_match({**observed, 'prompt':' exact prompt '}, expected)
+    assert not _sealed_arguments_match({**observed, 'duration':11}, expected)
+
+
 @pytest.mark.parametrize('field,observed,expected', [
     ('prompt','one  action','one action'), ('prompt','action\u00a0','action'),
     ('first_frame','frame.png ','frame.png'), ('first_frame','frame.png\n','frame.png'),
