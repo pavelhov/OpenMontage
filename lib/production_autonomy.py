@@ -2295,6 +2295,85 @@ def _historical_current_preparation(root, inputs, native, profile, historical_re
         raise AutonomyError(f'historical named preparation is incomplete: {exc}') from exc
 
 
+def _generated_carrier_sources(root, pack, frame):
+    """Exact original-input ancestry of one current, declared generated carrier."""
+    from lib import production_boards as boards, production_images as images
+    current = pack['board_bindings'][frame['asset_id']]
+    if (current['sha256'] != frame['sha256'] or _inside(root, current['path']) != _inside(root, frame['path'])
+            or not boards._binding_current(root, pack, frame['asset_id'])):
+        raise AutonomyError('generated carrier ancestry has stale bytes or a cycle')
+    sources = {}
+    visited = set()
+    def visit(asset_id):
+        if asset_id in visited:
+            return
+        binding = pack['board_bindings'][asset_id]
+        node = pack['prompt_pack'][asset_id]
+        roles = boards._roles(pack, asset_id)
+        if not roles or any(boards._review_blockers(pack, asset_id, role) for role in roles):
+            raise AutonomyError('generated carrier ancestor lacks current declared role evidence')
+        if binding.get('origin') != 'canonical_image_import':
+            raise AutonomyError('generated carrier ancestor lacks original image provenance')
+        call = images._call(images._load(root), binding.get('call_id'))
+        scope = images._scope(root, call['scope_id'])
+        approved = scope.get('requests', {}).get(call['slot_id'])
+        if isinstance(approved, list):
+            index = call['scope_attempt_index']
+            approved = approved[index] if type(index) is int and 0 <= index < len(approved) else None
+        receipt = images._read(images._bound_file(root, call['host_receipt'], 'carrier original host return'))
+        if (call['state'] != 'imported' or call['route'] != images.NATIVE_ROUTE
+                or call['tool_name'] != images.NATIVE_TOOL or call['slot_id'] != asset_id
+                or call['project_id'] != pack['project_id'] or call['story_revision'] != pack['story_revision']
+                or call['packet']['project_id'] != pack['project_id'] or call['packet']['story_revision'] != pack['story_revision']
+                or digest(scope) != call['scope_sha256']
+                or approved != call['request_sha256']
+                or call['packet']['packet_sha256'] != digest({k: v for k, v in call['packet'].items() if k != 'packet_sha256'})
+                or images.image_request_digest(call['packet'], call['slot_id'], call['host_arguments'],
+                    output_path=call['output_path']) != call['request_sha256']
+                or call['output']['sha256'] != binding['sha256']
+                or _inside(root, call['output']['path']) != _inside(root, binding['path'])
+                or _inside(root, call['output_path']) != _inside(root, binding['path'])
+                or receipt.get('tool_name') != images.NATIVE_TOOL
+                or receipt.get('arguments') != call['submitted_arguments']
+                or call['provenance'].get('kind') != 'agent_recorded_host_return'
+                or call['provenance'].get('tool_name') != images.NATIVE_TOOL
+                or call['provenance'].get('receipt_sha256') != call['host_receipt']['sha256']
+                or call['provenance'].get('arguments_sha256') != digest(call['submitted_arguments'])):
+            raise AutonomyError('generated starting carrier lacks exact original image provenance')
+        images._bound_file(root, {'path': call['output']['preserved_path'], 'sha256': binding['sha256']},
+                           'preserved starting carrier')
+        reference_ids = node.get('reference_ids', [])
+        dependencies = node.get('image_dependencies', [])
+        declared = reference_ids + dependencies
+        if len(set(declared)) != len(declared) or set(binding.get('source_bindings', {})) != set(declared):
+            raise AutonomyError('generated carrier inputs differ from declared ancestry')
+        originals = call['host_arguments'].get('referenced_image_paths', [])
+        submitted = call['submitted_arguments'].get('referenced_image_paths', [])
+        if len(originals) != len(declared) or len(originals) != len(submitted):
+            raise AutonomyError('generated carrier input occurrences differ from declared ancestry')
+        for source_id in declared:
+            expected = binding['source_bindings'][source_id]
+            source = pack['board_bindings'].get(source_id)
+            refs = [r for r in call['packet']['references'] if r['id'] == source_id
+                    and all(r[key] == expected[key] for key in ('path', 'sha256'))]
+            indices = [i for i, path in enumerate(originals) if _inside(root, path) == _inside(root, expected['path'])]
+            if (source is None or any(source[key] != expected[key] for key in ('path', 'sha256'))
+                    or len(refs) != 1 or len(indices) != 1
+                    or hashlib.sha256(_inside(root, submitted[indices[0]]).read_bytes()).hexdigest() != expected['sha256']):
+                raise AutonomyError('generated carrier ancestor was not an actual original image input')
+            if source_id in dependencies:
+                visit(source_id)
+                sources[source_id] = expected
+            else:
+                references = [r for r in pack['specification']['references'] if r['id'] == source_id]
+                if len(references) != 1 or any(references[0][key] != expected[key] for key in ('path', 'sha256')):
+                    raise AutonomyError('generated carrier ancestor source differs from declared reference')
+                sources[source_id] = expected
+        visited.add(asset_id)
+    visit(frame['asset_id'])
+    return sources
+
+
 def _frame_carrier_members(root, frame, projection, composites):
     """A frame-mode composite names exact approved sources with truthful membership.
 
@@ -2361,7 +2440,9 @@ def _frame_carrier_members(root, frame, projection, composites):
             if (binding.get('source_bindings', {}).get(asset['id']) != expected or len(refs) != 1
                     or len(indices) != 1 or len(originals) != len(submitted)
                     or hashlib.sha256(_inside(root, submitted[indices[0]]).read_bytes()).hexdigest() != asset['sha256']):
-                raise AutonomyError('frame composite member was not an actual generated carrier input')
+                sources = _generated_carrier_sources(root, pack, frame)
+                if sources.get(asset['id']) != expected:
+                    raise AutonomyError('frame composite member was not an actual generated carrier input')
 
 
 def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None, policy_context=None,
@@ -2447,6 +2528,7 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
     proof = {'policy_sha256': sha, 'baseline_sha256': digest(retained),
              'compiled_sha256': digest(compiled), 'review_sha256': digest(review),
              'inputs': actual, 'cast': [], 'controls': {}}
+    ancestry_checked = False
     for asset in projection['assets']:
         if asset.get('upstream_source'):
             continue
@@ -2473,6 +2555,22 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
         carriers = [b for b in boards if (b['sha256'], 'start_frame') in carrier_frozen and b['role'] == 'start_frame'
                     and any(m['sha256'] == asset['sha256'] and m['role'] == asset['role']
                             and m['cast_ids'] == asset['cast_ids'] for m in b['members'])]
+        if not carriers and frame is not None and not ancestry_checked:
+            from lib import production_boards as board_pack
+            pack = board_pack.load_board_pack(root)
+            if pack['board_bindings'][frame['asset_id']].get('origin') == 'canonical_image_import':
+                sources = _generated_carrier_sources(root, pack, frame)
+                members = [{key: copy.deepcopy(a[key]) for key in ('sha256', 'role', 'cast_ids')}
+                    for a in projection['assets'] if a.get('cast_ids')
+                    and a['role'] in {'identity_reference', 'start_frame', 'end_frame', 'payoff_board'}
+                    and sources.get(a['id']) == {key: a.get(key) for key in ('path', 'sha256')}]
+                # Input ancestry is mechanical provenance, not an added review.
+                # Retained preparation and direct-proof digests remain untouched.
+                boards = boards + [{'sha256': frame['sha256'], 'role': 'start_frame', 'members': members}]
+            ancestry_checked = True
+            carriers = [b for b in boards if (b['sha256'], 'start_frame') in carrier_frozen and b['role'] == 'start_frame'
+                        and any(m['sha256'] == asset['sha256'] and m['role'] == asset['role']
+                                and m['cast_ids'] == asset['cast_ids'] for m in b['members'])]
         if not carriers:
             raise AutonomyError(f'implicit locked source/cast {asset["id"]} is absent from actual inputs and named board proof')
         proof['cast'].append([asset['id'], asset['sha256'], carriers[0]['sha256']])

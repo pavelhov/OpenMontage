@@ -2464,7 +2464,7 @@ def test_motion_reference_evidence_never_adds_factory_review_gate(neutral_packag
     assert file_bytes(root) == before
 
 
-def frame_shapes_fixture(neutral_package, monkeypatch, *, cast_bearing=False, episode_controls=None, public_layout=False):
+def frame_shapes_fixture(neutral_package, monkeypatch, *, cast_bearing=False, episode_controls=None, public_layout=False, transitive=False):
     """Legacy incompatible synthetic activation, complete current board evidence."""
     from lib import production_boards as boards
     root, package, bind = neutral_package
@@ -2474,6 +2474,8 @@ def frame_shapes_fixture(neutral_package, monkeypatch, *, cast_bearing=False, ep
     node_by_id = {n['slot_id']: n for n in spec['image_nodes']}
     node_by_id['payoff']['shot_id'] = 's4'
     node_by_id['other']['shot_id'] = 's2'
+    if transitive:
+        node_by_id['other'].update(reference_ids=[], image_dependencies=['start'])
     third_start = copy.deepcopy(node_by_id['start']); third_start.update(slot_id='third-start', shot_id='s3', output_path='assets/images/third-start.png')
     third_end = copy.deepcopy(node_by_id['end']); third_end.update(slot_id='third-end', shot_id='s3', output_path='assets/images/third-end.png', image_dependencies=['third-start'])
     spec['image_nodes'] += [third_start, third_end]
@@ -2580,9 +2582,9 @@ def test_frame_conditioned_prospective_activation_allows_pending_board_observati
     assert all(a.get('preparation_pending') for a in contract['assets'])
 
 
-def prepared_frame_shapes(neutral_package, monkeypatch, provider, *, public_layout=False):
+def prepared_frame_shapes(neutral_package, monkeypatch, provider, *, public_layout=False, transitive=False):
     from lib import openart_mcp as mcp, openart_mcp_jobs as mcp_jobs
-    root = frame_shapes_fixture(neutral_package, monkeypatch, cast_bearing=True, public_layout=public_layout)
+    root = frame_shapes_fixture(neutral_package, monkeypatch, cast_bearing=True, public_layout=public_layout, transitive=transitive)
     contract = execution.load_shot_contract(root)
     assert [s['duration_seconds'] for s in contract['shots']] == [5]*4
     frame_sources = {}
@@ -2655,6 +2657,69 @@ def prepared_frame_shapes(neutral_package, monkeypatch, provider, *, public_layo
         prepared[sid] = (inputs, native, profile, compiled, review)
     assert images.image_usage(root) == before_usage and before_usage['total'] == 6
     return root, prepared
+
+
+def test_frame_carrier_inherits_only_authenticated_declared_ancestor_sources(neutral_package, monkeypatch):
+    root, prepared = prepared_frame_shapes(neutral_package, monkeypatch, 'grok_cli', transitive=True)
+    inputs, native, profile, _, review = prepared['s2']
+    review['composite_boards'] = []  # Retained C98 preparation has no direct cast references.
+    write(root, 'artifacts/preparation_review-frame-s2.json', review)
+    before = file_bytes(root)
+    assert len(pa.lock_proof(root, 's2', inputs=inputs, native=native, profile=profile)) == 64
+    assert file_bytes(root) == before
+    from lib import production_boards as boards
+    frame = prepared['s2'][3]['source_binding']['frame_input']
+    sources = pa._generated_carrier_sources(root, boards.load_board_pack(root), frame)
+    assert 'cast' in sources and 'start' in sources and 'second-cast' not in sources
+
+
+@pytest.mark.parametrize('defect', ['ancestor_bytes', 'original_snapshot', 'undeclared_edge',
+    'cycle', 'foreign_project', 'unapproved_scope', 'fabricated_member'])
+def test_transitive_frame_carrier_rejects_forged_or_stale_ancestry(neutral_package, monkeypatch, defect):
+    from lib import production_boards as boards
+    from lib.shot_contract import frame_conditioned_start
+    root = frame_shapes_fixture(neutral_package, monkeypatch, cast_bearing=True, transitive=True)
+    pack = boards.load_board_pack(root)
+    contract = execution.load_shot_contract(root)
+    frame = frame_conditioned_start(contract, contract['shots'][1], root)
+    projection = pa.current_projection(root, 's2')
+    if defect == 'ancestor_bytes':
+        (root / pack['board_bindings']['start']['path']).write_bytes(b'SYNTHETIC changed ancestor')
+    elif defect == 'undeclared_edge':
+        pack['board_bindings']['other']['source_bindings']['second-cast'] = {
+            k: pack['board_bindings']['second-cast'][k] for k in ('path', 'sha256')}
+        write(root, boards.ARTIFACT, pack)
+    elif defect == 'cycle':
+        pack['board_bindings']['start']['source_bindings']['other'] = {
+            k: pack['board_bindings']['other'][k] for k in ('path', 'sha256')}
+        write(root, boards.ARTIFACT, pack)
+    else:
+        journal = images._load(root)
+        call = images._call(journal, pack['board_bindings']['start']['call_id'])
+        if defect == 'original_snapshot':
+            snapshot = Path(call['submitted_arguments']['referenced_image_paths'][0])
+            snapshot.chmod(0o644)
+            snapshot.write_bytes(b'SYNTHETIC forged original')
+        elif defect == 'foreign_project':
+            call['project_id'] = 'other-project'
+            monkeypatch.setattr(images, '_load', lambda _: journal)
+        elif defect == 'unapproved_scope':
+            call['request_sha256'] = '0'*64
+            monkeypatch.setattr(images, '_load', lambda _: journal)
+        else:
+            member = {k: next(a for a in projection['assets'] if a['id'] == 'cast')[k]
+                      for k in ('sha256', 'role', 'cast_ids')}
+            member['cast_ids'] = ['unrelated-cast']
+            before = file_bytes(root)
+            with pytest.raises(pa.AutonomyError, match='exact approved source'):
+                pa._frame_carrier_members(root, frame, projection, [
+                    {'sha256': frame['sha256'], 'role': 'start_frame', 'members': [member]}])
+            assert file_bytes(root) == before
+            return
+    before = file_bytes(root)
+    with pytest.raises((ValueError, KeyError, OSError)):
+        pa._generated_carrier_sources(root, boards.load_board_pack(root), frame)
+    assert file_bytes(root) == before
 
 
 @pytest.mark.parametrize('provider', ['grok_cli', 'openart_mcp'])
