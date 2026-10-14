@@ -584,6 +584,26 @@ def test_unknown_status_keeps_original_recoverable_while_preparing_declared_boar
     assert jobs.frozen_request(root, 'accepted-original') == original
 
 
+@pytest.mark.parametrize('initial', [True,False])
+def test_incomplete_completed_original_details_do_not_block_board_and_then_become_downloadable(lifecycle,initial):
+    root,jobs=pending_openart_with_boards(lifecycle,accepted=False)
+    partial={'historyId':'actual-synthetic-job','status':'COMPLETED'}
+    if initial:jobs.receive(root,'accepted-original',outcome=partial)
+    else:
+        jobs.receive(root,'accepted-original',outcome={'historyId':'actual-synthetic-job','status':'PENDING'})
+        jobs.record_status(root,'accepted-original',result=partial)
+    frozen=jobs.frozen_request(root,'accepted-original')
+    before=file_bytes(root)
+    assert execution.next_production_action(root)['kind']=='prepare_board_image'
+    assert jobs.resume_original(root,'accepted-original')['next_action']['arguments']=={'historyId':'actual-synthetic-job'}
+    assert file_bytes(root)==before
+    jobs.record_status(root,'accepted-original',result={'historyId':'actual-synthetic-job','status':'COMPLETED',
+        'resources':[{'id':'actual-synthetic-resource','mediaType':'video','status':'COMPLETED','url':'https://fixture.invalid/original.mp4'}]})
+    assert execution.next_production_action(root)['kind']=='download_openart_original'
+    assert jobs.frozen_request(root,'accepted-original')==frozen
+    assert len(jobs.list_attempts(root))==1 and images.image_usage(root)['total']==0
+
+
 
 @pytest.mark.parametrize('invalid', [None, 'not-a-local-time', '2026-10-12T01:02:03'])
 def test_invalid_status_timestamp_does_not_mutate_original_or_block_declared_board(lifecycle, invalid):

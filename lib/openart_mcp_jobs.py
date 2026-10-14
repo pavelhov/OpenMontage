@@ -425,10 +425,18 @@ def resume_original(project_dir, attempt_id, *, outcome=None, request_sha256=Non
                                  {'action': 'blocked_original_host_reply_unavailable',
                                   'reason': 'Consumed original handoff has no retrievable historyId; retrieve its exact host reply and replay receive. Never begin again.',
                                   'attempt_id': aid, 'request_sha256': original_request})
+    elif state['receipt'].get('status') in TERMINAL and not state['status_observations']:
+        # Older receive retained a terminal first reply as submitted. Expose
+        # its existing exact replay, without rewriting history during inspection.
+        result['next_action'] = {'action': 'receive_original', 'function': 'lib.openart_mcp_jobs.resume_original',
+            'attempt_id': aid, 'request_sha256': original_request, 'outcome': copy.deepcopy(state['receipt'])}
     elif state['status'] == 'submitted':
         result['next_action'] = {'action': 'poll_original', **poll_args(root, aid)}
     elif state['status'] == 'completed':
-        result['next_action'] = {'action': 'download_original', 'function': 'lib.openart_mcp_jobs.download_original', 'attempt_id': aid}
+        if _completion_needs_details(state):
+            result['next_action'] = {'action': 'poll_original', **poll_args(root, aid)}
+        else:
+            result['next_action'] = {'action': 'download_original', 'function': 'lib.openart_mcp_jobs.download_original', 'attempt_id': aid}
     else:
         result['next_action'] = {'action': 'inspect_original', 'status': state['status']}
     return result
@@ -439,7 +447,9 @@ def poll_args(project_dir, attempt_id):
     if (_path(project_dir,attempt_id).parent/'receipt-correction.json').exists() and not state.get('receipt_correction_sha256'):
         _fail('original_correction_pending','replay audited correction before polling any original')
     if state['receipt'] is None: _fail('original_uncertain', 'original historyId unavailable; never replace it')
-    if state['receipt'].get('status') in TERMINAL or (state['status_observations'] and state['status_observations'][-1].get('status') in TERMINAL):
+    if ((state['receipt'].get('status') in TERMINAL
+            or state['status_observations'] and state['status_observations'][-1].get('status') in TERMINAL)
+            and not _completion_needs_details(state)):
         _fail('original_terminal', 'original terminal reply already retained; no polling or replacement')
     return {'tool':'mcp__codex_apps__openart_openart_creation_get', 'arguments':{'historyId':state['receipt']['historyId']}}
 
@@ -454,9 +464,15 @@ def record_status(project_dir, attempt_id, *, result):
         if result.get('status') not in {'PENDING','RUNNING',*TERMINAL}: _fail('status_invalid', 'unrecognized original creation status')
         _validate_original_metadata(state,result)
         previous = state['status_observations']
-        if previous and previous[-1]['status'] in TERMINAL:
-            if mcp.digest(previous[-1]) != mcp.digest(result): _fail('terminal_changed', 'terminal original status cannot be replaced')
-            return attempt_state(root, aid)
+        terminal = previous[-1] if previous and previous[-1]['status'] in TERMINAL else (
+            receipt if receipt.get('status') in TERMINAL else None)
+        if terminal:
+            if previous and mcp.digest(previous[-1]) == mcp.digest(result):
+                return attempt_state(root, aid)
+            if mcp.digest(terminal) != mcp.digest(result):
+                if terminal['status'] != 'COMPLETED' or result['status'] != 'COMPLETED' or not _completion_needs_details(state):
+                    _fail('terminal_changed', 'terminal original status cannot be replaced')
+                _validate_completion_enrichment([receipt, *previous], result)
         state['status_observations'].append(copy.deepcopy(result))
         _event(state, 'status_observed', history_id=receipt['historyId'], status=result['status'])
         state['status'] = {'COMPLETED':'completed','FAILED':'failed','CANCELLED':'failed'}.get(result['status'],'submitted')
@@ -482,6 +498,51 @@ def _video_resource(terminal):
     videos=[r for r in rows if r.get('mediaType')=='video']
     if len(videos)!=1:_fail('output_ambiguous','one unambiguous original video resource required; paid nextStep is never called')
     return videos[0]
+
+
+def _completion_needs_details(state):
+    """Provider completion and a retrievable original resource are distinct facts."""
+    result = state['status_observations'][-1] if (state['status_observations']
+        and state['status_observations'][-1].get('status') in TERMINAL) else state.get('receipt')
+    if not result or result.get('status') != 'COMPLETED':
+        return False
+    try:
+        resource = _video_resource(result)
+    except mcp.OpenArtMCPError:
+        return True
+    return not isinstance(resource['url'], str) or not resource['url'].startswith('https://')
+
+
+def _validate_completion_enrichment(previous, result):
+    """Read the same completed job's missing detail; never replace known media."""
+    rows = result.get('resources')
+    for observed in previous:
+        if observed.get('status') != 'COMPLETED':
+            continue
+        count = observed.get('resourceCount')
+        if type(count) is int and count > 0:
+            if ('resourceCount' in result and result['resourceCount'] != count
+                    or isinstance(rows, list) and len(rows) > count):
+                _fail('terminal_changed', 'original promised resource count cannot change')
+            if isinstance(rows, list) and len(rows) < count and not _completion_needs_details({'status_observations':[result]}):
+                _fail('terminal_changed', 'completed detail omits a promised original resource')
+        if observed.get('warning') and observed.get('warning') != result.get('warning'):
+            _fail('terminal_changed', 'original completion warning cannot be removed')
+        if not isinstance(rows, list) or not rows:
+            continue  # No new media detail; earlier observations remain exact.
+        by_id = {row.get('id'): row for row in rows if isinstance(row, dict)}
+        for old in observed.get('resources') or []:
+            if not isinstance(old, dict) or not isinstance(old.get('id'), str) or not old['id']:
+                continue
+            new = by_id.get(old['id'])
+            if new is None or any(old.get(key) and old[key] != new.get(key) for key in ('id', 'mediaType', 'url')):
+                _fail('terminal_changed', 'known original resource identity cannot change')
+            old_status = str(old.get('status', '')).upper()
+            new_status = str(new.get('status', 'COMPLETED')).upper()
+            if ((old_status in {'FAILED', 'CANCELLED'} and new_status != old_status)
+                    or old_status in {'COMPLETED', 'SUCCESS', 'SUCCEEDED'}
+                    and new_status not in {'COMPLETED', 'SUCCESS', 'SUCCEEDED'}):
+                _fail('terminal_changed', 'known original resource completion cannot change')
 
 
 def collect(project_dir, attempt_id, *, downloaded_path):

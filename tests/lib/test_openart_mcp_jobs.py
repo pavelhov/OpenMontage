@@ -33,6 +33,9 @@ def test_terminal_submission_is_retained_once_without_false_poll_or_new_begin(fi
     root,_,_=begun(tmp_path)
     reply={'status':status,'error_code':'INVALID_ARGUMENT'}
     if history is not None:reply['historyId']=history
+    if status=='COMPLETED':
+        reply.pop('error_code')
+        reply['resources']=[{'id':'original-video','mediaType':'video','status':'COMPLETED','url':'https://fixture.invalid/original.mp4'}]
     result=jobs.receive(root,'one',outcome=reply)
     assert result['status']==('completed' if status=='COMPLETED' else 'failed')
     state=jobs._load(root,'one')
@@ -57,6 +60,119 @@ def test_exact_terminal_reply_replay_repairs_pre_fix_submitted_state_without_new
     result=jobs.resume_original(root,'one',outcome=reply,request_sha256=state['frozen']['authority']['request_sha256'])
     assert result['status']=='failed' and jobs.terminal_failure_record(root,'one')['terminal']==reply
     assert (jobs._path(root,'one').parent/'original-host-reply.json').read_bytes()==reply_bytes
+    assert len([e for e in jobs._load(root,'one')['events'] if e['kind']=='begin_consumed_before_handoff'])==1
+
+
+@pytest.mark.parametrize('first_completion', ['submission', 'poll'])
+@pytest.mark.parametrize('detail', [{}, {'resources':[]}, {'resources':[{'id':'v','mediaType':'video','status':'COMPLETED'}]}])
+def test_completed_missing_details_recovers_same_original_to_download_and_collection(fixture_observations,tmp_path,monkeypatch,first_completion,detail):
+    root,_,_=begun(tmp_path)
+    partial={'historyId':'original','status':'COMPLETED',**copy.deepcopy(detail)}
+    if first_completion=='submission':jobs.receive(root,'one',outcome=partial)
+    else:
+        jobs.receive(root,'one',outcome={'historyId':'original','status':'PENDING'})
+        jobs.record_status(root,'one',result=partial)
+    state=jobs._load(root,'one');frozen=copy.deepcopy(state['frozen']);receipt=copy.deepcopy(state['receipt'])
+    reply_path=jobs._path(root,'one').parent/'original-host-reply.json';original_reply=reply_path.read_bytes()
+    before=retained_bytes(root)
+    recovery=jobs.resume_original(root,'one')
+    assert recovery['status']=='completed' and recovery['next_action']['action']=='poll_original'
+    assert recovery['next_action']['arguments']=={'historyId':'original'}
+    assert jobs.poll_args(root,'one')['arguments']=={'historyId':'original'}
+    assert retained_bytes(root)==before
+    with pytest.raises(ValueError):jobs.begin(root,'one',authority_fn=execution.prepare_openart_mcp_handoff)
+    complete={'historyId':'original','status':'COMPLETED','resources':[
+        {'id':'v','mediaType':'video','status':'COMPLETED','url':'https://fixture.invalid/original.mp4'}]}
+    jobs.record_status(root,'one',result=complete)
+    assert jobs.resume_original(root,'one')['next_action']['action']=='download_original'
+    with pytest.raises(ValueError,match='original_terminal'):jobs.poll_args(root,'one')
+    before=retained_bytes(root);jobs.record_status(root,'one',result=complete);assert retained_bytes(root)==before
+    from tests.integration.test_openart_first_pass_workflow import real_av_clip
+    clip=real_av_clip(tmp_path/'SYNTHETIC-original.mp4',seconds=1)
+    install_fake_download(monkeypatch,jobs,clip)
+    downloaded=jobs.download_original(root,'one');jobs.collect(root,'one',downloaded_path=downloaded['downloaded_path'])
+    state=jobs._load(root,'one')
+    assert state['status']=='collected' and state['frozen']==frozen and state['receipt']==receipt
+    assert reply_path.read_bytes()==original_reply and partial in state['status_observations']
+    assert len(jobs.list_attempts(root))==1
+    assert len([e for e in state['events'] if e['kind']=='begin_consumed_before_handoff'])==1
+
+
+@pytest.mark.parametrize('change', ['foreign_id','foreign_model','regress_status','resource_id','resource_url','resource_type','resource_count','erase_known_resource','terminal_failure','rich_change'])
+def test_completion_detail_enrichment_cannot_replace_original_evidence(fixture_observations,tmp_path,change):
+    root,_,_=begun(tmp_path)
+    partial={'historyId':'original','status':'COMPLETED','resourceCount':2,'resources':[
+        {'id':'v','mediaType':'video','status':'COMPLETED','url':'https://fixture.invalid/original.mp4'}]}
+    if change=='terminal_failure':partial={'historyId':'original','status':'FAILED'}
+    elif change=='rich_change':partial.pop('resourceCount')
+    jobs.receive(root,'one',outcome=partial)
+    result={'historyId':'original','status':'COMPLETED','resourceCount':2,'resources':[
+        {'id':'v','mediaType':'video','status':'COMPLETED','url':'https://fixture.invalid/original.mp4'},
+        {'id':'poster','mediaType':'image','status':'COMPLETED','url':'https://fixture.invalid/poster.png'}]}
+    if change=='foreign_id':result['historyId']='another-original'
+    elif change=='foreign_model':result['capabilityId']='another:mode'
+    elif change=='regress_status':result['status']='PENDING'
+    elif change=='resource_id':result['resources'][0]['id']='different-video'
+    elif change=='resource_url':result['resources'][0]['url']='https://fixture.invalid/different.mp4'
+    elif change=='resource_type':result['resources'][0]['mediaType']='image'
+    elif change=='resource_count':result['resourceCount']=1
+    elif change=='erase_known_resource':result['resources']=result['resources'][1:]
+    before=retained_bytes(root)
+    with pytest.raises(ValueError):jobs.record_status(root,'one',result=result)
+    assert retained_bytes(root)==before
+
+
+def test_temporarily_inaccessible_original_resource_retries_only_the_same_download(fixture_observations,tmp_path,monkeypatch):
+    from lib import openart_download
+    from tests.integration.test_openart_first_pass_workflow import real_av_clip
+    root,_,_=begun(tmp_path);complete={'historyId':'original','status':'COMPLETED','resources':[
+        {'id':'v','mediaType':'video','status':'COMPLETED','url':'https://fixture.invalid/original.mp4'}]}
+    jobs.receive(root,'one',outcome=complete)
+    def unavailable(*args,**kwargs):raise openart_download.OpenArtDownloadError('SYNTHETIC temporary HTTP failure')
+    with monkeypatch.context() as outage:
+        outage.setattr(openart_download,'collect_output',unavailable)
+        with pytest.raises(ValueError,match='download_failed'):jobs.download_original(root,'one')
+    assert jobs.resume_original(root,'one')['next_action']['action']=='download_original'
+    clip=real_av_clip(tmp_path/'SYNTHETIC-recovered.mp4',seconds=1);install_fake_download(monkeypatch,jobs,clip)
+    downloaded=jobs.download_original(root,'one');jobs.collect(root,'one',downloaded_path=downloaded['downloaded_path'])
+    state=jobs._load(root,'one');assert state['status']=='collected' and state['status_observations']==[complete]
+    assert len([e for e in state['events'] if e['kind']=='begin_consumed_before_handoff'])==1
+
+
+@pytest.mark.parametrize('change', ['url','count','warning','rich_terminal'])
+def test_legacy_receipt_only_completion_cannot_lose_known_original_details(fixture_observations,tmp_path,change):
+    root,_,_=begun(tmp_path)
+    receipt={'historyId':'original','status':'COMPLETED','resourceCount':2,'resources':[
+        {'id':'v','mediaType':'video','status':'COMPLETED','url':'https://fixture.invalid/original.mp4'}]}
+    if change=='warning':receipt['warning']='SYNTHETIC known original warning'
+    elif change=='rich_terminal':receipt.pop('resourceCount')
+    jobs.receive(root,'one',outcome=receipt)
+    state=jobs._load(root,'one');state.update(status='submitted',status_observations=[])
+    jobs._save(root,'one',state)
+    result={'historyId':'original','status':'COMPLETED','resourceCount':2,'resources':[
+        {'id':'v','mediaType':'video','status':'COMPLETED','url':'https://fixture.invalid/original.mp4'},
+        {'id':'poster','mediaType':'image','status':'COMPLETED','url':'https://fixture.invalid/poster.png'}]}
+    if change=='url':result['resources'][0]['url']='https://fixture.invalid/replacement.mp4'
+    elif change=='count':result['resourceCount']=1;result['resources']=result['resources'][:1]
+    before=retained_bytes(root)
+    with pytest.raises(ValueError,match='terminal_changed'):jobs.record_status(root,'one',result=result)
+    assert retained_bytes(root)==before
+
+
+@pytest.mark.parametrize('status,resources', [('FAILED',None),('CANCELLED',None),('COMPLETED',None),
+    ('COMPLETED',[{'id':'v','mediaType':'video','status':'COMPLETED','url':'https://fixture.invalid/original.mp4'}])])
+def test_legacy_terminal_receipt_only_resume_offers_exact_local_receive_repair(fixture_observations,tmp_path,status,resources):
+    root,_,_=begun(tmp_path);receipt={'historyId':'original','status':status}
+    if resources is not None:receipt['resources']=resources
+    jobs.receive(root,'one',outcome=receipt)
+    state=jobs._load(root,'one');state.update(status='submitted',status_observations=[]);jobs._save(root,'one',state)
+    before=retained_bytes(root);recovery=jobs.resume_original(root,'one')
+    assert retained_bytes(root)==before and recovery['provider_calls']==recovery['reservations']==0
+    action=recovery['next_action'];assert action['action']=='receive_original' and action['outcome']==receipt
+    assert action['request_sha256']==state['frozen']['authority']['request_sha256']
+    jobs.resume_original(root,'one',outcome=action['outcome'],request_sha256=action['request_sha256'])
+    next_action=jobs.resume_original(root,'one')['next_action']['action']
+    assert next_action==('inspect_original' if status!='COMPLETED' else 'poll_original' if resources is None else 'download_original')
     assert len([e for e in jobs._load(root,'one')['events'] if e['kind']=='begin_consumed_before_handoff'])==1
 
 
