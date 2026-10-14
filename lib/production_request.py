@@ -1,4 +1,4 @@
-"""Pure OpenArt preparation. Agents judge semantics; this module binds evidence.
+"""OpenArt preparation. Agents judge semantics; this module binds and retains evidence.
 
 No CLI, network, ffprobe, transport lock or credit reservation is performed here.
 Synthetic fixture reviews cannot qualify a live provider. Compilation is literal;
@@ -727,17 +727,22 @@ def prep_builder(provider):
     raise ValueError('provider outside Auto-continue')
 
 
-def prepare_compiled_request(inputs, native, profile, *, coverage, timing, review=None):
+def prepare_compiled_request(inputs, native, profile, *, coverage, timing, review=None, persist=False):
     """Build the compiled sidecar after a retained preview; never judge semantics.
 
     With no ``review``, return the compiled request as before. With a supplied
     reviewer-authored review, return ``(compiled, bound_review)``. Only the exact
     review ID, subject hash and authenticated generated-carrier membership are
-    filled when omitted; conflicting supplied bindings reject. Reviewer, status,
-    evidence kind and predicates remain supplied judgment, including failures or
-    unknowns. Persist separately and retain the normal preparation/admission gate.
+    filled when omitted; conflicting supplied bindings reject. ``persist=True``
+    retains both validated records with the existing exclusive immutable writer;
+    an exact existing record is reused and conflicting records reject before any
+    publication. The two writes are individually atomic, not a transaction.
+    Reviewer, status, evidence kind and predicates remain supplied judgment,
+    including failures or unknowns. Retain the normal preparation/admission gate.
     """
     from lib.production_execution import planned_request_digest
+    if persist and review is None:
+        raise ValueError('persisting preparation requires an explicit reviewer-authored review')
     root = Path(inputs['project_dir']).resolve()
     packet = source_packet(root, inputs['governance']['shot_id'], provider=native.get('provider', 'openart_cli'), native=native)
     value = {'version': '1.0', 'request_sha256': planned_request_digest(inputs, project_dir=root),
@@ -746,7 +751,22 @@ def prepare_compiled_request(inputs, native, profile, *, coverage, timing, revie
     _validate_compiled(value, inputs, native, profile, packet)
     if review is None:
         return value
-    return value, _bind_preparation_review(inputs, packet, value, review)
+    bound = _bind_preparation_review(inputs, packet, value, review)
+    if persist:
+        from lib.production_execution import _artifact_path, _inside, _write_new
+        records = [(_id(inputs.get('compiled_request_id')), 'compiled_request-', value),
+                   (_id(inputs.get('preparation_review_id')), 'preparation_review-', bound)]
+        targets = []
+        for record_id, prefix, record in records:
+            path = _inside(_artifact_path(root, prefix + record_id + '.json'), root)
+            if path.exists() and json.loads(path.read_text()) != record:
+                raise ValueError('immutable preparation record already exists with different evidence')
+            targets.append((path, record))
+        for path, record in targets:
+            if not path.exists():
+                path.parent.mkdir(parents=True, exist_ok=True)
+                _write_new(path, record)
+    return value, bound
 
 
 def _bind_preparation_review(inputs, packet, compiled, review):

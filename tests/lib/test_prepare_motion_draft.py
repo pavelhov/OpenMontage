@@ -9,7 +9,7 @@ from lib import production_images as images, production_request as request
 from lib.shot_contract import file_sha256
 from tests.integration.test_first_pass_workflow import attestation
 from tests.lib.test_factory_frame_alias import original_frame_run
-from tests.lib.test_production_factory import file_bytes, write
+from tests.lib.test_production_factory import file_bytes
 from tests.lib.test_production_request import neutral_package  # noqa: F401
 
 OBSERVATION = {'cli_version': '1.0.34', 'grok_path': '/SYNTHETIC/offline/grok'}
@@ -27,7 +27,7 @@ def _synthetic_preparation(root, draft, record_id, composite_boards=None):
     contract = execution.load_shot_contract(root)
     shot = next(s for s in contract['shots'] if s['id'] == draft['shot_id'])
     index = contract['shots'].index(shot)
-    native = request.prepare_grok_native(inputs, OBSERVATION)
+    native = request.prep_builder(draft['provider'])(inputs, OBSERVATION)
     timing = {'method': 'segmented_estimate', 'duration_seconds': 5, 'language': 'en', 'margin_seconds': .5,
         'rationale': 'SYNTHETIC fixture', 'overlap_policy': 'serial', 'overlap_rationale': 'SYNTHETIC fixture',
         'segments': [], 'action_windows': [{'source_pointer': f'/shot_contract/shots/{index}/' + key,
@@ -39,10 +39,11 @@ def _synthetic_preparation(root, draft, record_id, composite_boards=None):
             'evidence': 'SYNTHETIC fixture only'} for name in sorted(request.PREDICATES)]}
     if composite_boards is not None:
         judgment['composite_boards'] = composite_boards
-    compiled, review = request.prepare_compiled_request(inputs, native, {'source': 'real'},
-        coverage=draft['coverage'], timing=timing, review=judgment)
-    write(root, 'artifacts/compiled_request-' + record_id + '.json', compiled)
-    write(root, 'artifacts/preparation_review-' + record_id + '.json', review)
+    request.prepare_compiled_request(inputs, native, {'source': 'real'},
+        coverage=draft['coverage'], timing=timing, review=judgment, persist=True)
+    assert request.validate_preparation(inputs, native, {'source': 'real'})
+    assert (root / ('artifacts/compiled_request-' + record_id + '.json')).stat().st_mode & 0o222 == 0
+    assert (root / ('artifacts/preparation_review-' + record_id + '.json')).stat().st_mode & 0o222 == 0
 
 
 def test_draft_feeds_existing_preparation_and_native_admission(neutral_package, monkeypatch):

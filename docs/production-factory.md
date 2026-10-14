@@ -88,9 +88,13 @@ no image or video generation retry.
 Pass `draft['inputs']` to `prep_builder(draft['provider'])` with the exact selected
 profile. Supply the producer's timing estimate and actual preparation judgment
 to `prepare_compiled_request(..., coverage=draft['coverage'], timing=timing,
-review=judgment)`. Its returned bound review fills the canonical review ID,
-subject hash and authenticated generated-carrier membership. Retain those two
-returned sidecars under the IDs already in `draft['inputs']`; do not hand-copy
+review=judgment, persist=True)`. This retains both validated sidecars under the
+IDs in the inputs using the exclusive immutable writer; exact existing records
+are reused, and a conflicting retained record rejects before either publication.
+Each file is atomic; an interrupted pair can be completed by repeating the same
+preparation without a provider call. Its returned bound review fills the canonical
+review ID, subject hash and authenticated generated-carrier membership. The default
+`persist=False` remains pure. Do not hand-copy
 their binding fields or turn unknown/failed observations into passes. Then
 complete the same action with those inputs and provider.
 

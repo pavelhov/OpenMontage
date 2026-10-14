@@ -27,6 +27,49 @@ def bind_generated_review(prepared, review):
         coverage=compiled['coverage'], timing=compiled['timing'], review=review)
 
 
+
+@pytest.mark.parametrize('damage', [None, 'conflict', 'missing_review', 'invalid_review', 'partial_write', 'semantic_failure'])
+def test_public_preparation_persists_only_validated_immutable_evidence(generated_carrier_preparation, damage):
+    from tests.lib.test_production_factory import file_bytes
+    root, inputs, native, profile, compiled, review = generated_carrier_preparation
+    inputs = dict(inputs, compiled_request_id='persisted', preparation_review_id='persisted')
+    judgment = {k: copy.deepcopy(v) for k, v in review.items()
+                if k not in {'review_id', 'subject_sha256', 'composite_boards'}}
+    if damage == 'semantic_failure':
+        judgment['status'] = 'fail'
+        judgment['predicates'][0]['status'] = 'fail'
+    built, bound = request.prepare_compiled_request(inputs, native, profile,
+        coverage=compiled['coverage'], timing=compiled['timing'], review=judgment)
+    compiled_path = root / 'artifacts/compiled_request-persisted.json'
+    review_path = root / 'artifacts/preparation_review-persisted.json'
+    if damage == 'conflict':
+        execution._write_new(review_path, {**bound, 'reviewer': 'different retained reviewer'})
+    elif damage == 'partial_write':
+        execution._write_new(compiled_path, built)
+    elif damage == 'missing_review':
+        judgment = None
+    elif damage == 'invalid_review':
+        del judgment['predicates']
+    before = file_bytes(root)
+    kwargs = dict(coverage=compiled['coverage'], timing=compiled['timing'], review=judgment, persist=True)
+    if damage in {'conflict', 'missing_review', 'invalid_review'}:
+        with pytest.raises(ValueError):
+            request.prepare_compiled_request(inputs, native, profile, **kwargs)
+        assert file_bytes(root) == before and not compiled_path.exists()
+        return
+    assert request.prepare_compiled_request(inputs, native, profile, **kwargs) == (built, bound)
+    assert json.loads(compiled_path.read_text()) == built
+    assert json.loads(review_path.read_text()) == bound
+    assert compiled_path.stat().st_mode & 0o222 == review_path.stat().st_mode & 0o222 == 0
+    saved = file_bytes(root)
+    stats = [p.stat().st_mtime_ns for p in (compiled_path, review_path)]
+    assert request.prepare_compiled_request(inputs, native, profile, **kwargs) == (built, bound)
+    assert file_bytes(root) == saved
+    assert [p.stat().st_mtime_ns for p in (compiled_path, review_path)] == stats
+    if damage == 'semantic_failure':
+        with pytest.raises(ValueError, match='nonpassing preparation review|critical preparation predicates'):
+            request.validate_preparation(inputs, native, profile)
+
 def test_public_preparation_derives_only_authenticated_review_bindings(generated_carrier_preparation):
     from tests.lib.test_production_factory import file_bytes
     root, inputs, native, profile, compiled, review = generated_carrier_preparation
