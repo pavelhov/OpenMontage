@@ -657,12 +657,11 @@ def _standing_controls_initial(root, policy, controls):
         raise StandingSetupRequired(str(exc)) from exc
 
 
-def _validate_standing_controls_activation(root, policy, sha, decision):
+def _validate_standing_controls_activation(root, policy, sha, decision, *, setup):
     """Check new activation's initial record, including a linked frame successor."""
     prefix = 'standing-' + sha[:24] + '-controls-'
     if not decision or not decision.get('decision_id', '').startswith(prefix):
         return  # Older activations never retrofit ignored optional setup fields.
-    setup, _ = _validate_standing_basis(root, policy, retained_baselines(root, policy), check_first_pass_capacity=False)
     controls = _standing_episode_controls(root, setup, policy['activation_basis'])
     initial = _standing_controls_initial(root, policy, controls) if controls is not None else None
     if initial is None or decision['decision_id'] != prefix + digest(initial):
@@ -1525,7 +1524,7 @@ def _load_active_policy(root, *, shot_id=None):
                 raise AutonomyError('shot outside retained policy')
             _validate_local_protected_planning(root, policy, baselines)
         if policy.get('activation_basis'):
-            _validate_standing_basis(root, policy, baselines, check_first_pass_capacity=False)
+            setup, _ = _validate_standing_basis(root, policy, baselines, check_first_pass_capacity=False)
             effective_standing_setup(root, policy)
         # Retained original sources remain immutable authority even if a legal
         # request drops a reference or chooses separate approved substitute bytes.
@@ -1536,7 +1535,9 @@ def _load_active_policy(root, *, shot_id=None):
                     raise AutonomyError('retained original static source bytes changed')
         decision = activation_decision(root)
         if policy.get('activation_basis'):
-            _validate_standing_controls_activation(root, policy, sha, decision)
+            # This loader already proved the exact setup above. Intervening
+            # reads do not mutate it; every independent load proves it afresh.
+            _validate_standing_controls_activation(root, policy, sha, decision, setup=setup)
         if not decision or decision.get('selected') != f'auto_continue:{sha}' \
                 or decision.get('user_approved') is not True:
             reasons.append('no current user approval (missing, stale or revoked)')

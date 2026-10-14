@@ -185,6 +185,37 @@ def test_fresh_standing_activation_projects_explicit_creator_episode_controls(tm
     assert pa.require_active_policy(tmp_path)[2] == result['decision_id']
 
 
+@pytest.mark.parametrize('change', ['setup', 'source', 'controls'])
+def test_active_policy_validates_standing_basis_once_per_fresh_load(tmp_path, monkeypatch, change):
+    from lib import episode_production_controls as controls
+    kwargs = standing_controls_fixture(tmp_path, {'max_generations_per_shot': 1,
+        'alternate_repair': 'disabled', 'access_fallback': False})
+    result = pa.activate_standing_run(tmp_path, **kwargs)
+    original = pa._validate_standing_basis
+    calls = []
+    def counted(*args, **kw):
+        calls.append(kw)
+        return original(*args, **kw)
+    monkeypatch.setattr(pa, '_validate_standing_basis', counted)
+    before = file_bytes(tmp_path)
+    for count in (1, 2):
+        active, sha, decision, reasons = pa.load_active_policy(tmp_path, shot_id='entry')
+        assert active is not None and not reasons
+        assert (sha, decision) == (result['policy_sha256'], result['decision_id'])
+        assert len(calls) == count
+    assert file_bytes(tmp_path) == before
+    if change == 'setup':
+        (tmp_path / kwargs['standing_setup']['path']).write_text('{}')
+    elif change == 'source':
+        (tmp_path / 'assets/start.svg').write_text('changed actual source bytes')
+    else:
+        (tmp_path / controls.ARTIFACT).unlink()
+    before = file_bytes(tmp_path)
+    assert pa.load_active_policy(tmp_path, shot_id='entry')[0] is None
+    assert len(calls) == 3
+    assert file_bytes(tmp_path) == before
+
+
 @pytest.mark.parametrize('payload', [None, {'max_generations_per_shot': 1,
     'alternate_repair': 'disabled', 'access_fallback': False, 'first_cut': {'enabled': False}}])
 def test_standing_episode_controls_absence_and_explicit_overrides_preserve_defaults(tmp_path, payload):
