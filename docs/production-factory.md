@@ -85,6 +85,17 @@ backend deduplication. Unbound errors, access/policy denials, standalone one-bat
 authority, exhausted allowance, and another retry remain blocked. This grants
 no image or video generation retry.
 
+For a current singleton Grok `prepare_motion` action, complete it with
+`outcome={"preparation": {"timing": timing, "review": judgment}}`. The existing
+`complete_action` drafts the exact retained inputs, observes the registered CLI,
+builds the native request, validates the authored timing and passing reviewed
+judgment, and retains both immutable sidecars before normal scope admission and
+dispatch. Supply actual image judgment; this convenience creates no predicates or
+timing estimates. Modified/stale actions reject, and retrying after dispatch does
+not regenerate. Interrupted preparation retains the same IDs and exact records.
+Fresh observations at later admission/dispatch boundaries remain required.
+Other routes continue with their explicit prepared inputs and provider.
+
 Pass `draft['inputs']` to `prep_builder(draft['provider'])` with the exact selected
 profile. Supply the producer's timing estimate and actual preparation judgment
 to `prepare_compiled_request(..., coverage=draft['coverage'], timing=timing,
@@ -96,7 +107,8 @@ preparation without a provider call. Its returned bound review fills the canonic
 review ID, subject hash and authenticated generated-carrier membership. The default
 `persist=False` remains pure. Do not hand-copy
 their binding fields or turn unknown/failed observations into passes. Then
-complete the same action with those inputs and provider.
+complete the same action with those inputs and provider; Grok also requires the
+actual CLI observation as `outcome["observation"]`.
 
 For native image returns, load the existing
 [`scripts/native_host_receipt.js`](../scripts/native_host_receipt.js) in the agent

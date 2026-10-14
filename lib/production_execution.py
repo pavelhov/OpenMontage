@@ -3504,6 +3504,35 @@ def complete_action(project_dir, action, *, outcome):
             _fail('original receive requires exact host result')
         jobs.resume_original(root, aid, outcome=outcome['result'], request_sha256=action['binding']['request_sha256'])
     elif kind == 'prepare_motion':
+        if set(outcome) == {'preparation'}:
+            # Authored timing and actual image judgment stay with the producer;
+            # mechanical binding and the native CLI observation belong here.
+            preparation = outcome['preparation']
+            if not isinstance(preparation, dict) or set(preparation) != {'timing', 'review'}:
+                _fail('motion preparation requires exact authored timing and review')
+            draft = draft_motion_preparation(root, action)
+            if draft['provider'] != 'grok_cli':
+                _fail('authored preparation convenience requires the retained singleton Grok route')
+            from tools.tool_registry import registry
+            from tools._grok_cli_media import observe_grok_cli_compatibility, DEFAULT_GROK_PATH
+            from lib.production_request import prep_builder, prepare_compiled_request, validate_preparation_evidence, source_packet
+            import os
+            registry.ensure_discovered('tools.video')
+            tool = registry.get('grok_cli_video')
+            if tool is None:
+                _fail('exact registered production tool unavailable')
+            inputs = draft['inputs']
+            configured = getattr(tool, '_grok_path', None) or os.environ.get('GROK_CLI_PATH', DEFAULT_GROK_PATH)
+            observation = observe_grok_cli_compatibility(configured, cwd=inputs.get('cwd') or root)
+            native = prep_builder('grok_cli')(inputs, observation)
+            profile = {'source': 'real'}
+            compiled, reviewed = prepare_compiled_request(inputs, native, profile, coverage=draft['coverage'],
+                timing=preparation['timing'], review=preparation['review'])
+            packet = source_packet(root, aid, provider='grok_cli', native=native)
+            validate_preparation_evidence(compiled, reviewed, inputs, native, profile, packet)
+            prepare_compiled_request(inputs, native, profile, coverage=draft['coverage'],
+                timing=preparation['timing'], review=preparation['review'], persist=True)
+            outcome = {'inputs': inputs, 'provider': 'grok_cli', 'observation': observation}
         if set(outcome) - {'inputs', 'provider', 'observation'} or not {'inputs', 'provider'} <= set(outcome):
             _fail('motion preparation requires exact inputs and approved provider')
         from lib import production_autonomy as autonomy
