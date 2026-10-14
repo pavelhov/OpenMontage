@@ -54,6 +54,8 @@ function observeNativeHostTiming(observer, stage, details = {}) {
 }
 
 async function saveNativeHostReceipt(tools, observedReceipt, receiptPath, observeTiming) {
+  if (!tools || typeof tools.mcp__node_repl__js !== 'function')
+    throw new Error('A callable Node REPL bridge is required to save the native host receipt');
   observeNativeHostTiming(observeTiming, 'receipt_prepare_start');
   const url = observedReceipt?.tool_name === 'image_gen.imagegen' ? observedReceipt?.result?.image_url : undefined;
   const match = typeof url === 'string' && /^data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/]*={0,2})$/.exec(url);
@@ -153,6 +155,8 @@ async function consumeNativeHostAction(tools, step, options) {
   // ownership identity. Lost observations require canonical original collection.
   // OpenArt completion callbacks select the actual structuredContent payload for
   // the engine; the full raw connector result stays in the saved host receipt.
+  if (!tools || typeof tools.mcp__node_repl__js !== 'function')
+    throw new Error('A callable Node REPL bridge is required before native invocation');
   const {nativeTool, receiptPath, getObservation, retainObservation, completeAction} = options;
   const action = step?.action, envelope = step?.host_envelope;
   const toolName = envelope?.tool_name || envelope?.tool;

@@ -116,8 +116,13 @@ authored estimates, and supplied conflicting bindings reject.
 
 For native image returns, load the existing
 [`scripts/native_host_receipt.js`](../scripts/native_host_receipt.js) in the agent
-host and use `consumeNativeHostAction` with the exact emitted envelope and actual
-tool callback. It retains the actual observation before saving/completion. Its
+host and use `consumeNativeHostAction` from the outer `functions.exec` in Codex,
+with its real `tools` bridge and exact emitted envelope. Pass the actual image
+tool call as `nativeTool.invoke`, for example
+`args => tools.image_gen__imagegen(args)`. The Node REPL bridge is only for
+filesystem receipt RPC; it has no ambient tools and cannot emulate the image
+tool. The helper checks that bridge before claiming ownership or observing the
+native action. It retains the actual observation before saving/completion. Its
 `saveNativeHostReceipt` verifies the local cached image against the original data
 URL and writes the full receipt atomically through a small Node RPC. Never embed
 the multi-megabyte image data URL in a shell or Node script. Keep the receipt path

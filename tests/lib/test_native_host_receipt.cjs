@@ -155,6 +155,31 @@ function imageStep(f) {
   return {status: 'host_action', action: {kind: 'receive_native_image', subject: 'original-call', action_id: 'unchanged'},
     host_envelope: {tool_name: 'image_gen.imagegen', call_id: 'original-call', arguments: f.observation.arguments}};
 }
+test('invalid Node bridge fails before ownership effects and corrected bridge can invoke once', async t => {
+  const f = await fixture(t), step = imageStep(f);
+  let nativeCalls = 0, observationReads = 0, retentions = 0, completions = 0;
+  const options = hostOptions(f, async () => { nativeCalls++; return f.observation.result; }, async () => {
+    completions++; return {status: 'host_action'};
+  });
+  const getObservation = options.getObservation, retainObservation = options.retainObservation;
+  options.getObservation = (...args) => { observationReads++; return getObservation(...args); };
+  options.retainObservation = (...args) => { retentions++; return retainObservation(...args); };
+  for (const invalid of [undefined, null, {}, {mcp__node_repl__js: null}, {mcp__node_repl__js: {}}]) {
+    await assert.rejects(consumeNativeHostAction(invalid, step, options), /Node REPL bridge/);
+    assert.equal(observationReads, 0); assert.equal(retentions, 0);
+    assert.equal(nativeCalls, 0); assert.equal(completions, 0);
+    await assert.rejects(fs.access(f.receiptPath + '.invoked'), {code: 'ENOENT'});
+  }
+  const timingEvents = [];
+  await assert.rejects(saveNativeHostReceipt({}, f.observation, f.receiptPath,
+    event => timingEvents.push(event)), /Node REPL bridge/);
+  assert.deepEqual(timingEvents, []); assert.equal(f.calls.length, 0);
+  await consumeNativeHostAction(f.tools, step, options);
+  assert.equal(nativeCalls, 1); assert.equal(completions, 1);
+  const restarted = hostOptions(f, options.nativeTool.invoke, options.completeAction);
+  await assert.rejects(consumeNativeHostAction(f.tools, step, restarted), /already exists/);
+  assert.equal(nativeCalls, 1); assert.equal(completions, 1);
+});
 test('actual image callback, durable lossless original and completion share one operation', async t => {
   const f = await fixture(t), step = imageStep(f);
   let nativeCalls = 0, completionCalls = 0;
