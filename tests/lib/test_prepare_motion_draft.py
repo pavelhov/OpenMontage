@@ -51,8 +51,11 @@ def test_draft_feeds_existing_preparation_and_native_admission(neutral_package, 
     action = _current_prepare(root)
     usage = images.image_usage(root)['total']
     before = file_bytes(root)
-    draft = execution.draft_motion_preparation(root, action, provider='grok_cli',
-        output_path='assets/video/draft-s3.mp4', compiled_request_id='draft-s3', preparation_review_id='draft-s3')
+    draft = execution.draft_motion_preparation(root, action, provider='grok_cli')
+    record_id = 'motion-' + action['action_id'][:24]
+    assert draft['inputs']['output_path'] == str(root / ('assets/video/' + record_id + '.mp4'))
+    assert draft['inputs']['compiled_request_id'] == draft['inputs']['preparation_review_id'] == record_id
+    assert execution.draft_motion_preparation(root, action, provider='grok_cli') == draft
     # Pure: no writes, no image usage, no provider/native call.
     assert file_bytes(root) == before and images.image_usage(root)['total'] == usage
     assert draft['provider_calls'] == 0 and draft['missing'] == [] and len(transport.native_requests) == 1
@@ -64,7 +67,7 @@ def test_draft_feeds_existing_preparation_and_native_admission(neutral_package, 
     # Producer-owned route controls absent from this fixture's retained template.
     inputs = dict(draft['inputs'], operation='reference_to_video', allow_unknown_cost=True)
     draft = {**draft, 'inputs': inputs}
-    _synthetic_preparation(root, draft, 'draft-s3')
+    _synthetic_preparation(root, draft, record_id)
     result = execution.complete_action(root, action, outcome={
         'inputs': inputs, 'provider': draft['provider'], 'observation': OBSERVATION})
     assert result['status'] == 'dispatched' and result['result']['success'], result['result'].get('error')
@@ -86,7 +89,12 @@ def test_draft_refuses_stale_modified_or_foreign_route_without_writes(neutral_pa
     with pytest.raises(Exception):
         execution.draft_motion_preparation(root, action, provider='grok_cli', compiled_request_id='../escape')
     draft = execution.draft_motion_preparation(root, action, provider='grok_cli')
-    assert draft['missing'] == ['output_path', 'compiled_request_id', 'preparation_review_id']
+    assert draft['missing'] == []
+    explicit = execution.draft_motion_preparation(root, action, provider='grok_cli',
+        output_path='assets/video/explicit.mp4', compiled_request_id='explicit-compiled', preparation_review_id='explicit-review')
+    assert explicit['inputs']['output_path'] == str(root / 'assets/video/explicit.mp4')
+    assert explicit['inputs']['compiled_request_id'] == 'explicit-compiled'
+    assert explicit['inputs']['preparation_review_id'] == 'explicit-review'
     assert file_bytes(root) == before and len(transport.native_requests) == 1
 
 
@@ -96,7 +104,8 @@ def test_draft_refuses_changed_board_bytes_and_preserves_retained_controls(neutr
     policy, _, _ = pa.require_active_policy(root, shot_id='s3')
     template = pa.retained_baselines(root, policy)['s3']['planned_request_template']['inputs']
     draft = execution.draft_motion_preparation(root, action, provider='grok_cli')
-    assert {k: v for k, v in draft['inputs'].items() if k not in {'image_path', 'project_dir', 'governance', 'prompt'}} \
+    assert {k: v for k, v in draft['inputs'].items() if k not in {
+        'image_path', 'project_dir', 'governance', 'prompt', 'output_path', 'compiled_request_id', 'preparation_review_id'}} \
         == {k: v for k, v in template.items() if k != 'image_path'}
     path = Path(execution.resolve_board_input(root, {'asset_id': 'other'})['path'])
     path = path if path.is_absolute() else root / path

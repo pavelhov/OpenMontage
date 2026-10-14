@@ -3196,8 +3196,9 @@ def draft_motion_preparation(project_dir, action, *, output_path=None, compiled_
     Projects the active policy's retained ``planned_request_template`` inputs,
     resolves declared ``$board``/``$upstream`` frame occurrences to their actual
     current bytes, and attaches the existing ``compile_provider_prompt`` preview.
-    Exact connector model/mode inputs infer their approved OpenArt route and
-    receive stable administrative IDs, account-project and upload-authority args.
+    Grok and OpenArt drafts receive stable administrative IDs. Exact connector
+    model/mode inputs infer their approved OpenArt route and account-project and
+    upload-authority args.
     It writes nothing, reserves/uploads nothing and makes no review, timing or
     provider judgment. The returned ``inputs``/``provider`` are an ordinary
     draft for ``prep_builder``/``prepare_compiled_request``/``complete_action``;
@@ -3260,13 +3261,14 @@ def draft_motion_preparation(project_dir, action, *, output_path=None, compiled_
     authored = compile_provider_prompt(root, sid, provider=provider,
         **({'model': inputs.get('model')} if provider == 'openart_mcp' else {}))
     inputs.update(project_dir=str(root), governance={'shot_id': sid}, prompt=authored['prompt'])
-    if provider == 'openart_mcp':
+    if provider in ('grok_cli', 'openart_mcp'):
         # Administrative names are deterministic for this exact action. Native
         # upload receipts and preparation judgment remain their existing owners.
         record_id = 'motion-' + current['action_id'][:24]
         inputs.setdefault('output_path', str(_inside('assets/video/' + record_id + '.mp4', root)))
         inputs.setdefault('compiled_request_id', record_id)
         inputs.setdefault('preparation_review_id', record_id)
+    if provider == 'openart_mcp':
         spec = autonomy._provider_spec(policy, provider)
         if spec.get('project_id') is not None:
             inputs.setdefault('openart_project_id', spec['project_id'])
