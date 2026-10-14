@@ -1925,22 +1925,81 @@ def _retained_grok_launch(directory, request, expected, native_tool, cwd):
     return launch
 
 
-def _grok_prompt_boundary_original(root, request, *, allow_pending=False):
+def _grok_download_original(root, directory, request, events, expected, native_tool, session, log, log_sha):
+    """Bind only the exact original CLI download transport failure, never a new job."""
+    import re
+    from tools._grok_cli_media import _content_text, _probe_artifact, _validate_media_contract
+    original = _read(directory / 'raw_result.json')
+    calls = [e for e in events if e.get('type') == 'tool_call']
+    updates = [e for e in events if e.get('type') == 'tool_call_update']
+    ends = [e for e in events if e.get('type') == 'end']
+    failures = [e for e in updates if e.get('status') == 'failed']
+    if (len(calls) != 1 or (calls[0].get('toolName') or calls[0].get('title')) != native_tool
+            or not isinstance(calls[0].get('toolCallId'), str) or not calls[0]['toolCallId']
+            or len(failures) != 1 or any(e.get('toolCallId') != calls[0]['toolCallId']
+                or e.get('status') not in {None, 'pending', 'in_progress', 'failed'}
+                or e.get('status') != 'failed' and e.get('rawOutput') not in (None, {}) for e in updates)
+            or len(ends) != 1 or ends[0].get('sessionId') != request['cli_session_id']
+            or ends[0].get('stopReason') != 'end_turn'):
+        _fail('original download requires one exact failed native call and terminal session')
+    raw = failures[0].get('rawOutput')
+    if (not isinstance(raw, dict) or set(raw) != {'error', 'message'}
+            or raw['error'] != 'tool_execution_failed' or not isinstance(raw['message'], str)):
+        _fail('original download requires exact transport failure output')
+    match = re.fullmatch(r'Failed to download video: error sending request for url \((https://vidgen\.x\.ai/xai-vidgen-bucket/xai-video-[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.mp4)\)', raw['message'])
+    if not match or original.get('error') != 'Grok CLI cli error: ' + _content_text(failures[0]):
+        _fail('original download URL or exact returned failure differs')
+    binding = {'version': '1.0', 'attempt_id': request['attempt_id'],
+        'request_sha256': request['request_sha256'], 'session_id': request['cli_session_id'],
+        'native_tool': native_tool, 'arguments_sha256': _digest(expected), 'url': match[1],
+        'native_evidence': {'path': str(log), 'sha256': log_sha},
+        'original_sha256': {name: file_sha256(directory / name) for name in
+            ('request.json', 'raw_result.json', 'result.json', 'grok_launch.json')}}
+    proof = {'version': '1.0', 'mode': 'original_download_transport', 'session_id': request['cli_session_id'],
+        'session_directory': str(session), 'updates_sha256': log_sha,
+        'original_sha256': binding['original_sha256'], 'download_binding': binding}
+    receipt_path = directory / 'original_download.json'
+    source = directory / 'original_download.mp4'
+    if not receipt_path.exists():
+        if source.is_symlink() or source.exists() and not source.is_file():
+            _fail('unreceipted original download source is not a regular local file')
+        # Orphan bytes never qualify by themselves. An interrupted publication
+        # repeats only the exact original GET, then checks these bytes against
+        # that fresh validated download before retaining the missing receipt.
+        return dict(proof, status='download_required'), None
+    receipt = _read(receipt_path)
+    if (receipt_path.is_symlink() or source.is_symlink() or not source.is_file()
+            or set(receipt) != {'binding', 'source', 'media_metadata'} or receipt['binding'] != binding
+            or receipt['source'] != {'path': str(source), 'sha256': file_sha256(source)}):
+        _fail('original download receipt or source changed')
+    metadata = _probe_artifact(source, media_kind='video')
+    _validate_media_contract(metadata, tool_name=native_tool, arguments=expected)
+    if receipt['media_metadata'] != metadata or file_sha256(source) != receipt['source']['sha256']:
+        _fail('original downloaded media differs from retained contract')
+    proof.update(source_sha256=receipt['source']['sha256'], media_metadata=metadata,
+        download_receipt={'path': str(receipt_path), 'sha256': file_sha256(receipt_path)})
+    return proof, source
+
+
+def _grok_prompt_boundary_original(root, request, *, allow_pending=False, original_download_only=False):
     """Qualify an uncertain original or historical prompt rejection from native logs."""
     from urllib.parse import quote
     from tools._grok_cli_media import (retained_grok_session_stream, _parse_stream,
         _trusted_session_artifact, _sealed_arguments_match, _probe_artifact, _validate_media_contract,
         GrokCLIContractError)
     directory = root / 'production_attempts' / request['attempt_id']
-    state = _state(root, request)
+    state = _read(directory / 'result.json') if original_download_only else _state(root, request)
     previous = state.get('result') or {}
     data = previous.get('data', {})
+    download_failure = (state['status'] == 'failed' and previous.get('success') is False
+        and data.get('error_category') == 'cli' and data.get('dispatch_status') == 'failed'
+        and 'Failed to download video: error sending request for url (' in str(previous.get('error')))
     boundary = (state['status'] == 'failed' and previous.get('success') is False
         and previous.get('error') == 'Grok CLI protocol error: Grok changed the sealed media-tool arguments; the artifact was rejected'
         and data.get('error_category') == 'protocol' and data.get('dispatch_status') == 'failed')
     uncertain = state['status'] == 'uncertain'
     if (request['scope']['provider'] != 'grok_cli' or request['media_kind'] != 'motion'
-            or not (boundary or uncertain)):
+            or not (boundary or uncertain or download_failure)):
         _fail('only an uncertain original or exact sealed-prompt boundary rejection can be reconciled')
     if previous and (data.get('session_id') != request['cli_session_id']
             or data.get('dispatch_session_id') != request['cli_session_id']
@@ -1989,6 +2048,15 @@ def _grok_prompt_boundary_original(root, request, *, allow_pending=False):
     if (not isinstance(observed, dict) or (boundary and observed.get('prompt') == expected.get('prompt'))
             or not _sealed_arguments_match(observed, expected)):
         _fail('original protocol change is not prompt-only ASCII boundary whitespace')
+    if download_failure:
+        if launch is None:
+            _fail('original download recovery requires retained prelaunch evidence')
+        for asset in request['input_assets']:
+            if file_sha256(_inside(asset['path'], root)) != asset['sha256']:
+                _fail('original recovery input bytes changed')
+        proof, source = _grok_download_original(root, directory, request, events, expected,
+            native_tool, session_directory, log, updates_sha256)
+        return proof, source, receipt, expected
     # A concurrent original can have only its exact call and progress updates.
     # Collection must leave that attempt unchanged until its final stream exists;
     # End-bearing and failed records still use the strict final parser below.
@@ -2051,7 +2119,7 @@ def _grok_prompt_boundary_original(root, request, *, allow_pending=False):
 
 
 def collect_original_grok_prompt_boundary(project_dir, attempt_id, *, request_sha256, dry_run=True):
-    """Collect one original completed artifact; no CLI, network, dispatch or reservation."""
+    """Collect the exact original; only a bound failed download permits a media GET."""
     from tools._grok_cli_media import _copy_and_validate
     from tools.base_tool import ToolResult
     root = Path(project_dir).resolve()
@@ -2060,6 +2128,53 @@ def collect_original_grok_prompt_boundary(project_dir, attempt_id, *, request_sh
         request = _read(directory / 'request.json')
         if request_sha256 != request['request_sha256']:
             _fail('original collection request digest differs')
+        pending_proof, source, receipt, arguments = _grok_prompt_boundary_original(root, request, allow_pending=True)
+        download = pending_proof.get('status') == 'download_required'
+        if download and dry_run:
+            return {'attempt_id': attempt_id, 'request_sha256': request_sha256,
+                'provider_calls': 0, 'reservations': 0, 'would_download_original': True,
+                'original_session_recovery': pending_proof}
+        if download and Path(request['submitted_inputs']['output_path']).exists():
+            _fail('unbound existing output blocks original download')
+    if download:
+        import os
+        import tempfile
+        import requests
+        from tools._grok_cli_media import _probe_artifact, _validate_media_contract
+        staging = None
+        try:
+            with tempfile.NamedTemporaryFile(prefix='.original-download-', suffix='.mp4', dir=directory, delete=False) as file:
+                staging = Path(file.name)
+                with requests.get(pending_proof['download_binding']['url'], stream=True,
+                        allow_redirects=False, timeout=60) as response:
+                    response.raise_for_status()
+                    if response.status_code != 200:
+                        _fail('original download requires direct HTTP 200 response')
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        file.write(chunk)
+                file.flush(); os.fsync(file.fileno())
+            metadata = _probe_artifact(staging, media_kind='video')
+            _validate_media_contract(metadata, tool_name=receipt['native_tool'], arguments=arguments)
+            digest = file_sha256(staging)
+            with _lock(root):
+                current, _, _, _ = _grok_prompt_boundary_original(root, request, allow_pending=True)
+                if current != pending_proof:
+                    _fail('original download evidence changed during transfer')
+                source = directory / 'original_download.mp4'
+                if source.exists():
+                    if source.is_symlink() or not source.is_file() or file_sha256(source) != digest:
+                        _fail('orphan original download differs from freshly validated original bytes')
+                    source.chmod(0o444)
+                else:
+                    _preserve_output(staging, source, digest)
+                _write_new(directory / 'original_download.json', {'binding': pending_proof['download_binding'],
+                    'source': {'path': str(source), 'sha256': digest}, 'media_metadata': metadata})
+        finally:
+            if staging is not None:
+                staging.unlink(missing_ok=True)
+    with _lock(root):
+        if _read(directory / 'request.json') != request:
+            _fail('original request changed during collection')
         proof, source, original_receipt, arguments = _grok_prompt_boundary_original(root, request, allow_pending=True)
         if proof.get('status') == 'pending':
             return proof
@@ -2183,12 +2298,19 @@ def _verify_original_grok_motion_success(root, directory, request, result):
     from tools._grok_cli_media import (_parse_stream, _trusted_session_artifact,
                                      _probe_artifact, _validate_media_contract)
     submitted, expected, native_tool, session, log, log_sha, stream, launch = _original_grok_motion_stream(root, directory, request, result)
-    source_path, _, session_id = _parse_stream(stream, tool_name=native_tool, expected_arguments=expected)
-    if session_id != request['cli_session_id']:
-        _fail('original motion completion session differs')
-    source = _trusted_session_artifact(source_path, session.parent.parent, session_id)
-    if not source.is_relative_to(session.resolve()):
-        _fail('original motion artifact differs from exact original session')
+    downloaded = result.data.get('original_session_recovery', {}).get('mode') == 'original_download_transport'
+    if downloaded:
+        proof, source, _, _ = _grok_prompt_boundary_original(root, request, original_download_only=True)
+        if source is None or proof != result.data['original_session_recovery']:
+            _fail('original downloaded recovery evidence differs')
+        session_id = proof['session_id']
+    else:
+        source_path, _, session_id = _parse_stream(stream, tool_name=native_tool, expected_arguments=expected)
+        if session_id != request['cli_session_id']:
+            _fail('original motion completion session differs')
+        source = _trusted_session_artifact(source_path, session.parent.parent, session_id)
+        if not source.is_relative_to(session.resolve()):
+            _fail('original motion artifact differs from exact original session')
     digest = file_sha256(source)
     output = _inside(submitted['output_path'], root)
     if output.is_symlink() or not output.is_file() or file_sha256(output) != digest:

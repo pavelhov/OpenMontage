@@ -3,6 +3,10 @@ import copy
 import json
 from pathlib import Path
 import subprocess
+import shutil
+
+_REAL_RUN = subprocess.run
+_REAL_WHICH = shutil.which
 
 import pytest
 
@@ -561,3 +565,193 @@ def test_motion_failure_reconciliation_requires_actual_original_terminal_failure
         assert not (directory/'reconciliation.json').exists()
         assert execution.load_attempt_result(p.root,aid)['status']=='uncertain'
     assert len(p.transport.native_requests)==len(execution._attempts(p.root))==1
+
+
+@pytest.fixture
+def download_failed(production, monkeypatch):
+    p = production
+    inputs = copy.deepcopy(p.inputs['entry'])
+    inputs.pop('preferred_provider', None); inputs.pop('allowed_providers', None)
+    inputs['cwd'] = str(p.root)
+    p.scope['requests']['entry'] = execution.planned_request_digest(inputs, project_dir=p.root)
+    p.persist_scope()
+    url = 'https://vidgen.x.ai/xai-vidgen-bucket/xai-video-00000000-0000-0000-0000-000000000001.mp4'
+    message = 'Failed to download video: error sending request for url (' + url + ')'
+    def transport(argv, **kwargs):
+        result = p.transport(argv, **kwargs)
+        if '--prompt-file' not in argv: return result
+        events = [json.loads(line) for line in result.stdout.splitlines()]
+        events[1].update(status='failed', content=[{'type':'content', 'content':{'type':'text',
+            'text':'Tool `reference_to_video` failed: ' + message}}],
+            rawOutput={'error': 'tool_execution_failed', 'message': message})
+        aid = events[-1]['sessionId']; folder = p.transport.original_sessions[aid]['artifact'].parent.parent
+        original_log(folder, aid, events, 'updates')
+        p.transport.original_sessions[aid]['artifact'].unlink()
+        return subprocess.CompletedProcess(argv, 0, '\n'.join(json.dumps(e) for e in events), '')
+    monkeypatch.setattr('tools._grok_cli_media._run_process', transport)
+    result = p.cli.execute(inputs)
+    aid = result.data['production_attempt_id']; directory = p.root / 'production_attempts' / aid
+    assert not result.success and result.data['error_category'] == 'cli'
+    request = read(directory / 'request.json')
+    frozen = {name: (directory / name).read_bytes() for name in ('request.json', 'raw_result.json', 'result.json', 'grok_launch.json')}
+    original_media = directory / 'SYNTHETIC-response.mp4'
+    _REAL_RUN([_REAL_WHICH('ffmpeg'), '-v', 'error', '-y', '-f', 'lavfi', '-i',
+        'color=c=blue:s=1280x720:r=2:d=8', '-c:v', 'libx264', '-preset', 'ultrafast',
+        '-pix_fmt', 'yuv420p', str(original_media)], check=True, capture_output=True)
+    body = original_media.read_bytes(); original_media.unlink()
+    class Download:
+        status_code = 200
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def raise_for_status(self): pass
+        def iter_content(self, chunk_size): yield body
+    downloads = []
+    def get(actual, **kwargs):
+        assert actual == url and kwargs['allow_redirects'] is False
+        downloads.append(actual); return Download()
+    monkeypatch.setattr('requests.get', get)
+    def probe_only(argv, **kwargs):
+        assert Path(argv[0]).name == 'ffprobe', 'no CLI generation or observation during recovery'
+        return _REAL_RUN(argv, **kwargs, capture_output=True, text=True)
+    monkeypatch.setattr('tools._grok_cli_media._run_process', probe_only)
+    monkeypatch.setattr('tools._grok_cli_media.shutil.which', lambda name: _REAL_WHICH(name))
+    return p, aid, directory, request, frozen, downloads
+
+
+def test_failed_original_download_recovers_once_without_dispatch(download_failed):
+    p, aid, directory, request, frozen, downloads = download_failed
+    scopes = (p.root / 'production_scopes.json').read_bytes()
+    dry = execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'], dry_run=True)
+    assert dry['would_download_original'] and not downloads
+    result = execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'])
+    assert result.success and len(downloads) == 1
+    p.select('entry', result)
+    again = execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'])
+    assert again.success and len(downloads) == 1
+    assert len(p.transport.native_requests) == len(execution._attempts(p.root)) == 1
+    assert (p.root / 'production_scopes.json').read_bytes() == scopes
+    for name, raw in frozen.items(): assert (directory / name).read_bytes() == raw
+
+
+@pytest.mark.parametrize('damage', ['foreign_url', 'unmatched_url', 'other_error', 'completed', 'foreign_call', 'session', 'arguments', 'incomplete', 'input', 'ambiguous', 'duplicate_failure'])
+def test_failed_download_recovery_refuses_unbound_evidence_before_network(download_failed, damage):
+    p, aid, directory, request, frozen, downloads = download_failed
+    folder = p.transport.original_sessions[aid]['artifact'].parent.parent
+    log = folder / 'updates.jsonl'; rows = [json.loads(line) for line in log.read_text().splitlines()]
+    failed = rows[1]['params']['update']
+    if damage == 'foreign_url': failed['rawOutput']['message'] = failed['rawOutput']['message'].replace('vidgen.x.ai', 'foreign.invalid')
+    elif damage == 'unmatched_url': failed['rawOutput']['message'] = failed['rawOutput']['message'].replace('000000000001', '000000000002')
+    elif damage == 'other_error': failed['rawOutput']['message'] = 'account exhausted'
+    elif damage == 'completed': failed['status'] = 'completed'
+    elif damage == 'foreign_call': failed['toolCallId'] = 'foreign-call'
+    elif damage == 'session': rows[1]['params']['sessionId'] = 'foreign-session'
+    elif damage == 'arguments': rows[0]['params']['update']['rawInput']['duration'] = 7
+    elif damage == 'incomplete': rows.pop()
+    elif damage == 'input':
+        path = Path(request['input_assets'][0]['path']); path.chmod(0o644); path.write_bytes(b'changed')
+    elif damage == 'ambiguous': failed['rawOutput']['message'] += ' https://foreign.invalid/video.mp4'
+    elif damage == 'duplicate_failure': rows.insert(2, copy.deepcopy(rows[1]))
+    log.write_text('\n'.join(json.dumps(row) for row in rows))
+    with pytest.raises((ValueError, GrokCLIContractError)):
+        execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'])
+    assert not downloads and not (directory / 'reconciliation.json').exists()
+    assert len(p.transport.native_requests) == 1
+
+
+@pytest.mark.parametrize('damage', ['receipt', 'media', 'log'])
+def test_collected_failed_download_revalidates_all_original_evidence(download_failed, damage):
+    p, aid, directory, request, frozen, downloads = download_failed
+    result = execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'])
+    assert result.success
+    if damage == 'receipt':
+        path = directory / 'original_download.json'; path.chmod(0o644)
+        receipt = read(path); receipt['binding']['url'] = 'https://foreign.invalid/video.mp4'; save(path, receipt)
+    elif damage == 'media':
+        path = directory / 'original_download.mp4'; path.chmod(0o644); path.write_bytes(b'changed')
+    else:
+        path = p.transport.original_sessions[aid]['artifact'].parent.parent / 'updates.jsonl'
+        path.write_text(path.read_text() + '\n{}')
+    with pytest.raises((ValueError, GrokCLIContractError)):
+        execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'])
+    assert len(downloads) == len(p.transport.native_requests) == 1
+
+
+@pytest.mark.parametrize('failure', ['redirect', 'invalid_media'])
+def test_original_download_rejects_redirects_and_invalid_media(download_failed, monkeypatch, failure):
+    p, aid, directory, request, frozen, downloads = download_failed
+    class BadDownload:
+        status_code = 302 if failure == 'redirect' else 200
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def raise_for_status(self): pass
+        def iter_content(self, chunk_size): yield b'not video'
+    def get(url, **kwargs):
+        assert kwargs['allow_redirects'] is False
+        downloads.append(url); return BadDownload()
+    monkeypatch.setattr('requests.get', get)
+    with pytest.raises((ValueError, GrokCLIContractError)):
+        execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'])
+    assert len(downloads) == len(p.transport.native_requests) == 1
+    assert not (directory / 'original_download.json').exists()
+    assert not (directory / 'reconciliation.json').exists()
+    assert not Path(request['submitted_inputs']['output_path']).exists()
+    for name, raw in frozen.items(): assert (directory / name).read_bytes() == raw
+
+
+@pytest.mark.parametrize('tamper', [False, True])
+def test_original_download_receipt_interruption_revalidates_orphan_via_same_get(download_failed, monkeypatch, tamper):
+    p, aid, directory, request, frozen, downloads = download_failed
+    write_new = execution._write_new
+    def interrupted(path, value):
+        if Path(path).name == 'original_download.json':
+            raise OSError('SYNTHETIC interruption after source publication')
+        return write_new(path, value)
+    with monkeypatch.context() as interruption:
+        interruption.setattr(execution, '_write_new', interrupted)
+        with pytest.raises(OSError, match='interruption'):
+            execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'])
+    source = directory / 'original_download.mp4'
+    assert source.is_file() and not (directory / 'original_download.json').exists()
+    if tamper:
+        source.chmod(0o644); source.write_bytes(b'changed orphan')
+    dry = execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'], dry_run=True)
+    assert dry['would_download_original'] and len(downloads) == 1
+    if tamper:
+        with pytest.raises(ValueError, match='orphan'):
+            execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'])
+        assert not (directory / 'original_download.json').exists()
+        assert source.read_bytes() == b'changed orphan'
+    else:
+        result = execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'])
+        assert result.success
+    assert len(downloads) == 2 and len(p.transport.native_requests) == 1
+    for name, raw in frozen.items(): assert (directory / name).read_bytes() == raw
+
+
+@pytest.mark.parametrize('foreign_title', [False, True])
+def test_download_recovery_accepts_actual_acp_title_and_statusless_progress_shape(download_failed, foreign_title):
+    p, aid, directory, request, frozen, downloads = download_failed
+    folder = p.transport.original_sessions[aid]['artifact'].parent.parent
+    path = folder / 'updates.jsonl'; rows = [json.loads(line) for line in path.read_text().splitlines()]
+    call = rows[0]['params']['update']
+    call['title'] = 'foreign_tool' if foreign_title else call.pop('toolName')
+    call.pop('toolName', None)
+    # Actual C100 ACP: title names the tool; a statusless progress update has
+    # a human prompt title; terminal comes through the _x.ai method alias.
+    rows.insert(1, {'method':'session/update', 'params':{'sessionId':aid,
+        'update':{'sessionUpdate':'tool_call_update', 'toolCallId':call['toolCallId'],
+            'title':'SYNTHETIC human prompt progress', 'content':[]}}})
+    rows[-1]['method'] = '_x.ai/session/update'
+    path.write_text('\n'.join(json.dumps(row) for row in rows))
+    if foreign_title:
+        with pytest.raises(ValueError, match='exact failed native call'):
+            execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'], dry_run=True)
+        assert not downloads
+    else:
+        dry = execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'], dry_run=True)
+        assert dry['would_download_original'] and not downloads
+        result = execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'])
+        assert result.success and len(downloads) == 1
+        p.select('entry', result)
+    assert len(p.transport.native_requests) == 1
+    for name, raw in frozen.items(): assert (directory / name).read_bytes() == raw

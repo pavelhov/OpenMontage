@@ -158,6 +158,17 @@ loop returns the applicable same-job recovery action, including
 independent eligible slots within the existing account, source, route and generation
 limits.
 
+`resume_original_attempt` also collects an exact Grok CLI native download transport
+failure when the retained failed update binds one original `vidgen.x.ai` video URL
+to the frozen call, arguments and session. Dry-run validates that evidence without
+network access. Collection performs only a direct GET of that original resource,
+validates the native media contract and retains an immutable download receipt.
+Original failure records and session logs stay unchanged; repeated resume revalidates
+the collected bytes without another GET or generation. If source publication was
+interrupted before its receipt, recovery repeats only the same original GET and
+requires the orphan bytes to match that newly validated download. Foreign/ambiguous URLs,
+changed evidence, incomplete sessions and other native failures remain blocked.
+
 Once originals are collected, assemble every technically playable clip in planned
 order, including semantically poor footage. Report the affected shot, observed
 defect, missing coverage and actual duration. Missing or corrupt footage produces
