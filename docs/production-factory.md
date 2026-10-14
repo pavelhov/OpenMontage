@@ -110,6 +110,10 @@ their binding fields or turn unknown/failed observations into passes. Then
 complete the same action with those inputs and provider; Grok also requires the
 actual CLI observation as `outcome["observation"]`.
 
+When omitted, the compiler binds action-window source hashes and dialogue text
+hashes/word counts from the exact plan. Intervals, rates and rationale remain
+authored estimates, and supplied conflicting bindings reject.
+
 For native image returns, load the existing
 [`scripts/native_host_receipt.js`](../scripts/native_host_receipt.js) in the agent
 host and use `consumeNativeHostAction` with the exact emitted envelope and actual

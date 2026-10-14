@@ -745,6 +745,39 @@ def prepare_compiled_request(inputs, native, profile, *, coverage, timing, revie
         raise ValueError('persisting preparation requires an explicit reviewer-authored review')
     root = Path(inputs['project_dir']).resolve()
     packet = source_packet(root, inputs['governance']['shot_id'], provider=native.get('provider', 'openart_cli'), native=native)
+    # Bind mechanical source digests/counts from the authenticated source packet.
+    # Author-supplied intervals, rates, rationale and any conflicting bindings
+    # remain untouched and are checked by the normal compiled-request validator.
+    timing = copy.deepcopy(timing)
+    if isinstance(timing, dict) and timing.get('method') == 'segmented_estimate':
+        occurrences = {}
+        for row in packet['occurrences']:
+            occurrences.setdefault(row['source_pointer'], []).append(row)
+        actions = timing.get('action_windows')
+        if isinstance(actions, list):
+            for window in actions:
+                if not isinstance(window, dict) or 'value_sha256' in window:
+                    continue
+                matches = occurrences.get(window.get('source_pointer'), [])
+                if len(matches) != 1:
+                    raise ValueError('action window source pointer must identify one exact source occurrence')
+                window['value_sha256'] = matches[0]['value_sha256']
+        segments = timing.get('segments')
+        dialogue = packet['shot']['dialogue']
+        if isinstance(segments, list):
+            for segment in segments:
+                if not isinstance(segment, dict):
+                    continue
+                index = segment.get('dialogue_index')
+                if type(index) is not int or not 0 <= index < len(dialogue):
+                    if 'text_sha256' not in segment or 'word_count' not in segment:
+                        raise ValueError('dialogue index must identify an exact dialogue occurrence')
+                    continue
+                line = dialogue[index]
+                if 'text_sha256' not in segment:
+                    segment['text_sha256'] = digest(line['text'])
+                if 'word_count' not in segment:
+                    segment['word_count'] = len(line['text'].split())
     value = {'version': '1.0', 'request_sha256': planned_request_digest(inputs, project_dir=root),
              'source_binding': packet['binding'], 'native_binding': _native_binding(native),
              'coverage': copy.deepcopy(coverage), 'timing': copy.deepcopy(timing)}

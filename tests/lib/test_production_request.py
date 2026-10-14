@@ -88,6 +88,57 @@ def test_public_preparation_derives_only_authenticated_review_bindings(generated
         bind_generated_review(generated_carrier_preparation, incomplete)
 
 
+def test_preparation_fills_only_omitted_mechanical_timing_bindings(package):
+    root, inputs, native, profile, compiled, _ = package
+    authored = copy.deepcopy(compiled['timing'])
+    for window in authored['action_windows']:
+        window.pop('value_sha256')
+    for segment in authored['segments']:
+        segment.pop('text_sha256')
+        segment.pop('word_count')
+    original = copy.deepcopy(authored)
+    result = request.prepare_compiled_request(inputs, native, profile,
+        coverage=compiled['coverage'], timing=authored)
+    assert authored == original
+    assert result == compiled
+    assert request.prepare_compiled_request(inputs, native, profile,
+        coverage=compiled['coverage'], timing=compiled['timing']) == compiled
+
+
+@pytest.mark.parametrize('damage', ['action_hash', 'text_hash', 'word_count', 'action_pointer', 'dialogue_index'])
+def test_preparation_rejects_conflicting_or_unresolvable_timing_bindings_without_writes(package, damage):
+    from tests.lib.test_production_factory import file_bytes
+    root, inputs, native, profile, compiled, review = package
+    timing = copy.deepcopy(compiled['timing'])
+    if damage == 'action_hash':
+        timing['action_windows'][0]['value_sha256'] = '0' * 64
+    elif damage == 'text_hash':
+        timing['segments'][0]['text_sha256'] = '0' * 64
+    elif damage == 'word_count':
+        timing['segments'][0]['word_count'] += 1
+    elif damage == 'action_pointer':
+        timing['action_windows'][0].pop('value_sha256')
+        timing['action_windows'][0]['source_pointer'] = '/shot_contract/shots/99/dominant_action'
+    else:
+        timing['segments'][0]['dialogue_index'] = 99
+    before = file_bytes(root)
+    with pytest.raises((ValueError, ValidationError)):
+        request.prepare_compiled_request(inputs, native, profile,
+            coverage=compiled['coverage'], timing=timing, review=review, persist=True)
+    assert file_bytes(root) == before
+
+
+def test_measured_audio_timing_is_not_rewritten(package):
+    root, inputs, native, profile, compiled, _ = package
+    measured(package)
+    authored = copy.deepcopy(compiled['timing'])
+    expected = copy.deepcopy(authored)
+    rebuilt = request.prepare_compiled_request(inputs, native, profile,
+        coverage=compiled['coverage'], timing=authored)
+    assert rebuilt['timing'] == expected
+    assert authored == expected
+
+
 @pytest.mark.parametrize('field', ['review_id', 'subject_sha256', 'composite_boards'])
 def test_public_preparation_rejects_conflicting_supplied_review_bindings(generated_carrier_preparation, field):
     from tests.lib.test_production_factory import file_bytes
