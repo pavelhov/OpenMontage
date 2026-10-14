@@ -29,6 +29,16 @@ middle frames and untimed references, requiredness, known limits, timing rules a
 exact native schema/readiness provenance. Missing maxima remain explicitly unknown.
 Declare useful images only; optional capacity is not a requirement to fill.
 
+For one reference-guided whole-story request, author one shot with the route's
+supported total duration and the timestamped internal cuts in its action text.
+Declare a small ordered set of `reference_image` consumers; descriptive source
+filenames and the actual upload receipt labels retain their identities. Internal
+cuts are instructions within this one original, not additional video slots.
+Native references guide objects/cast/style rather than pinning exact cut frames.
+The optional single-video `quoted_credit_budget` policy retains a creator budget
+against an exact host-observed connector quote before scope admission; its shape
+and honest price/ceiling distinction are owned by [OPENART_MCP](OPENART_MCP.md).
+
 The compact package supports optional shot `roles` entries with `asset_id`,
 canonical `role` (`start_frame`, `end_frame`, `timed_keyframe` or `reference_image`)
 and `time_seconds` for a `timed_keyframe`. Explicit roles replace

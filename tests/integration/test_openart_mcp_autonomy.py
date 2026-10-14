@@ -96,6 +96,126 @@ def test_actual_compile_policy_prepare_begin_at_single_attempt_cap(lifecycle):
         pa.derive_scope(root, inputs, provider='openart_mcp')
 
 
+def quoted_lifecycle(lifecycle, *, amount=900):
+    """Rebind the isolated genuine prep lifecycle to explicit quote-budget terms."""
+    root, policy, _, inputs, native, profile, jobs = lifecycle
+    inputs = copy.deepcopy(inputs)
+    inputs['governance'].pop('scope_id')
+    policy = copy.deepcopy(policy)
+    spec = next(row for row in policy['providers'] if row['id'] == 'openart_mcp')
+    spec.pop('exposure_acknowledgement')
+    spec.update(billing='quoted_credit_budget', max_credit_budget=900,
+                cost_observation_path='artifacts/SYNTHETIC-exact-cost.json')
+    quote = {'version': '1', 'transport': 'openart_mcp',
+        'classification': 'agent_recorded_connector_quote_not_backend_ceiling',
+        'observed_at': '2026-10-14T00:00:00Z', 'tool': 'openart_model_cost',
+        'account_binding': copy.deepcopy(native['account_binding']),
+        'native_request_binding': {key: copy.deepcopy(native['body'][key]) for key in ('model', 'mode', 'params')},
+        'arguments': {'model': inputs['model'], 'mode': inputs['mode'],
+            'params': copy.deepcopy(inputs['native_params'])},
+        'data': {'currency': 'credits', 'balance': 1000, 'items': [{
+            'model': inputs['model'], 'mode': inputs['mode'], 'mediaType': 'video',
+            'config': copy.deepcopy(inputs['native_params']), 'unitCredits': amount,
+            'quantity': 1, 'totalCredits': amount, 'affordable': True}]}}
+    (root / spec['cost_observation_path']).write_text(json.dumps(quote))
+    policy, sha = install_existing(root, policy, templates={
+        'entry': execution.planned_request_template(inputs, project_dir=root)})
+    (root / 'production_scopes.json').write_text(json.dumps({'version': '1.0', 'scopes': []}))
+    return root, policy, sha, inputs, native, profile, jobs, quote
+
+
+def test_quoted_budget_runs_actual_scope_prepare_begin_and_reports_without_uncapped_ack(lifecycle):
+    root, policy, sha, inputs, native, _, jobs, _ = quoted_lifecycle(lifecycle)
+    assert not pa.schema_errors(policy) and not pa.policy_conflicts(policy)
+    scope = pa.derive_scope(root, inputs, provider='openart_mcp')
+    inputs['governance']['scope_id'] = scope['id']
+    jobs.prepare(root, attempt_id='quoted-original', generation_inputs=inputs,
+                 authority_fn=execution.prepare_openart_mcp_handoff)
+    envelope = jobs.begin(root, 'quoted-original', authority_fn=execution.prepare_openart_mcp_handoff)
+    assert envelope['arguments'] == native['body']
+    billing = jobs.frozen_request(root, 'quoted-original')['authority']['billing']
+    assert billing['kind'] == 'quoted_credit_budget' and billing['quoted_credits'] == 900
+    assert billing['max_credit_budget'] == 900 and billing['enforceable_credit_ceiling'] is False
+    assert billing['backend_credit_ceiling_guaranteed'] is False
+    assert 'exposure_acknowledgement' not in billing
+    assert pa.root_attempt_counts(root, policy)['total'] == 1
+    with pytest.raises(ValueError):
+        jobs.begin(root, 'quoted-original', authority_fn=execution.prepare_openart_mcp_handoff)
+    jobs.receive(root, 'quoted-original', outcome={'historyId': 'SYNTHETIC-quoted-original', 'status': 'PENDING'})
+    from lib.production_autonomy_report import _mcp_policy_rows
+    rows, exposure, _ = _mcp_policy_rows(root, policy, sha)
+    assert rows[0]['credits']['authorization_kind'] == exposure['billing'] == 'quoted_credit_budget'
+    assert exposure['max_credit_budget'] == 900 and 'exposure_acknowledgement' not in exposure
+
+
+@pytest.mark.parametrize('change', ['missing', 'over_budget', 'unknown', 'body', 'source', 'arguments', 'full_arguments', 'binding_absent', 'config',
+    'currency', 'balance', 'account', 'account_observation', 'multiple', 'timestamp', 'bool_amount'])
+def test_quoted_budget_blocks_unknown_foreign_or_unaffordable_quote_before_admission(lifecycle, change):
+    root, policy, _, inputs, _, _, _, quote = quoted_lifecycle(lifecycle)
+    path = root / next(p for p in policy['providers'] if p['id'] == 'openart_mcp')['cost_observation_path']
+    row = quote['data']['items'][0]
+    if change == 'missing': path.unlink()
+    elif change == 'over_budget': row.update(unitCredits=901, totalCredits=901)
+    elif change == 'unknown': row.pop('totalCredits')
+    elif change == 'body': quote['native_request_binding']['params']['duration'] = 2
+    elif change == 'source': quote['native_request_binding']['params']['visualReferences'] = [{'id': 'foreign'}]
+    elif change == 'arguments': quote['arguments']['params']['duration'] = 2
+    elif change == 'full_arguments': quote['arguments'] = copy.deepcopy(quote['native_request_binding'])
+    elif change == 'binding_absent': quote.pop('native_request_binding')
+    elif change == 'config': row['config']['duration'] = 2
+    elif change == 'currency': quote['data']['currency'] = 'USD'
+    elif change == 'balance': quote['data']['balance'] = 899
+    elif change == 'account': quote['account_binding']['uid_sha256'] = 'f' * 64
+    elif change == 'account_observation': quote['account_binding']['account_observation_sha256'] = 'f' * 64
+    elif change == 'multiple': quote['data']['items'].append(copy.deepcopy(row))
+    elif change == 'timestamp': quote['observed_at'] = 1
+    elif change == 'bool_amount': row.update(unitCredits=True, totalCredits=True)
+    if change != 'missing': path.write_text(json.dumps(quote))
+    before = project_file_bytes(root)
+    with pytest.raises(ValueError):
+        pa.derive_scope(root, inputs, provider='openart_mcp')
+    assert project_file_bytes(root) == before and pa.root_attempt_counts(root, policy)['total'] == 0
+
+
+def test_quoted_budget_freezes_exact_quote_bytes_between_scope_and_dispatch(lifecycle):
+    root, policy, _, inputs, _, _, jobs, quote = quoted_lifecycle(lifecycle)
+    scope = pa.derive_scope(root, inputs, provider='openart_mcp')
+    inputs['governance']['scope_id'] = scope['id']
+    path = root / next(p for p in policy['providers'] if p['id'] == 'openart_mcp')['cost_observation_path']
+    path.write_text(json.dumps(quote, indent=2))
+    before = project_file_bytes(root)
+    counts = pa.root_attempt_counts(root, policy)
+    with pytest.raises(ValueError):
+        jobs.prepare(root, attempt_id='changed-quote', generation_inputs=inputs,
+                     authority_fn=execution.prepare_openart_mcp_handoff)
+    assert pa.root_attempt_counts(root, policy) == counts
+    assert all((root / name).read_bytes() == raw for name, raw in before.items())
+
+
+def test_quoted_budget_begin_rechecks_quote_and_original_recovery_never_resubmits(lifecycle):
+    root, policy, _, inputs, native, profile, jobs, quote = quoted_lifecycle(lifecycle)
+    scope = pa.derive_scope(root, inputs, provider='openart_mcp')
+    inputs['governance']['scope_id'] = scope['id']
+    jobs.prepare(root, attempt_id='quoted-recovery', generation_inputs=inputs,
+                 authority_fn=execution.prepare_openart_mcp_handoff)
+    path = root / next(p for p in policy['providers'] if p['id'] == 'openart_mcp')['cost_observation_path']
+    original = path.read_bytes()
+    path.write_text(json.dumps(quote, indent=2))
+    with pytest.raises(ValueError):
+        jobs.begin(root, 'quoted-recovery', authority_fn=execution.prepare_openart_mcp_handoff)
+    assert jobs.attempt_state(root, 'quoted-recovery')['status'] == 'prepared'
+    path.write_bytes(original)
+    assert jobs.begin(root, 'quoted-recovery', authority_fn=execution.prepare_openart_mcp_handoff)['arguments'] == native['body']
+    jobs.receive(root, 'quoted-recovery', outcome={'historyId': 'SYNTHETIC-budget-original', 'status': 'PENDING'})
+    assert jobs.poll_args(root, 'quoted-recovery')['arguments'] == {'historyId': 'SYNTHETIC-budget-original'}
+    billing = jobs.frozen_request(root, 'quoted-recovery')['authority']['billing']
+    assert pa.validate_policy_mcp_attempt(root, scope, inputs=inputs, native=native,
+        profile=profile, authority=billing, return_authority=True) == billing
+    assert pa.root_attempt_counts(root, policy)['total'] == 1
+    with pytest.raises(ValueError):
+        pa.derive_scope(root, inputs, provider='openart_mcp')
+
+
 def duplicate_frame_source_upload(root,source_path):
     from lib import openart_mcp_jobs as jobs
     from tests.lib.test_production_factory import write

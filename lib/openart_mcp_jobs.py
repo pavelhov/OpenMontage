@@ -285,12 +285,19 @@ def receive(project_dir, attempt_id, *, outcome=None, error=None):
         reply_path = _path(root, aid).parent / 'original-host-reply.json'
         if state['receipt'] is not None:
             if error is None and mcp.digest(outcome) == state['receipt_sha256']:
+                if outcome.get('status') in TERMINAL and not state['status_observations']:
+                    _validate_original_metadata(state, outcome)
+                    _retain_submission_terminal(state, outcome)
+                    _save(root, aid, state)
                 return attempt_state(root, aid)
             _fail('receipt_exists', 'original connector receipt cannot be replaced')
-        if error is not None or not isinstance(outcome, dict) or not isinstance(outcome.get('historyId'), str) or not outcome.get('historyId'):
+        terminal_without_id = (isinstance(outcome, dict) and outcome.get('status') in {'FAILED', 'CANCELLED'}
+                               and outcome.get('historyId') is None)
+        if error is not None or not isinstance(outcome, dict) or (not terminal_without_id
+                and (not isinstance(outcome.get('historyId'), str) or not outcome.get('historyId'))):
             state['status']='uncertain'; _event(state, 'uncertain', error=str(error) if error is not None else 'missing original historyId')
         else:
-            if _history_owners(root,outcome['historyId'],aid):
+            if outcome.get('historyId') and _history_owners(root,outcome['historyId'],aid):
                 _fail('original_history_reused','original historyId already belongs to another retained attempt')
             _validate_original_metadata(state,outcome)
             # Retain the exact original host reply before updating state. On a
@@ -305,9 +312,17 @@ def receive(project_dir, attempt_id, *, outcome=None, error=None):
             else:
                 _write(reply_path, reply)
             state['receipt']=copy.deepcopy(outcome); state['receipt_sha256']=mcp.digest(outcome); state['status']='submitted'
-            _event(state, 'submission_receipt_retained', history_id=outcome['historyId'])
+            _event(state, 'submission_receipt_retained', history_id=outcome.get('historyId'))
+            _retain_submission_terminal(state, outcome)
         _save(root, aid, state)
         return attempt_state(root, aid)
+
+def _retain_submission_terminal(state, outcome):
+    """A terminal first reply is original status evidence, not a pending job."""
+    if outcome.get('status') in TERMINAL:
+        state['status_observations'].append(copy.deepcopy(outcome))
+        _event(state, 'status_observed', history_id=outcome.get('historyId'), status=outcome['status'])
+        state['status'] = 'completed' if outcome['status'] == 'COMPLETED' else 'failed'
 
 def resume_original(project_dir, attempt_id, *, outcome=None, request_sha256=None, correct_receipt=False):
     """Inspect the original handoff, or replay its exact retrievable host reply.
@@ -424,6 +439,8 @@ def poll_args(project_dir, attempt_id):
     if (_path(project_dir,attempt_id).parent/'receipt-correction.json').exists() and not state.get('receipt_correction_sha256'):
         _fail('original_correction_pending','replay audited correction before polling any original')
     if state['receipt'] is None: _fail('original_uncertain', 'original historyId unavailable; never replace it')
+    if state['receipt'].get('status') in TERMINAL or (state['status_observations'] and state['status_observations'][-1].get('status') in TERMINAL):
+        _fail('original_terminal', 'original terminal reply already retained; no polling or replacement')
     return {'tool':'mcp__codex_apps__openart_openart_creation_get', 'arguments':{'historyId':state['receipt']['historyId']}}
 
 def record_status(project_dir, attempt_id, *, result):
@@ -447,7 +464,7 @@ def record_status(project_dir, attempt_id, *, result):
 
 def _terminal(state, statuses):
     receipt = state.get('receipt'); observations = state['status_observations']
-    if not receipt or not observations or observations[-1].get('historyId') != receipt['historyId'] or observations[-1].get('status') not in statuses:
+    if not receipt or not observations or observations[-1].get('historyId') != receipt.get('historyId') or observations[-1].get('status') not in statuses:
         _fail('original_not_terminal', 'terminal evidence must belong to the original historyId')
     return observations[-1]
 
@@ -550,7 +567,7 @@ def provenance_record(project_dir, attempt_id):
 
 def terminal_failure_record(project_dir, attempt_id):
     s=_load(project_dir, _id(attempt_id)); terminal=_terminal(s, {'FAILED','CANCELLED'})
-    return {'attempt_id':s['attempt_id'],'history_id':s['receipt']['historyId'],
+    return {'attempt_id':s['attempt_id'],'history_id':s['receipt'].get('historyId'),
         'terminal':copy.deepcopy(terminal),'terminal_failure_sha256':mcp.digest(terminal)}
 
 def _capture_evidence(root,inputs,native,authority):
@@ -828,6 +845,17 @@ def prepare_upload(project_dir, *, files, billing_declaration, openart_project_i
             manifest.append({'path':str(path),'sha256':sha,'type':_media_type(path)})
         if len({r['path'] for r in manifest})!=len(manifest): _fail('source_invalid','duplicate upload source paths are ambiguous')
         authority,authority_sha=_upload_authority(root,manifest,billing_declaration,account,openart_project_id)
+        if (not str(account.get('classification', '')).startswith('synthetic_fixture')
+                and not authority.get('derived_from_standing_run', {}).get('policy_fallback')):
+            from lib import production_autonomy as autonomy
+            policy, _, _, _ = autonomy.load_active_policy(root)
+            spec = autonomy._provider_spec(policy, 'openart_mcp') if policy else None
+            if (spec and spec.get('uid_sha256') == account['uid_sha256']
+                    and spec.get('project_id') == openart_project_id and len(spec.get('routes', [])) == 1):
+                route = spec['routes'][0]
+                for row in manifest:
+                    if row['type'] == 'image':
+                        mcp.validate_image_source_dimensions(row['path'], **route)
         if not authority.get('derived_from_standing_run', {}).get('policy_fallback'):
             for row in manifest:
                 _approved_source(root,Path(row['path']),row['sha256'])

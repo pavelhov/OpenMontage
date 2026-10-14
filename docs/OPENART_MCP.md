@@ -24,11 +24,66 @@ Record that treatment as `reference_mode: "reference_guided"` on the shot contra
 
 The normal route is Strict. A fresh approval binds the exact request, model/mode, native parameters, sources, project, and account. A displayed default cost is only an estimate. Exact-credit authorization requires verified account identity, billing unit, debit quantum, request parameters, balance, and debit evidence. Otherwise the approval must explicitly accept unknown cost with no enforceable credit ceiling. Attempt caps limit attempts; they do not cap provider charges.
 
-Auto-continue is a separate supported policy variant, not a readiness claim. It requires a fresh, active, user-approved Auto-continue policy with strict governance safeguards, the exact provider entry `openart_mcp`, unknown-cost billing and an explicit no-ceiling acknowledgement, a bound account UID and OpenArt project ID, and exact schema-supported model/mode routes. The policy is revalidated for every attempt. Without a current valid policy, use Strict approval. A Grok CLI subscription entry is separate: its media model and remaining quota are unreported, and its approval cannot authorize OpenArt MCP requests or vice versa.
+A standing one-original-video run may instead use the existing policy's
+`quoted_credit_budget` MCP variant. It admits the exact request only when an
+actual connector `openart_model_cost` reply covers the native pricing controls,
+the same retained account observation, one video, all declared cost controls,
+an affordable credit amount and a quote within `max_credit_budget`. Unknown,
+foreign, conflicting or excessive quotes block before scope admission. This
+variant retains a creator budget without inventing acceptance of uncapped
+generation. It is quote-based admission, not the CLI debit-guarantee contract
+or a promise that OpenArt enforces a backend ceiling. Use the undiscounted
+quote conservatively; an optional plan discount cannot increase its allowance.
+
+The provider term in both the actual standing setup and run policy is:
+
+```json
+{
+  "id": "openart_mcp",
+  "billing": "quoted_credit_budget",
+  "uid_sha256": "<actual-account-uid-sha256>",
+  "project_id": "<actual-openart-project-id>",
+  "routes": [{"model": "<exact-model>", "mode": "element2video"}],
+  "max_credit_budget": 4000,
+  "cost_observation_path": "artifacts/openart_mcp_cost_observation-whole-story.json"
+}
+```
+
+Use one authored shot and `max_total_attempts: 1`; the shot may describe multiple
+timestamped internal cuts. Retain the cost reply once after the source-bound
+native request is ready, before completing its `prepare_motion` action. The
+fixed in-project path may be declared before images exist. Save the actual
+host observation as `version: "1"`, `transport: "openart_mcp"`, classification
+`agent_recorded_connector_quote_not_backend_ceiling`, actual `observed_at`,
+`tool: "openart_model_cost"`, actual `{model, mode, params}` arguments containing
+only the native pricing controls (`duration`, `resolution`, `aspectRatio`,
+`videoCount`, `generateAudio` when present), the native request's exact
+`account_binding`, and the complete actual
+`structuredContent` as `data`. Do not recast a catalog price as this reply.
+Separately retain `native_request_binding: {model, mode, params}` with the full
+prepared generation params, including prompt and references. This local binding
+freezes the request being admitted; it does not claim the cost tool accepted or
+priced the prompt and reference fields.
+Scope derivation freezes the file SHA and normal `prepare`/`begin` rechecks it;
+changing even its formatting after admission blocks fresh dispatch. Recover
+the same original through its existing journal. Upload authority remains its
+separate bounded source-transfer term and grants no generation allowance.
+
+Auto-continue is a separate supported policy variant, not a readiness claim. It requires a fresh, active, user-approved Auto-continue policy with strict governance safeguards, the exact provider entry `openart_mcp`, either its explicit unknown-cost acknowledgement or the single-video quoted-budget term above, a bound account UID and OpenArt project ID, and exact schema-supported model/mode routes. The policy is revalidated for every attempt. Without a current valid policy, use Strict approval. A Grok CLI subscription entry is separate: its media model and remaining quota are unreported, and its approval cannot authorize OpenArt MCP requests or vice versa.
 
 The provider-qualification pipeline is optional for bounded, user-approved tests and diagnostics. Its live-result evidence may inform quality decisions, but it is not ordinary production onboarding. Candidate status remains insufficient for production; supported exact native routes may proceed under ordinary request, account, authorization, and scope checks without paid result qualification. Paid benchmarks still require separate approval.
 
 ## Source uploads and generation handoff
+
+An actual Seedance 2.5 `element2video` terminal rejection observed on 2026-10-14
+reported that image dimensions must be 300–6000 pixels on each side (the supplied
+image was 211×374). Future real native preparation measures those source bytes
+before scope admission; a matching active single-route standing upload checks
+before preserving an upload batch. An invalid source blocks without resizing,
+replacement generation or a consumed motion attempt. Original recovery keeps its
+frozen sources readable. A terminal `FAILED` or `CANCELLED` submission reply is
+retained immediately as terminal evidence; it does not create a pending polling
+step or authorize another submission.
 
 The current `upload_import` connector contract makes no promise about upload spend or delayed charges. Treat upload exposure as unknown with no enforceable credit ceiling; do not claim a fee or delay will occur. At episode proposal, name the episode and shots, exact MCP route/account/project/model/mode scope, necessary board/reference source categories, and bounded source and upload-batch counts. Show any available request-applicable generation credit estimates as estimates; the actual charge remains unknown and has no enforceable ceiling. One explicit episode approval can cover this bounded plan, including source transfers and the named generation policy; do not add a routine second billing/upload prompt after that approval.
 

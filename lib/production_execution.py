@@ -618,7 +618,7 @@ def _state(root, attempt):
         return {'status':'uncertain', 'journal_error':str(exc)}
 
 
-def explicit_motion_duration(inputs):
+def explicit_motion_duration(inputs, *, provider=None):
     """One explicit native duration, without defaults or output-goal coercion."""
     import math
     params = inputs.get('native_params', {})
@@ -632,6 +632,15 @@ def explicit_motion_duration(inputs):
             if key == 'videoDuration' and inputs.get('model') != 'smart-shot':
                 _fail('videoDuration requires the explicit SmartShot model')
             values.append(params[key])
+    # Historical compact MCP templates emitted the same authored duration in
+    # both public and native fields. This exact connector spelling is one
+    # value; conflicting aliases, booleans and other transports stay refused.
+    if (provider == 'openart_mcp' and len(values) == 2 and 'duration' in inputs and 'duration' in params
+            and 'videoDuration' not in params
+            and all(isinstance(inputs.get(k), str) and inputs[k] for k in ('model', 'mode', 'openart_project_id'))
+            and type(values[0]) is type(values[1]) and type(values[0]) in (int, float)
+            and values[0] == values[1]):
+        values = values[:1]
     if len(values) != 1:
         _fail('exactly one explicit motion duration is required; duplicate aliases are ambiguous')
     value = values[0]
@@ -640,7 +649,7 @@ def explicit_motion_duration(inputs):
     return value
 
 
-def _check_motion_inputs(contract, shot_id, inputs, root, *, policy_composite=False):
+def _check_motion_inputs(contract, shot_id, inputs, root, *, policy_composite=False, provider=None):
     shot = next(item for item in contract['shots'] if item['id'] == shot_id)
     assets = {item['id']: item for item in contract['assets']}
     actual = []
@@ -728,7 +737,7 @@ def _check_motion_inputs(contract, shot_id, inputs, root, *, policy_composite=Fa
     approved_hashes = {assets[item]['sha256'] for item in submitted_asset_ids}
     if any(digest not in approved_hashes for key, digest in actual):
         _fail('submitted inputs contain an unapproved asset')
-    if explicit_motion_duration(inputs) != shot['duration_seconds']:
+    if explicit_motion_duration(inputs, provider=provider) != shot['duration_seconds']:
         _fail('submitted duration differs from shot contract')
 
 
@@ -988,9 +997,9 @@ def preflight(tool, inputs, *, _local_continuation=None):
             _check_local_render_inputs(contract, shot_id, _clean(inputs), root)
         else:
             if policy_validated:
-                _check_motion_inputs(contract, shot_id, _clean(inputs), root, policy_composite=True)
+                _check_motion_inputs(contract, shot_id, _clean(inputs), root, policy_composite=True, provider=tool.provider)
             else:
-                _check_motion_inputs(contract, shot_id, _clean(inputs), root)
+                _check_motion_inputs(contract, shot_id, _clean(inputs), root, provider=tool.provider)
     allowance = scope.get('attempts_per_shot', {}).get(shot_id)
     if isinstance(allowance, bool) or not isinstance(allowance, int) or allowance < 1:
         _fail('scope lacks a positive exact shot allowance')
@@ -1596,9 +1605,9 @@ def _execute_governed(tool, inputs, invoke):
             _fail('nested dispatch introduced an unsnapshotted input')
         if active['contract']:
             if active.get('policy_validated'):
-                _check_motion_inputs(active['contract'], active['shot_id'], cleaned, active['root'], policy_composite=True)
+                _check_motion_inputs(active['contract'], active['shot_id'], cleaned, active['root'], policy_composite=True, provider=tool.provider)
             else:
-                _check_motion_inputs(active['contract'], active['shot_id'], cleaned, active['root'])
+                _check_motion_inputs(active['contract'], active['shot_id'], cleaned, active['root'], provider=tool.provider)
         for key in ('prompt','negative_prompt','duration','resolution','aspect_ratio','voices','endpoint_requirement_id','seed','model','model_name'):
             expected = active['submitted_inputs'].get(key)
             actual = cleaned.get(key)
@@ -1674,9 +1683,9 @@ def _execute_governed(tool, inputs, invoke):
                 _check_local_render_inputs(checked['contract'], checked['shot_id'], submitted, root)
             else:
                 if checked.get('policy_validated'):
-                    _check_motion_inputs(checked['contract'], checked['shot_id'], submitted, root, policy_composite=True)
+                    _check_motion_inputs(checked['contract'], checked['shot_id'], submitted, root, policy_composite=True, provider=tool.provider)
                 else:
-                    _check_motion_inputs(checked['contract'], checked['shot_id'], submitted, root)
+                    _check_motion_inputs(checked['contract'], checked['shot_id'], submitted, root, provider=tool.provider)
         # Rebind actual submitted snapshot bytes to ORIGINAL approved locations.
         # Rereading original files alone is insufficient if they changed then reverted.
         bindings = iter(asset_records)
@@ -3386,7 +3395,9 @@ def draft_motion_preparation(project_dir, action, *, output_path=None, compiled_
         return copy.deepcopy(value)
     inputs = resolve(template)
     authored = compile_provider_prompt(root, sid, provider=provider,
-        **({'model': inputs.get('model')} if provider == 'openart_mcp' else {}))
+        **({'model': inputs.get('model'), 'input_assets': inputs.get('input_assets'),
+            'openart_project_id': inputs.get('openart_project_id',
+                autonomy._provider_spec(policy, provider).get('project_id'))} if provider == 'openart_mcp' else {}))
     inputs.update(project_dir=str(root), governance={'shot_id': sid}, prompt=authored['prompt'])
     if provider in ('grok_cli', 'openart_mcp'):
         # Administrative names are deterministic for this exact action. Native

@@ -274,11 +274,18 @@ def _mcp_policy_rows(root, policy, sha):
         if baseline_request_sha is None:
             baseline_request_sha = execution.approved_request_digest(template, project_dir=root,
                 selected_attempts=scope['derived_from_policy'].get('resolved_upstream', {}))
+        credits = {'authorization_kind': 'unknown_cost', 'requested_charge': 'unknown',
+                   'enforceable_credit_ceiling': False}
+        if autonomy._is_mcp_quoted(spec):
+            billing = authority['billing']
+            credits.update(authorization_kind='quoted_credit_budget',
+                quoted_credits=billing['quoted_credits'], max_credit_budget=billing['max_credit_budget'],
+                quote_price_basis=billing['quote_price_basis'],
+                backend_credit_ceiling_guaranteed=False)
         rows.append({'attempt_id': item['attempt_id'], 'job_id': _token(state.get('history_id')),
             'shot_id': authority['shot_id'], 'request_sha256': authority['request_sha256'],
             'status': _token(status), 'outbox_only': False, 'settings': settings,
-            'credits': {'authorization_kind': 'unknown_cost', 'requested_charge': 'unknown',
-                        'enforceable_credit_ceiling': False},
+            'credits': credits,
             'native_body_sha256': native['body_sha256'],
             'source_binding_sha256': native['source_binding_sha256'],
             'baseline_delta': {'baseline_sha256': execution._digest(baseline),
@@ -289,10 +296,15 @@ def _mcp_policy_rows(root, policy, sha):
                 'settings_changes': changes, 'baseline_settings': baseline_settings,
                 'reference_bytes_changed': sorted(a['sha256'] for a in settings['references']) != sorted(a['sha256'] for a in baseline_refs)}})
     exposure = {'provider': 'openart_mcp', 'cost_status': 'unknown', 'billing': spec['billing'],
-        'exposure_acknowledgement': spec['exposure_acknowledgement'], 'enforceable_credit_ceiling': False,
+        'enforceable_credit_ceiling': False,
         'policy_sha256': sha, 'uid_sha256': spec['uid_sha256'], 'project_id': spec['project_id'],
         'routes': copy.deepcopy(spec['routes']), 'attempt_ids': sorted(row['attempt_id'] for row in rows),
         'attempts': len(rows)}
+    if autonomy._is_mcp_quoted(spec):
+        exposure.update(cost_status='quoted', max_credit_budget=spec['max_credit_budget'],
+                        backend_credit_ceiling_guaranteed=False)
+    else:
+        exposure['exposure_acknowledgement'] = spec['exposure_acknowledgement']
     return rows, exposure, snapshot
 
 

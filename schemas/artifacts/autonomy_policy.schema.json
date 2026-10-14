@@ -63,6 +63,9 @@
           },
           {
             "$ref": "#/$defs/openart_mcp_unknown_cost"
+          },
+          {
+            "$ref": "#/$defs/openart_mcp_quoted_credit_budget"
           }
         ]
       }
@@ -735,6 +738,62 @@
         },
         "sha256": {
           "$ref": "#/$defs/sha"
+        }
+      }
+    },
+    "openart_mcp_quoted_credit_budget": {
+      "description": "One original MCP video admitted by an exact connector quote within a creator credit budget; no backend debit ceiling guarantee.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "billing",
+        "uid_sha256",
+        "project_id",
+        "routes",
+        "max_credit_budget",
+        "cost_observation_path"
+      ],
+      "properties": {
+        "id": {
+          "const": "openart_mcp"
+        },
+        "billing": {
+          "const": "quoted_credit_budget"
+        },
+        "uid_sha256": {
+          "$ref": "#/$defs/sha"
+        },
+        "project_id": {
+          "$ref": "#/$defs/text"
+        },
+        "routes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "model",
+              "mode"
+            ],
+            "properties": {
+              "model": {
+                "$ref": "#/$defs/text"
+              },
+              "mode": {
+                "$ref": "#/$defs/text"
+              }
+            }
+          }
+        },
+        "max_credit_budget": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cost_observation_path": {
+          "$ref": "#/$defs/text"
         }
       }
     }

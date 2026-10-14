@@ -159,7 +159,7 @@ def _shootable_rows(contract, shot, index, reference_free):
         for key in ('desire', 'action', 'consequence', 'payoff'):
             rows.append(_row(contract['story'][key], '/shot_contract/story/' + key, 'Story ' + key + ': '))
     rows.append(_row(shot['initial_state'], base + '/initial_state', 'Opening frame: '))
-    rows.append(_row(shot['dominant_action'], base + '/dominant_action', 'Main action (one continuous beat): '))
+    rows.append(_row(shot['dominant_action'], base + '/dominant_action', 'Main action: '))
     rows.append(_row(shot['completed_end_state'], base + '/completed_end_state',
                      'Ending frame (the action is finished on screen): '))
     cast = shot['cast_ids']
@@ -491,9 +491,58 @@ def build_static_source_packet(project_dir, shot_id, *, provider):
     return packet
 
 
-def compile_provider_prompt(project_dir, shot_id, *, provider, model=None):
+def compile_provider_prompt(project_dir, shot_id, *, provider, model=None,
+                            input_assets=None, openart_project_id=None):
     packet = build_static_source_packet(project_dir, shot_id, provider=provider)
-    return _compile_provider_packet(packet, provider=provider, model=model)
+    compiled = _compile_provider_packet(packet, provider=provider, model=model)
+    if provider == 'openart_mcp' and input_assets:
+        compiled['_mapping_free_prompt'] = compiled['prompt']
+        compiled['prompt'] += _ready_mcp_reference_mapping(project_dir, packet,
+            input_assets, openart_project_id)
+    return compiled
+
+
+REFERENCE_MAPPING_HEADER = 'Native reference identity mapping (preserve these sources):\n'
+
+
+def _ready_mcp_reference_mapping(project_dir, packet, input_assets, openart_project_id, *, native=None):
+    """Explain actual upload labels using current approved source IDs, in order.
+
+    Upload snapshots may have numeric names. This pure prompt handoff preserves
+    their native references and the original receipt; missing uploads add nothing.
+    """
+    from lib import openart_mcp as mcp, openart_mcp_jobs as jobs
+    root = Path(project_dir).resolve()
+    contract = _read(root, 'shot_contract.json')
+    needed = {row['id'] for row in packet['binding']['references']}
+    sources = [asset for asset in contract['assets'] if asset['id'] in needed]
+    rows = []
+    for asset in input_assets:
+        if asset.get('role') not in {'reference_image', 'reference_video', 'reference_audio',
+                                      'character_reference', 'environment_reference'}:
+            continue
+        if native is None:
+            ready = jobs.reuse_uploaded_input_asset(root, asset,
+                account_binding=mcp.account_summary(), openart_project_id=openart_project_id)
+        else:
+            value = native['body']
+            for key in asset['param_path'].strip('/').split('/'):
+                value = value[int(key)] if isinstance(value, list) else value[key]
+            ready = {**asset, 'visual_reference': value} if isinstance(value, dict) else None
+        if ready is None:
+            continue
+        path = Path(ready['source_path']).resolve()
+        matches = [source for source in sources if (root / source['path']).resolve() == path
+                   and source['sha256'] == ready['source_sha256']]
+        if not matches:
+            raise ValueError('ready reference label has no current approved source binding')
+        label = ready['visual_reference'].get('label')
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError('ready native reference lacks its actual upload label')
+        description = {'native_label': label, 'source_ids': [source['id'] for source in matches],
+            'source_file': path.name, 'cast_ids': sorted({c for source in matches for c in source['cast_ids']})}
+        rows.append('Reference ' + str(len(rows) + 1) + ': ' + json.dumps(description, ensure_ascii=False))
+    return (REFERENCE_MAPPING_HEADER + '\n'.join(rows) + '\n') if rows else ''
 
 
 def _compile_historical_provider_prompt(project_dir, shot_id, *, provider, native):
@@ -504,7 +553,27 @@ def _compile_historical_provider_prompt(project_dir, shot_id, *, provider, nativ
     the caller separately checks retained contract deltas and exact native proof.
     """
     packet = _historical_source_packet(project_dir, shot_id, provider=provider, native=native)
-    return _compile_provider_packet(packet, provider=provider, model=native.get('model'), historical=True)
+    compiled = _compile_provider_packet(packet, provider=provider, model=native.get('model'), historical=True)
+    original_compilations = compiled.get('_historical_compilations', [
+        {key: compiled[key] for key in ('prompt', 'coverage')}])
+    originals = compiled.get('_historical_prompt_variants', [compiled['prompt']])
+    variants = list(originals)
+    compilations = copy.deepcopy(original_compilations)
+    if provider == 'openart_mcp':
+        mapping = _ready_mcp_reference_mapping(project_dir, packet, native.get('input_assets', []),
+            native['body'].get('projectId'), native=native)
+        if mapping:
+            if _no_music_default(packet):
+                compiled['prompt'] += NO_MUSIC_DIRECTION
+            compiled['prompt'] += mapping
+            variants.extend(value + (NO_MUSIC_DIRECTION if _no_music_default(packet) else '') + mapping
+                            for value in originals)
+            compilations.extend({**value,
+                'prompt': value['prompt'] + (NO_MUSIC_DIRECTION if _no_music_default(packet) else '') + mapping}
+                for value in original_compilations)
+    compiled['_historical_prompt_variants'] = variants
+    compiled['_historical_compilations'] = compilations
+    return compiled
 
 
 NO_MUSIC_DIRECTION = 'No background music; keep only the native scene sound.\n'
@@ -518,12 +587,20 @@ def _no_music_default(packet):
 
 def historical_prompt_matches(prompt, canonical):
     """Frozen originals compiled before or after the no-music default both stay readable."""
-    base = canonical['prompt']
     # Grok's seal strips the trailing newline before the historical canonical is
     # returned, so the appended direction is restored on its own exact line.
-    body = base.rstrip('\n\r') + '\n'
-    return prompt in {base, base.rstrip('\n\r'), body + NO_MUSIC_DIRECTION,
-                      (body + NO_MUSIC_DIRECTION).rstrip('\n\r')}
+    candidates = set()
+    for base in canonical.get('_historical_prompt_variants', [canonical['prompt']]):
+        body = base.rstrip('\n\r') + '\n'
+        candidates.update({base, base.rstrip('\n\r'), body + NO_MUSIC_DIRECTION,
+                           (body + NO_MUSIC_DIRECTION).rstrip('\n\r')})
+    return prompt in candidates
+
+
+def historical_preparation_matches(prompt, coverage, canonical):
+    """Legacy prompt spelling and span offsets must match the same compilation."""
+    return any(coverage == variant['coverage'] and historical_prompt_matches(prompt, variant)
+               for variant in canonical.get('_historical_compilations', [canonical]))
 
 
 def _compile_provider_packet(packet, *, provider, model=None, historical=False):
@@ -533,6 +610,20 @@ def _compile_provider_packet(packet, *, provider, model=None, historical=False):
     if provider == 'grok_cli':
         from tools._grok_cli_media import validate_prompt
         compiled['prompt'] = validate_prompt(compiled['prompt'])
+    if historical and packet['binding'].get('prompt_compiler') == SHOOTABLE_COMPILER:
+        legacy = copy.deepcopy(packet)
+        for row in legacy['occurrences']:
+            if row['source_pointer'].endswith('/dominant_action') and row['before'] == 'Main action: ':
+                row['before'] = 'Main action (one continuous beat): '
+        legacy_compiled = _compile_packet(legacy, native_pointer='/arguments/prompt' if provider == 'grok_cli' else
+            ('/params/sceneDescription' if provider == 'openart_mcp' and model == 'smart-shot' else '/params/prompt'))
+        legacy_prompt = legacy_compiled['prompt']
+        if provider == 'grok_cli':
+            legacy_prompt = validate_prompt(legacy_prompt)
+        compiled['_historical_prompt_variants'] = [compiled['prompt'], legacy_prompt]
+        compiled['_historical_compilations'] = [
+            {key: compiled[key] for key in ('prompt', 'coverage')},
+            {'prompt': legacy_prompt, 'coverage': legacy_compiled['coverage']}]
     return compiled
 
 
@@ -1920,7 +2011,12 @@ def build_video_request_templates(package, settings):
                 raise ValueError('timed keyframe must be inside duration, increasing and correctly spaced')
             last = timestamp
         native = {k: copy.deepcopy(v) for k, v in settings.items() if k != 'provider' and not (provider == 'openart_mcp' and k in {'preferred_provider', 'allowed_providers'})}
-        native['duration'] = duration
+        native_duration = native.get('native_params', {}).get('duration') if provider == 'openart_mcp' else None
+        if native_duration is not None:
+            if type(native_duration) not in (int, float) or native_duration != duration:
+                raise ValueError('native duration differs from authored shot duration')
+        else:
+            native['duration'] = duration
         native['operation'] = caps['operation']
         def source(row):
             return {'$board': {'asset_id': row['asset_id']}}

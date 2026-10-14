@@ -1675,8 +1675,16 @@ def _is_unknown(spec):
         and spec.get('exposure_acknowledgement') == UNKNOWN_ACKNOWLEDGEMENT
 
 
+def _is_mcp_quoted(spec):
+    return isinstance(spec, dict) and spec.get("id") == "openart_mcp" and spec.get("billing") == "quoted_credit_budget"
+
+
+def _mcp_billing_supported(spec):
+    return _is_unknown(spec) or _is_mcp_quoted(spec)
+
+
 def _openart_route_approved(spec, model, mode):
-    if _is_unknown(spec):
+    if _is_unknown(spec) or _is_mcp_quoted(spec):
         return {'model': model, 'mode': mode} in spec['routes']
     return model in spec['models']
 
@@ -1714,7 +1722,7 @@ def _intent_conflicts(policy):
                     out.append(f'conflict: intent pool Grok route outside policy for {shot_id}')
             elif provider in {'openart_cli', 'openart_mcp'}:
                 spec = providers.get(provider)
-                names = ({r['model'] for r in spec['routes']} if _is_unknown(spec) else set(spec['models'])) if spec else set()
+                names = ({r['model'] for r in spec['routes']} if _is_unknown(spec) or _is_mcp_quoted(spec) else set(spec['models'])) if spec else set()
                 if item.get('model') not in names:
                     out.append(f'conflict: intent pool OpenArt model outside policy for {shot_id}')
             else:
@@ -1730,9 +1738,11 @@ def policy_conflicts(policy, baselines=None):
     if len(ids) != len(set(ids)):
         out.append('conflict: duplicate policy provider')
     mcp_spec = _provider_spec(policy, 'openart_mcp')
-    if mcp_spec is not None and not _is_unknown(mcp_spec):
-        out.append('conflict: MCP requires fresh no-enforceable-ceiling acceptance')
-    if _is_unknown(mcp_spec) and 'model' in policy['locked']['controls'] and not any(_model_lock_allows(policy['locked']['controls']['model'], route['model']) for route in mcp_spec['routes']):
+    if mcp_spec is not None and not _mcp_billing_supported(mcp_spec):
+        out.append('conflict: MCP requires approved unknown-cost or quoted-budget terms')
+    if _is_mcp_quoted(mcp_spec) and (policy['caps']['max_total_attempts'] != 1 or len(policy['shots']) != 1):
+        out.append('conflict: quoted MCP budget covers exactly one original video')
+    if _mcp_billing_supported(mcp_spec) and 'model' in policy['locked']['controls'] and not any(_model_lock_allows(policy['locked']['controls']['model'], route['model']) for route in mcp_spec['routes']):
         out.append('conflict: exact model lock excludes every approved MCP route')
     spec = _openart_spec(policy)
     if spec is not None and spec.get('billing') == UNKNOWN_BILLING and not _is_unknown(spec):
@@ -2197,7 +2207,7 @@ def eligible_routes(policy, shot_id, menu):
         provider = row.get('provider')
         if provider == 'openart_mcp':
             spec = providers.get(provider)
-            if not _is_unknown(spec) or row.get('production_available') is not True:
+            if not _mcp_billing_supported(spec) or row.get('production_available') is not True:
                 excluded.append({'provider': provider, 'reason': 'not approved or not production-ready'})
                 continue
             from lib import openart_mcp as mcp
@@ -2622,11 +2632,14 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
     if historical is not None or policy_context is not None:
         canonical = preparation._compile_historical_provider_prompt(root, shot_id, provider=provider, native=native)
     else:
-        canonical = preparation.compile_provider_prompt(root, shot_id, provider=provider, **({'model': native['model']} if provider == 'openart_mcp' else {}))
+        canonical = preparation.compile_provider_prompt(root, shot_id, provider=provider,
+            **({'model': native['model'], 'input_assets': inputs.get('input_assets'),
+                'openart_project_id': native['body'].get('projectId')} if provider == 'openart_mcp' else {}))
     body = preparation._body(native)
     prompt = body['params'].get('sceneDescription' if provider == 'openart_mcp' and native.get('prompt_param_path') == '/params/sceneDescription' else 'prompt')
     exact = (preparation.historical_prompt_matches(prompt, canonical)
-             if historical is not None or policy_context is not None else prompt == canonical['prompt'])
+             if historical is not None or policy_context is not None else
+             prompt in {canonical['prompt'], canonical.get('_mapping_free_prompt', canonical['prompt'])})
     if compiled.get('creator_prompt_override') is not None:
         # Retained creator prompt: read-only authentication of the frozen marker
         # against the exact submitted prompt, current historical source occurrences
@@ -2641,7 +2654,8 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
             preparation.historical_creator_prompt_coverage(compiled, prompt, packet, native_pointer=pointer)
         except (ValueError, KeyError, TypeError) as exc:
             raise AutonomyError(f'retained creator prompt override is not authenticated history: {exc}') from exc
-    elif not exact or compiled['coverage'] != canonical['coverage']:
+    elif not exact or (not preparation.historical_preparation_matches(prompt, compiled['coverage'], canonical)
+            if historical is not None or policy_context is not None else compiled['coverage'] != canonical['coverage']):
         raise AutonomyError('submitted native prompt/coverage is not canonical root compilation')
     if provider == 'grok_cli':
         actual_controls = dict(native['request']['arguments'])
@@ -2800,7 +2814,7 @@ def _prepare_mcp_policy_native(root, policy, shot_id, inputs, *, _retained_input
     """Qualified connector evidence is separate from CLI account and preview proof."""
     from lib import openart_mcp as mcp, production_execution as execution
     spec = _provider_spec(policy, 'openart_mcp')
-    if not _is_unknown(spec) or not _openart_route_approved(spec, inputs.get('model'), inputs.get('mode')):
+    if not _mcp_billing_supported(spec) or not _openart_route_approved(spec, inputs.get('model'), inputs.get('mode')):
         raise AutonomyError('exact MCP model/mode is outside freshly approved policy')
     if not _intent_allows(policy, shot_id, 'openart_mcp', inputs.get('model')):
         raise AutonomyError('MCP route violates retained model selection intent')
@@ -2810,6 +2824,8 @@ def _prepare_mcp_policy_native(root, policy, shot_id, inputs, *, _retained_input
     # The builder validates this fresh request; retained native requests are
     # rebuilt and compared at their later preparation/dispatch boundaries.
     _validate_mcp_policy_binding(spec, native, profile)
+    if _is_mcp_quoted(spec):
+        _mcp_quoted_budget_terms(root, spec, native)
     return profile, native
 
 
@@ -2827,12 +2843,71 @@ def _validate_mcp_policy_binding(spec, native, profile):
         raise AutonomyError('MCP native exact model/mode outside fresh policy')
 
 
+def _mcp_quoted_budget_terms(root, spec, native):
+    """Validate a host-recorded exact cost reply; never promise a debit ceiling.
+
+    A single undiscounted quote is conservative for the connector's optional
+    plan discount. The existing policy and original-attempt journal own consent
+    and consumption; this is admission evidence, not a second credit ledger.
+    """
+    path = _inside(root, spec['cost_observation_path'])
+    if path.is_symlink() or not path.is_file():
+        raise AutonomyError('exact MCP cost observation unavailable')
+    raw = path.read_bytes()
+    try:
+        quote = json.loads(raw)
+        observed = datetime.fromisoformat(quote['observed_at'].replace('Z', '+00:00'))
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise AutonomyError('invalid MCP cost observation') from None
+    body = native['body']
+    expected = {'model': body['model'], 'mode': body['mode'], 'params': body['params']}
+    cost_controls = {'duration', 'resolution', 'aspectRatio', 'videoCount', 'generateAudio'} & body['params'].keys()
+    expected_cost_arguments = {'model': body['model'], 'mode': body['mode'],
+        'params': {key: body['params'][key] for key in cost_controls}}
+    if (quote.get('version') != '1' or quote.get('transport') != 'openart_mcp'
+            or quote.get('classification') != 'agent_recorded_connector_quote_not_backend_ceiling'
+            or quote.get('tool') != 'openart_model_cost' or observed.tzinfo is None
+            or digest(quote.get('account_binding')) != digest(native['account_binding'])
+            or digest(quote.get('native_request_binding')) != digest(expected)
+            or digest(quote.get('arguments')) != digest(expected_cost_arguments)):
+        raise AutonomyError('MCP cost observation differs from exact native request')
+    data = quote.get('data', {})
+    if not isinstance(data, dict):
+        raise AutonomyError('invalid MCP quote data')
+    rows = data.get('items', [])
+    if data.get('currency') != 'credits' or not isinstance(rows, list) or len(rows) != 1:
+        raise AutonomyError('MCP quote requires one exact credit-priced video item')
+    row = rows[0]
+    if (not isinstance(row, dict) or row.get('model') != body['model']
+            or row.get('mode') != body['mode'] or row.get('mediaType') != 'video'
+            or row.get('affordable') is not True or type(row.get('quantity')) is not int
+            or row['quantity'] != 1 or body['params'].get('videoCount', 1) != 1):
+        raise AutonomyError('MCP quote item does not cover one affordable original video')
+    config = row.get('config')
+    if (not isinstance(config, dict) or not {'duration', 'resolution'} <= cost_controls
+            or not cost_controls <= config.keys()
+            or any(key not in body['params'] or digest(value) != digest(body['params'][key])
+                   for key, value in config.items())):
+        raise AutonomyError('MCP cost config differs from exact native parameters')
+    amount, unit, balance = row.get('totalCredits'), row.get('unitCredits'), data.get('balance')
+    if (any(type(value) is not int or value < 0 for value in (amount, unit, balance))
+            or amount != unit * row['quantity']):
+        raise AutonomyError('MCP quote has unknown or inconsistent credit amounts')
+    if amount > balance or amount > spec['max_credit_budget']:
+        raise AutonomyError('MCP quoted video cost exceeds approved budget or quoted balance')
+    return {'kind': 'quoted_credit_budget', 'max_credit_budget': spec['max_credit_budget'],
+        'quoted_credits': amount, 'quote_price_basis': 'undiscounted_conservative',
+        'cost_observation': {'path': str(path.relative_to(Path(root).resolve())),
+                             'sha256': hashlib.sha256(raw).hexdigest()},
+        'cost_observed_at': quote['observed_at'], 'backend_credit_ceiling_guaranteed': False}
+
+
 def _mcp_policy_terms(root, policy, sha, decision_id, scope, inputs, native):
     """Canonical derived terms; no caller assertion of unknown cost grants authority."""
     spec = _provider_spec(policy, 'openart_mcp')
-    if not _is_unknown(spec):
-        raise AutonomyError('MCP policy lacks fresh no-enforceable-ceiling acknowledgement')
-    return {'kind': 'unknown_cost', 'provider': 'openart_mcp',
+    if not _mcp_billing_supported(spec):
+        raise AutonomyError('MCP policy lacks approved billing terms')
+    terms = {'kind': 'unknown_cost', 'provider': 'openart_mcp',
         'project_root': str(Path(root).resolve()), 'project_id': policy['project_id'],
         'story_revision': policy['story_revision'], 'policy_sha256': sha,
         'activation_decision_id': decision_id, 'scope_id': scope['id'],
@@ -2845,6 +2920,10 @@ def _mcp_policy_terms(root, policy, sha, decision_id, scope, inputs, native):
         'lock_digest': scope['derived_from_policy']['lock_digest'],
         'exposure_acknowledgement': UNKNOWN_ACKNOWLEDGEMENT,
         'enforceable_credit_ceiling': False, 'count': 1, 'purpose': 'generation'}
+    if _is_mcp_quoted(spec):
+        terms.pop('exposure_acknowledgement')
+        terms.update(_mcp_quoted_budget_terms(root, spec, native))
+    return terms
 
 
 def rooted_policy_mcp_authority(root, inputs, scope, native, profile, *, exclude_attempt_id=None):
@@ -2970,8 +3049,8 @@ def _scope_material(root, inputs, provider, observation=None, *, derived_unknown
         if not isinstance(inputs.get('unknown_cost_evidence_id'), str):
             raise AutonomyError('unknown-cost policy requires retained unknown_cost_evidence_id')
     elif provider == 'openart_mcp':
-        if not unknown:
-            raise AutonomyError('MCP requires a freshly approved distinct unknown-cost policy')
+        if not _mcp_billing_supported(_provider_spec(policy, provider)):
+            raise AutonomyError('MCP requires freshly approved billing terms')
         if _json(Path(root) / 'project.json').get('pipeline_type') == 'provider-qualification':
             raise AutonomyError('MCP qualification requires separate Strict approval')
         if any(key in inputs for key in ('credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256', 'unknown_cost_evidence_id', 'unknown_cost_authorization_id', 'mcp_billing_authorization_id', 'billing_authority')):
@@ -3646,9 +3725,13 @@ def _append_route_decisions_locked(root, policy, sha, decision_id, shot_id, prov
         caps = effective_standing_caps(root, policy)
         remaining = {'total': caps['max_total_attempts'] - counts['total'] - 1,
                      'per_shot': caps.get('max_attempts_by_shot', {}).get(shot_id, caps['max_attempts_per_shot']) - counts['per_shot'].get(shot_id, 0) - 1}
+        spec = _provider_spec(policy, provider)
+        exposure = ('exact connector quote admitted within creator budget '
+                    + str(spec['max_credit_budget']) + ' credits; no backend debit ceiling guarantee'
+                    if _is_mcp_quoted(spec) else 'unknown cost with no enforceable credit ceiling')
         reason = ('Exact production-ready MCP route ' + inputs['model'] + '/' + inputs['mode']
                   + '; phase first_pass; replaces []'
-                  + '; unknown cost with no enforceable credit ceiling; remaining attempt caps '
+                  + '; ' + exposure + '; remaining attempt caps '
                   + json.dumps(remaining, sort_keys=True) + ' ' + citation)
         entries[0] = ('provider_selection', f'Production route for {shot_id}', provider, reason)
     baseline = retained_baselines(root, policy)[shot_id]['planned_request_template']['inputs']
@@ -3915,7 +3998,24 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider, *, policy_c
             slots = [a for a in retained['projection']['assets'] if a['id'] == binding['asset_id']]
             if policy.get('planning_mode') != 'shot_local_v1' or len(slots) != 1:
                 raise AutonomyError('board input lies outside exact prospective consumer')
-            _validate_generated_board_source(root, {**slots[0], **record}, expected=slots[0])
+            slot = slots[0]
+            from lib import production_boards as boards
+            if slot.get('preparation_pending') or slot['id'] in boards.load_board_pack(root)['prompt_pack']:
+                _validate_generated_board_source(root, {**slot, **record}, expected=slot)
+            else:
+                # Compact plans address both approved supplied references and
+                # generated nodes through $board. Supplied sources remain exact
+                # frozen bytes; the canonical resolver already rechecks reuse
+                # attribution and role reviews, without pretending a source is
+                # a same-run image node.
+                current = next((a for a in execution.load_shot_contract(root)['assets']
+                                if a['id'] == slot['id']), None)
+                if (current is None or any(current.get(k) != slot.get(k)
+                        for k in ('id', 'role', 'cast_ids', 'sha256'))
+                        or record['sha256'] != slot.get('sha256')
+                        or _inside(root, record['path']) != _inside(root, slot.get('path', ''))
+                        or _inside(root, current['path']) != _inside(root, record['path'])):
+                    raise AutonomyError('supplied board source differs from exact retained reference')
             dynamic.append((pointer, copy.deepcopy(binding), record['sha256']))
             return {'sha256': record['sha256']}
         if isinstance(value, dict) and '$upstream' in value:
@@ -3991,7 +4091,7 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider, *, policy_c
     for key in routing | plumbing | {'prompt', 'duration', 'resolution'}:
         expected.pop(key, None)
         bound_actual.pop(key, None)
-    if execution.explicit_motion_duration(inputs) != current_projection(root, shot_id)['shot']['duration_seconds']:
+    if execution.explicit_motion_duration(inputs, provider=provider) != current_projection(root, shot_id)['shot']['duration_seconds']:
         raise AutonomyError('request duration does not match approved deterministic planning')
     def explicit_resolution(value):
         params = value.get('native_params', {})

@@ -28,6 +28,51 @@ def test_parallel_original_begin_consumes_once(fixture_observations,tmp_path):
     with pytest.raises(ValueError):jobs.begin(root,'one',authority_fn=execution.prepare_openart_mcp_handoff)
 
 
+@pytest.mark.parametrize('status,history', [('FAILED','submit-failed'),('FAILED',None),('CANCELLED','original-cancelled'),('COMPLETED','original-completed')])
+def test_terminal_submission_is_retained_once_without_false_poll_or_new_begin(fixture_observations,tmp_path,status,history):
+    root,_,_=begun(tmp_path)
+    reply={'status':status,'error_code':'INVALID_ARGUMENT'}
+    if history is not None:reply['historyId']=history
+    result=jobs.receive(root,'one',outcome=reply)
+    assert result['status']==('completed' if status=='COMPLETED' else 'failed')
+    state=jobs._load(root,'one')
+    assert state['receipt']==reply and state['status_observations']==[reply]
+    assert state['receipt_sha256']==mcp.digest(reply)
+    before=retained_bytes(root)
+    assert jobs.receive(root,'one',outcome=reply)==result
+    assert retained_bytes(root)==before
+    with pytest.raises(ValueError,match='original_terminal'):jobs.poll_args(root,'one')
+    with pytest.raises(ValueError):jobs.begin(root,'one',authority_fn=execution.prepare_openart_mcp_handoff)
+    if status!='COMPLETED':
+        assert jobs.terminal_failure_record(root,'one')['terminal']==reply
+    assert len([e for e in state['events'] if e['kind']=='begin_consumed_before_handoff'])==1
+
+
+def test_exact_terminal_reply_replay_repairs_pre_fix_submitted_state_without_new_begin(fixture_observations,tmp_path):
+    root,_,_=begun(tmp_path);reply={'status':'FAILED','historyId':'submit-failed','failedCode':'input_invalid'}
+    jobs.receive(root,'one',outcome=reply)
+    state=jobs._load(root,'one');state.update(status='submitted',status_observations=[])
+    state['events']=[e for e in state['events'] if e['kind']!='status_observed'];jobs._save(root,'one',state)
+    reply_bytes=(jobs._path(root,'one').parent/'original-host-reply.json').read_bytes()
+    result=jobs.resume_original(root,'one',outcome=reply,request_sha256=state['frozen']['authority']['request_sha256'])
+    assert result['status']=='failed' and jobs.terminal_failure_record(root,'one')['terminal']==reply
+    assert (jobs._path(root,'one').parent/'original-host-reply.json').read_bytes()==reply_bytes
+    assert len([e for e in jobs._load(root,'one')['events'] if e['kind']=='begin_consumed_before_handoff'])==1
+
+
+@pytest.mark.parametrize('size,accepted', [((211,374),False),((299,300),False),((300,300),True),((6000,300),True),((6001,300),False)])
+def test_seedance_dimensions_are_measured_without_source_mutation(tmp_path,size,accepted):
+    from PIL import Image
+    path=tmp_path/'supplied.png';Image.new('RGB',size).save(path);original=path.read_bytes()
+    if accepted:mcp.validate_image_source_dimensions(path,model='byte-plus-seedance-2-5',mode='element2video')
+    else:
+        with pytest.raises(ValueError,match='reference_dimensions_invalid'):
+            mcp.validate_image_source_dimensions(path,model='byte-plus-seedance-2-5',mode='element2video')
+    # The observed constraint is not projected onto another route.
+    mcp.validate_image_source_dimensions(path,model='minimax-h3',mode='element2video')
+    assert path.read_bytes()==original
+
+
 def test_receive_identical_original_is_idempotent_and_missing_id_uncertain(fixture_observations,tmp_path):
     root,_,_=begun(tmp_path)
     jobs.receive(root,'one',outcome={})

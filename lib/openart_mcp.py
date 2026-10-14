@@ -280,6 +280,25 @@ def _project_reference(raw, schema):
             return projected
     _fail('reference_invalid', 'ready connector reference does not satisfy native media schema')
 
+def validate_image_source_dimensions(path, *, model, mode):
+    """Actual Seedance 2.5 rejection observed 2026-10-14: 300–6000px per side.
+
+    This future-preparation check only reads original bytes. It grants no image
+    editing or replacement authority and does not rewrite retained originals.
+    """
+    if (model, mode) != ('byte-plus-seedance-2-5', 'element2video'):
+        return
+    from PIL import Image, UnidentifiedImageError
+    try:
+        with Image.open(path) as source:
+            width, height = source.size
+    except (OSError, ValueError, UnidentifiedImageError, Image.DecompressionBombError):
+        _fail('reference_dimensions_invalid', 'Seedance 2.5 requires a readable image source')
+    if not all(300 <= value <= 6000 for value in (width, height)):
+        _fail('reference_dimensions_invalid',
+              f'Seedance 2.5 image dimensions must be between 300px and 6000px per side; actual {width}x{height}')
+
+
 def prepare_native_request(controls, profile, *, _retained_input_assets=None):
     _check_profile(profile)
     if not isinstance(controls, dict) or controls.get('model') != profile['model'] or controls.get('mode') != profile['mode']:
@@ -330,6 +349,9 @@ def prepare_native_request(controls, profile, *, _retained_input_assets=None):
         if 'reference_id' in asset: asset['upload_id'] = asset.pop('reference_id')
         from lib import openart_mcp_jobs as jobs
         resolver_asset=copy.deepcopy(asset)
+        if _retained_input_assets is None and profile['source'] == 'real' and ROLES[role][1] == 'image':
+            validate_image_source_dimensions(jobs._inside(Path(controls['project_dir']).resolve(), asset['source_path']),
+                model=profile['model'], mode=profile['mode'])
         if _retained_input_assets is not None:
             retained=_retained_input_assets[index]
             path=jobs._inside(Path(controls['project_dir']).resolve(),asset['source_path'])
