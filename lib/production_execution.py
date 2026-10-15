@@ -1531,11 +1531,13 @@ def _execute_local_grok_continuation(tool, inputs, invoke):
     try:
         result = invoke(submitted)
     except BaseException as exc:
-        _save_result(directory, error=exc, prefix='local_continuation_')
+        with _lock(root):
+            _save_result(directory, error=exc, prefix='local_continuation_')
         raise
     else:
-        retained = _save_result(directory, result=result, prefix='local_continuation_')
-        _observe_retained_output(root, request, retained)
+        with _lock(root):
+            retained = _save_result(directory, result=result, prefix='local_continuation_')
+            _observe_retained_output(root, request, retained)
         result.data['production_attempt_id'] = request['attempt_id']
         result.data['production_request_sha256'] = request['request_sha256']
         return result
@@ -1775,25 +1777,29 @@ def _execute_governed(tool, inputs, invoke):
         result = invoke(submitted)
     except BaseException as exc:
         emit_event(root, {'event': 'governed-invocation-error', **observation})
-        _save_result(directory, error=exc)
+        with _lock(root):
+            _save_result(directory, error=exc)
         raise
     else:
         emit_event(root, {'event': 'governed-invocation-return', **observation})
-        try:
-            retained = _save_result(directory, result=result)
-        except BaseException as exc:
-            # Preserve the raw return before fallible output copying, then record
-            # uncertainty if storage still permits it. Never report persistence success.
-            if not (directory / 'result.json').exists():
-                try:
-                    _write_new(directory / 'result.json', {'status':'uncertain', 'result':asdict(result),
-                        'output':None, 'preserved_output':None, 'exception':repr(exc)})
-                except (OSError, ValueError):
-                    pass
-            raise
-        emit_event(root, {'event': 'governed-result-retained', **observation,
-                         'status': retained['status'],
-                         'output_sha256': (retained.get('output') or {}).get('sha256')})
+        # Provider work stays concurrent; publishing candidate-visible evidence
+        # shares the delivery lock so a cut cannot become stale during closeout.
+        with _lock(root):
+            try:
+                retained = _save_result(directory, result=result)
+            except BaseException as exc:
+                # Preserve the raw return before fallible output copying, then record
+                # uncertainty if storage still permits it. Never report persistence success.
+                if not (directory / 'result.json').exists():
+                    try:
+                        _write_new(directory / 'result.json', {'status':'uncertain', 'result':asdict(result),
+                            'output':None, 'preserved_output':None, 'exception':repr(exc)})
+                    except (OSError, ValueError):
+                        pass
+                raise
+            emit_event(root, {'event': 'governed-result-retained', **observation,
+                             'status': retained['status'],
+                             'output_sha256': (retained.get('output') or {}).get('sha256')})
         result.data['production_attempt_id'] = session_id
         result.data['production_request_sha256'] = checked['request_sha256']
         return result

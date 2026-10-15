@@ -6,8 +6,12 @@ publication or generation authority.
 from __future__ import annotations
 
 import copy
+import contextlib
+import contextvars
 import json
+import os
 import subprocess
+import threading
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
@@ -18,6 +22,40 @@ from lib.shot_contract import (UPSTREAM_PREDICATES, CRITICAL_PREDICATES, file_sh
 _KEYS = {'version', 'mode', 'project_id', 'story_revision', 'shot_id', 'attempt_id',
          'contract', 'output', 'outgoing_frame', 'failed_review', 'failed_predicate',
          'defect', 'accepted_by', 'acceptance_evidence', 'outgoing_review'}
+
+_DELIVERY_LOCKS = contextvars.ContextVar('production_delivery_locks', default=frozenset())
+
+
+@contextlib.contextmanager
+def delivery_lock(project_dir):
+    """Serialize cut selection, rendering and closeout with original completion.
+
+    Nested delivery calls share the existing project lock in this thread only.
+    Other threads/processes must acquire it and resnapshot their current cut.
+    """
+    from lib import production_execution as execution
+    root = Path(project_dir).resolve()
+    owner = (os.getpid(), threading.get_ident(), root)
+    held = _DELIVERY_LOCKS.get()
+    if owner in held:
+        yield
+        return
+    with execution._lock(root):
+        token = _DELIVERY_LOCKS.set(held | {owner})
+        try:
+            yield
+        finally:
+            _DELIVERY_LOCKS.reset(token)
+
+
+def _delivery_serialized(function):
+    import functools
+
+    @functools.wraps(function)
+    def wrapper(project_dir, *args, **kwargs):
+        with delivery_lock(project_dir):
+            return function(project_dir, *args, **kwargs)
+    return wrapper
 
 
 def _status_read(function):
@@ -576,6 +614,7 @@ def _find_intent(root, operation_id):
 
 
 @_write
+@_delivery_serialized
 def compose_first_cut(project_dir, *, compose=None, export_profile=None, operation_id=None):
     """Render a versioned preview from current candidates and record it immutably.
 
@@ -738,6 +777,7 @@ def compose_first_cut(project_dir, *, compose=None, export_profile=None, operati
 
 
 @_write
+@_delivery_serialized
 def deliver_standalone(project_dir, *, export_profile=None, operation_id=None, compose=None):
     """Engine-only saved draft cut from current candidates; no Studio, Drive or account.
 

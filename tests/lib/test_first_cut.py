@@ -55,6 +55,46 @@ def fake_compose(inputs):
     return ToolResult(success=False, error='synthetic render failure')
 
 
+def test_parallel_standalone_delivery_reuses_one_retained_operation(p, monkeypatch):
+    import contextlib
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from lib import production_execution as execution
+    p.generate('entry')  # Existing offline original receipt fixture.
+    entered, waiting, release = (threading.Event() for _ in range(3))
+    calls = []
+    real_lock = execution._lock
+
+    @contextlib.contextmanager
+    def observed_lock(root):
+        if threading.current_thread().name.endswith('_1'):
+            waiting.set()
+        with real_lock(root):
+            yield
+
+    def compose(inputs):
+        calls.append(inputs)
+        entered.set()
+        assert release.wait(10), 'test did not release composition'
+        Path(inputs['output_path']).write_bytes(b'SYNTHETIC composed original')
+        return ToolResult(success=True)
+
+    monkeypatch.setattr(execution, '_lock', observed_lock)
+    with ThreadPoolExecutor(max_workers=2, thread_name_prefix='standalone-race') as pool:
+        first = pool.submit(draft.deliver_standalone, p.root, compose=compose)
+        try:
+            assert entered.wait(10)
+            second = pool.submit(draft.deliver_standalone, p.root, compose=compose)
+            assert waiting.wait(10)
+            assert not second.done()
+        finally:
+            release.set()
+        results = [future.result(timeout=10) for future in (first, second)]
+    assert results[0]['first_cut'] == results[1]['first_cut']
+    assert results[0]['operation_id'] == results[1]['operation_id']
+    assert len(calls) == len(draft._cut_records(p.root)) == 1
+
+
 def test_failed_predicate_candidate_is_disclosed_never_strict(p):
     result = p.generate('entry')
     aid = result.data['production_attempt_id']
