@@ -89,32 +89,32 @@ including a playable upstream clip whose frame could not be sampled, and reports
 the partial result. It never replaces the original or holds that cut indefinitely
 for a dependent image that cannot be produced.
 
-### Author the scene once, then describe its change
+### Input preparation and prompt roles
 
-Use the existing one-plan → images once → one original per clip
-→ stitch → disclose path. Author for the current genre and brief; identity-specific
-cast, jokes, serialized endings and delivery choices belong to that identity.
+Initialize a new project through the current client entry before writing its
+assets or notes. Check provided images against the exact native dimension limits
+before freezing path/hash bindings. When necessary, prepare mechanical resize/pad
+copies preserving full-image content, originals and provenance; local input
+preparation is not a corrective image generation.
 
-Put static facts in the board prompt: who is present, the prop's recognizable
-shape, relative positions, framing, light and the visible starting state. Put
-change in the short motion prompt: one main action, its physical consequence,
-the camera behavior and `End of clip:`. Refer to the supplied scene rather than
-repeating its full appearance description. Keep only constraints whose violation
-would change the intended event. Avoid competing actions, decorative camera moves
-and a checklist of imagined failure modes.
+Author against the actual bound role, not just the operation name. A literal
+`start_frame` supplies initial composition; an untimed `reference_image` guides
+appearance and does not pin the opening. Put static scene facts in a first-frame
+board and describe change chronologically in motion, ending with `End of clip:`.
+Reference-guided internal cuts instead need their changing poses, possession and
+completed states in the timed action text. Source identity references remain
+separate from these native consumers.
+
+These brand-neutral examples separate a first-frame scene from its motion:
 
 | Brief | Board establishes | Motion describes |
 | --- | --- | --- |
-| Product demo | Same red latch on a closed silver case; hand beside it; close view | “The hand flips the latch and opens the lid. Locked camera. End of clip: the case is open, latch attached.” |
-| Physical comedy | Performer beside a tiny trolley with one visibly bent wheel; full view | “The performer pushes; the bent wheel jams and the trolley tips. Hold the wide shot. End of clip: the performer catches the handle.” |
-| Quiet drama | Two people across a table; one blue envelope between them | “One person slides the envelope across; the other rests a hand on it. Slow push in. End of clip: both hands are still.” |
+| Product demo | Red latch on a closed silver case; hand beside it; close view | “The hand flips the latch and opens the lid. Locked camera. End of clip: case open, latch attached.” |
+| Physical comedy | Performer beside a tiny trolley with one visibly bent wheel; full view | “The performer pushes; the bent wheel jams and the trolley tips. Wide shot. End of clip: performer catches the handle.” |
+| Quiet drama | Two people across a table; one blue envelope between them | “One slides the envelope across; the other rests a hand on it. Slow push in. End of clip: both hands still.” |
 
-When several boards must depict the same invented prop, establish it in one
-planned image R1, then give each derived board both the original cast references
-and that same R1 image. Repeating a description or supplying only cast references
-does not transfer the prop's visual design. Declare those edges in the existing
-image plan; do not create another reference-generation stage. For example, these
-are image-node fields in the existing board specification:
+For recurring appearance, an image node can retain original cast `reference_ids`
+and use `image_dependencies` on the first suitable scene board. For example:
 
 ```json
 [
@@ -124,32 +124,15 @@ are image-node fields in the existing board specification:
 ]
 ```
 
-These are excerpts, not a complete package. Give R1 its actual scene/prop prompt
-and each later node its new framing or state. The native image action carries the
-original cast references first and the already prepared R1 bytes after them.
-R2 and R3 depend on R1, not on each other. This shared-first-image pattern also
-appears in xAI's [storyboard-to-film example](https://github.com/xai-org/xai-cookbook/blob/main/examples/storyboard-to-film/typescript/src/storyboard.ts),
-which prepares a first image and then derives later boards in parallel. It is a
-useful input pattern, not evidence that generated continuity will succeed.
-
-Choose continuity deliberately. Independent prepared boards suit a hard cut to a
-new angle or time. Use a supported native end pin only when reaching that visible
-outcome is essential and reachable within the clip; optional frame capacity is
-not a target. Sharing a prepared end/start image constrains both sides of a cut
-but does not prove the originals match it. Use actual outgoing-frame chaining
-only when the preauthored next action is compatible with plausible upstream
-ending states and needs the preceding footage's final visual state; otherwise
-use a hard cut. That edge is serial and carries a still image, not velocity or
-continuous motion.
-Follow the existing ready action: prepare and dispatch a ready clip, then prepare
-other images while that original runs. Do not add a producer, timer, semantic
-validator, creative revision or approval gate.
-
-If appropriate to the brief, motion may request native sound effects or brief
-dialogue. Add no background music and no audio-validation gate. Collect originals,
-assemble playable footage and disclose observed defects or unobserved qualities.
-Software regression and CI review happen outside production; passing an offline
-input-wiring test establishes no live visual or audio quality.
+These are image-node excerpts, not another package. R2 and R3 depend on R1,
+not each other, and state their own composition. Input ancestry establishes
+which images were supplied; it does not prove appearance or motion quality.
+An end pin should derive from its own start scene when the intent preserves that
+world/camera and changes only the result. Use supported pins selectively; a shared
+prepared boundary expresses intended state, whereas the outgoing-frame edge above
+binds actual decoded footage. Neither guarantees continuity or carries velocity.
+The brief and relevant [creative skills](../skills/INDEX.md) guide action, pacing
+and boundary strategy; an identity may supply its own story owner.
 
 ### Preparation handoff
 
