@@ -2775,6 +2775,66 @@ def board_factory_fixture(neutral_package, *, image_allowance=8, required_start=
     return root
 
 
+
+def test_factory_native_images_reuse_one_prop_anchor_with_original_cast_references(neutral_package):
+    """Public factory emits real native argument shapes; all returns are synthetic."""
+    import base64
+    from lib import production_boards as boards
+    from tests.lib.test_production_images import PNG
+    root, package, bind = neutral_package
+    package = copy.deepcopy(package)
+    spec = package['boards']
+    second = copy.deepcopy(spec['references'][0])
+    second.update(id='second-cast', path='assets/images/second-cast.png')
+    (root / second['path']).write_bytes(b'SYNTHETIC distinct second cast reference')
+    second['sha256'] = second['review']['subject_sha256'] = file_sha256_of(root / second['path'])
+    second['review']['review_id'] = 'second-cast-review'
+    spec['references'].append(second)
+    for node in spec['image_nodes']:
+        node['reference_ids'] = ['cast', 'second-cast']
+        # R1=start establishes the prop; R2=end and R3=payoff each reuse R1,
+        # rather than deriving R3 from R2 or relying on repeated prop prose.
+        if node['slot_id'] in {'end', 'payoff'}:
+            node['image_dependencies'] = ['start']
+    spec['shots'][1]['video_dependencies'] = ['s1']
+    spec['motion_binding']['contract_template']['shots'][1]['upstream'] = [{'shot_id': 's1'}]
+    root = board_factory_fixture((root, package, bind))
+    original_cast = [(root / ref['path']).read_bytes() for ref in spec['references']]
+    step = execution.advance(root)
+    seen = []
+    anchor_bytes = None
+    for expected in ('start', 'payoff', 'end'):
+        assert step['status'] == 'host_action' and step['action']['kind'] == 'receive_native_image', step
+        envelope = step['host_envelope']
+        call = images.image_call_status(root, envelope['call_id'])
+        assert call['slot_id'] == expected
+        assert envelope['tool_name'] == 'image_gen.imagegen'
+        actual_bytes = [Path(path).read_bytes() for path in envelope['arguments']['referenced_image_paths']]
+        assert actual_bytes[:2] == original_cast
+        if expected == 'start':
+            assert len(actual_bytes) == 2
+        else:
+            anchor = boards.load_board_pack(root)['board_bindings']['start']
+            assert (root / anchor['path']).read_bytes() == anchor_bytes
+            assert actual_bytes == original_cast + [anchor_bytes]
+            assert file_sha256_of(envelope['arguments']['referenced_image_paths'][2]) == anchor['sha256']
+        seen.append(envelope['call_id'])
+        # Resuming a begun image returns its original action, never a new call.
+        resumed = execution.advance(root)
+        assert resumed['action'] == step['action']
+        assert images.image_usage(root)['total'] == len(seen)
+        # Valid PNGs with distinct trailing fixture bytes distinguish R1 from R2.
+        result = {'image_url': 'data:image/png;base64,' + base64.b64encode(
+            PNG + expected.encode()).decode(), 'output_hint': 'SYNTHETIC fixture'}
+        step = execution.complete_action(root, step['action'], outcome={
+            'host_receipt': host_receipt(root, envelope, name='prop-anchor-' + expected, result=result)})
+        if expected == 'start':
+            anchor_bytes = (root / boards.load_board_pack(root)['board_bindings']['start']['path']).read_bytes()
+    assert [call['slot_id'] for call in images._load(root)['calls']] == ['start', 'payoff', 'end']
+    assert len(set(seen)) == images.image_usage(root)['total'] == 3
+    assert step['action']['kind'] == 'prepare_motion'
+    assert not execution._attempts(root)  # No synthetic fixture submits video or image tools.
+
 def retain_factory_board(root, slot, *, predicates=None, omitted=(), roles=None):
     from lib import production_boards as boards
     prepared = boards.prepare_image_request(root, slot, images=images)
