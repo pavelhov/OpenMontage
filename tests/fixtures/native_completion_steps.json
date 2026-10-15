@@ -1,0 +1,214 @@
+[
+  {
+    "name": "action-without-envelope",
+    "valid": true,
+    "step": {
+      "status": "host_action",
+      "action": {
+        "kind": "receive_native_image",
+        "action_id": "SYNTHETIC-action"
+      }
+    }
+  },
+  {
+    "name": "object-envelope",
+    "valid": true,
+    "step": {
+      "status": "host_action",
+      "action": {
+        "kind": "receive_native_image",
+        "action_id": "SYNTHETIC-action"
+      },
+      "host_envelope": {}
+    }
+  },
+  {
+    "name": "null-envelope",
+    "valid": false,
+    "step": {
+      "status": "host_action",
+      "action": {
+        "kind": "receive_native_image",
+        "action_id": "SYNTHETIC-action"
+      },
+      "host_envelope": null
+    }
+  },
+  {
+    "name": "text-envelope",
+    "valid": false,
+    "step": {
+      "status": "host_action",
+      "action": {
+        "kind": "receive_native_image",
+        "action_id": "SYNTHETIC-action"
+      },
+      "host_envelope": "text"
+    }
+  },
+  {
+    "name": "array-envelope",
+    "valid": false,
+    "step": {
+      "status": "host_action",
+      "action": {
+        "kind": "receive_native_image",
+        "action_id": "SYNTHETIC-action"
+      },
+      "host_envelope": []
+    }
+  },
+  {
+    "name": "number-envelope",
+    "valid": false,
+    "step": {
+      "status": "host_action",
+      "action": {
+        "kind": "receive_native_image",
+        "action_id": "SYNTHETIC-action"
+      },
+      "host_envelope": 1
+    }
+  },
+  {
+    "name": "array-status",
+    "valid": false,
+    "step": {
+      "status": [],
+      "action": {
+        "kind": "receive_native_image",
+        "action_id": "SYNTHETIC-action"
+      }
+    }
+  },
+  {
+    "name": "object-status",
+    "valid": false,
+    "step": {
+      "status": {},
+      "action": {
+        "kind": "receive_native_image",
+        "action_id": "SYNTHETIC-action"
+      }
+    }
+  },
+  {
+    "name": "null-status",
+    "valid": false,
+    "step": {
+      "status": null,
+      "action": {
+        "kind": "receive_native_image",
+        "action_id": "SYNTHETIC-action"
+      }
+    }
+  },
+  {
+    "name": "number-status",
+    "valid": false,
+    "step": {
+      "status": 1,
+      "action": {
+        "kind": "receive_native_image",
+        "action_id": "SYNTHETIC-action"
+      }
+    }
+  },
+  {
+    "name": "array-kind",
+    "valid": false,
+    "step": {
+      "status": "host_action",
+      "action": {
+        "kind": [],
+        "action_id": "SYNTHETIC-action"
+      }
+    }
+  },
+  {
+    "name": "object-kind",
+    "valid": false,
+    "step": {
+      "status": "host_action",
+      "action": {
+        "kind": {},
+        "action_id": "SYNTHETIC-action"
+      }
+    }
+  },
+  {
+    "name": "null-kind",
+    "valid": false,
+    "step": {
+      "status": "host_action",
+      "action": {
+        "kind": null,
+        "action_id": "SYNTHETIC-action"
+      }
+    }
+  },
+  {
+    "name": "number-kind",
+    "valid": false,
+    "step": {
+      "status": "host_action",
+      "action": {
+        "kind": 1,
+        "action_id": "SYNTHETIC-action"
+      }
+    }
+  },
+  {
+    "name": "actionless-array-status",
+    "valid": false,
+    "step": {
+      "status": []
+    }
+  },
+  {
+    "name": "actionless-object-status",
+    "valid": false,
+    "step": {
+      "status": {}
+    }
+  },
+  {
+    "name": "null-step",
+    "valid": false,
+    "step": null
+  },
+  {
+    "name": "array-step",
+    "valid": false,
+    "step": []
+  },
+  {
+    "name": "text-step",
+    "valid": false,
+    "step": "host_action"
+  },
+  {
+    "name": "empty-step",
+    "valid": false,
+    "step": {}
+  },
+  {
+    "name": "array-terminal-sha256",
+    "valid": false,
+    "step": {
+      "status": "incomplete",
+      "first_cut": {
+        "path": "renders/SYNTHETIC-first-cut.json",
+        "sha256": [
+          "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ]
+      },
+      "clips": [],
+      "delivery": {
+        "status": "closeout_failed",
+        "closeout_complete": false
+      },
+      "recoverable_originals": []
+    }
+  }
+]

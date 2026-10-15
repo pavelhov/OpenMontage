@@ -176,6 +176,41 @@ URL and writes the full receipt atomically through a small Node RPC. Never embed
 the multi-megabyte image data URL in a shell or Node script. Keep the receipt path
 fixed per original and carry the helper's exact next action; lost saving or
 completion replies recover the retained original without another image call.
+Both completion consumers reject empty or malformed step objects. Use
+`consumeSavedNativeCompletion` to drain the owned completion command and read its
+saved JSON; valid saved state wins over truncated stdout, with exposed initial
+and final command diagnostics preserved. A running owned session stays pending.
+If a terminated completion lost its unsaved next-image handoff, retain that
+evidence through the current `receive_native_image` action's
+`completion_handoff_lost` outcome. The call stays consumed with submission unknown;
+independent work proceeds and delivery reports the missing original. An absent
+caller-selected invocation marker proves nothing. Never rebuild or invoke the
+lost envelope; a later authentic original remains collectable.
+
+Map the helper's actual error to the existing outcome as follows. Here
+`completionPath` is the same caller-supplied absolute path used by the owned
+completion command; `completeAction(outcome)` is the caller's existing bridge to
+`complete_action(project_dir, current_receive_action, outcome=outcome)` for that
+begun original. Running or unknown completion remains pending: propagate the
+error and recover the same completion, without rerunning it.
+
+```javascript
+const nextStep = await consumeSavedNativeCompletion(tools, {completion, completionPath})
+  .catch(error => {
+    if (error.completion_state !== 'terminated'
+        || !['missing', 'invalid'].includes(error.saved_step)) throw error;
+    return completeAction({completion_handoff_lost: {
+      kind: 'unsaved_next_handoff',
+      completion_path: completionPath,
+      saved_step: error.saved_step,
+      diagnostics: error.completion_diagnostics
+    }});
+  });
+```
+
+Pass the exposed initial/final metadata unchanged; do not supply invented exit
+codes, timestamps, host results or invocation envelopes.
+
 For bridge diagnosis, optionally pass a synchronous `observeTiming: event => ...`
 callback to `consumeNativeHostAction`. It receives local timestamps for native
 return, retention, receipt preparation, receipt RPC and completion, plus Node

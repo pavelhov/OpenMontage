@@ -123,6 +123,7 @@
                   "imported",
                   "failed",
                   "host_exception",
+                  "handoff_lost",
                   "supplemental_tool_return",
                   "collection_status"
                 ]
@@ -338,6 +339,96 @@
             "sha256",
             "kind",
             "arguments_sha256"
+          ]
+        },
+        "handoff_lost": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "unsaved_next_handoff"
+            },
+            "completion_path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "saved_step": {
+              "enum": [
+                "missing",
+                "invalid"
+              ]
+            },
+            "diagnostics": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "initial": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "exit_code": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "output": {
+                      "type": "string"
+                    },
+                    "stderr": {
+                      "type": "string"
+                    },
+                    "session_id": {
+                      "type": [
+                        "string",
+                        "integer",
+                        "null"
+                      ]
+                    }
+                  }
+                },
+                "final": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "exit_code": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "output": {
+                      "type": "string"
+                    },
+                    "stderr": {
+                      "type": "string"
+                    },
+                    "session_id": {
+                      "type": [
+                        "string",
+                        "integer",
+                        "null"
+                      ]
+                    }
+                  }
+                }
+              },
+              "required": [
+                "initial",
+                "final"
+              ]
+            },
+            "recorded_at": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "completion_path",
+            "saved_step",
+            "diagnostics",
+            "recorded_at"
           ]
         },
         "collection": {

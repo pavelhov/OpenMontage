@@ -148,6 +148,46 @@ async function claimNativeHostInvocation(tools, receiptPath, action, invocation)
     throw new Error('Native invocation ownership unknown; collect original without replaying its envelope');
 }
 
+// One shared shape check for every completion consumer. Only a legitimate
+// canonical engine step counts as progress; empty objects, raw exec results,
+// arrays and malformed states never advance the producer.
+const CANONICAL_STEP_STATUSES = ['mechanical', 'host_action', 'ready_to_compose', 'complete', 'blocked', 'pending', 'dispatched'];
+const CANONICAL_ACTION_KINDS = ['restore_derived_views', 'prepare_board_image', 'begin_native_image',
+  'promote_imported_board', 'receive_native_image', 'prepare_motion', 'bind_upstream_frame',
+  'collect_grok_original', 'collect_openart_original', 'begin_openart_original',
+  'receive_openart_original', 'poll_openart_original', 'download_openart_original',
+  'compose_cut', 'complete', 'blocked'];
+// Studio's finished composition state is the other legitimate return form:
+// {status: complete|partial|incomplete, first_cut:{path,sha256}, clips:[...],
+// delivery:{status, closeout_complete}, recoverable_originals:[...]} with no
+// action; closeout may legitimately be pending or failed. It is accepted as-is; no action id is invented for it.
+const TERMINAL_COMPOSITION_STATUSES = ['complete', 'partial', 'incomplete'];
+function canonicalProductionStep(value) {
+  const isObject = item => item !== null && typeof item === 'object' && !Array.isArray(item);
+  const action = isObject(value) ? value.action : undefined;
+  const cut = isObject(value) ? value.first_cut : undefined, delivery = isObject(value) ? value.delivery : undefined;
+  if (isObject(value) && !('action' in value) && TERMINAL_COMPOSITION_STATUSES.includes(value.status)
+      && isObject(cut) && typeof cut.path === 'string' && cut.path
+      && typeof cut.sha256 === 'string' && /^[0-9a-f]{64}$/.test(cut.sha256)
+      && Array.isArray(value.clips) && isObject(delivery) && typeof delivery.status === 'string' && delivery.status
+      && typeof delivery.closeout_complete === 'boolean' && Array.isArray(value.recoverable_originals))
+    return value;
+  if (!isObject(value) || !CANONICAL_STEP_STATUSES.includes(value.status) || !isObject(action)
+      || !CANONICAL_ACTION_KINDS.includes(action.kind) || typeof action.action_id !== 'string' || !action.action_id
+      || ('host_envelope' in value && !isObject(value.host_envelope)))
+    throw new Error('Completion is not a canonical production step; the original stays consumed and unresolved');
+  return value;
+}
+
+// Keep only the execution fields the host actually exposed.
+function completionDiagnostics(result) {
+  const kept = {};
+  if (result && typeof result === 'object')
+    for (const field of ['exit_code', 'output', 'stderr', 'session_id'])
+      if (result[field] !== undefined) kept[field] = result[field];
+  return kept;
+}
+
 async function consumeNativeHostAction(tools, step, options) {
   // One emitted envelope only. A completion may itself emit the next envelope;
   // return that exact step to the producer rather than calling advance again.
@@ -211,6 +251,7 @@ async function consumeNativeHostAction(tools, step, options) {
     observeNativeHostTiming(timing, 'completion_start');
     const next = await completeAction(action, outcome);
     observeNativeHostTiming(timing, 'completion_end');
+    canonicalProductionStep(next);
     // Engine metadata counts its completion mechanics, not the actual host job.
     // Preserve the exact next action/envelope while keeping job exposure unknown.
     return {...next, provider_calls: null};
@@ -231,36 +272,47 @@ async function consumeSavedNativeCompletion(tools, {completion, sessionId, compl
   if (!tools || typeof tools.mcp__node_repl__js !== 'function'
       || typeof completionPath !== 'string' || !completionPath.startsWith('/'))
     throw new Error('Saved completion recovery requires Node REPL access and an absolute path');
-  let currentSession = sessionId || completion?.session_id;
+  const initial = completionDiagnostics(completion);
+  let final = initial, currentSession = sessionId || completion?.session_id;
+  const unresolved = (detail, fields) => Object.assign(new Error('Original completion unresolved; recover the saved completion at '
+    + completionPath + ' without rerunning completion or its provider: ' + detail),
+    {completion_diagnostics: {initial, final}, ...fields});
   while (currentSession) {
+    // A running owned session stays pending; it is never classified lost.
     if (typeof tools.write_stdin !== 'function')
-      throw new Error('Original completion session is active but write_stdin is unavailable; completion unresolved');
+      throw unresolved('original completion session is active but write_stdin is unavailable', {completion_state: 'running'});
     const completed = await tools.write_stdin({session_id: currentSession,
       yield_time_ms: 30000, max_output_tokens: 6000});
+    final = completionDiagnostics(completed);
     currentSession = completed?.session_id;
   }
+  // Only an exposed integer exit code proves the command ended; otherwise unknown.
+  const ended = Number.isInteger(final.exit_code) ? 'terminated' : 'unknown';
   const code = `await (async () => {
     const fs = await import('node:fs/promises');
-    try { nodeRepl.write(JSON.stringify({ok:true, value:JSON.parse(await fs.readFile(${JSON.stringify(completionPath)}, 'utf8'))})); }
-    catch (error) { nodeRepl.write(JSON.stringify({ok:false, error:String(error?.message || error)})); }
+    let text;
+    try { text = await fs.readFile(${JSON.stringify(completionPath)}, 'utf8'); }
+    catch (error) { nodeRepl.write(JSON.stringify({ok:false, missing:error?.code === 'ENOENT', error:String(error?.message || error)})); return; }
+    try { nodeRepl.write(JSON.stringify({ok:true, value:JSON.parse(text)})); }
+    catch (error) { nodeRepl.write(JSON.stringify({ok:false, missing:false, error:String(error?.message || error)})); }
   })();`;
-  let result;
+  let envelope;
   try {
     const saved = await tools.mcp__node_repl__js({code, title: 'Recover saved native completion', timeout_ms: 30000});
     if (saved?.isError) throw new Error('Node REPL returned an error');
-    const text = saved?.content?.find(block => block.type === 'text')?.text;
-    const envelope = JSON.parse(text);
-    if (!envelope?.ok) throw new Error(envelope?.error || 'saved completion unavailable');
-    result = envelope.value;
-    if (!result || typeof result !== 'object' || Array.isArray(result))
-      throw new Error('saved completion is not a step object');
+    envelope = JSON.parse(saved?.content?.find(block => block.type === 'text')?.text);
   } catch (error) {
-    throw new Error('Original completion unresolved; recover the saved completion at ' + completionPath
-      + ' without rerunning completion or its provider: ' + String(error?.message || error));
+    throw unresolved(String(error?.message || error), {completion_state: ended});
   }
-  return result;
+  if (!envelope?.ok)
+    throw unresolved(envelope?.error || 'saved completion unavailable',
+      {completion_state: ended, saved_step: envelope?.missing ? 'missing' : 'invalid'});
+  try { canonicalProductionStep(envelope.value); }
+  catch (error) { throw unresolved(error.message, {completion_state: ended, saved_step: 'invalid'}); }
+  // The saved step stays exact; the exec evidence travels beside it.
+  return {...envelope.value, completion_diagnostics: {initial, final}};
 }
 if (typeof module !== 'undefined') module.exports = {
   saveNativeHostReceipt, nativeImageURLSha256, nativeHostReceiptBinding, consumeNativeHostAction,
-  consumeSavedNativeCompletion,
+  consumeSavedNativeCompletion, canonicalProductionStep,
 };

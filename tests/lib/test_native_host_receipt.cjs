@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 const zlib = require('node:zlib');
 const repl = require('node:repl');
 const {PassThrough} = require('node:stream');
-const {saveNativeHostReceipt, nativeImageURLSha256, consumeNativeHostAction, consumeSavedNativeCompletion} = require('../../scripts/native_host_receipt.js');
+const {saveNativeHostReceipt, nativeImageURLSha256, consumeNativeHostAction, consumeSavedNativeCompletion, canonicalProductionStep} = require('../../scripts/native_host_receipt.js');
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
 function chunk(type, data) {
@@ -49,6 +49,7 @@ async function fixture(t) {
   return {root, imagePath, image, observation, receiptPath, tools, calls};
 }
 
+const doneStep = {status: 'host_action', action: {kind: 'prepare_motion', subject: 'same', action_id: 'd'.repeat(64)}};
 test('ASCII fingerprint matches standard SHA-256 across block and native-result boundaries', () => {
   for (const size of [0, 3, 55, 56, 63, 64, 65, 1024, 3336502]) {
     const text = 'data:image/png;base64,' + 'Ab0+/='.repeat(Math.ceil(size / 6)).slice(0, size);
@@ -72,10 +73,10 @@ test('optional bridge clocks separate host work and Node persistence without cha
   const f = await fixture(t), events = [];
   let clock = 1000;
   t.mock.method(Date, 'now', () => ++clock);
-  const options = hostOptions(f, async () => f.observation.result, async () => ({status: 'host_action'}));
+  const options = hostOptions(f, async () => f.observation.result, async () => doneStep);
   options.observeTiming = event => events.push(event);
   assert.deepEqual(await consumeNativeHostAction(f.tools, imageStep(f), options),
-    {status: 'host_action', provider_calls: null});
+    {...doneStep, provider_calls: null});
   assert.deepEqual(events.map(event => event.stage), ['native_return', 'retention_start', 'retention_end',
     'receipt_prepare_start', 'receipt_prepare_end', 'receipt_rpc_start', 'receipt_rpc_end',
     'node_receipt', 'completion_start', 'completion_end']);
@@ -92,10 +93,10 @@ test('optional bridge clocks separate host work and Node persistence without cha
 });
 test('diagnostic observer failure does not interrupt original retention or completion', async t => {
   const f = await fixture(t);
-  const options = hostOptions(f, async () => f.observation.result, async () => ({status: 'host_action'}));
+  const options = hostOptions(f, async () => f.observation.result, async () => doneStep);
   options.observeTiming = () => { throw new Error('diagnostic sink unavailable'); };
   assert.deepEqual(await consumeNativeHostAction(f.tools, imageStep(f), options),
-    {status: 'host_action', provider_calls: null});
+    {...doneStep, provider_calls: null});
   assert.equal(JSON.parse(await fs.readFile(f.receiptPath)).result.image_url, f.observation.result.image_url);
 });
 test('receipt diagnostics preserve exact bytes and missing RPC replies leave unmatched clocks', async t => {
@@ -159,7 +160,7 @@ test('invalid Node bridge fails before ownership effects and corrected bridge ca
   const f = await fixture(t), step = imageStep(f);
   let nativeCalls = 0, observationReads = 0, retentions = 0, completions = 0;
   const options = hostOptions(f, async () => { nativeCalls++; return f.observation.result; }, async () => {
-    completions++; return {status: 'host_action'};
+    completions++; return doneStep;
   });
   const getObservation = options.getObservation, retainObservation = options.retainObservation;
   options.getObservation = (...args) => { observationReads++; return getObservation(...args); };
@@ -183,7 +184,7 @@ test('invalid Node bridge fails before ownership effects and corrected bridge ca
 test('actual image callback, durable lossless original and completion share one operation', async t => {
   const f = await fixture(t), step = imageStep(f);
   let nativeCalls = 0, completionCalls = 0;
-  const next = {status: 'host_action', action: {kind: 'receive_native_image', subject: 'next-original'},
+  const next = {status: 'host_action', action: {kind: 'receive_native_image', subject: 'next-original', action_id: 'n'.repeat(64)},
     host_envelope: {call_id: 'next-original', tool_name: 'image_gen.imagegen', arguments: {prompt: 'next'}}};
   const options = hostOptions(f, async args => {
     nativeCalls++;
@@ -215,7 +216,7 @@ test('saving and completion interruptions recover retained original without paid
   const options = hostOptions(f, async () => { nativeCalls++; return f.observation.result; }, async () => {
     completionCalls++;
     if (completionCalls === 1) throw new Error('interrupted completion');
-    return {status: 'host_action'};
+    return doneStep;
   });
   const rpc = f.tools.mcp__node_repl__js;
   f.tools.mcp__node_repl__js = async request => {
@@ -227,7 +228,7 @@ test('saving and completion interruptions recover retained original without paid
   const original = await fs.readFile(f.receiptPath);
   f.tools.mcp__node_repl__js = rpc;
   await assert.rejects(consumeNativeHostAction(f.tools, step, options), /interrupted completion/);
-  assert.deepEqual(await consumeNativeHostAction(f.tools, step, options), {status: 'host_action', provider_calls: null});
+  assert.deepEqual(await consumeNativeHostAction(f.tools, step, options), {...doneStep, provider_calls: null});
   assert.deepEqual(await fs.readFile(f.receiptPath), original);
   assert.equal(nativeCalls, 1); assert.equal(completionCalls, 2);
 });
@@ -255,7 +256,7 @@ test('OpenArt return is durably retained before completing, and polling stays a 
   const options = hostOptions(f, async args => { calls++; assert.deepEqual(args, step.host_envelope.arguments); return result; }, async (action, outcome) => {
     assert.strictEqual(action, step.action); assert.strictEqual(outcome.result, result);
     assert.deepEqual(JSON.parse(await fs.readFile(f.receiptPath)).result, result);
-    return {action: {kind: 'poll_openart_original', subject: 'motion-original'}, status: 'host_action'};
+    return {action: {kind: 'poll_openart_original', subject: 'motion-original', action_id: 'p'.repeat(64)}, status: 'host_action'};
   });
   options.nativeTool.tool_name = step.host_envelope.tool;
   const pending = await consumeNativeHostAction(f.tools, step, options);
@@ -280,8 +281,8 @@ test('helper is executable in fresh functions.exec style without Node imports or
   const f = await fixture(t);
   const source = await fs.readFile(path.join(__dirname, '../../scripts/native_host_receipt.js'), 'utf8');
   const helper = new Function(source + '; return consumeNativeHostAction;')();
-  const options = hostOptions(f, async () => f.observation.result, async () => ({status: 'host_action'}));
-  assert.deepEqual(await helper(f.tools, imageStep(f), options), {status: 'host_action', provider_calls: null});
+  const options = hostOptions(f, async () => f.observation.result, async () => doneStep);
+  assert.deepEqual(await helper(f.tools, imageStep(f), options), {...doneStep, provider_calls: null});
 });
 test('failed result retention and host-store loss never replay the emitted invocation', async t => {
   const f = await fixture(t), step = imageStep(f);
@@ -310,9 +311,11 @@ test('pre-invocation store failure calls no host tool', async t => {
   await assert.rejects(consumeNativeHostAction(f.tools, imageStep(f), options), /store unavailable/);
   assert.equal(calls, 0); assert.equal(f.calls.length, 0);
 });
+// Successful recovery returns the exact saved step plus exec evidence beside it.
+function savedStep(recovered) { const {completion_diagnostics, ...step} = recovered; return step; }
 test('saved completion is canonical with empty, truncated or chunked stdout and drains only its original session', async t => {
   const f = await fixture(t), completionPath = path.join(f.root, 'completed-step.json');
-  const exactStep = {status: 'host_action', action: {kind: 'receive_native_image', subject: 'next'},
+  const exactStep = {status: 'host_action', action: {kind: 'receive_native_image', subject: 'next', action_id: 'e'.repeat(64)},
     host_envelope: {tool_name: 'image_gen.imagegen', call_id: 'next', arguments: {prompt: 'retained'}}};
   await fs.writeFile(completionPath, JSON.stringify(exactStep));
   let drains = 0, completionRuns = 1, providerRuns = 1;
@@ -338,7 +341,10 @@ test('saved completion is canonical with empty, truncated or chunked stdout and 
     const completion = {exit_code: 0, output};
     if (!drains) completion.session_id = 'original-session';
     const recovered = await consumeSavedNativeCompletion(f.tools, {completion, completionPath});
-    assert.deepEqual(recovered, exactStep);
+    assert.deepEqual(savedStep(recovered), exactStep);
+    assert.deepEqual(recovered.completion_diagnostics.initial, completion);
+    assert.deepEqual(recovered.completion_diagnostics.final,
+      completion.session_id ? {exit_code: 0, output: 'action"'} : completion);
     assert.deepEqual(recovered.host_envelope, exactStep.host_envelope);
   }
   assert.equal(drains, 2);
@@ -346,7 +352,7 @@ test('saved completion is canonical with empty, truncated or chunked stdout and 
 });
 test('saved completion recovery without a session reads the exact saved step after empty stdout', async t => {
   const f = await fixture(t), completionPath = path.join(f.root, 'completed-step.json');
-  const exactStep = {status: 'host_action', action: {kind: 'prepare_motion', subject: 'same'}};
+  const exactStep = doneStep;
   await fs.writeFile(completionPath, JSON.stringify(exactStep));
   const rpc = f.tools.mcp__node_repl__js;
   f.tools.mcp__node_repl__js = async request => {
@@ -354,12 +360,15 @@ test('saved completion recovery without a session reads the exact saved step aft
     const match = request.code.match(/readFile\(("(?:[^"\\]|\\.)*")/);
     return {content: [{type: 'text', text: JSON.stringify({ok: true, value: JSON.parse(await fs.readFile(JSON.parse(match[1]), 'utf8'))})}]};
   };
-  assert.deepEqual(await consumeSavedNativeCompletion(f.tools, {completionPath}), exactStep);
+  const recovered = await consumeSavedNativeCompletion(f.tools, {completionPath});
+  assert.deepEqual(savedStep(recovered), exactStep);
+  assert.deepEqual(recovered.completion_diagnostics, {initial: {}, final: {}});
+  assert.deepEqual(JSON.parse(await fs.readFile(completionPath)), exactStep);
   assert.equal(f.tools.write_stdin, undefined);
 });
 test('emitted recovery code runs repeatedly in one persistent Node REPL context', async t => {
   const f = await fixture(t), completionPath = path.join(f.root, 'completed-step.json');
-  const exactStep = {status: 'host_action', action: {kind: 'prepare_motion', subject: 'same'}};
+  const exactStep = doneStep;
   await fs.writeFile(completionPath, JSON.stringify(exactStep));
   let captured;
   const server = repl.start({input: new PassThrough(), output: new PassThrough(), terminal: false, prompt: ''});
@@ -370,8 +379,8 @@ test('emitted recovery code runs repeatedly in one persistent Node REPL context'
     await new Promise((resolve, reject) => server.eval(request.code, server.context, 'completion-recovery', error => error ? reject(error) : resolve()));
     return {content: [{type: 'text', text: captured}]};
   };
-  assert.deepEqual(await consumeSavedNativeCompletion(f.tools, {completionPath}), exactStep);
-  assert.deepEqual(await consumeSavedNativeCompletion(f.tools, {completionPath}), exactStep);
+  assert.deepEqual(savedStep(await consumeSavedNativeCompletion(f.tools, {completionPath})), exactStep);
+  assert.deepEqual(savedStep(await consumeSavedNativeCompletion(f.tools, {completionPath})), exactStep);
 });
 test('missing or corrupt saved completion remains explicitly unresolved without resubmission', async t => {
   const f = await fixture(t), completionPath = path.join(f.root, 'completed-step.json');
@@ -402,4 +411,112 @@ test('existing saved original prevents stale-envelope invocation after process r
   await assert.rejects(consumeNativeHostAction(f.tools, step, options), /already exists/);
   assert.equal(calls, 0);
   assert.deepEqual(JSON.parse(await fs.readFile(f.receiptPath)), f.observation);
+});
+
+// U2: one shared shape check for both completion consumers.
+const canonicalNext = {status: 'host_action', steps: 1, provider_calls: 0,
+  action: {kind: 'receive_native_image', subject: 'next', action_id: 'a'.repeat(64)},
+  host_envelope: {tool_name: 'image_gen.imagegen', call_id: 'next', arguments: {prompt: 'retained'}}};
+const sharedCompletionSteps = require('../fixtures/native_completion_steps.json');
+const nonSteps = [{}, null, [], 'host_action', {status: 'host_action'}, {status: 'bogus', action: canonicalNext.action},
+  {status: 'host_action', action: {kind: 'invented', action_id: 'x'}}, {status: 'host_action', action: {kind: 'complete'}},
+  {exit_code: 0, output: ''}, {session_id: 'still-running'}, {...canonicalNext, host_envelope: 'text'},
+  ...sharedCompletionSteps.filter(item => !item.valid).map(item => item.step)];
+function savedReader(f) {
+  const rpc = f.tools.mcp__node_repl__js;
+  f.tools.mcp__node_repl__js = async request => {
+    if (request.title !== 'Recover saved native completion') return rpc(request);
+    const match = request.code.match(/readFile\(("(?:[^"\\]|\\.)*")/);
+    try {
+      return {content: [{type: 'text', text: JSON.stringify({ok: true, value: JSON.parse(await fs.readFile(JSON.parse(match[1]), 'utf8'))})}]};
+    } catch (error) {
+      return {content: [{type: 'text', text: JSON.stringify({ok: false, missing: error.code === 'ENOENT', error: error.message})}]};
+    }
+  };
+}
+test('U2 shared shape check rejects empty, raw exec and malformed completion as progress', async t => {
+
+  assert.equal(typeof canonicalProductionStep, 'function');
+  for (const value of nonSteps) assert.throws(() => canonicalProductionStep(value), /canonical production step/, JSON.stringify(value));
+  assert.strictEqual(canonicalProductionStep(canonicalNext), canonicalNext);
+  for (const {step, valid} of sharedCompletionSteps)
+    if (valid) assert.strictEqual(canonicalProductionStep(step), step);
+  const f = await fixture(t), completionPath = path.join(f.root, 'completed-step.json');
+  savedReader(f);
+  for (const value of nonSteps) {
+    let completions = 0;
+    const g = await fixture(t);
+    const options = hostOptions(g, async () => g.observation.result, async () => { completions++; return value; });
+    await assert.rejects(consumeNativeHostAction(g.tools, imageStep(g), options), /canonical production step/);
+    assert.equal(completions, 1);
+    await fs.writeFile(completionPath, JSON.stringify(value));
+    await assert.rejects(consumeSavedNativeCompletion(f.tools, {completion: {exit_code: 0, output: ''}, completionPath}),
+      error => /Original completion unresolved/.test(error.message) && error.saved_step === 'invalid');
+  }
+});
+test('U2 nonzero exit or missing saved output keeps actual initial/final diagnostics without rerun', async t => {
+  const f = await fixture(t), completionPath = path.join(f.root, 'completed-step.json');
+  savedReader(f);
+  f.tools.write_stdin = async () => ({exit_code: 137, output: 'killed partial'});
+  const error = await consumeSavedNativeCompletion(f.tools,
+    {completion: {session_id: 'owned', output: '{"status":'}, completionPath}).catch(e => e);
+  assert.match(error.message, /Original completion unresolved/);
+  assert.equal(error.saved_step, 'missing'); assert.equal(error.completion_state, 'terminated');
+  assert.deepEqual(error.completion_diagnostics, {initial: {session_id: 'owned', output: '{"status":'},
+    final: {exit_code: 137, output: 'killed partial'}});
+  const plain = await consumeSavedNativeCompletion(f.tools, {completion: {exit_code: 1, stderr: 'boom'}, completionPath}).catch(e => e);
+  assert.deepEqual(plain.completion_diagnostics, {initial: {exit_code: 1, stderr: 'boom'}, final: {exit_code: 1, stderr: 'boom'}});
+  await fs.writeFile(completionPath, JSON.stringify(canonicalNext));
+  f.tools.write_stdin = async () => ({exit_code: 0, output: '{"trunc'});
+  const recovered = await consumeSavedNativeCompletion(f.tools, {completion: {session_id: 'owned'}, completionPath});
+  assert.deepEqual(savedStep(recovered), canonicalNext);
+  assert.deepEqual(recovered.completion_diagnostics, {initial: {session_id: 'owned'}, final: {exit_code: 0, output: '{"trunc'}});
+  // Absence of a session alone is not termination evidence.
+  await fs.rm(completionPath);
+  const unknown = await consumeSavedNativeCompletion(f.tools, {completion: {output: '{"st'}, completionPath}).catch(e => e);
+  assert.equal(unknown.completion_state, 'unknown'); assert.equal(unknown.saved_step, 'missing');
+  assert.deepEqual(unknown.completion_diagnostics, {initial: {output: '{"st'}, final: {output: '{"st'}});
+});
+test('U2 a still-running owned completion stays pending and is consumed once it finishes', async t => {
+  const f = await fixture(t), completionPath = path.join(f.root, 'completed-step.json');
+  savedReader(f);
+  let drains = 0;
+  f.tools.write_stdin = async request => {
+    drains++; assert.equal(request.session_id, 'owned');
+    if (drains < 3) return {session_id: 'owned', output: ''};
+    await fs.writeFile(completionPath, JSON.stringify(canonicalNext));
+    return {exit_code: 0, output: ''};
+  };
+  assert.deepEqual(savedStep(await consumeSavedNativeCompletion(f.tools, {completion: {session_id: 'owned', output: ''}, completionPath})), canonicalNext);
+  assert.equal(drains, 3);
+  delete f.tools.write_stdin;
+  await fs.rm(completionPath);
+  const running = await consumeSavedNativeCompletion(f.tools, {completion: {session_id: 'owned2'}, completionPath}).catch(e => e);
+  assert.equal(running.completion_state, 'running');
+  assert.equal(running.saved_step, undefined);
+});
+test('U2 Studio terminal composition states are progress without an invented action', async t => {
+  const f = await fixture(t), completionPath = path.join(f.root, 'completed-step.json');
+  savedReader(f);
+  for (const status of ['complete', 'partial', 'incomplete']) {
+    // Shape of Studio _finish_state: deliver_standalone/handoff fields + closeout delivery.
+    const finished = {status, currency: {status: 'current', reasons: []}, annotation_currency: {status: 'current'},
+      first_cut: {path: 'renders/first-cut-v001.mp4', sha256: 'c'.repeat(64)}, clips: [{clip_id: 'c1', review: 'unknown'}],
+      export_profile: 'tiktok', operation_id: 'deliver-op', not_certification: true, posted: false, provider_calls: 0,
+      delivery: {status: status === 'incomplete' ? 'closeout_failed' : 'closeout_pending', closeout_complete: false},
+      recoverable_originals: status === 'complete' ? [] : [{kind: 'collect_grok_original'}]};
+    assert.strictEqual(canonicalProductionStep(finished), finished);
+    const g = await fixture(t);
+    const direct = await consumeNativeHostAction(g.tools, imageStep(g), hostOptions(g, async () => g.observation.result, async () => finished));
+    assert.deepEqual(direct, {...finished, provider_calls: null}); assert.equal(direct.action, undefined);
+    await fs.writeFile(completionPath, JSON.stringify(finished));
+    const saved = await consumeSavedNativeCompletion(f.tools, {completion: {exit_code: 0, output: ''}, completionPath});
+    assert.deepEqual(savedStep(saved), finished);
+    const {first_cut, ...noCut} = finished;
+    for (const broken of [{status}, {status, delivery: {}, recoverable_originals: []}, noCut,
+      {...finished, first_cut: {path: 'cut.mp4', sha256: 'short'}}, {...finished, clips: undefined},
+      {...finished, delivery: {status: 'delivered'}}, {...finished, delivery: null},
+      {...finished, recoverable_originals: {}}, {...finished, action: undefined}])
+      assert.throws(() => canonicalProductionStep(broken), /canonical production step/);
+  }
 });

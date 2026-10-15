@@ -633,7 +633,7 @@ def image_call_status(project_dir, call_id):
     call = _call(_load(root),call_id)
     status = {key:copy.deepcopy(value) for key,value in call.items()
               if key not in {'packet','host_arguments','submitted_arguments'}}
-    if call.get('host_exception') and call['state'] in PENDING:
+    if (call.get('host_exception') or call.get('handoff_lost')) and call['state'] in PENDING:
         status['backend_submission_status'] = 'unknown'
         status['next_action'] = 'collect_original_or_authoritative_reconciliation'
     if call.get('output'):
@@ -860,6 +860,96 @@ def record_native_image_host_exception(project_dir, call_id, *, host_exception):
 
 
 OPENART_IMAGE_TOOL = 'mcp__codex_apps__openart_openart_generate_image'
+_STEP_STATUSES = frozenset({'mechanical', 'host_action', 'ready_to_compose', 'complete', 'blocked', 'pending', 'dispatched'})
+_DIAGNOSTIC_FIELDS = frozenset({'exit_code', 'output', 'stderr', 'session_id'})
+
+
+def _saved_step_state(path):
+    """'valid' only for a canonical engine step; otherwise 'missing'/'invalid'."""
+    from lib.production_execution import ACTION_KINDS
+    try:
+        step = json.loads(path.read_text())
+    except FileNotFoundError:
+        return 'missing'
+    except (OSError, ValueError):
+        return 'invalid'
+    action = step.get('action') if isinstance(step, dict) else None
+    # Studio's finished composition state carries no action; it is still valid.
+    # Mirrors canonicalProductionStep in scripts/native_host_receipt.js.
+    if (isinstance(step, dict) and 'action' not in step and isinstance(step.get('status'), str)
+            and step['status'] in {'complete','partial','incomplete'}):
+        cut, delivery = step.get('first_cut'), step.get('delivery')
+        if (isinstance(cut, dict) and isinstance(cut.get('path'), str) and cut['path']
+                and isinstance(cut.get('sha256'), str) and re.fullmatch(r'[0-9a-f]{64}', cut['sha256'])
+                and isinstance(step.get('clips'), list) and isinstance(delivery, dict)
+                and isinstance(delivery.get('status'), str) and delivery['status']
+                and isinstance(delivery.get('closeout_complete'), bool)
+                and isinstance(step.get('recoverable_originals'), list)):
+            return 'valid'
+        return 'invalid'
+    if (isinstance(step, dict) and isinstance(step.get('status'), str) and step['status'] in _STEP_STATUSES
+            and isinstance(action, dict) and isinstance(action.get('kind'), str) and action['kind'] in ACTION_KINDS
+            and isinstance(action.get('action_id'), str) and action['action_id']
+            and ('host_envelope' not in step or isinstance(step['host_envelope'], dict))):
+        return 'valid'
+    return 'invalid'
+
+
+def record_native_image_handoff_lost(project_dir, call_id, *, evidence):
+    """Record a lost unsaved import->advance->begin-next completion handoff.
+
+    The next call was marked submitted and its envelope emitted inside the
+    terminated completion command, but the completion step was never saved.
+    Binds only diagnostics the host exposed. The call stays counted and
+    consumed with backend submission unknown; no exception, non-invocation,
+    reconstructed envelope or second invocation is manufactured. A late
+    authentic return remains collectable with import_native_image.
+    """
+    root,_ = _root(project_dir)
+    if not isinstance(evidence,dict) or set(evidence) != {'kind','completion_path','saved_step','diagnostics'}:
+        raise ValueError('lost handoff requires exact kind, completion_path, saved_step and diagnostics')
+    diagnostics = evidence['diagnostics']
+    if (evidence['kind'] != 'unsaved_next_handoff' or evidence['saved_step'] not in {'missing','invalid'}
+            or not isinstance(diagnostics,dict) or set(diagnostics) != {'initial','final'}
+            or any(not isinstance(item,dict) or set(item) - _DIAGNOSTIC_FIELDS for item in diagnostics.values())):
+        raise ValueError('lost handoff evidence has unsupported kind, saved step or diagnostic fields')
+    if diagnostics['final'].get('session_id') is not None:
+        raise ValueError('owned completion is still running; it stays pending and is not lost')
+    exit_code = diagnostics['final'].get('exit_code')
+    if not isinstance(exit_code,int) or isinstance(exit_code,bool):
+        raise ValueError('completion termination is unknown without an exposed exit code; not recorded as lost')
+    completion = Path(evidence['completion_path']) if isinstance(evidence['completion_path'],str) else None
+    if completion is None or not completion.is_absolute():
+        raise ValueError('lost handoff requires the absolute saved completion path')
+    observed = _saved_step_state(completion)
+    if observed == 'valid':
+        raise ValueError('a valid saved completion step exists; consume it instead of recording loss')
+    if observed != evidence['saved_step']:
+        raise ValueError('saved completion state differs from the recorded evidence')
+    with _ex()._lock(root):
+        value = _load(root); call = _call(value,call_id)
+        recorded = {key:copy.deepcopy(evidence[key]) for key in ('kind','completion_path','saved_step','diagnostics')}
+        if call.get('handoff_lost'):
+            if {k:v for k,v in call['handoff_lost'].items() if k != 'recorded_at'} != recorded:
+                raise ValueError('image call already binds different lost handoff evidence')
+            return copy.deepcopy(call)
+        if 'submitted_arguments' not in call:
+            raise ValueError('lost handoff requires the original submitted invocation')
+        if call.get('host_receipt') or call.get('host_exception'):
+            raise ValueError('actual host evidence already retained; handoff loss cannot be recorded')
+        if call['state'] not in PENDING - {'reserved'}:
+            raise ValueError('only a begun pending image call can record a lost handoff')
+        call['handoff_lost'] = {**recorded, 'recorded_at':_now()}
+        _event(call,'handoff_lost',reason=f"Completion step {evidence['saved_step']} at {evidence['completion_path']} "
+               'after the next call was submitted.')
+        if call['state'] != 'uncertain':
+            call['state'] = 'uncertain'
+            _event(call,'uncertain',reason='Completion handoff was lost after the next call was submitted; '
+                   'backend submission remains unknown.')
+        _write(root,value)
+        return copy.deepcopy(call)
+
+
 # Positive refusal phrases only; infrastructure wording never qualifies.
 _POLICY_DENIAL = ('content_policy_violation', 'content policy violation', 'violates our content policy',
                   'violated our content policy', 'did not follow our content policy',

@@ -2,6 +2,7 @@
 import copy
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -3484,3 +3485,109 @@ def test_adjacent_native_pin_clips_share_one_prepared_boundary(tmp_path):
     assert all(not shot['upstream'] for shot in contract['shots'])
     assert image_tool.calls == 1 and tool.calls == 2
     assert len(records) == 3 and sum(r['phase'] == 'image' for r in records) == 1
+
+
+def _lost_handoff_evidence(root, *, name='completed-step.json', contents=None, final=None):
+    path = root / 'notes' / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if contents is not None:
+        path.write_text(contents)
+    return {'kind': 'unsaved_next_handoff', 'completion_path': str(path),
+            'saved_step': 'missing' if contents is None else 'invalid',
+            'diagnostics': {'initial': {'session_id': 'owned-completion', 'output': '{"status":"host_'},
+                            'final': final if final is not None else {'exit_code': 137, 'output': ''}}}
+
+
+NATIVE_COMPLETION_STEPS = json.loads((Path(__file__).parents[1] / 'fixtures/native_completion_steps.json').read_text())
+
+
+@pytest.mark.parametrize('case', NATIVE_COMPLETION_STEPS, ids=lambda case: case['name'])
+def test_saved_native_completion_shape_matches_shared_host_fixtures(tmp_path, case):
+    path = tmp_path / 'completed-step.json'
+    path.write_text(json.dumps(case['step']))
+    assert images._saved_step_state(path) == ('valid' if case['valid'] else 'invalid')
+
+
+def test_native_completion_action_allowlist_matches_canonical_engine():
+    host = (Path(__file__).parents[2] / 'scripts/native_host_receipt.js').read_text()
+    kinds = re.search(r'const CANONICAL_ACTION_KINDS = \[(.*?)\];', host, re.DOTALL)
+    assert kinds is not None
+    assert set(re.findall(r"'([^']+)'", kinds.group(1))) == execution.ACTION_KINDS
+
+
+@pytest.mark.parametrize('malformed', [None] + [case for case in NATIVE_COMPLETION_STEPS if not case['valid']],
+                         ids=lambda case: case['name'] if case else 'missing')
+def test_u2_lost_unsaved_next_handoff_stays_consumed_and_closes_out_partial(neutral_package, malformed):
+    """Import current -> advance -> begin next, then the returned step is never saved."""
+    root = board_factory_fixture(neutral_package)
+    first = execution.advance(root)
+    assert first['action']['kind'] == 'receive_native_image' and 'host_envelope' in first
+    lost = execution.complete_action(root, first['action'],
+        outcome={'host_receipt': host_receipt(root, first['host_envelope'], name='first')})
+    # The engine already marked the next call submitted; this step is the lost response.
+    assert lost['action']['kind'] == 'receive_native_image' and 'host_envelope' in lost
+    next_id = lost['action']['subject']
+    assert images.image_call_status(root, next_id)['state'] == 'submitted'
+    count = images.image_usage(root)['total']
+    resumed = execution.advance(root)
+    assert resumed['action'] == lost['action'] and 'host_envelope' not in resumed
+    # A running owned completion, unknown termination, or a valid saved step
+    # (including Studio's actionless finished composition state) is not loss.
+    finished = {'status': 'partial', 'currency': {'status': 'current', 'reasons': []},
+                'first_cut': {'path': 'renders/first-cut-v001.mp4', 'sha256': 'c' * 64}, 'clips': [],
+                'delivery': {'status': 'closeout_failed', 'closeout_complete': False},
+                'recoverable_originals': [], 'not_certification': True, 'posted': False}
+    for evidence in (_lost_handoff_evidence(root, final={'session_id': 'owned-completion'}),
+                     _lost_handoff_evidence(root, final={'output': ''}),
+                     _lost_handoff_evidence(root, name='valid.json', contents=json.dumps(
+                         {'status': 'host_action', 'action': lost['action'], 'provider_calls': 0})),
+                     _lost_handoff_evidence(root, name='finished.json', contents=json.dumps(finished))):
+        with pytest.raises(ValueError, match='running|unknown without an exposed exit code|valid saved'):
+            execution.complete_action(root, resumed['action'], outcome={'completion_handoff_lost': evidence})
+    assert images.image_call_status(root, next_id)['state'] == 'submitted'
+    # A fabricated empty terminal state is not a valid saved step.
+    assert images._saved_step_state(Path(_lost_handoff_evidence(root, name='empty.json', contents=json.dumps(
+        {'status': 'complete', 'delivery': {}, 'recoverable_originals': []}))['completion_path'])) == 'invalid'
+    evidence = _lost_handoff_evidence(root, contents=json.dumps(malformed['step']) if malformed else None)
+    step = execution.complete_action(root, resumed['action'], outcome={'completion_handoff_lost': evidence})
+    status = images.image_call_status(root, next_id)
+    assert status['state'] == 'uncertain' and status['backend_submission_status'] == 'unknown'
+    assert status['handoff_lost']['diagnostics'] == evidence['diagnostics']
+    assert 'host_exception' not in status and 'never_submitted_proof' not in status
+    assert 'host_envelope' not in step or step['host_envelope']['call_id'] != next_id
+    # The lost call stays counted; only independent ready work may begin next.
+    begun = 1 if 'host_envelope' in step else 0
+    assert images.image_usage(root)['total'] == count + begun
+    assert next_id in images.image_usage(root)['unresolved_originals']
+    replay = execution.complete_action(root, resumed['action'], outcome={'completion_handoff_lost': evidence})
+    assert replay['replayed'] and images.image_usage(root)['total'] == count + begun
+    with pytest.raises(ValueError, match='already emitted'):
+        images.begin_native_image(root, next_id)
+    deferred = execution._recoverable_native_original_action(root, next_id)
+    assert deferred['inputs']['action'] == 'blocked_original_host_reply_unavailable'
+    assert deferred['inputs']['handoff_lost'] is True and deferred['inputs']['counted_original'] is True
+    for _ in range(12):
+        action = execution.next_production_action(root)
+        if action['kind'] == 'compose_cut':
+            break
+        state = step if step and 'host_envelope' in step else execution.advance(root)
+        step = None
+        assert state['action']['subject'] != next_id, state
+        receipt = host_receipt(root, state['host_envelope'], name=state['action']['subject'],
+                               result={'isError': True, 'error': 'SYNTHETIC terminal image error'})
+        images.import_native_image(root, state['action']['subject'], host_receipt=receipt)
+    else:
+        pytest.fail('lost handoff prevented incomplete composition')
+    assert action['inputs']['recoverable_originals'] == [deferred]
+    from lib import production_draft as draft
+    cut = draft.deliver_standalone(root, compose=lambda _: pytest.fail('no playable clips to render'))
+    assert cut['status'] == 'incomplete' and not cut['clips']
+    closed = execution.advance(root)
+    assert closed['status'] == 'complete'
+    assert closed['action']['inputs']['recoverable_originals'] == [deferred]
+    assert images.image_usage(root)['total'] == count + begun
+    late = execution.complete_action(root, deferred,
+        outcome={'host_receipt': host_receipt(root, lost['host_envelope'], name='late')})
+    assert images.image_call_status(root, next_id)['state'] == 'imported'
+    assert late['action']['kind'] != 'begin_native_image'
+    assert images.image_call_status(root, next_id)["handoff_lost"] == status["handoff_lost"]

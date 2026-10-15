@@ -3112,7 +3112,8 @@ def _recoverable_original_action(root, aid):
 
 
 def _native_original_action(root, call):
-    unavailable = bool(call.get('host_exception') and not call.get('host_receipt'))
+    lost = bool(call.get('handoff_lost') and not call.get('host_receipt'))
+    unavailable = bool(call.get('host_exception') and not call.get('host_receipt')) or lost
     inputs = {'call_id': call['call_id'], 'original_request_sha256': call['request_sha256'],
               'supplemental_to': (call.get('host_receipt') or {}).get('sha256')}
     reason = 'Retrieve and retain the exact original host return; the begun call is never emitted again.'
@@ -3126,8 +3127,13 @@ def _native_original_action(root, call):
                           collection_helper='production_images.record_openart_image_collection', reason=reason)
     if unavailable:
         reason = 'Consumed native image raised a host exception without a retained reply; retrieve its exact original return and replay receive. Never begin again.'
+        if lost:
+            reason = ('Consumed native image was submitted in an unsaved next handoff whose completion step was lost; '
+                      'retrieve its exact original return and replay receive. Never begin again.')
         inputs.update(action='blocked_original_host_reply_unavailable', slot_id=call['slot_id'],
                       counted_original=True, reason=reason)
+        if lost:
+            inputs['handoff_lost'] = True
     return _production_action(root, 'receive_native_image', subject=call['call_id'],
         binding={'call_id': call['call_id'], 'request_sha256': call['request_sha256'],
                  'state': call['state'], 'scope_sha256': call['scope_sha256'],
@@ -3698,6 +3704,17 @@ def complete_action(project_dir, action, *, outcome):
                 boards.bind_imported_board(root, call['slot_id'], action['subject'], images=images)
             current = next_production_action(root)
             return {'status': _action_status(current), 'action': current, 'provider_calls': 0, 'replayed': True}
+    if (valid and action.get('kind') == 'receive_native_image' and isinstance(outcome, dict)
+            and set(outcome) == {'completion_handoff_lost'}):
+        call = images.image_call_status(root, action['subject'])
+        if call.get('handoff_lost'):
+            if (action['binding'].get('request_sha256') != call['request_sha256']
+                    or action['binding'].get('scope_sha256') != call['scope_sha256']):
+                _fail('original image replay binding differs')
+            # Identical evidence replays; different evidence is refused there.
+            images.record_native_image_handoff_lost(root, action['subject'], evidence=outcome['completion_handoff_lost'])
+            current = next_production_action(root)
+            return {'status': _action_status(current), 'action': current, 'provider_calls': 0, 'replayed': True}
     # An exact begun original's receive stays accepted while independent work
     # changes the selector's preferred action. Its host envelope is never emitted again.
     if not valid or (action != next_production_action(root) and not (
@@ -3710,9 +3727,13 @@ def complete_action(project_dir, action, *, outcome):
         _fail('actual structured producer outcome required')
     kind = action['kind']; aid = action['subject']
     if kind == 'receive_native_image':
-        if set(outcome) - {'host_receipt', 'supplemental_to', 'host_exception'}:
+        if set(outcome) - {'host_receipt', 'supplemental_to', 'host_exception', 'completion_handoff_lost'}:
             _fail('unsupported original image outcome')
-        if 'host_exception' in outcome:
+        if 'completion_handoff_lost' in outcome:
+            if set(outcome) != {'completion_handoff_lost'}:
+                _fail('lost handoff outcome cannot carry host evidence')
+            images.record_native_image_handoff_lost(root, aid, evidence=outcome['completion_handoff_lost'])
+        elif 'host_exception' in outcome:
             images.record_native_image_host_exception(root, aid, host_exception=outcome['host_exception'])
         else:
             imported = images.import_native_image(root, aid, host_receipt=outcome['host_receipt'],
