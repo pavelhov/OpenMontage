@@ -49,8 +49,19 @@ an explicit `end_frame` consumer. Source identity references remain distinct fro
 native reference consumers. `build_video_request_templates(package, settings)`
 derives native requests from these bindings and rejects unsupported roles/settings
 before image attempts. Keep one authored plan and no duplicate binding manifest.
+An omitted compact `motion.frame_input` is derived only from one explicit
+effective `start_frame` consumer; ambiguity or a conflicting explicit value is
+an error. A source-free outgoing-frame reuse board may omit its administrative
+`prompt`; expansion names the declared reuse without requesting an image.
 Legacy start-only inputs and retained requests keep their original interpretation
 and bytes.
+
+Clients that derive story/command wrappers use `preflight_package(project, package,
+package_binding=...)` before publishing them. It runs the same structural core as
+`compile_package`, reading actual reference bytes and checking existing output
+conflicts. It grants no authority: retained source validation, publication and
+live dispatch admission still run normally. New shootable prompts use the neutral
+`End of clip:` label; exact historical labels and coverage remain readable.
 
 For a continuous continuation, declare the consumer's source-free `start_frame`
 board with `upstream_source: {shot_id: <earlier-shot>, role: outgoing_frame}` and

@@ -288,3 +288,53 @@ def test_shootable_opt_in_fails_closed(neutral_package, damage):
     with pytest.raises(ValueError):
         request.prepare_package(root, binding)
     assert file_bytes(root) == before
+
+
+@pytest.mark.parametrize('explicit_roles', [False, True])
+def test_compact_omitted_frame_uses_one_explicit_start_role(neutral_package, explicit_roles):
+    root, base, bind = neutral_package
+    compact, _ = packages(base)
+    shot = compact['shots'][0]
+    if explicit_roles:
+        shot['roles'] = [copy.deepcopy(shot['motion']['frame_input'])]
+    expected = request.compile_package(root, bind(compact))
+    del shot['motion']['frame_input']
+    original = copy.deepcopy(compact)
+    actual = request.compile_package(root, bind(compact))
+    assert without_binding(actual) == without_binding(expected)
+    assert compact == original
+
+
+@pytest.mark.parametrize('starts', [0, 2])
+def test_compact_omitted_frame_rejects_missing_or_ambiguous_start(neutral_package, starts):
+    root, base, bind = neutral_package
+    compact, _ = packages(base)
+    shot = compact['shots'][0]
+    del shot['motion']['frame_input']
+    shot['roles'] = ([{'asset_id': 's1-start', 'role': 'end_frame'}] if starts == 0 else
+        [{'asset_id': 's1-start', 'role': 'start_frame'}, {'asset_id': 's2-start', 'role': 'start_frame'}])
+    binding = bind(compact); before = file_bytes(root)
+    with pytest.raises(ValueError, match='one explicit start_frame'):
+        request.compile_package(root, binding)
+    assert file_bytes(root) == before
+
+
+def test_upstream_reuse_needs_no_authored_image_prompt(neutral_package):
+    root, base, bind = neutral_package
+    compact, _ = packages(base)
+    board = compact['shots'][1]['boards'][0]
+    # The payoff asset remains explicitly declared, with a separate native start consumer.
+    board.update(slot_id='s2-upstream', role='start_frame', upstream_source={'shot_id': 's1', 'role': 'outgoing_frame'})
+    compact['shots'][1]['motion']['frame_input'] = {'asset_id': 's2-upstream', 'role': 'start_frame'}
+    compact['shots'][1]['boards'].append({'slot_id':'s2-start', 'role':'payoff_board', 'prompt':'SYNTHETIC payoff',
+        'reference_ids':[], 'image_dependencies':[], 'required_predicates':['asset_quality','cast_identity'],
+        'transparent_background':False, 'cast_ids':[]})
+    del board['prompt']
+    binding = bind(compact)
+    before = file_bytes(root)
+    projected = request.compile_package(root, binding)
+    node = projected['spec']['image_nodes'][1]
+    assert node['upstream_source'] == {'shot_id': 's1', 'role': 'outgoing_frame'}
+    assert node['prompt'] == 'Reuse s1 outgoing frame as start_frame.'
+    assert images.image_usage(root)['total'] == 0
+    assert file_bytes(root) == before

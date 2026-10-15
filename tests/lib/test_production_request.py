@@ -1700,3 +1700,22 @@ def test_factory_report_only_preparation_validates_before_immutable_publication(
             request.prepare_compiled_request(inputs, native, profile, **kwargs)
         assert file_bytes(root) == before
     assert execution._attempts(root) == []
+
+
+def test_proposed_package_preflight_uses_same_structural_core_without_writes(neutral_package):
+    root, package, bind = neutral_package
+    binding = bind()
+    expected = request.compile_package(root, binding)
+    # Prospective wrappers need not exist for structural projection.
+    for name in ('story', 'approval'):
+        (root / package['boards'][name]['path']).unlink()
+    (root / binding['path']).unlink()
+    before = _tree(root)
+    assert request.preflight_package(root, package, package_binding=binding) == expected
+    assert _tree(root) == before
+    package['boards']['image_nodes'][0]['required_predicates'] = ['cast_identity']
+    package['boards']['image_nodes'][1]['required_predicates'] = ['cast_identity']
+    with pytest.raises(ValueError) as exc:
+        request.preflight_package(root, package, package_binding=binding)
+    assert 'payoff: missing' in str(exc.value) and 'start: missing' in str(exc.value)
+    assert _tree(root) == before

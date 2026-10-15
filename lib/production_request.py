@@ -1557,16 +1557,29 @@ def _expand_compact_package(package):
         if (not isinstance(motion, dict) or set(motion) - required_motion
                 or not required_motion - {'frame_input'} <= set(motion)
                 or motion['reference_mode'] not in {'frame_conditioned', 'reference_guided'}
-                or (motion['reference_mode'] == 'frame_conditioned') != ('frame_input' in motion)):
+                or motion['reference_mode'] == 'reference_guided' and 'frame_input' in motion):
             raise ValueError('compact motion needs explicit frame_conditioned treatment and all semantics')
         if not isinstance(shot['boards'], list) or (not shot['boards'] and not shot.get('roles')):
             raise ValueError('compact shot needs authored boards')
+        motion = copy.deepcopy(motion)
+        if motion['reference_mode'] == 'frame_conditioned' and 'frame_input' not in motion:
+            declared = shot.get('roles', [{'asset_id': b.get('slot_id'), 'role': b.get('role')}
+                                          for b in shot['boards'] if isinstance(b, dict)])
+            _validate_consumer_roles(declared)
+            starts = [role for role in declared if role['role'] == 'start_frame']
+            if len(starts) != 1:
+                raise ValueError(sid + '/motion/frame_input needs one explicit start_frame role')
+            motion['frame_input'] = copy.deepcopy(starts[0])
         deps = shot['video_dependencies']
         if (not isinstance(deps, list) or any(not isinstance(dep, str) or not dep.strip() for dep in deps)
                 or len(set(deps)) != len(deps)):
             raise ValueError('compact video dependencies need unique explicit shot IDs')
         roles = []
         for board in shot['boards']:
+            if (isinstance(board, dict) and isinstance(board.get('upstream_source'), dict)
+                    and 'prompt' not in board):
+                board = copy.deepcopy(board)
+                board['prompt'] = 'Reuse ' + str(board['upstream_source'].get('shot_id')) + ' outgoing frame as start_frame.'
             if (not isinstance(board, dict) or not board_fields <= set(board)
                     or set(board) - board_fields - {'upstream_source', 'time_seconds'}):
                 raise ValueError('compact board requires exact authored prompt, role and source declarations')
@@ -1577,7 +1590,7 @@ def _expand_compact_package(package):
                         or motion['frame_input'] != {'asset_id': board['slot_id'], 'role': 'start_frame'}
                         or board['role'] != 'start_frame' or board['reference_ids'] or board['image_dependencies']
                         or board['transparent_background'] is not False
-                        or any('upstream_source' in b for b in shot['boards'] if b is not board)):
+                        or sum(isinstance(b, dict) and 'upstream_source' in b for b in shot['boards']) != 1):
                     raise ValueError('compact upstream_source needs one start_frame board reusing a declared '
                                      'video dependency outgoing_frame with no image sources')
             for key in ('reference_ids', 'image_dependencies', 'required_predicates', 'cast_ids'):
@@ -1684,11 +1697,31 @@ def _apply_prompt_compiler(package, template):
 
 
 def _compile_package_targets(root, package_binding):
-    """Validate the bound package and return (spec, records, targets) without writing."""
+    """Validate retained sources and the shared structural projection without writes."""
+    from lib import production_images as images
+    package_path = images._bound_file(root, package_binding, 'production package')
+    result = _compile_package_value(root, json.loads(package_path.read_text()), package_binding)
+    spec = result[0]
+    if spec['image_nodes']:
+        images.build_preboard_packet(root, story=spec['story'], approval=spec['approval'],
+            references=spec['references'], board_slots=[{'id': node['slot_id'],
+                'shot_id': node['shot_id'], 'role': node['role'], 'status': 'unresolved'}
+                for node in spec['image_nodes']])
+    else:
+        for label in ('story', 'approval'):
+            images._bound_file(root, spec[label], label)
+    return result
+
+
+def _compile_package_value(root, package, package_binding):
+    """Shared structural core, including current reference bytes and output conflicts.
+
+    Prospective story/approval wrappers are checked from retained bytes by the
+    publishing path; this projection alone grants no generation authority.
+    """
     from lib import production_boards as boards, production_images as images
     from lib.episode_production_controls import episode_production_status
-    package_path = images._bound_file(root, package_binding, 'production package')
-    package = json.loads(package_path.read_text())
+    package_path = boards._inside(root, package_binding['path'])
     if 'authoring_form' in package or 'compact' in package:
         package = _expand_compact_package(package)
     marker = json.loads((root / 'project.json').read_text())
@@ -1809,16 +1842,8 @@ def _compile_package_targets(root, package_binding):
         clock = end
     if ids != [s['shot_id'] for s in spec['shots']]:
         raise ValueError('authored shots and ordered board shot mappings differ')
-    # The engine validates retained story/approval/reference bytes even for pure reuse.
-    if nodes:
-        images.build_preboard_packet(root, story=spec['story'], approval=spec['approval'],
-            references=spec['references'], board_slots=[{'id': n['slot_id'],
-                'shot_id': n['shot_id'], 'role': n['role'], 'status': 'unresolved'} for n in nodes.values()])
-    else:
-        for label in ('story', 'approval'):
-            images._bound_file(root, spec[label], label)
-        if not spec['approval'].get('approved_by'):
-            raise ValueError('story needs explicit approval provenance')
+    if not spec['approval'].get('approved_by'):
+        raise ValueError('story needs explicit approval provenance')
     assets, bindings, reference_aliases = [], {}, {}
     for ref in spec['references']:
         aid = ref['id']
@@ -1911,6 +1936,17 @@ def _compile_package_targets(root, package_binding):
         if not same_pack and (images.image_usage(root)['total'] or episode_production_status(root)['usage']['total']):
             raise ValueError('cannot materialize missing package artifacts after dispatch')
     return spec, records, targets
+
+
+def preflight_package(project_dir, package, *, package_binding):
+    """Project prospective authored wrappers through the normal structural core.
+
+    Reads actual references and existing conflicts but writes no wrappers, locks,
+    attempts or authority. Publication rechecks the bound sources normally.
+    """
+    root = Path(project_dir).expanduser().resolve()
+    spec, records, _ = _compile_package_value(root, package, package_binding)
+    return {'spec': spec, 'records': records}
 
 
 def compile_package(project_dir, package_binding):
