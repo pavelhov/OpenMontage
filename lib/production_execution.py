@@ -2239,6 +2239,14 @@ def _retained_grok_original(root, directory, request, *, request_sha256, dry_run
     from tools.base_tool import ToolResult
     attempt_id = request['attempt_id']
     retained = _read(directory / 'reconciliation.json')
+    if retained.get('status') == 'failed' and isinstance(retained.get('result'), dict):
+        result = ToolResult(**retained['result'])
+        evidence = _verify_original_grok_motion_failure(root, directory, request, result)
+        if result.success or retained.get('original_session_evidence') != evidence:
+            _fail('retained original failure native evidence changed')
+        return ({'status': 'failed', 'attempt_id': attempt_id, 'request_sha256': request_sha256,
+                 'provider_calls': 0, 'reservations': 0, 'already_collected_original': True}
+                if dry_run else retained)
     if retained.get('status') != 'generated' or not isinstance(retained.get('result'), dict):
         _fail('retained original reconciliation is not collected output')
     result = ToolResult(**retained['result'])
@@ -2925,8 +2933,38 @@ def resume_original_attempt(project_dir, attempt_id, *, request_sha256, dry_run=
                 with _lock(root):
                     return _retained_grok_original(root, directory, request,
                         request_sha256=request_sha256, dry_run=dry_run)
-            return collect_original_grok_prompt_boundary(root, attempt_id,
-                request_sha256=request_sha256, dry_run=dry_run)
+            from tools._grok_cli_media import GrokCLIContractError
+            try:
+                return collect_original_grok_prompt_boundary(root, attempt_id,
+                    request_sha256=request_sha256, dry_run=dry_run)
+            except GrokCLIContractError:
+                # An interrupted adapter can also leave an exact native failed
+                # completion. The existing verifier requires its one failed
+                # update, terminal end, frozen controls and absence of media;
+                # a parser error alone never closes an uncertain original.
+                from tools.video.grok_cli_video import build_native_video_request
+                from tools.base_tool import ToolResult
+                with _lock(root):
+                    if _state(root, request)['status'] != 'uncertain':
+                        raise
+                    submitted = request['submitted_inputs']
+                    launch = _retained_grok_launch(directory, request,
+                        _grok_native_arguments(submitted, 'motion'), _grok_native_operation(submitted, 'motion'),
+                        Path(submitted.get('cwd') or Path(submitted['output_path']).parent).resolve())
+                    version = (launch or {}).get('adapter_version') or (request.get('tool_version')
+                        if request.get('tool_name') == 'grok_cli_video' else None)
+                    receipt = build_native_video_request(submitted, adapter_version=version, provider='grok_cli')['receipt']
+                    receipt.update(cli_version=(launch or {}).get('cli_version'), session_id=request['cli_session_id'],
+                                   dispatch_status='failed', submission_evidence='verified_native_call')
+                    result = ToolResult(success=False, error='Original native call failed; no replacement was issued.',
+                        data={'provider': 'grok_cli', 'session_id': request['cli_session_id'],
+                              'dispatch_status': 'failed', 'conditioning_receipt': receipt})
+                    proof = _verify_original_grok_motion_failure(root, directory, request, result)
+                    if dry_run:
+                        return {'status': 'failed', 'attempt_id': attempt_id, 'request_sha256': request_sha256,
+                                'would_collect_original': True, 'original_session_evidence': proof,
+                                'provider_calls': 0, 'reservations': 0}
+                return reconcile_attempt(root, attempt_id, result, request_sha256=request_sha256)
         if provider == 'openart_cli':
             if dry_run:
                 return {'attempt_id': attempt_id, 'request_sha256': request_sha256,
@@ -2990,8 +3028,7 @@ def _native_original_action(root, call):
 def _recoverable_native_original_action(root, call_id):
     from lib import production_images as images
     call = images.image_call_status(root, call_id)
-    if (call['state'] not in images.PENDING or not call.get('host_exception')
-            or call.get('host_receipt')):
+    if call['state'] not in images.PENDING - {'reserved'}:
         return None
     return _native_original_action(root, call)
 
@@ -3060,7 +3097,7 @@ def next_production_action(project_dir):
     board_actions = {}
     motion_action = None
     ready_original_action = None
-    uncertain_cli_actions = []
+    uncertain_cli_actions = set()
     recoverable_originals = []
     image_calls = []
     ready_images = []
@@ -3185,7 +3222,7 @@ def next_production_action(project_dir):
                 recoverable_originals.append(candidate)
             else:
                 if observed.get('status') == 'uncertain':
-                    uncertain_cli_actions.append(candidate)
+                    uncertain_cli_actions.add(candidate['action_id'])
                 remember_motion(candidate)
             continue
     if not contract_path.exists():
@@ -3219,19 +3256,16 @@ def next_production_action(project_dir):
                 inputs={'shot_id': sid}, reason='Producer prepares the one exact registered-route original request for this planned clip; engine admits and dispatches it.')
         blocked_shots[sid] = checked['errors']
     from lib.production_draft import first_cut_candidates, first_cut_media_status, latest_first_cut
-    # Save usable footage before waiting on another original. Its unchanged
-    # current partial cut does not render again; subsequent advance still
-    # collects/polls the exact pending operation, never another generation.
-    if board_action is None and motion_action is not None and motion_action in uncertain_cli_actions:
-        candidates = first_cut_candidates(root)
-        cut = latest_first_cut(root)
-        if (any(row['status'] == 'candidate' for row in candidates)
-                and (cut is None or first_cut_media_status(root, cut).get('status') != 'current')):
-            return action('compose_cut', 'cut', {'selections_sha256': _digest(selected),
-                'contract_sha256': contract_digest(contract), 'candidates_sha256': _digest(candidates)},
-                inputs={'candidates': candidates, 'blocked_shots': blocked_shots,
-                        'recoverable_originals': recoverable_originals + uncertain_cli_actions},
-                reason='Save the playable originals as a partial cut, retaining exact pending original collection actions.')
+    # Resolve exact original evidence before final assembly. An absent adapter
+    # result can mean either a running call or an interrupted completed call;
+    # the original collector distinguishes them without another generation.
+    # Independently ready board work cannot wait for that adapter's first
+    # native journal event. The finite existing preparation queue runs before
+    # uncertain CLI collection, just as independent ready motion does above.
+    if (board_action is not None and motion_action is not None
+            and motion_action['action_id'] in uncertain_cli_actions
+            and board_action['kind'] in {'prepare_board_image', 'begin_native_image', 'receive_native_image', 'promote_imported_board'}):
+        return board_action
     # Original recovery (receipt/collection/download) precedes board work;
     # board preparation precedes a known pending poll.
     if motion_action is not None and motion_action['kind'] != 'poll_openart_original':
@@ -3303,10 +3337,15 @@ def advance(project_dir, *, max_steps=8):
                 boards.reserve_board_image(root, slot, scope_id=scope, call_id=aid, images=images)
             elif kind == 'begin_native_image':
                 envelope = images.begin_native_image(root, action['subject'])
-                return {'status': 'host_action', 'action': next_production_action(root),
+                return {'status': 'host_action', 'action': _native_original_action(root,
+                            images.image_call_status(root, action['subject'])),
                         'host_envelope': envelope, 'steps': step + 1, 'provider_calls': 0}
             elif kind in {'collect_grok_original', 'collect_openart_original'}:
-                resume_original_attempt(root, action['subject'], request_sha256=action['binding']['request_sha256'])
+                collected = resume_original_attempt(root, action['subject'], request_sha256=action['binding']['request_sha256'])
+                if isinstance(collected, dict) and collected.get('status') == 'pending':
+                    return {'status': 'pending', 'action': action, 'steps': step + 1,
+                            'provider_calls': 0, 'original': collected,
+                            'reason': 'The exact original has no terminal result yet; resume this collection action without resubmitting.'}
             elif kind == 'begin_openart_original':
                 envelope = jobs.begin(root, action['subject'], authority_fn=prepare_openart_mcp_handoff)
                 # The producer returns this begun original's reply through its
@@ -3504,8 +3543,8 @@ def complete_action(project_dir, action, *, outcome):
                 boards.bind_imported_board(root, call['slot_id'], action['subject'], images=images)
             current = next_production_action(root)
             return {'status': _action_status(current), 'action': current, 'provider_calls': 0, 'replayed': True}
-    # A begun original without a retained reply never preempts independent
-    # clips, but its exact receive replay stays accepted at any later point.
+    # An exact begun original's receive stays accepted while independent work
+    # changes the selector's preferred action. Its host envelope is never emitted again.
     if not valid or (action != next_production_action(root) and not (
             action['kind'] == 'receive_openart_original'
             and action == _recoverable_original_action(root, action['subject']) or

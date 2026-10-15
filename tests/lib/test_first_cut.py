@@ -147,6 +147,35 @@ def test_pending_and_failed_originals_report_exact_reasons_without_repair(p):
     assert not list(p.root.glob('checkpoint_assets*')) and not list(p.root.glob('checkpoint_compose*'))
 
 
+def test_missing_disposition_refresh_preserves_current_media_and_immutable_cut(p):
+    from lib import production_execution as execution
+    p.select('entry', p.generate('entry'))
+    p.bind_upstream('interior')
+    p.transport.timeout_next = True
+    p.transport.fail_next = True
+    failed = p.generate('interior')
+
+    def compose(inputs):
+        Path(inputs['output_path']).write_bytes(b'SYNTHETIC retained partial export')
+        return ToolResult(success=True)
+
+    cut = draft.compose_first_cut(p.root, compose=compose)
+    before = {path: path.read_bytes() for path in p.root.rglob('*') if path.is_file()}
+    assert draft.first_cut_missing_status(p.root, cut) == {
+        'status': 'current', 'reasons': [], 'missing': cut['missing']}
+    aid = failed.data['production_attempt_id']
+    request = read(p.root / 'production_attempts' / aid / 'request.json')
+    execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'])
+    current = draft.first_cut_missing_status(p.root, cut)
+    assert current['status'] == 'stale' and current['reasons'] == ['missing_disposition_changed']
+    assert current['missing'][0]['reason'] == 'attempt_failed'
+    assert draft.first_cut_status(p.root, cut)['reasons'] == ['missing_disposition_changed']
+    assert draft.first_cut_media_status(p.root, cut) == {'status': 'current', 'reasons': []}
+    for path, data in before.items():
+        assert path.read_bytes() == data
+    assert len(draft._cut_records(p.root)) == 1
+
+
 def test_first_cut_api_has_no_external_audio_writer(p):
     p.generate('entry')
     before = {path: path.read_bytes() for path in p.root.rglob('*') if path.is_file()}

@@ -887,13 +887,16 @@ def _cut_reasons(root, cut, *, include_findings=True):
         reasons.append('contract_changed')
     current_findings = None
     if not reasons:
-        current_clips = [row for row in first_cut_candidates(root) if row['status'] == 'candidate']
+        candidates = first_cut_candidates(root)
+        current_clips = [row for row in candidates if row['status'] == 'candidate']
         if _clip_media_bindings(current_clips) != _clip_media_bindings(record['clips'], placed=True):
             reasons.append('candidate_bindings_changed')
         else:
             # Identical placed clips: each candidate row already resolved these
             # exact bytes' current findings and provenance like _clip_findings.
             current_findings = [{'shot_id': row['shot_id'], 'findings': row['findings']} for row in current_clips]
+        if include_findings and [row for row in candidates if row['status'] == 'missing'] != record['missing']:
+            reasons.append('missing_disposition_changed')
     if include_findings:
         if current_findings is None:
             current_findings = _clip_findings(root, record['clips'], current=True)
@@ -920,6 +923,25 @@ def first_cut_media_status(project_dir, cut):
     """
     reasons = _cut_reasons(Path(project_dir).resolve(), cut, include_findings=False)
     return {'status': 'stale' if reasons else 'current', 'reasons': reasons}
+
+
+@_status_read
+def first_cut_missing_status(project_dir, cut):
+    """Current missing-shot disposition, independent of unchanged export bytes.
+
+    A pending original can fail without changing the placed clips. Delivery
+    callers refresh their disclosure from ``missing`` without reencoding media.
+    The immutable cut record continues to describe the state at render time.
+    """
+    from lib import production_execution as execution
+    root = Path(project_dir).resolve()
+    path = _bound(root, {key: cut[key] for key in ('path', 'sha256')})
+    if path.parent != root / _CUTS or path.name != cut['sha256'] + '.json':
+        raise ValueError('first-cut missing status requires a canonical cut record')
+    record = execution._read(path)
+    missing = [row for row in first_cut_candidates(root) if row['status'] == 'missing']
+    reasons = ['missing_disposition_changed'] if missing != record['missing'] else []
+    return {'status': 'stale' if reasons else 'current', 'reasons': reasons, 'missing': missing}
 
 
 def disclosure_clip_map(record):

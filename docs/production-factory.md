@@ -207,6 +207,16 @@ an honest partial cut; no usable clip produces an incomplete result. Findings ar
 disclosures, not acceptance or repair gates. Preserve original media, rejected or
 superseded historical media, records and derived edits.
 
+Ready independent originals can dispatch concurrently. Before final assembly,
+collect each exact CLI original: a qualified nonterminal stream returns bounded
+`pending` with the same collection action, while an interrupted terminal result
+is recovered without another generation. Nonterminal evidence alone does not
+prove a worker is still running. Terminal failure requires the existing strict
+native failure evidence; uncertainty is never relabeled as failure. If an older
+partial cut's missing-shot disposition changes while its placed media stays the
+same, `first_cut_missing_status` supplies current disclosure rows without
+reencoding the export; the retained cut remains the record at render time.
+
 This factory adds no background music and has no audio-review gate. Keep returned
 provider audio as produced. The producer may state “no background music” in the
 prompt and disclose an observed mismatch, but must not claim listening or audio

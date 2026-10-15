@@ -1768,6 +1768,193 @@ def test_motion_waiting_original_does_not_hold_independent_ready_shot(p, monkeyp
     assert execution._attempts(p.root) == [original]
 
 
+def test_uncertain_cli_startup_does_not_hold_independent_ready_board(neutral_package, monkeypatch):
+    from lib import production_boards as boards
+    root, package, bind = neutral_package
+    request.prepare_package(root, bind(prospective_package(package)))
+    contract = execution.load_shot_contract(root)
+    originals = [{'attempt_id': 'synthetic-starting-' + shot['id'], 'shot_id': shot['id'],
+        'media_kind': 'motion', 'request_sha256': 'a'*64, 'scope': {'provider': 'grok_cli'}}
+        for shot in contract['shots']]
+    monkeypatch.setattr(execution, '_attempts', lambda _: originals)
+    monkeypatch.setattr(execution, '_state', lambda *a: {'status': 'uncertain'})
+    monkeypatch.setattr(execution, 'resume_original_attempt', lambda *a, **kw:
+        pytest.fail('independent board must precede startup-window collection'))
+    ready = boards.board_schedule(root, images=images)['ready_images']
+    assert ready
+    action = execution.next_production_action(root)
+    assert action['kind'] == 'prepare_board_image' and action['subject'] in ready
+
+
+@pytest.mark.parametrize('preempt_receive', [False, True])
+def test_begun_board_envelope_keeps_exact_receive_while_cli_original_pending(neutral_package, monkeypatch, preempt_receive):
+    from lib import production_boards as boards
+    root, package, bind = neutral_package
+    package = prospective_package(package)
+    request.prepare_package(root, bind(package))
+    prepared = boards.prepare_image_request(root, 'start', images=images)
+    scope = {'id': 'exact-start', 'status': 'approved', 'approved_by': 'SYNTHETIC creator fixture',
+        'project_id': package['project_id'], 'story_revision': 'r1', 'phase': 'image', 'provider': 'native_imagegen',
+        'evidence': {key: package['boards']['approval'][key] for key in ('path', 'sha256')},
+        'image_allowance': 2, 'allowed_image_routes': ['native_imagegen'],
+        'requests': {'start': prepared['request_sha256']}, 'attempts_per_shot': {'start': 1}}
+    write(root, 'production_scopes.json', {'version': '1.0', 'scopes': [scope]})
+    call = boards.reserve_board_image(root, 'start', scope_id=scope['id'], call_id='exact-start-original', images=images)
+    original = {'attempt_id': 'synthetic-running-video', 'shot_id': 's1', 'media_kind': 'motion',
+        'request_sha256': 'a'*64, 'scope': {'provider': 'grok_cli'}}
+    monkeypatch.setattr(execution, '_attempts', lambda _: [original])
+    monkeypatch.setattr(execution, '_state', lambda *a: {'status': 'uncertain'})
+    begun = execution.advance(root)
+    assert begun['host_envelope']['call_id'] == call['call_id']
+    assert begun['action']['kind'] == 'receive_native_image'
+    assert begun['action']['subject'] == call['call_id']
+    assert execution.next_production_action(root) == begun['action']
+    assert boards.board_schedule(root, images=images)['ready_images']
+    if preempt_receive:
+        other = execution._production_action(root, 'prepare_motion', subject='independent-shot', binding={}, host=True)
+        monkeypatch.setattr(execution, 'next_production_action', lambda _: other)
+    receipt = host_receipt(root, begun['host_envelope'])
+    execution.complete_action(root, begun['action'], outcome={'host_receipt': receipt})
+    assert images.image_call_status(root, call['call_id'])['state'] == 'imported'
+    assert images.image_usage(root)['total'] == 1
+    with pytest.raises(ValueError, match='already emitted'):
+        images.begin_native_image(root, call['call_id'])
+
+
+def test_running_cli_original_returns_pending_then_one_final_assembly(p, monkeypatch):
+    """Exercise real selector/adapter journals while the native call is running."""
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from lib import production_draft as draft
+    from tools.base_tool import ToolResult
+    for sid in ('entry', 'interior'):
+        if sid == 'interior':
+            p.bind_upstream(sid)
+        p.select(sid, p.generate(sid))
+    p.bind_upstream('payoff')
+    entered, release = threading.Event(), threading.Event()
+    transport = p.transport
+
+    def running(argv, **kwargs):
+        returned = transport(argv, **kwargs)
+        if '--prompt-file' in argv:
+            sid = argv[argv.index('--session-id') + 1]
+            original = transport.original_sessions[sid]
+            log = original['artifact'].parent.parent / 'events.jsonl'
+            events = [json.loads(line) for line in original['stream'].splitlines() if line.strip()]
+            log.write_text('\n'.join(json.dumps(event) for event in [events[0],
+                {'type': 'tool_call_update', 'toolCallId': 'native-1', 'status': 'in_progress'}]) + '\n')
+            entered.set()
+            assert release.wait(10), 'test did not release original native call'
+            log.write_text(original['stream'])
+        return returned
+
+    monkeypatch.setattr('tools._grok_cli_media.subprocess.run', running)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(p.generate, 'payoff')
+        try:
+            assert entered.wait(10)
+            action = execution.next_production_action(p.root)
+            assert action['kind'] == 'collect_grok_original'
+            pending = execution.advance(p.root)
+            assert pending['status'] == 'pending' and pending['steps'] == 1
+            assert pending['action'] == action
+            assert pending['original']['attempt_id'] == action['subject']
+            assert len(transport.native_requests) == 3
+            assert not draft._cut_records(p.root)
+        finally:
+            release.set()
+        assert future.result(timeout=10).success
+    assert execution.advance(p.root)['status'] == 'ready_to_compose'
+    renders = []
+    probe = draft._probe
+    monkeypatch.setattr(draft, '_probe', lambda path: dict(probe(path), duration_seconds=24.0)
+        if Path(path).name == 'first_cut.mp4' else probe(path))
+
+    def compose(inputs):
+        renders.append(inputs)
+        Path(inputs['output_path']).write_bytes(b'SYNTHETIC final export')
+        return ToolResult(success=True)
+
+    delivered = draft.deliver_standalone(p.root, compose=compose)
+    assert delivered['status'] == 'complete'
+    assert execution.advance(p.root)['status'] == 'complete'
+    assert len(renders) == 1 and len(transport.native_requests) == 3
+
+
+@pytest.mark.parametrize('terminal_failed', [False, True])
+def test_interrupted_cli_original_recovers_terminal_result_before_final_assembly(p, monkeypatch, terminal_failed):
+    from lib import production_draft as draft
+    from tools.base_tool import ToolResult
+    for sid in ('entry', 'interior'):
+        if sid == 'interior':
+            p.bind_upstream(sid)
+        p.select(sid, p.generate(sid))
+    p.bind_upstream('payoff')
+    p.transport.timeout_next = True
+    p.transport.fail_next = terminal_failed
+    original = p.generate('payoff')
+    aid = original.data['production_attempt_id']
+    assert execution.load_attempt_result(p.root, aid)['status'] == 'uncertain'
+    assert execution.next_production_action(p.root)['kind'] == 'collect_grok_original'
+    advanced = execution.advance(p.root)
+    assert advanced['status'] == 'ready_to_compose'
+    assert execution.load_attempt_result(p.root, aid)['status'] == ('failed' if terminal_failed else 'generated')
+    candidates = advanced['action']['inputs']['candidates']
+    assert candidates[-1]['status'] == ('missing' if terminal_failed else 'candidate')
+    if terminal_failed:
+        assert candidates[-1]['reason'] == 'attempt_failed'
+        request = json.loads((p.root / 'production_attempts' / aid / 'request.json').read_text())
+        assert execution.resume_original_attempt(p.root, aid,
+            request_sha256=request['request_sha256'])['status'] == 'failed'
+        assert execution.resume_original_attempt(p.root, aid,
+            request_sha256=request['request_sha256'], dry_run=True)['already_collected_original']
+    assert len(p.transport.native_requests) == len(execution._attempts(p.root)) == 3
+    assert not draft._cut_records(p.root)
+    duration = sum(row['duration_seconds'] for row in candidates if row['status'] == 'candidate')
+    probe = draft._probe
+    monkeypatch.setattr(draft, '_probe', lambda path: dict(probe(path), duration_seconds=duration)
+        if Path(path).name == 'first_cut.mp4' else probe(path))
+    renders = []
+
+    def compose(inputs):
+        renders.append(inputs)
+        Path(inputs['output_path']).write_bytes(b'SYNTHETIC recovered-original export')
+        return ToolResult(success=True)
+
+    cut = draft.deliver_standalone(p.root, compose=compose)
+    assert cut['status'] == ('partial' if terminal_failed else 'complete')
+    assert execution.advance(p.root)['status'] == 'complete'
+    assert len(renders) == 1 and len(p.transport.native_requests) == 3
+
+
+@pytest.mark.parametrize('defect', ['changed_arguments', 'missing_end', 'completed_update', 'retained_media'])
+def test_interrupted_cli_parser_error_cannot_fabricate_terminal_failure(p, defect):
+    p.transport.timeout_next = True
+    p.transport.fail_next = True
+    original = p.generate('entry')
+    aid = original.data['production_attempt_id']
+    request = json.loads((p.root / 'production_attempts' / aid / 'request.json').read_text())
+    session = p.transport.original_sessions[aid]
+    events = [json.loads(line) for line in session['stream'].splitlines() if line.strip()]
+    if defect == 'changed_arguments':
+        events[0]['rawInput']['duration'] = 1
+    elif defect == 'missing_end':
+        events.pop()
+    elif defect == 'completed_update':
+        events.insert(2, {'type': 'tool_call_update', 'toolCallId': 'native-1', 'status': 'completed',
+                         'rawOutput': {'path': str(session['artifact'])}})
+    elif defect == 'retained_media':
+        session['artifact'].write_bytes(b'SYNTHETIC original media cannot be erased by a failure label')
+    (session['artifact'].parent.parent / 'events.jsonl').write_text(
+        '\n'.join(json.dumps(event) for event in events) + '\n')
+    with pytest.raises(execution.ProductionGovernanceError):
+        execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'])
+    assert not (p.root / 'production_attempts' / aid / 'reconciliation.json').exists()
+    assert execution.load_attempt_result(p.root, aid)['status'] == 'uncertain'
+    assert len(p.transport.native_requests) == 1
+
+
 @pytest.mark.parametrize('cut', [
     {'status': 'incomplete', 'technical': {'has_audio': True}, 'missing': ['payoff']},
     {'status': 'complete', 'technical': None, 'missing': []}])
