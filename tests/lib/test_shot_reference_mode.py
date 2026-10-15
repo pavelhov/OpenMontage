@@ -145,7 +145,7 @@ def test_local_guided_payoff_source_retains_roles_and_required_native_pins(mixed
         assert packet['binding']['reference_mode'] == 'reference_guided'
         assert {r['id']: r['role'] for r in packet['binding']['references']} == {
             'start': 'start_frame', 'payoff': 'payoff_board', 'patient': 'identity_reference'}
-        with pytest.raises(ValueError, match='explicit OpenArt MCP reference route'):
+        with pytest.raises(ValueError, match='explicit native reference route'):
             request.source_packet(root, 'entry', provider='openart_cli')
 
 
