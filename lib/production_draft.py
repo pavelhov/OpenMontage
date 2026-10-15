@@ -960,6 +960,51 @@ def _check_disclosure(root, cut, record, disclosure):
         raise ValueError('disclosure does not describe this exact first cut and export')
     if sidecar.get('clips') != disclosure_clip_map(record):
         raise ValueError('disclosure clip map differs from the complete first-cut record')
+    return sidecar
+
+
+@_status_read
+def current_cut_disclosure(project_dir, cut):
+    """Latest retained actual-export observations for this current cut, or None.
+
+    Reuse the recorder's event binding and disclosure contract. Clip annotation
+    changes require the recorder's matching findings digest; neither this lookup
+    nor a retained observation establishes review coverage or certification.
+    """
+    from lib import production_execution as execution
+    from lib.events import read_events
+    root = Path(project_dir).resolve()
+    currency = first_cut_status(root, cut)
+    if currency['status'] != 'current' and currency['reasons'] != ['findings_changed']:
+        return None
+    record = execution._read(_bound(root, cut))
+    for event in reversed(read_events(root)):
+        if (event.get('event') != 'cut-disclosure-retained'
+                or event.get('project_id') != record['project_id']
+                or event.get('story_revision') != record['story_revision']
+                or event.get('first_cut') != cut or event.get('export') != record['export']):
+            continue
+        try:
+            binding = event['disclosure']
+            path = _bound(root, binding)
+            if (path.parent != root / 'production_first_cut_disclosures'
+                    or path.name != binding['sha256'] + '.json'
+                    or binding['path'] != str(path.relative_to(root))):
+                return None
+            sidecar = _check_disclosure(root, cut, record, binding)
+            if (sidecar.get('kind') != 'first_cut_disclosure' or sidecar.get('version') != '1.0'
+                    or not isinstance(sidecar.get('observations'), list)):
+                return None
+            findings_digest = sidecar.get('current_findings_sha256',
+                _findings_digest(root, record['clips'], current=False))
+            if findings_digest != _findings_digest(root, record['clips'], current=True):
+                return None
+            return {'disclosure': binding, 'observations': sidecar['observations']}
+        except (OSError, ValueError, TypeError, KeyError):
+            # Do not resurrect an older review when the latest matching retained
+            # disclosure has changed or no longer describes current annotations.
+            return None
+    return None
 
 
 @_write
