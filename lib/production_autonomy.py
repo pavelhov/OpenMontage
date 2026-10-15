@@ -67,6 +67,94 @@ def _validate_checkpoint_stages(root, stages):
     return gated
 
 
+STANDING_REPLAY_IGNORED = frozenset({'evidence', 'shots', 'activation_basis', 'planning_mode'})
+
+
+def effective_checkpoint_policy(project_dir, policy):
+    """Return a copy whose checkpoint stages are the pipeline's preauthorizable gates.
+
+    Requested order is kept; non-gated known stages are dropped and unknown
+    stage names are rejected.
+    """
+    stages, gated = _pipeline_checkpoint_stages(Path(project_dir))
+    requested = policy['checkpoint_stages']
+    unknown = [stage for stage in requested if stage not in stages]
+    if unknown:
+        raise ValueError('Unknown checkpoint stages for pipeline: ' + ', '.join(unknown))
+    effective = copy.deepcopy(policy)
+    effective['checkpoint_stages'] = [stage for stage in requested if stage in gated]
+    return effective
+
+
+def _same_standing_scope(retained, policy):
+    return ({k: v for k, v in retained.items() if k not in STANDING_REPLAY_IGNORED}
+            == {k: v for k, v in policy.items() if k not in STANDING_REPLAY_IGNORED})
+
+
+def standing_replay_policy(project_dir, *, package_binding, identity_id, run_command, policy=None):
+    """Return the retained policy when this is an exact same-command replay, else ``None``.
+
+    The candidate is the active policy, or the retained policy when the only
+    load failure is a missing canonical derived view (repaired by the existing
+    package preparer, then revalidated by the caller). Zero writes.
+    """
+    root = Path(project_dir).resolve()
+    preparation = root / 'artifacts/board_preparation.json'
+    if not preparation.is_file() or preparation.is_symlink() \
+            or _json(preparation).get('package_binding') != package_binding:
+        return None
+    active, _, _, reasons = load_active_policy(root)
+    candidate = active if not reasons else None
+    if active is None:
+        views = [root / 'artifacts' / (name + '.json') for name in ('script', 'scene_plan', 'asset_manifest')]
+        missing = [path for path in views if not path.is_file() or path.is_symlink()]
+        policy_path = root / POLICY_ARTIFACT
+        if (missing and len(reasons) == 1 and 'No such file or directory' in reasons[0]
+                and any(str(path) in reasons[0] for path in missing)
+                and policy_path.is_file() and not policy_path.is_symlink()):
+            candidate = _json(policy_path)
+    if candidate is None:
+        return None
+    basis = candidate.get('activation_basis', {})
+    if basis.get('identity_id') != identity_id or basis.get('run_command') != run_command:
+        return None
+    if policy is not None and not _same_standing_scope(candidate, effective_checkpoint_policy(root, policy)):
+        return None
+    return candidate
+
+
+def standing_policy(*, policy_id, project_id, story_revision, setup, evidence):
+    """Build the standing-run policy from plain setup/package values (canonical key order)."""
+    return {'version': '1.0', 'policy_id': policy_id, 'mode': 'auto_continue',
+        'project_id': project_id, 'story_revision': story_revision,
+        'providers': copy.deepcopy(setup['providers']), 'caps': copy.deepcopy(setup['caps']), 'shots': {},
+        'locked': {'cast': {}, 'dialogue': {}, 'sources': [], 'story_predicates': [], 'controls': {}},
+        'flex': copy.deepcopy(setup['flex']), 'checkpoint_stages': copy.deepcopy(setup['checkpoint_stages']),
+        'planning_mode': 'shot_local_v1', 'evidence': copy.deepcopy(evidence)}
+
+
+def standing_baselines(project_dir, templates):
+    """Build per-shot activation baselines from prepared project state and native inputs."""
+    from lib import production_execution as execution
+    root = Path(project_dir).resolve()
+    contract = execution.load_shot_contract(root)
+    if not isinstance(templates, dict) or set(templates) != {shot['id'] for shot in contract['shots']}:
+        raise ValueError('request_templates must contain one native input object per prepared shot')
+    script = _json(root / 'artifacts/script.json')
+    baselines = {}
+    for shot in contract['shots']:
+        sid = shot['id']
+        projection = current_projection(root, sid)
+        baselines[sid] = {
+            'projection': projection,
+            'planned_request_template': execution.planned_request_template(templates[sid], project_dir=root),
+            'script_snapshot': script,
+            'dialogue_coverage': dialogue_occurrences(projection),
+            'approval_plan_sha256': execution.approval_plan_digest(contract, sid),
+        }
+    return baselines
+
+
 def _bound_authorization(root, record, identity_id):
     binding = record.get('authorization')
     if not isinstance(binding, dict) or set(binding) != {'path', 'sha256'}:
@@ -516,11 +604,9 @@ def activate_standing_run(project_dir, *, policy, baselines, standing_setup, run
         if path.exists():
             retained = _json(path)
             basis = retained.get('activation_basis', {})
-            ignored = {'evidence', 'shots', 'activation_basis', 'planning_mode'}
             if (basis.get('identity_id') == identity_id and basis.get('standing_setup') == standing_setup
                     and basis.get('run_command') == run_command
-                    and {k: v for k, v in retained.items() if k not in ignored}
-                        == {k: v for k, v in policy.items() if k not in ignored}):
+                    and _same_standing_scope(retained, policy)):
                 active, sha, decision_id, reasons = load_active_policy(root)
                 if active is not None:
                     # Resume uses the retained internally derived plan. Current

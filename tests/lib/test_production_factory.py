@@ -3651,3 +3651,60 @@ def test_u2_lost_unsaved_next_handoff_stays_consumed_and_closes_out_partial(neut
     assert images.image_call_status(root, next_id)['state'] == 'imported'
     assert late['action']['kind'] != 'begin_native_image'
     assert images.image_call_status(root, next_id)["handoff_lost"] == status["handoff_lost"]
+
+
+def test_effective_checkpoint_policy_filters_to_gated_stages_in_requested_order(tmp_path):
+    kwargs = standing_fixture(tmp_path)
+    policy = copy.deepcopy(kwargs['policy'])
+    policy['checkpoint_stages'] = ['scene_plan', 'publish', 'edit', 'proposal', 'research']
+    before = copy.deepcopy(policy)
+    effective = pa.effective_checkpoint_policy(tmp_path, policy)
+    assert effective['checkpoint_stages'] == ['scene_plan', 'proposal']
+    assert policy == before and {k: v for k, v in effective.items() if k != 'checkpoint_stages'} == \
+        {k: v for k, v in before.items() if k != 'checkpoint_stages'}
+    policy['checkpoint_stages'] = ['script', 'comopse']
+    with pytest.raises(ValueError, match='Unknown checkpoint stages for pipeline: comopse'):
+        pa.effective_checkpoint_policy(tmp_path, policy)
+
+
+def test_standing_replay_policy_requires_exact_package_identity_command_and_scope(tmp_path):
+    kwargs = standing_fixture(tmp_path)
+    pa.activate_standing_run(tmp_path, **kwargs)
+    binding = write(tmp_path, 'notes/package.json', {'fixture': True})
+    args = dict(identity_id='fixture-identity', run_command=kwargs['run_command'])
+    assert pa.standing_replay_policy(tmp_path, package_binding=binding, **args) is None
+    write(tmp_path, 'artifacts/board_preparation.json', {'package_binding': binding})
+    active = pa.load_active_policy(tmp_path)[0]
+    assert pa.standing_replay_policy(tmp_path, package_binding=binding, **args) == active
+    assert pa.standing_replay_policy(tmp_path, package_binding=binding, policy=kwargs['policy'], **args) == active
+    assert pa.standing_replay_policy(tmp_path, package_binding=dict(binding, sha256='0' * 64), **args) is None
+    assert pa.standing_replay_policy(tmp_path, package_binding=binding, identity_id='other',
+                                     run_command=kwargs['run_command']) is None
+    assert pa.standing_replay_policy(tmp_path, package_binding=binding, identity_id='fixture-identity',
+                                     run_command=dict(kwargs['run_command'], sha256='0' * 64)) is None
+    changed = copy.deepcopy(kwargs['policy']); changed['policy_id'] = 'different'
+    assert pa.standing_replay_policy(tmp_path, package_binding=binding, policy=changed, **args) is None
+    (tmp_path / 'artifacts/scene_plan.json').unlink()
+    retained = json.loads((tmp_path / pa.POLICY_ARTIFACT).read_text())
+    assert pa.load_active_policy(tmp_path)[0] is None
+    assert pa.standing_replay_policy(tmp_path, package_binding=binding, policy=kwargs['policy'], **args) == retained
+
+
+def test_standing_baselines_and_policy_build_the_activation_inputs_from_plain_values(tmp_path):
+    kwargs = standing_fixture(tmp_path)
+    inputs = {'duration': 8, 'image_path': str(tmp_path / 'assets/start.svg')}
+    assert pa.standing_baselines(tmp_path, {'entry': inputs}) == kwargs['baselines']
+    with pytest.raises(ValueError, match='one native input object per prepared shot'):
+        pa.standing_baselines(tmp_path, {'entry': inputs, 'extra': {}})
+    setup = {'providers': [{'id': 'p'}], 'caps': {'c': 1}, 'flex': {'duration_s': [8]}, 'checkpoint_stages': ['script']}
+    policy = pa.standing_policy(policy_id='pid', project_id='proj', story_revision=2, setup=setup,
+                                evidence={'path': 'e', 'sha256': 'f'})
+    assert list(policy) == ['version', 'policy_id', 'mode', 'project_id', 'story_revision', 'providers', 'caps',
+        'shots', 'locked', 'flex', 'checkpoint_stages', 'planning_mode', 'evidence']
+    assert policy == {'version': '1.0', 'policy_id': 'pid', 'mode': 'auto_continue', 'project_id': 'proj',
+        'story_revision': 2, 'providers': [{'id': 'p'}], 'caps': {'c': 1}, 'shots': {},
+        'locked': {'cast': {}, 'dialogue': {}, 'sources': [], 'story_predicates': [], 'controls': {}},
+        'flex': {'duration_s': [8]}, 'checkpoint_stages': ['script'], 'planning_mode': 'shot_local_v1',
+        'evidence': {'path': 'e', 'sha256': 'f'}}
+    policy['providers'][0]['id'] = 'mutated'
+    assert setup['providers'][0]['id'] == 'p'
