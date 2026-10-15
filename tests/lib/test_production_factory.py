@@ -2188,6 +2188,85 @@ def grok_final_fixture(tmp_path, **extra):
     return contract, inputs, observation
 
 
+def test_guided_grok_actual_standing_preparation_and_preflight(neutral_package, monkeypatch):
+    """Exercise all admission layers with retained synthetic bytes, never transport."""
+    from tools.video import grok_cli_video
+    monkeypatch.setattr(grok_cli_video, 'execute_grok_cli_media',
+                        lambda **kw: pytest.fail('offline admission must not call a provider'))
+    from tests.lib.test_production_package_authoring import supplied_payoff_package
+    tmp_path, base, bind = neutral_package
+    compact = supplied_payoff_package(tmp_path, base)
+    compact['shots'][0]['script'] = 'SYNTHETIC exact supplied context'
+    request.prepare_package(tmp_path, bind(compact))
+    contract = execution.load_shot_contract(tmp_path); shot = contract['shots'][0]
+    guide = next(a for a in contract['assets'] if a['id'] == 'actor')
+    inputs = {'project_dir': str(tmp_path), 'governance': {'shot_id': 's1'},
+        'prompt': 'SYNTHETIC placeholder before compilation', 'operation': 'reference_to_video',
+        'duration': 5, 'allow_unknown_cost': True,
+        'reference_image_paths': [str(tmp_path / a['path']) for a in contract['assets']],
+        'output_path': str(tmp_path / 'guided.mp4'), 'compiled_request_id': 'guided',
+        'preparation_review_id': 'guided'}
+    kwargs = standing_treatment_fixture(tmp_path)
+    kwargs['policy']['providers'] = [p for p in kwargs['policy']['providers'] if p['id'] == 'grok_cli']
+    kwargs['baselines']['s1']['planned_request_template'] = execution.planned_request_template(inputs, project_dir=tmp_path)
+    setup = json.loads((tmp_path / kwargs['standing_setup']['path']).read_text())
+    setup.pop('authorization'); setup['providers'] = copy.deepcopy(kwargs['policy']['providers'])
+    setup['source_transfer'] = [t for t in setup['source_transfer'] if t['provider'] == 'grok_cli']
+    kwargs['standing_setup'] = creator_fixture(tmp_path, 'standing', setup)
+    command = json.loads((tmp_path / kwargs['run_command']['path']).read_text())
+    command.pop('authorization'); command['standing_setup_sha256'] = kwargs['standing_setup']['sha256']
+    kwargs['run_command'] = creator_fixture(tmp_path, 'command', command)
+    invalid = copy.deepcopy(kwargs['baselines'])
+    invalid['s1']['planned_request_template']['inputs']['operation'] = 'first_last_frame'
+    with execution._lock(tmp_path):
+        pass
+    before = file_bytes(tmp_path)
+    with pytest.raises(pa.StandingSetupRequired, match='requires reference_to_video'):
+        pa.activate_standing_run(tmp_path, **dict(kwargs, baselines=invalid))
+    assert file_bytes(tmp_path) == before
+    assert pa.activate_standing_run(tmp_path, **kwargs)['provider_calls'] == 0
+    observation = {'cli_version': '1.0.34', 'grok_path': '/SYNTHETIC/offline/grok'}
+    authored = request.compile_provider_prompt(tmp_path, 's1', provider='grok_cli')
+    inputs['prompt'] = authored['prompt']
+    native = request.prepare_grok_native(inputs, observation)
+    timing = {'method': 'segmented_estimate', 'duration_seconds': 5, 'language': 'en', 'margin_seconds': .5,
+        'rationale': 'SYNTHETIC offline fixture', 'overlap_policy': 'serial', 'overlap_rationale': 'SYNTHETIC serial',
+        'segments': [{'dialogue_index': i, 'text_sha256': request.digest(line['text']), 'language': 'en',
+            'word_count': 2, 'words_per_minute': 180, 'pause_seconds': 0, 'rationale': 'SYNTHETIC fixture'}
+            for i, line in enumerate(shot['dialogue'])],
+        'action_windows': [{'source_pointer': '/shot_contract/shots/0/' + key, 'value_sha256': request.digest(shot[key]),
+            'start_seconds': start, 'end_seconds': end, 'rationale': 'SYNTHETIC fixture'}
+            for key, start, end in [('dominant_action', .1, 3), ('completed_end_state', 3.1, 4.4)]]}
+    judgment = {'version': '1.0', 'reviewer': 'SYNTHETIC offline reviewer', 'status': 'pass',
+        'evidence_kind': 'reviewed', 'predicates': [{'name': p, 'status': 'pass', 'severity': 'critical',
+            'evidence': 'SYNTHETIC software fixture only'} for p in sorted(request.PREDICATES)]}
+    for extra in ({'first_frame': str(tmp_path / guide['path'])},
+                  {'reference_image_paths': [str(tmp_path / guide['path'])]}):
+        changed = dict(inputs, **extra)
+        before = file_bytes(tmp_path)
+        with pytest.raises(ValueError, match='guided references'):
+            request.prepare_compiled_request(changed, request.prepare_grok_native(changed, observation),
+                {'source': 'real'}, coverage=authored['coverage'], timing=timing, review=judgment,
+                persist=True, require_passing_review=True)
+        assert file_bytes(tmp_path) == before
+    compiled, _ = request.prepare_compiled_request(inputs, native, {'source': 'real'},
+        coverage=authored['coverage'], timing=timing, review=judgment, persist=True, require_passing_review=True)
+    assert all('path' not in ref for ref in compiled['source_binding']['references'])
+    scope = pa.derive_scope(tmp_path, inputs, provider='grok_cli', observation=observation)
+    inputs['governance']['scope_id'] = scope['id']
+    token = execution._GROK_COMPATIBILITY.set(observation)
+    try:
+        before = file_bytes(tmp_path)
+        assert execution.preflight(grok_cli_video.GrokCLIVideo(), inputs)['governed']
+        assert file_bytes(tmp_path) == before
+        (tmp_path / guide['path']).write_bytes(b'SYNTHETIC changed reviewed source')
+        with pytest.raises(ValueError):
+            execution.preflight(grok_cli_video.GrokCLIVideo(), inputs)
+        assert not execution._attempts(tmp_path)
+    finally:
+        execution._GROK_COMPATIBILITY.reset(token)
+
+
 def test_grok_final_inline_batch_scope_revalidates_after_original_reservation(tmp_path):
     contract, inputs, observation = grok_final_fixture(tmp_path)
     scope = pa.derive_scope(tmp_path, inputs, provider='grok_cli', observation=observation)

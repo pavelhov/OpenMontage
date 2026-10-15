@@ -88,6 +88,38 @@ def test_public_preparation_derives_only_authenticated_review_bindings(generated
         bind_generated_review(generated_carrier_preparation, incomplete)
 
 
+@pytest.mark.parametrize('damage', [None, 'review_status', 'predicate', 'duplicate_predicate',
+                                   'live_fixture', 'timing', 'missing_review'])
+def test_passing_preparation_uses_one_current_packet_before_publication(generated_carrier_preparation, monkeypatch, damage):
+    from tests.lib.test_production_factory import file_bytes
+    from unittest.mock import Mock
+    root, inputs, native, profile, compiled, review = generated_carrier_preparation
+    inputs = dict(inputs, compiled_request_id='passing-once', preparation_review_id='passing-once')
+    judgment = {k: copy.deepcopy(v) for k, v in review.items()
+                if k not in {'review_id', 'subject_sha256', 'composite_boards'}}
+    timing = copy.deepcopy(compiled['timing'])
+    if damage == 'review_status': judgment['status'] = 'unknown'
+    elif damage == 'predicate': judgment['predicates'][0]['status'] = 'unknown'
+    elif damage == 'duplicate_predicate': judgment['predicates'].append(copy.deepcopy(judgment['predicates'][0]))
+    elif damage == 'live_fixture': profile = {'source': 'real'}
+    elif damage == 'timing': timing['duration_seconds'] = 100
+    elif damage == 'missing_review': judgment = None
+    packet_reads = Mock(wraps=request.source_packet)
+    monkeypatch.setattr(request, 'source_packet', packet_reads)
+    before = file_bytes(root)
+    kwargs = dict(coverage=compiled['coverage'], timing=timing, review=judgment,
+                  persist=True, require_passing_review=True)
+    if damage:
+        with pytest.raises(ValueError): request.prepare_compiled_request(inputs, native, profile, **kwargs)
+        assert file_bytes(root) == before
+    else:
+        built, bound = request.prepare_compiled_request(inputs, native, profile, **kwargs)
+        assert built == compiled and bound['status'] == 'pass'
+        assert json.loads((root / 'artifacts/compiled_request-passing-once.json').read_text()) == built
+        assert json.loads((root / 'artifacts/preparation_review-passing-once.json').read_text()) == bound
+    assert packet_reads.call_count == (0 if damage == 'missing_review' else 1)
+
+
 def test_preparation_fills_only_omitted_mechanical_timing_bindings(package):
     root, inputs, native, profile, compiled, _ = package
     authored = copy.deepcopy(compiled['timing'])
@@ -1531,3 +1563,26 @@ def test_compact_guided_payoff_stays_semantic_without_native_consumer(neutral_pa
     original = [{k:v for k,v in payoff.items() if k != 'native_required'}]
     with pytest.raises(ValueError, match='native requirement'):
         request._replay_reference_projection(root, 's1', scene, original, [payoff], contract)
+
+
+def test_grok_guided_route_requires_exact_operation():
+    projection = {'shot': {'id': 's1', 'reference_mode': 'reference_guided'}, 'contract_snapshot': {}}
+    assert request.route_treatment_error(projection, provider='grok_cli', operation='reference_to_video') is None
+    for operation in (None, 'image_to_video', 'first_last_frame'):
+        assert 'requires reference_to_video' in request.route_treatment_error(projection, provider='grok_cli', operation=operation)
+
+
+@pytest.mark.parametrize('damage', [None, 'operation', 'missing', 'foreign', 'wrong_role', 'unsupported'])
+def test_grok_guided_binds_exact_shot_reference_consumers(tmp_path, damage):
+    path = str(tmp_path / 'identity.png')
+    packet = {'binding': {'references': [{'id': 'tung', 'role': 'reference_image', 'sha256': 'a'*64, 'path': path}]}}
+    native = {'request': {'operation': 'reference_to_video', 'input_assets': [{'role': 'reference', 'sha256': 'a'*64, 'path': path}]}}
+    if damage == 'operation': native['request']['operation'] = 'first_last_frame'
+    if damage == 'missing': native['request']['input_assets'] = []
+    if damage == 'foreign': native['request']['input_assets'].append({'role': 'reference', 'sha256': 'b'*64, 'path': path})
+    if damage == 'wrong_role': native['request']['input_assets'][0]['role'] = 'first_frame'
+    if damage == 'unsupported': packet['binding']['references'].append({'id': 'audio', 'role': 'reference_audio', 'sha256': 'c'*64, 'path': path})
+    if damage:
+        with pytest.raises(ValueError): request._validate_grok_guided_assets(packet, native)
+    else:
+        request._validate_grok_guided_assets(packet, native)

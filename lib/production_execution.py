@@ -973,8 +973,9 @@ def preflight(tool, inputs, *, _local_continuation=None):
         if contract.get('project_id') != marker.get('project_id'):
             _fail('shot contract project mismatch')
         scoped_shot = next((shot for shot in contract.get('shots', []) if shot.get('id') == shot_id), {})
-        if scoped_shot.get('reference_mode', contract.get('reference_mode')) == 'reference_guided' and provider != 'openart_mcp':
-            _fail('reference-guided production requires its explicit OpenArt MCP route')
+        if scoped_shot.get('reference_mode', contract.get('reference_mode')) == 'reference_guided':
+            if provider != 'openart_mcp' and not (provider == 'grok_cli' and inputs.get('operation') == 'reference_to_video'):
+                _fail('reference-guided production requires its explicit native reference route')
         checked = validate_shot_contract(contract, project_dir=root, shot_id=shot_id,
             story_revision=marker['story_revision'], selected_upstream=load_selected_attempts(root))
         if not checked['eligible']:
@@ -3539,7 +3540,7 @@ def complete_action(project_dir, action, *, outcome):
                 _fail('authored preparation convenience requires the retained singleton Grok route')
             from tools.tool_registry import registry
             from tools._grok_cli_media import observe_grok_cli_compatibility, DEFAULT_GROK_PATH
-            from lib.production_request import prep_builder, prepare_compiled_request, validate_preparation_evidence, source_packet
+            from lib.production_request import prep_builder, prepare_compiled_request
             import os
             registry.ensure_discovered('tools.video')
             tool = registry.get('grok_cli_video')
@@ -3550,12 +3551,9 @@ def complete_action(project_dir, action, *, outcome):
             observation = observe_grok_cli_compatibility(configured, cwd=inputs.get('cwd') or root)
             native = prep_builder('grok_cli')(inputs, observation)
             profile = {'source': 'real'}
-            compiled, reviewed = prepare_compiled_request(inputs, native, profile, coverage=draft['coverage'],
-                timing=preparation['timing'], review=preparation['review'])
-            packet = source_packet(root, aid, provider='grok_cli', native=native)
-            validate_preparation_evidence(compiled, reviewed, inputs, native, profile, packet)
             prepare_compiled_request(inputs, native, profile, coverage=draft['coverage'],
-                timing=preparation['timing'], review=preparation['review'], persist=True)
+                timing=preparation['timing'], review=preparation['review'], persist=True,
+                require_passing_review=True)
             outcome = {'inputs': inputs, 'provider': 'grok_cli', 'observation': observation}
         if set(outcome) - {'inputs', 'provider', 'observation'} or not {'inputs', 'provider'} <= set(outcome):
             _fail('motion preparation requires exact inputs and approved provider')

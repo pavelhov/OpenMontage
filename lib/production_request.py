@@ -274,8 +274,8 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
         raise ValueError('contract project mismatch')
     index, shot = next((i, s) for i, s in enumerate(contract['shots']) if s['id'] == shot_id)
     reference_guided = (shot.get('reference_mode', contract.get('reference_mode')) == 'reference_guided')
-    if reference_guided and provider != 'openart_mcp':
-        raise ValueError('reference-guided contract requires the explicit OpenArt MCP reference route')
+    if reference_guided and provider not in {'openart_mcp', 'grok_cli'}:
+        raise ValueError('reference-guided contract requires an explicit native reference route')
     frame_conditioned = shot.get('reference_mode', contract.get('reference_mode')) == 'frame_conditioned'
     frame_input = None
     if frame_conditioned:
@@ -818,7 +818,8 @@ def prep_builder(provider):
     raise ValueError('provider outside Auto-continue')
 
 
-def prepare_compiled_request(inputs, native, profile, *, coverage, timing, review=None, persist=False):
+def prepare_compiled_request(inputs, native, profile, *, coverage, timing, review=None, persist=False,
+                             require_passing_review=False):
     """Build the compiled sidecar after a retained preview; never judge semantics.
 
     With no ``review``, return the compiled request as before. With a supplied
@@ -829,11 +830,15 @@ def prepare_compiled_request(inputs, native, profile, *, coverage, timing, revie
     an exact existing record is reused and conflicting records reject before any
     publication. The two writes are individually atomic, not a transaction.
     Reviewer, status, evidence kind and predicates remain supplied judgment,
-    including failures or unknowns. Retain the normal preparation/admission gate.
+    including failures or unknowns. ``require_passing_review=True`` checks the
+    normal preparation gate against this same current packet before publication.
+    Dispatch still performs its own fresh preparation/admission checks.
     """
     from lib.production_execution import planned_request_digest
     if persist and review is None:
         raise ValueError('persisting preparation requires an explicit reviewer-authored review')
+    if require_passing_review and review is None:
+        raise ValueError('passing preparation requires an explicit reviewer-authored review')
     root = Path(inputs['project_dir']).resolve()
     packet = source_packet(root, inputs['governance']['shot_id'], provider=native.get('provider', 'openart_cli'), native=native)
     # Bind mechanical source digests/counts from the authenticated source packet.
@@ -876,6 +881,8 @@ def prepare_compiled_request(inputs, native, profile, *, coverage, timing, revie
     if review is None:
         return value
     bound = _bind_preparation_review(inputs, packet, value, review)
+    if require_passing_review:
+        validate_preparation_evidence(value, bound, inputs, native, profile, packet)
     if persist:
         from lib.production_execution import _artifact_path, _inside, _write_new
         records = [(_id(inputs.get('compiled_request_id')), 'compiled_request-', value),
@@ -1048,6 +1055,13 @@ def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=
         media_fields = ('startFrame', 'endFrame', 'visualReferences', 'characterReferenceImageUrls', 'environmentReferenceImageUrl') if mcp else ('image', 'images', 'first_frame', 'last_frame', 'keyframes', 'references', 'voices', 'audio')
         if (mcp and (native.get('input_assets') or any(key in body['params'] and body['params'][key] not in ([], None) for key in media_fields))) or (not mcp and any(key in body['params'] for key in media_fields)):
             raise ValueError('reference-free native request contains image/reference controls')
+    elif grok and packet['binding'].get('reference_mode') == 'reference_guided':
+        _validate_grok_guided_assets(packet, native)
+        from lib.production_execution import _artifact_path
+        root = Path(inputs['project_dir']).resolve()
+        manifest_path = _artifact_path(root, 'asset_manifest.json')
+        _check_frame_hard_inputs(packet, native, _read(root, 'scene_plan.json'),
+            _read(root, 'asset_manifest.json') if manifest_path.exists() else None, root)
     elif grok:
         refs = packet['binding']['references']
         frame = packet['binding'].get('frame_input')
@@ -1088,7 +1102,7 @@ def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=
     validate_timing(compiled['timing'], packet, inputs['project_dir'], body)
 
 
-def route_treatment_error(projection, *, provider, model=None, mode=None, native_capabilities=None):
+def route_treatment_error(projection, *, provider, model=None, mode=None, operation=None, native_capabilities=None):
     """Pure input-treatment feasibility from authored roles, before media exists.
 
     This checks explicit guided/frame native-mode and role support. Reviewed
@@ -1106,6 +1120,10 @@ def route_treatment_error(projection, *, provider, model=None, mode=None, native
             return prefix + 'frame-conditioned treatment requires Grok CLI or OpenArt MCP image2video'
         if (native_capabilities or {}).get('roles', {}).get('first_frame', {}).get('supported') is not True:
             return prefix + 'frame-conditioned treatment requires supported native first_frame'
+        return None
+    if provider == 'grok_cli':
+        if operation != 'reference_to_video':
+            return prefix + 'reference-guided Grok treatment requires reference_to_video'
         return None
     if provider != 'openart_mcp' or mode not in REFERENCE_GUIDED_MODES:
         return prefix + 'reference-guided contract requires OpenArt MCP element2video or generate-shot-video'
@@ -1149,11 +1167,28 @@ def _validate_frame_native(packet, native, *, submitted=None):
             raise ValueError('frame-conditioned request omits separately required native reference ' + ref['role'])
 
 
+def _validate_grok_guided_assets(packet, native):
+    """Guidance images are exact shot-local consumers, never implicit frame pins."""
+    if native['request'].get('operation') != 'reference_to_video':
+        raise ValueError('reference-guided Grok treatment requires reference_to_video')
+    refs = packet['binding']['references']
+    approved = {ref['sha256'] for ref in refs if ref['role'] == 'reference_image'}
+    submitted = native['request']['input_assets']
+    actual = {asset['sha256'] for asset in submitted}
+    if not approved or any(asset['role'] != 'reference' for asset in submitted) or actual != approved:
+        raise ValueError('Grok guided references must match all approved shot reference images exactly')
+    if (any(ref.get('native_required') is True and ref['role'] in {'start_frame', 'end_frame'} for ref in refs)
+            or any(ref.get('native_required') is not False and ref['role'] not in {
+                'reference_image', 'identity_reference', 'start_frame', 'end_frame'} for ref in refs)):
+        raise ValueError('Grok guided request omits a separately required native reference role')
+
+
 def _check_frame_hard_inputs(packet, native, scene, manifest, root):
     """Keep separately authored native obligations independent of treatment."""
     submitted = native.get('input_assets', [])
     if native.get('provider') == 'grok_cli':
-        submitted = [{'role': a['role'], 'source_sha256': a['sha256']} for a in native['request']['input_assets']]
+        submitted = [{'role': {'reference': 'reference_image', 'keyframe': 'timed_keyframe'}.get(a['role'], a['role']),
+                      'source_sha256': a['sha256']} for a in native['request']['input_assets']]
     view = {**native, 'input_assets': submitted}
     _check_required_native_controls(scene, manifest, packet['binding']['shot_id'], native=view, project_dir=root)
     obligations = _manifest_requirement_binding(manifest, packet['binding']['shot_id'])

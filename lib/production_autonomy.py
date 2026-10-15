@@ -1817,7 +1817,8 @@ def _validate_standing_route_treatments(policy, baselines):
                         rejected.append(prefix + 'native capabilities unavailable: ' + capabilities)
                         continue
                 reason = preparation.route_treatment_error(projection, provider=provider, model=model,
-                    mode=mode, native_capabilities=capabilities)
+                    mode=mode, operation=baseline['planned_request_template']['inputs'].get('operation'),
+                    native_capabilities=capabilities)
                 if reason is None:
                     compatible = True
                     break
