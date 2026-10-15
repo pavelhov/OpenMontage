@@ -1265,6 +1265,81 @@ def test_shootable_castless_shot_needs_no_dummy_names(tmp_path):
     assert 'Sound: Dialogue and cutlery clatter SFX only; no background music.' in prompt
 
 
+@pytest.mark.parametrize('end_state', [
+    'The plate is still sliding toward the edge.',
+    'The plate has fallen and shattered on the floor.',
+])
+def test_shootable_ending_label_preserves_authored_state(tmp_path, end_state):
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    root, contract = shootable_project(tmp_path, cast=False)
+    shot = contract['shots'][0]
+    # Identical authored directions at distinct source pointers remain distinct.
+    shot['dominant_action'] = shot['completed_end_state'] = end_state
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    for s in contract['shots']:
+        s['review']['subject_sha256'] = shot_review_subject(contract, s['id'])
+    write(root / 'artifacts/shot_contract.json', contract)
+    before = _tree(root)
+    compiled = request.compile_prompt(root, 'entry')
+    assert 'End of clip: ' + end_state + '\n' in compiled['prompt']
+    assert 'the action is finished on screen' not in compiled['prompt']
+    assert compiled['prompt'].count(end_state) == 2
+    spans = [span for span in compiled['coverage'] if span['source_pointer'] in {
+        '/shot_contract/shots/0/dominant_action', '/shot_contract/shots/0/completed_end_state'}]
+    assert len(spans) == 2 and spans[0]['end'] <= spans[1]['start']
+    for span in spans:
+        assert compiled['prompt'][span['start']:span['end']] == end_state
+        assert span['value_sha256'] == span['fragment_sha256'] == request.digest(end_state)
+    assert _tree(root) == before
+
+
+@pytest.mark.parametrize('provider,model', [
+    ('openart_cli', None), ('grok_cli', None), ('openart_mcp', 'fixture-model'), ('openart_mcp', 'smart-shot')])
+@pytest.mark.parametrize('labels', ['neutral', 'old_ending', 'old_ending_and_action'])
+@pytest.mark.parametrize('no_music', [False, True])
+def test_historical_shootable_labels_keep_exact_original_coverage(tmp_path, provider, model, labels, no_music):
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    root, contract = shootable_project(tmp_path)
+    del contract['shots'][0]['sound']
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    for s in contract['shots']:
+        s['review']['subject_sha256'] = shot_review_subject(contract, s['id'])
+    write(root / 'artifacts/shot_contract.json', contract)
+    before = _tree(root)
+    packet = request._historical_source_packet(root, 'entry', provider=provider)
+    retained = copy.deepcopy(packet)
+    for row in retained['occurrences']:
+        if row['source_pointer'].endswith('/completed_end_state'):
+            row['before'] = ('End of clip: ' if labels == 'neutral' else
+                             'Ending frame (the action is finished on screen): ')
+        if labels == 'old_ending_and_action' and row['source_pointer'].endswith('/dominant_action'):
+            row['before'] = 'Main action (one continuous beat): '
+    pointer = ('/arguments/prompt' if provider == 'grok_cli' else
+               '/params/sceneDescription' if model == 'smart-shot' else '/params/prompt')
+    original = request._compile_packet(retained, native_pointer=pointer)
+    prompt = original['prompt'] + (request.NO_MUSIC_DIRECTION if no_music else '')
+    if provider == 'grok_cli':
+        prompt = prompt.rstrip('\n')  # The native Grok seal retains this spelling.
+    canonical = request._compile_historical_provider_prompt(root, 'entry', provider=provider,
+        native={'model': model, 'body': {}})
+    assert request.historical_preparation_matches(prompt, original['coverage'], canonical)
+    assert not request.historical_preparation_matches(prompt + ' Changed direction.', original['coverage'], canonical)
+    assert not request.historical_preparation_matches(
+        prompt.replace(contract['shots'][0]['completed_end_state'], 'A different authored ending.'),
+        original['coverage'], canonical)
+    assert not request.historical_preparation_matches(
+        prompt.replace('End of clip: ', 'End of clip (all motion stops): ').replace(
+            'Ending frame (the action is finished on screen): ', 'Ending frame (all motion stops): '),
+        original['coverage'], canonical)
+    shifted = copy.deepcopy(original['coverage'])
+    shifted[-1]['start'] += 1
+    assert not request.historical_preparation_matches(prompt, shifted, canonical)
+    if labels != 'neutral':
+        assert not request.historical_preparation_matches(prompt, canonical['coverage'], canonical)
+    # Original request text, source files and hashes are only read, never migrated.
+    assert _tree(root) == before
+
+
 def test_shootable_missing_name_fails_closed(tmp_path):
     root, contract = shootable_project(tmp_path)
     from lib.shot_contract import project_review_subject, shot_review_subject

@@ -161,7 +161,7 @@ def _shootable_rows(contract, shot, index, reference_free):
     rows.append(_row(shot['initial_state'], base + '/initial_state', 'Opening frame: '))
     rows.append(_row(shot['dominant_action'], base + '/dominant_action', 'Main action: '))
     rows.append(_row(shot['completed_end_state'], base + '/completed_end_state',
-                     'Ending frame (the action is finished on screen): '))
+                     'End of clip: '))
     cast = shot['cast_ids']
     for n, cast_id in enumerate(cast):
         rows.append(name(cast_id, 'Characters in this shot: ' if n == 0 else ' and ',
@@ -611,19 +611,24 @@ def _compile_provider_packet(packet, *, provider, model=None, historical=False):
         from tools._grok_cli_media import validate_prompt
         compiled['prompt'] = validate_prompt(compiled['prompt'])
     if historical and packet['binding'].get('prompt_compiler') == SHOOTABLE_COMPILER:
-        legacy = copy.deepcopy(packet)
-        for row in legacy['occurrences']:
-            if row['source_pointer'].endswith('/dominant_action') and row['before'] == 'Main action: ':
-                row['before'] = 'Main action (one continuous beat): '
-        legacy_compiled = _compile_packet(legacy, native_pointer='/arguments/prompt' if provider == 'grok_cli' else
-            ('/params/sceneDescription' if provider == 'openart_mcp' and model == 'smart-shot' else '/params/prompt'))
-        legacy_prompt = legacy_compiled['prompt']
-        if provider == 'grok_cli':
-            legacy_prompt = validate_prompt(legacy_prompt)
-        compiled['_historical_prompt_variants'] = [compiled['prompt'], legacy_prompt]
-        compiled['_historical_compilations'] = [
-            {key: compiled[key] for key in ('prompt', 'coverage')},
-            {'prompt': legacy_prompt, 'coverage': legacy_compiled['coverage']}]
+        compiled['_historical_prompt_variants'] = [compiled['prompt']]
+        compiled['_historical_compilations'] = [{key: compiled[key] for key in ('prompt', 'coverage')}]
+        # Retained spellings predate the neutral ending label. Compile each
+        # exact historical wrapper with its own offsets; never rewrite originals.
+        for action_label in ('Main action: ', 'Main action (one continuous beat): '):
+            legacy = copy.deepcopy(packet)
+            for row in legacy['occurrences']:
+                if row['source_pointer'].endswith('/completed_end_state') and row['before'] == 'End of clip: ':
+                    row['before'] = 'Ending frame (the action is finished on screen): '
+                if row['source_pointer'].endswith('/dominant_action') and row['before'] == 'Main action: ':
+                    row['before'] = action_label
+            legacy_compiled = _compile_packet(legacy, native_pointer='/arguments/prompt' if provider == 'grok_cli' else
+                ('/params/sceneDescription' if provider == 'openart_mcp' and model == 'smart-shot' else '/params/prompt'))
+            legacy_prompt = legacy_compiled['prompt']
+            if provider == 'grok_cli':
+                legacy_prompt = validate_prompt(legacy_prompt)
+            compiled['_historical_prompt_variants'].append(legacy_prompt)
+            compiled['_historical_compilations'].append({'prompt': legacy_prompt, 'coverage': legacy_compiled['coverage']})
     return compiled
 
 
