@@ -1562,23 +1562,27 @@ def _expand_compact_package(package):
     for reference in header['references']:
         if not isinstance(reference, dict):
             raise ValueError('compact reference must be an exact source object')
-        if reference.get('role') != 'identity_reference':
+        role = reference.get('role')
+        if role not in {'identity_reference', 'payoff_board'}:
             if 'cast_ids' in reference:
-                raise ValueError('compact reference cast_ids require explicit identity_reference role')
+                raise ValueError('compact reference cast_ids require explicit identity_reference or payoff_board role')
             continue
         cast = reference.get('cast_ids')
-        if (not isinstance(cast, list) or not cast
+        if (not isinstance(cast, list) or (role == 'identity_reference' and not cast)
                 or any(not isinstance(c, str) or not c.strip() for c in cast) or len(set(cast)) != len(cast)):
-            raise ValueError('compact identity reference requires unique explicit cast_ids')
-        assets.append({'id': reference['id'], 'role': 'identity_reference', 'cast_ids': copy.deepcopy(cast)})
-        shared_roles.append({'asset_id': reference['id'], 'role': 'identity_reference'})
+            raise ValueError('compact ' + role + ' reference requires unique explicit cast_ids')
+        # The supplied board keeps its semantic role; native consumption stays
+        # in the authored shot roles and retains ordinary source/review guards.
+        assets.append({'id': reference['id'], 'role': role, 'cast_ids': copy.deepcopy(cast)})
+        if role == 'identity_reference':
+            shared_roles.append({'asset_id': reference['id'], 'role': role})
     identity_cast = {c for a in assets if a['role'] == 'identity_reference' for c in a['cast_ids']}
     for shot in authored:
         if isinstance(shot['cast'], list) and any(c not in identity_cast for c in shot['cast']):
             raise ValueError('compact cast requires explicit identity_reference source metadata')
     payoff = next((a for a in assets if a['id'] == header['payoff_asset_id']), None)
     if payoff is None or payoff['role'] != 'payoff_board':
-        raise ValueError('compact payoff asset must name an explicitly authored payoff_board')
+        raise ValueError('compact payoff asset must name an explicitly authored or supplied payoff_board')
     template = {'version': '1.0', 'planning_mode': 'shot_local_v1',
         'reference_mode': 'frame_conditioned', 'story': copy.deepcopy(header['story_meaning']),
         **{k: copy.deepcopy(header[k]) for k in ('late_cast_ids', 'payoff_speaker_ids', 'payoff_asset_id')},

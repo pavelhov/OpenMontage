@@ -265,6 +265,20 @@ def test_compact_factory_mixed_supplied_identity_and_generated_reference_reaches
     with jobs._lock(root):
         pass
     before=file_bytes(root)
+    # The pure producer draft rejects unsuitable reference bytes before prompt
+    # compilation or any upload preparation, using the same native validator.
+    draft_action=execution.next_production_action(root)
+    assert draft_action['kind']=='prepare_motion'
+    real_profile=copy.deepcopy(mcp.load_profile(settings['model'],settings['mode'],require='supported'))
+    real_profile['source']='real'
+    with monkeypatch.context() as early_check:
+        early_check.setattr(mcp,'load_profile',lambda *args,**kwargs:real_profile)
+        def unexpected_compilation(*args,**kwargs):
+            raise AssertionError('invalid dimensions must reject before prompt compilation')
+        early_check.setattr(prep,'compile_provider_prompt',unexpected_compilation)
+        with pytest.raises(ValueError,match='reference_dimensions_invalid'):
+            execution.draft_motion_preparation(root,draft_action)
+    assert file_bytes(root)==before
     with monkeypatch.context() as real_account:
         real_account.setattr(mcp,'account_summary',lambda:{**account_summary(),'classification':'agent_recorded_real_connector_observation'})
         with pytest.raises(ValueError,match='reference_dimensions_invalid'):

@@ -3394,6 +3394,14 @@ def draft_motion_preparation(project_dir, action, *, output_path=None, compiled_
             return [resolve(v, key, pointer + '/' + str(i)) for i, v in enumerate(value)]
         return copy.deepcopy(value)
     inputs = resolve(template)
+    if provider == 'openart_mcp':
+        from lib import openart_mcp as connector
+        profile = connector.load_profile(inputs.get('model'), inputs.get('mode'), require='supported')
+        if profile['source'] == 'real':
+            for asset in inputs.get('input_assets', []):
+                if connector.ROLES.get(asset.get('role'), (None, None))[1] == 'image':
+                    connector.validate_image_source_dimensions(_inside(asset['source_path'], root),
+                        model=profile['model'], mode=profile['mode'])
     authored = compile_provider_prompt(root, sid, provider=provider,
         **({'model': inputs.get('model'), 'input_assets': inputs.get('input_assets'),
             'openart_project_id': inputs.get('openart_project_id',

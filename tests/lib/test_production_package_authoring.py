@@ -8,7 +8,7 @@ import pytest
 from lib import production_request as request, production_images as images
 from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES
 from tests.lib.test_production_request import neutral_package  # noqa: F401
-from tests.lib.test_production_factory import file_bytes, write, standing_treatment_fixture
+from tests.lib.test_production_factory import file_bytes, write, standing_treatment_fixture, guided_observations  # noqa: F401
 from lib import production_autonomy as pa, production_execution as execution
 
 
@@ -162,6 +162,92 @@ def test_compact_explicit_identity_reference_binds_nonempty_cast(neutral_package
     del compact['compact']['references'][0]['cast_ids']
     with pytest.raises(ValueError, match='explicit cast_ids'):
         request.compile_package(root, bind(compact))
+
+
+def supplied_payoff_package(root, base):
+    compact, _ = packages(base)
+    compact['shots'] = compact['shots'][:1]
+    shot = compact['shots'][0]
+    shot.update(duration_seconds=5, cast=['actor', 'partner'], boards=[], roles=[
+        {'asset_id': aid, 'role': 'reference_image'} for aid in ('actor', 'partner', 'R1')])
+    shot['motion'].update(reference_mode='reference_guided')
+    shot['motion'].pop('frame_input')
+    references = []
+    for aid, role, cast in [('actor', 'identity_reference', ['actor']),
+                            ('partner', 'identity_reference', ['partner']),
+                            ('R1', 'payoff_board', ['actor', 'partner'])]:
+        path = root / 'assets/images' / (aid + '.png')
+        path.write_bytes(('SYNTHETIC supplied ' + aid).encode())
+        reference = copy.deepcopy(base['boards']['references'][0])
+        reference.update(id=aid, role=role, cast_ids=cast, path=str(path.relative_to(root)),
+                         sha256=request.file_sha256(path))
+        reference['applicability']['roles'] = [role, 'reference_image']
+        reference['review']['subject_sha256'] = reference['sha256']
+        references.append(reference)
+    compact['compact'].update(references=references, payoff_asset_id='R1')
+    return compact
+
+
+def test_compact_all_supplied_payoff_reaches_motion_preparation_without_images(neutral_package, guided_observations, monkeypatch):
+    from lib import production_boards as boards, openart_mcp as mcp
+    monkeypatch.setattr(mcp, '_ALLOW_FIXTURE_PRODUCTION', True)
+    root, base, bind = neutral_package
+    compact = supplied_payoff_package(root, base)
+    original = copy.deepcopy(compact)
+    settings = {'provider': 'openart_mcp', 'model': 'minimax-h3', 'mode': 'element2video',
+                'operation': 'reference_to_video', 'native_params': {'duration': 5, 'resolution': '768P'}}
+    templates = request.build_video_request_templates(compact, settings)
+    binding = bind(compact)
+    before = file_bytes(root)
+    projection = request.compile_package(root, binding)
+    assert file_bytes(root) == before and compact == original
+    spec = projection['spec']
+    assert spec['image_nodes'] == []
+    assert spec['motion_binding']['contract_template']['assets'][-1] == {
+        'id': 'R1', 'role': 'payoff_board', 'cast_ids': ['actor', 'partner']}
+    prepared = request.prepare_package(root, binding)
+    assert prepared['provider_calls'] == prepared['reservations'] == 0
+    kwargs = standing_treatment_fixture(root, guided_routes=[{'model': settings['model'], 'mode': settings['mode']}])
+    kwargs['baselines']['s1']['planned_request_template'] = execution.planned_request_template(templates['s1'], project_dir=root)
+    pa.activate_standing_run(root, **kwargs)
+    result = execution.advance(root)
+    assert result['action']['kind'] == 'prepare_motion'
+    pack = boards.load_board_pack(root)
+    assert pack['prompt_pack'] == {} and all(b['origin'] == 'reuse' for b in pack['board_bindings'].values())
+    contract = execution.load_shot_contract(root)
+    payoff = next(a for a in contract['assets'] if a['id'] == 'R1')
+    assert payoff['role'] == 'payoff_board' and payoff['cast_ids'] == ['actor', 'partner']
+    assert payoff['review'] == compact['compact']['references'][-1]['review']
+    assert images.image_usage(root)['total'] == 0 and execution._attempts(root) == []
+    assert request.file_sha256(root / binding['path']) == binding['sha256']
+
+
+@pytest.mark.parametrize('damage', ['missing_cast', 'duplicate_cast', 'invalid_cast', 'unsupported_semantic_role',
+    'unsupported_native_role', 'missing_role_applicability', 'stale_applicability', 'stale_review',
+    'wrong_review_hash', 'failed_review', 'duplicate_reference', 'generated_reference_collision'])
+def test_compact_supplied_payoff_preserves_source_and_role_guards(neutral_package, damage):
+    root, base, bind = neutral_package
+    compact = supplied_payoff_package(root, base)
+    reference = compact['compact']['references'][-1]
+    if damage == 'missing_cast': reference.pop('cast_ids')
+    elif damage == 'duplicate_cast': reference['cast_ids'] = ['actor', 'actor']
+    elif damage == 'invalid_cast': reference['cast_ids'] = [None]
+    elif damage == 'unsupported_semantic_role': reference['role'] = 'end_frame'
+    elif damage == 'unsupported_native_role': compact['shots'][0]['roles'][-1]['role'] = 'reference_audio'
+    elif damage == 'missing_role_applicability': reference['applicability']['roles'].remove('reference_image')
+    elif damage == 'stale_applicability': reference['applicability']['story_revision'] = 'old'
+    elif damage == 'stale_review': reference['review']['story_revision'] = 'old'
+    elif damage == 'wrong_review_hash': reference['review']['subject_sha256'] = '0' * 64
+    elif damage == 'failed_review': reference['review']['status'] = 'fail'
+    elif damage == 'duplicate_reference': compact['compact']['references'].append(copy.deepcopy(reference))
+    else:
+        generated = copy.deepcopy(packages(base)[0]['shots'][0]['boards'][0])
+        generated.update(slot_id='R1', role='payoff_board')
+        compact['shots'][0]['boards'] = [generated]
+    binding = bind(compact)
+    before = file_bytes(root)
+    with pytest.raises(ValueError): request.prepare_package(root, binding)
+    assert file_bytes(root) == before and images.image_usage(root)['total'] == 0
 
 
 def test_shootable_opt_in_compact_and_full_paths(neutral_package):
