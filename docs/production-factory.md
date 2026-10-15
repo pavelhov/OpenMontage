@@ -52,6 +52,32 @@ before image attempts. Keep one authored plan and no duplicate binding manifest.
 Legacy start-only inputs and retained requests keep their original interpretation
 and bytes.
 
+For a continuous continuation, declare the consumer's source-free `start_frame`
+board with `upstream_source: {shot_id: <earlier-shot>, role: outgoing_frame}` and
+include that shot in `video_dependencies`. The normal `advance` loop waits for
+that exact original, samples its final decoded video frame with the registered
+sampler, and binds those bytes to the consumer's first-frame input. It never
+requests a new image for this board or uses the authored ending illustration as
+if it were the actual outgoing footage. Independent boards and clips remain
+eligible while the upstream original runs.
+
+The immutable `factory_outgoing_sampling.json` in the original attempt directory
+retains the source video hash, decoded timestamp evidence, exact sampler request,
+actual result and frame hash. Interrupted sampling/binding reuses the same
+original and retained receipt; publishing the factual selection again adds no
+history or generation count. The selection and reused-board observations remain
+explicitly `unknown`, never a passing semantic review. Source ancestry describes
+only the actual inputs to that original, with no claim that identity or continuity
+survived generation. Current source paths/hashes, native roles, authority and
+transfer limits still validate normally. Generic manifest selection review gates
+remain strict.
+
+A terminal failed upstream original or a retained local sampling failure leaves
+its dependent clip missing. The factory assembles other playable originals,
+including a playable upstream clip whose frame could not be sampled, and reports
+the partial result. It never replaces the original or holds that cut indefinitely
+for a dependent image that cannot be produced.
+
 ### Preparation handoff
 
 Use `draft_motion_preparation(project, action)` for the current `prepare_motion`
@@ -98,10 +124,11 @@ no image or video generation retry.
 For a current singleton Grok `prepare_motion` action, complete it with
 `outcome={"preparation": {"timing": timing, "review": judgment}}`. The existing
 `complete_action` drafts the exact retained inputs, observes the registered CLI,
-builds the native request, validates the authored timing and passing reviewed
+builds the native request, validates the authored timing and exactly bound
 judgment, and retains both immutable sidecars before normal scope admission and
-dispatch. Supply actual image judgment; this convenience creates no predicates or
-timing estimates. Modified/stale actions reject, and retrying after dispatch does
+dispatch. Supply actual image judgment, including unknowns or failures; semantic findings
+are report-only in this activated factory. This convenience creates no predicates
+or timing estimates. Modified/stale actions reject, and retrying after dispatch does
 not regenerate. Interrupted preparation retains the same IDs and exact records.
 Fresh observations at later admission/dispatch boundaries remain required.
 Other routes continue with their explicit prepared inputs and provider.

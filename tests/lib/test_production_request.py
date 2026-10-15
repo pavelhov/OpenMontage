@@ -29,7 +29,7 @@ def bind_generated_review(prepared, review):
 
 
 @pytest.mark.parametrize('damage', [None, 'conflict', 'missing_review', 'invalid_review', 'partial_write', 'semantic_failure'])
-def test_public_preparation_persists_only_validated_immutable_evidence(generated_carrier_preparation, damage):
+def test_public_preparation_persists_only_validated_immutable_evidence(generated_carrier_preparation, damage, monkeypatch):
     from tests.lib.test_production_factory import file_bytes
     root, inputs, native, profile, compiled, review = generated_carrier_preparation
     inputs = dict(inputs, compiled_request_id='persisted', preparation_review_id='persisted')
@@ -67,6 +67,11 @@ def test_public_preparation_persists_only_validated_immutable_evidence(generated
     assert file_bytes(root) == saved
     assert [p.stat().st_mtime_ns for p in (compiled_path, review_path)] == stats
     if damage == 'semantic_failure':
+        # Activated factory retains the exact failure as disclosure; generic
+        # manifest admission still requires the real passing verdict.
+        assert request.validate_preparation(inputs, native, profile)['review_sha256'] == request.digest(bound)
+        assert bound['status'] == bound['predicates'][0]['status'] == 'fail'
+        monkeypatch.setattr('lib.shot_contract.factory_project', lambda _: False)
         with pytest.raises(ValueError, match='nonpassing preparation review|critical preparation predicates'):
             request.validate_preparation(inputs, native, profile)
 
@@ -215,7 +220,7 @@ def test_public_preparation_rejects_changed_generated_carrier_provenance(generat
 
 
 @pytest.mark.parametrize('status,predicate_status', [('fail', 'fail'), ('unknown', 'unknown'), ('pass', 'fail')])
-def test_public_preparation_preserves_semantic_failure(generated_carrier_preparation, status, predicate_status):
+def test_public_preparation_preserves_semantic_failure(generated_carrier_preparation, status, predicate_status, monkeypatch):
     root, inputs, native, profile, _, review = generated_carrier_preparation
     judgment = copy.deepcopy(review); judgment['status'] = status
     judgment['predicates'][0]['status'] = predicate_status
@@ -223,6 +228,12 @@ def test_public_preparation_preserves_semantic_failure(generated_carrier_prepara
     assert bound == judgment
     write(root / 'artifacts/compiled_request-frame-s1.json', built)
     write(root / 'artifacts/preparation_review-frame-s1.json', bound)
+    if status == 'pass':
+        with pytest.raises(ValueError, match='contradicts'):
+            request.validate_preparation(inputs, native, profile)
+    else:
+        assert request.validate_preparation(inputs, native, profile)['review_sha256'] == request.digest(bound)
+    monkeypatch.setattr('lib.shot_contract.factory_project', lambda _: False)
     with pytest.raises(ValueError, match='nonpassing preparation review|critical preparation predicates'):
         request.validate_preparation(inputs, native, profile)
 
@@ -1586,3 +1597,31 @@ def test_grok_guided_binds_exact_shot_reference_consumers(tmp_path, damage):
         with pytest.raises(ValueError): request._validate_grok_guided_assets(packet, native)
     else:
         request._validate_grok_guided_assets(packet, native)
+
+
+@pytest.mark.parametrize('damage', ['unknown', 'missing_predicate', 'contradictory_pass'])
+def test_factory_report_only_preparation_validates_before_immutable_publication(generated_carrier_preparation, damage):
+    from tests.lib.test_production_factory import file_bytes
+    root, inputs, native, profile, compiled, review = generated_carrier_preparation
+    inputs = dict(inputs, compiled_request_id='factory-observation', preparation_review_id='factory-observation')
+    judgment = {k: copy.deepcopy(v) for k, v in review.items()
+                if k not in {'review_id', 'subject_sha256', 'composite_boards'}}
+    judgment['status'] = 'unknown'
+    for predicate in judgment['predicates']:
+        predicate['status'] = 'unknown'
+    if damage == 'missing_predicate':
+        judgment['predicates'].pop()
+    elif damage == 'contradictory_pass':
+        judgment['status'] = 'pass'
+    before = file_bytes(root)
+    kwargs = dict(coverage=compiled['coverage'], timing=compiled['timing'], review=judgment, persist=True)
+    if damage == 'unknown':
+        _, bound = request.prepare_compiled_request(inputs, native, profile, **kwargs)
+        assert bound['status'] == 'unknown'
+        assert all(p['status'] == 'unknown' for p in bound['predicates'])
+        assert request.validate_preparation(inputs, native, profile)['review_sha256'] == request.digest(bound)
+    else:
+        with pytest.raises(ValueError):
+            request.prepare_compiled_request(inputs, native, profile, **kwargs)
+        assert file_bytes(root) == before
+    assert execution._attempts(root) == []

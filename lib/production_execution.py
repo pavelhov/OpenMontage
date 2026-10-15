@@ -2683,6 +2683,132 @@ def sample_local_render_outgoing(project_dir, attempt_id):
         return frame
 
 
+def _factory_outgoing_selection(root, shot_id, attempt_id, *, sample=False):
+    """Retain the last decoded original frame, never a semantic acceptance."""
+    import subprocess
+    from lib.production_provenance import validate_attempt_provenance
+    from lib.shot_contract import factory_project, frozen_factory_authority, selection_digest, UPSTREAM_PREDICATES
+    from tools.tool_registry import registry
+    if sample and not factory_project(root):
+        _fail('automatic outgoing handoff requires activated standing make_video authority')
+    marker = _read(root / 'project.json')
+    original = load_attempt_result(root, attempt_id)
+    proven = validate_attempt_provenance(root, attempt_id, shot_id=shot_id,
+        story_revision=marker['story_revision'], expected_output=original.get('output'))
+    if not factory_project(root) and not frozen_factory_authority(root, proven['request'].get('scope')):
+        _fail('outgoing receipt lacks standing make_video original authority')
+    state = proven['result']
+    if state.get('status') != 'generated':
+        _fail('outgoing handoff requires the collected generated original')
+    output = state['output']
+    path = _inside(output['path'], root)
+    if file_sha256(path) != output['sha256']:
+        _fail('outgoing original bytes changed')
+    directory = root / 'production_attempts' / attempt_id
+    if (root / 'openart_mcp' / 'attempts' / attempt_id).is_dir():
+        directory = root / 'openart_mcp' / 'attempts' / attempt_id
+    receipt_path = directory / 'factory_outgoing_sampling.json'
+    if receipt_path.exists():
+        receipt = _read(receipt_path)
+    else:
+        if not sample:
+            _fail('factory outgoing handoff lacks its retained sampling receipt')
+        # Actual decoded frame timestamps avoid duration estimates (including
+        # audio tails and variable frame rate) and preserve the original ending.
+        from tools.base_tool import ToolResult
+        probe_argv = ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+            '-show_entries', 'frame=best_effort_timestamp_time', '-of', 'json', str(path)]
+        inputs, probe_data, frame = None, None, None
+        registry.ensure_discovered('tools.analysis')
+        sampler = registry.get('frame_sampler')
+        if sampler is None or sampler.provider != 'ffmpeg':
+            _fail('registered outgoing frame sampler unavailable')
+        try:
+            probe = subprocess.run(probe_argv, capture_output=True, text=True, timeout=60, check=True)
+            probe_data = json.loads(probe.stdout)
+            times = [float(f['best_effort_timestamp_time']) for f in probe_data.get('frames', [])
+                     if 'best_effort_timestamp_time' in f]
+            if not times:
+                _fail('original has no decoded video frame timestamps')
+            inputs = {'input_path': str(path), 'strategy': 'timestamps', 'timestamps': [times[-1]],
+                'format': 'png', 'output_dir': str(directory / 'factory_outgoing_frames')}
+            result = sampler.execute(inputs)
+            if result.success and len(result.data.get('frames', [])) == 1:
+                frame_path = _inside(result.data['frames'][0]['path'], root)
+                frame = {'path': str(frame_path), 'sha256': file_sha256(frame_path)}
+        except (subprocess.SubprocessError, OSError, ValueError, KeyError, TypeError) as exc:
+            result = ToolResult(success=False, error='Original outgoing sampling failed: ' + str(exc))
+        receipt = {'version': '1.0', 'attempt_id': attempt_id, 'shot_id': shot_id,
+            'input': output, 'tool': sampler.name, 'provider': sampler.provider,
+            'probe_argv': probe_argv, 'probe_result': probe_data,
+            'submitted_inputs': inputs, 'tool_result': asdict(result), 'outgoing_frame': frame}
+        _write_new(receipt_path, receipt)
+        if frame:
+            frame_path.chmod(0o444)
+    frame = receipt.get('outgoing_frame')
+    frames = receipt.get('tool_result', {}).get('data', {}).get('frames', [])
+    if (sample and receipt.get('attempt_id') == attempt_id and receipt.get('shot_id') == shot_id
+            and receipt.get('input') == output and receipt.get('outgoing_frame') is None):
+        return None  # Local sampling defect: preserve playable A, leave dependent B missing.
+    if (receipt.get('attempt_id') != attempt_id or receipt.get('shot_id') != shot_id
+            or receipt.get('input') != output or receipt.get('tool') != 'frame_sampler'
+            or receipt.get('provider') != 'ffmpeg' or not receipt.get('tool_result', {}).get('success')
+            or not frame or len(frames) != 1
+            or _inside(frames[0]['path'], root) != _inside(frame['path'], root)
+            or not _inside(frame['path'], root).is_relative_to(directory / 'factory_outgoing_frames')
+            or file_sha256(_inside(frame['path'], root)) != frame['sha256']):
+        _fail('actual outgoing sampling failed or retained receipt/bytes changed')
+    selection = {'attempt_id': attempt_id, 'output': copy.deepcopy(output), 'outgoing_frame': copy.deepcopy(frame)}
+    selection['review'] = {'review_id': 'factory-original-' + attempt_id,
+        'reviewer': 'factory_original_handoff', 'story_revision': marker['story_revision'],
+        'subject_sha256': selection_digest(selection), 'status': 'unknown',
+        'predicates': [{'name': name, 'status': 'unknown', 'severity': 'critical',
+            'evidence': 'Not semantically reviewed; exact collected original and sampled outgoing frame only.'}
+            for name in sorted(UPSTREAM_PREDICATES)]}
+    return selection
+
+
+def _factory_handoff_selection_locked(root, shot_id, attempt_id):
+    """Always prove the actual sampled tuple; preserve a matching prior review."""
+    factual = _factory_outgoing_selection(root, shot_id, attempt_id, sample=True)
+    if factual is None:
+        return None
+    selected = load_selected_attempts(root).get(shot_id)
+    if selected is None:
+        return _publish_selection_locked(root, shot_id, factual,
+            history_id='factory-original-' + attempt_id)
+    if any(selected.get(key) != factual[key] for key in ('attempt_id', 'output', 'outgoing_frame')):
+        _fail('existing selection differs from actual original outgoing sampling; explicit rebinding is required')
+    return selected
+
+
+def _publish_selection_locked(root, shot_id, selection, *, history_id=None):
+    """Publish an already-validated selection; exact replay adds no history."""
+    import os
+    selected = load_selected_attempts(root)
+    if selected.get(shot_id) == selection:
+        return copy.deepcopy(selection)
+    selected[shot_id] = copy.deepcopy(selection)
+    history = root / 'production_selections'
+    history.mkdir(exist_ok=True)
+    record = {'shot_id': shot_id, 'selection': selection}
+    history_path = history / ((history_id or str(uuid.uuid4())) + '.json')
+    if history_path.exists():
+        if _read(history_path) != record:
+            _fail('immutable selection history differs')
+    else:
+        _write_new(history_path, record)
+    (root / 'artifacts').mkdir(exist_ok=True)
+    path = _artifact_path(root, 'selected_attempts.json')
+    temp = path.with_name('.selected-attempts-' + str(uuid.uuid4()) + '.tmp')
+    with temp.open('x') as stream:
+        json.dump(selected, stream, indent=2)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temp, path)
+    return copy.deepcopy(selection)
+
+
 def record_selection(project_dir, shot_id, selection):
     """Publish a reviewer-authored selection after factual provenance checks.
 
@@ -2692,7 +2818,6 @@ def record_selection(project_dir, shot_id, selection):
     from lib.shot_contract import selection_digest, UPSTREAM_PREDICATES, provisional_audio_review, required_review_predicates, audio_review_disabled
     from schemas.artifacts import load_schema
     from jsonschema import Draft202012Validator
-    import os
     root = Path(project_dir).resolve()
     with _lock(root):
         attempt_id = selection.get('attempt_id')
@@ -2740,22 +2865,7 @@ def record_selection(project_dir, shot_id, selection):
                 or any(item['status'] != 'pass' and not ((audio_provisional and name == 'speaker_source' and item['status'] == 'unknown') or (name == accepted and item['status'] == 'fail'))
                        for name, item in predicates.items() if not (name == 'speaker_source' and audio_review_disabled(root)) and (item.get('severity','critical') == 'critical' or name in required))):
             _fail('selection has missing/failed critical predicates')
-        selected = load_selected_attempts(root)
-        selected[shot_id] = copy.deepcopy(selection)
-        history = root / 'production_selections'
-        history.mkdir(exist_ok=True)
-        _write_new(history / (str(uuid.uuid4()) + '.json'), {'shot_id':shot_id,'selection':selection})
-        canonical = root / 'artifacts' / 'selected_attempts.json'
-        canonical.parent.mkdir(exist_ok=True)
-        # Avoid silently diverging an existing supported legacy selection file.
-        path = _artifact_path(root, 'selected_attempts.json')
-        temp = path.with_name('.selected-attempts-' + str(uuid.uuid4()) + '.tmp')
-        with temp.open('x') as stream:
-            json.dump(selected, stream, indent=2)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temp, path)
-        return copy.deepcopy(selection)
+        return _publish_selection_locked(root, shot_id, selection)
 
 
 def record_rejection(project_dir, attempt_id, review):
@@ -2979,7 +3089,7 @@ def resume_original_attempt(project_dir, attempt_id, *, request_sha256, dry_run=
 
 
 ACTION_KINDS = frozenset({'restore_derived_views', 'prepare_board_image', 'begin_native_image',
-    'promote_imported_board', 'receive_native_image', 'prepare_motion',
+    'promote_imported_board', 'receive_native_image', 'prepare_motion', 'bind_upstream_frame',
     'collect_grok_original', 'collect_openart_original', 'begin_openart_original',
     'receive_openart_original', 'poll_openart_original', 'download_openart_original',
     'compose_cut', 'complete', 'blocked'})
@@ -3062,6 +3172,9 @@ def _validated_upstream_binding(root, contract, shot_id, upstream_id, selection)
         record = selection[role]
         if file_sha256(_inside(record['path'], root)) != record['sha256']:
             _fail('upstream selection bytes missing or changed: ' + role)
+    if selection.get('review', {}).get('reviewer') == 'factory_original_handoff':
+        if _factory_outgoing_selection(root, upstream_id, selection['attempt_id']) != selection:
+            _fail('factory outgoing selection differs from retained original sampling')
     binding = {'shot_id': upstream_id, 'attempt_id': selection['attempt_id'],
         'output_sha256': selection['output']['sha256'],
         'outgoing_frame_sha256': selection['outgoing_frame']['sha256'],
@@ -3244,6 +3357,42 @@ def next_production_action(project_dir):
     # stays recoverable and is never resubmitted, but cannot hold other clips.
     marker = _read(root / 'project.json')
     blocked_shots = {}
+    from lib.shot_contract import factory_project
+    if pack and factory_project(root):
+        for slot, node in pack['prompt_pack'].items():
+            source = node.get('upstream_source')
+            if not source:
+                continue
+            sid = node['shot_id']; upstream = source['shot_id']
+            if sid in attempted_shots:
+                continue
+            current = pack['board_bindings'].get(slot)
+            consumer = next(s for s in contract['shots'] if s['id'] == sid)
+            if current and any(u.get('shot_id') == upstream and u.get('attempt_id')
+                               for u in consumer['upstream']):
+                continue
+            originals = [r for r in _attempts(root) if r.get('media_kind') == 'motion' and r['shot_id'] == upstream]
+            if len(originals) != 1:
+                continue
+            original = originals[0]
+            state = load_attempt_result(root, original['attempt_id'])
+            if state.get('status') != 'generated':
+                continue
+            directory = root / 'production_attempts' / original['attempt_id']
+            if original.get('provider') == 'openart_mcp':
+                directory = root / 'openart_mcp' / 'attempts' / original['attempt_id']
+            receipt_path = directory / 'factory_outgoing_sampling.json'
+            if receipt_path.exists():
+                sampled = _read(receipt_path)
+                if (sampled.get('attempt_id') == original['attempt_id']
+                        and sampled.get('shot_id') == upstream and sampled.get('input') == state['output']
+                        and sampled.get('outgoing_frame') is None):
+                    blocked_shots.setdefault(sid, []).append('Declared upstream original has no usable sampled outgoing frame; no replacement requested.')
+                    continue
+            return action('bind_upstream_frame', slot, {'slot_id': slot, 'shot_id': sid,
+                'upstream_shot_id': upstream, 'attempt_id': original['attempt_id'],
+                'output': state['output'], 'specification_sha256': pack['specification_sha256']},
+                reason='Sample the exact collected original outgoing frame and bind the declared continuation; semantics remain unreviewed.')
     for shot in contract['shots']:
         sid = shot['id']
         if sid in attempted_shots or sid in selected:
@@ -3254,7 +3403,7 @@ def next_production_action(project_dir):
             # Independent ready shots dispatch while other originals render.
             return action('prepare_motion', sid, {'shot_subject': shot_review_subject(contract, sid)}, host=True,
                 inputs={'shot_id': sid}, reason='Producer prepares the one exact registered-route original request for this planned clip; engine admits and dispatches it.')
-        blocked_shots[sid] = checked['errors']
+        blocked_shots[sid] = blocked_shots.get(sid, []) + checked['errors']
     from lib.production_draft import first_cut_candidates, first_cut_media_status, latest_first_cut
     # Resolve exact original evidence before final assembly. An absent adapter
     # result can mean either a running call or an interrupted completed call;
@@ -3325,6 +3474,12 @@ def advance(project_dir, *, max_steps=8):
         try:
             if kind == 'restore_derived_views':
                 preparation.prepare_package(root, action['binding']['package'])
+            elif kind == 'bind_upstream_frame':
+                with _lock(root):
+                    binding = action['binding']
+                    selected = _factory_handoff_selection_locked(root, binding['upstream_shot_id'], binding['attempt_id'])
+                if selected is not None:
+                    boards.bind_upstream_board(root, binding['slot_id'], selected)
             elif kind == 'promote_imported_board':
                 boards.bind_imported_board(root, action['binding']['slot_id'], action['subject'], images=images)
             elif kind == 'prepare_board_image':
@@ -3586,6 +3741,7 @@ def complete_action(project_dir, action, *, outcome):
             from tools.tool_registry import registry
             from tools._grok_cli_media import observe_grok_cli_compatibility, DEFAULT_GROK_PATH
             from lib.production_request import prep_builder, prepare_compiled_request
+            from lib.shot_contract import factory_project
             import os
             registry.ensure_discovered('tools.video')
             tool = registry.get('grok_cli_video')
@@ -3598,7 +3754,7 @@ def complete_action(project_dir, action, *, outcome):
             profile = {'source': 'real'}
             prepare_compiled_request(inputs, native, profile, coverage=draft['coverage'],
                 timing=preparation['timing'], review=preparation['review'], persist=True,
-                require_passing_review=True)
+                require_passing_review=not factory_project(root))
             outcome = {'inputs': inputs, 'provider': 'grok_cli', 'observation': observation}
         if set(outcome) - {'inputs', 'provider', 'observation'} or not {'inputs', 'provider'} <= set(outcome):
             _fail('motion preparation requires exact inputs and approved provider')

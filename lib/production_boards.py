@@ -647,6 +647,33 @@ def bind_upstream_board_locked(root, pack, slot_id, selection):
 
 
 @_board_transaction
+def bind_upstream_board(project_dir, slot_id, selection):
+    """Materialize a declared factory continuation without generating an image."""
+    from lib import production_execution as execution
+    from lib.shot_contract import factory_project
+    root = Path(project_dir).resolve()
+    if not factory_project(root):
+        raise ValueError('automatic outgoing handoff requires activated standing make_video authority')
+    pack = load_board_pack(root)
+    node = pack['prompt_pack'][slot_id]
+    upstream = node['upstream_source']['shot_id']
+    contract = execution.load_shot_contract(root)
+    binding = execution._validated_upstream_binding(root, contract, node['shot_id'], upstream, selection)
+    bind_upstream_board_locked(root, pack, slot_id, {**binding, 'path': selection['outgoing_frame']['path']})
+    if not _observation(pack, slot_id, node['role']):
+        pack['observations'].append({'asset_id': slot_id, 'roles': _roles(pack, slot_id),
+            'origin': 'mechanical_original_handoff', 'review': {
+                'review_id': 'mechanical-handoff-' + selection['outgoing_frame']['sha256'][:16],
+                'reviewer': 'factory_original_handoff', 'story_revision': pack['story_revision'],
+                'subject_sha256': selection['outgoing_frame']['sha256'], 'status': 'unknown',
+                'predicates': [{'name': 'semantic_review', 'status': 'unknown', 'severity': 'cosmetic',
+                    'evidence': 'Not reviewed; exact sampled frame from original ' + selection['attempt_id']}]}})
+    _save(root, pack)
+    _promote_motion_bindings(root, pack)
+    return deepcopy(pack['board_bindings'][slot_id])
+
+
+@_board_transaction
 def prepare_image_request(project_dir, slot_id, *, images):
     """Materialize only current references; no dependency waits enter text prompts."""
     root = Path(project_dir).resolve()
@@ -983,6 +1010,20 @@ def _promote_motion_bindings(root, pack, *, publish=True):
                 handoffs.pop(aid)
     if not pending or local:
         Draft202012Validator(load_schema("shot_contract")).validate(template)
+        from lib import production_execution as execution
+        selected = execution.load_selected_attempts(root)
+        for shot in template['shots']:
+            for asset in template['assets']:
+                if asset['id'] not in shot['asset_ids'] or not asset.get('upstream_source'):
+                    continue
+                bound = pack['board_bindings'].get(asset['id'], {}).get('upstream_source')
+                if bound:
+                    current = execution._validated_upstream_binding(root, template, shot['id'],
+                        bound['shot_id'], selected.get(bound['shot_id']))
+                    if current != bound:
+                        raise ValueError('upstream board differs from selected original')
+                    index = next(i for i, u in enumerate(shot['upstream']) if u['shot_id'] == bound['shot_id'])
+                    shot['upstream'][index] = deepcopy(bound)
         digest = contract_digest(template)
         contract_path = root / "artifacts/shot_contract.json"
         if local and not contract_path.exists():

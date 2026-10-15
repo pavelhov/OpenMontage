@@ -2305,7 +2305,7 @@ def lock_proof(root, shot_id, *, inputs, native, profile, policy_context=None):
                             policy_context=policy_context)
 
 
-def _historical_current_preparation(root, inputs, native, profile, historical_replay=False):
+def _historical_current_preparation(root, inputs, native, profile, historical_replay=False, *, factory=False):
     """Validate current named preparation for retained-authority replay only.
 
     Uses the original-review historical source packet and the shared evidence
@@ -2321,7 +2321,7 @@ def _historical_current_preparation(root, inputs, native, profile, historical_re
                                                        provider=native.get('provider', 'openart_cli'), native=native,
                                                        reference_bindings=compiled['source_binding']['references'])
         return preparation.validate_preparation_evidence(compiled, review, inputs, native, profile, packet,
-                                                         historical=historical_replay)
+                                                         historical=historical_replay, factory=factory)
     except (ValueError, KeyError) as exc:
         raise AutonomyError(f'historical named preparation is incomplete: {exc}') from exc
 
@@ -2405,7 +2405,71 @@ def _generated_carrier_sources(root, pack, frame):
     return sources
 
 
-def _frame_carrier_members(root, frame, projection, composites):
+def _outgoing_carrier_sources(root, pack, frame, *, visited=None, historical=False):
+    """Factual original-input ancestry through an explicitly declared video edge.
+
+    This establishes which sources conditioned the original, never that a cast
+    identity survived generation or that its outgoing frame passed review.
+    """
+    from lib import production_execution as execution
+    from lib.production_provenance import validate_attempt_provenance
+    from lib.shot_contract import factory_project
+    if not historical and not factory_project(root):
+        raise AutonomyError('outgoing carrier ancestry requires activated standing make_video')
+    binding = pack['board_bindings'][frame['asset_id']]
+    declared = pack['prompt_pack'][frame['asset_id']].get('upstream_source')
+    source = binding.get('upstream_source') or {}
+    if (binding.get('origin') != 'reuse' or not declared or declared.get('role') != 'outgoing_frame'
+            or source.get('shot_id') != declared.get('shot_id')):
+        raise AutonomyError('outgoing carrier lacks an exact declared video dependency')
+    selected = execution.load_selected_attempts(root)[source['shot_id']]
+    if historical:
+        # Original collection may use frozen standing authority after current
+        # dispatch authority changes; this path cannot admit another clip.
+        factual = execution._factory_outgoing_selection(root, source['shot_id'], source['attempt_id'])
+        if any(selected.get(key) != factual[key] for key in ('attempt_id', 'output', 'outgoing_frame')):
+            raise AutonomyError('retained outgoing ancestry differs from original sampling')
+        from lib.shot_contract import review_digest
+        expected = {'shot_id': source['shot_id'], 'attempt_id': selected['attempt_id'],
+            'output_sha256': selected['output']['sha256'], 'outgoing_frame_sha256': selected['outgoing_frame']['sha256'],
+            'review_sha256': review_digest(selected['review'])}
+        if source != expected:
+            raise AutonomyError('retained outgoing ancestry binding changed')
+        current = {'path': str(_inside(root, selected['outgoing_frame']['path'])),
+                   'sha256': selected['outgoing_frame']['sha256']}
+    else:
+        current = execution.resolve_board_input(root, {'asset_id': frame['asset_id']})
+    if current != {key: frame[key] for key in ('path', 'sha256')}:
+        raise AutonomyError('outgoing carrier differs from sampled original bytes')
+    visited = set() if visited is None else set(visited)
+    aid = source['attempt_id']
+    if aid in visited:
+        raise AutonomyError('outgoing carrier ancestry has a cycle')
+    visited.add(aid)
+    selected = execution.load_selected_attempts(root)[source['shot_id']]
+    proof = validate_attempt_provenance(root, aid, shot_id=source['shot_id'],
+        story_revision=pack['story_revision'], expected_output=selected['output'])
+    records = proof['request'].get('input_assets')
+    if records is None and (Path(root) / 'openart_mcp/attempts' / aid).is_dir():
+        from lib import openart_mcp_jobs as jobs
+        records = [{'original_path': row['source_path'], 'sha256': row['source_sha256']}
+            for row in jobs.frozen_request(root, aid)['native'].get('input_assets', [])]
+    sources = {}
+    for record in records or []:
+        for asset_id, original in pack['board_bindings'].items():
+            if (original.get('sha256') != record['sha256']
+                    or _inside(root, original['path']) != _inside(root, record['original_path'])):
+                continue
+            actual = {'asset_id': asset_id, 'path': str(_inside(root, original['path'])), 'sha256': original['sha256']}
+            if original.get('origin') == 'canonical_image_import':
+                sources.update(_generated_carrier_sources(root, pack, actual))
+            elif original.get('upstream_source'):
+                sources.update(_outgoing_carrier_sources(root, pack, actual, visited=visited, historical=historical))
+            sources[asset_id] = {key: original[key] for key in ('path', 'sha256')}
+    return sources
+
+
+def _frame_carrier_members(root, frame, projection, composites, *, historical=False):
     """A frame-mode composite names exact approved sources with truthful membership.
 
     Named semantic proof remains available for provided boards. For a generated
@@ -2445,6 +2509,8 @@ def _frame_carrier_members(root, frame, projection, composites):
             raise AutonomyError('generated starting carrier lacks exact original image provenance')
         images._bound_file(root, {'path': call['output']['preserved_path'], 'sha256': frame['sha256']},
                            'preserved starting carrier')
+    outgoing_sources = (_outgoing_carrier_sources(root, pack, frame, historical=historical)
+        if composites and binding.get('upstream_source') else None)
     seen = set()
     for composite in composites:
         if composite['sha256'] != frame['sha256'] or composite['role'] != 'start_frame':
@@ -2459,6 +2525,10 @@ def _frame_carrier_members(root, frame, projection, composites):
             if len(matches) != 1 or key in seen:
                 raise AutonomyError('frame composite member is not one exact approved source')
             seen.add(key)
+            if outgoing_sources is not None:
+                asset = matches[0]
+                if outgoing_sources.get(asset['id']) != {key: asset.get(key) for key in ('path', 'sha256')}:
+                    raise AutonomyError('outgoing composite member was not an actual original video input ancestor')
             if not generated:
                 continue
             asset = matches[0]
@@ -2483,6 +2553,7 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
     if _return_preparation and (historical is not None or policy_context is not None):
         raise AutonomyError('preparation result sharing requires fresh rooted preparation')
     from lib import production_request as preparation
+    from lib.shot_contract import _standing_make_video
     from lib.production_execution import _paths, _clean, _artifact_path
     # A retained historical payload is always genuine replay; otherwise only an
     # explicit retained-collection caller opts in (never policy_context alone).
@@ -2527,7 +2598,8 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
         if policy_context is None:
             preparation_result = preparation.validate_preparation(inputs, native, profile)
         else:
-            _historical_current_preparation(root, inputs, native, profile, historical_replay)
+            _historical_current_preparation(root, inputs, native, profile, historical_replay,
+                factory=_standing_make_video(root, policy))
         compiled = _json(_artifact_path(Path(root), 'compiled_request-' + preparation._id(inputs['compiled_request_id']) + '.json'))
         review = _json(_artifact_path(Path(root), 'preparation_review-' + preparation._id(inputs['preparation_review_id']) + '.json'))
     else:
@@ -2552,7 +2624,8 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
         if (compiled['source_binding'].get('frame_input') != frame or not any(
                 a['path'] == frame['path'] and a['sha256'] == frame['sha256'] for a in actual)):
             raise AutonomyError('actual inputs do not carry the exact declared starting frame')
-        _frame_carrier_members(root, frame, projection, boards)
+        _frame_carrier_members(root, frame, projection, boards,
+            historical=historical is not None or policy_context is not None)
         # A payoff board may have an independently authored/observed start role.
         # Preserve its canonical primary role in actual inputs and direct locks.
         carrier_frozen = frozen | {(frame['sha256'], 'start_frame')}
@@ -2589,8 +2662,11 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
         if not carriers and frame is not None and not ancestry_checked:
             from lib import production_boards as board_pack
             pack = board_pack.load_board_pack(root)
-            if pack['board_bindings'][frame['asset_id']].get('origin') == 'canonical_image_import':
-                sources = _generated_carrier_sources(root, pack, frame)
+            origin = pack['board_bindings'][frame['asset_id']]
+            if origin.get('origin') == 'canonical_image_import' or origin.get('upstream_source'):
+                sources = (_outgoing_carrier_sources(root, pack, frame,
+                    historical=historical is not None or policy_context is not None) if origin.get('upstream_source')
+                           else _generated_carrier_sources(root, pack, frame))
                 members = [{key: copy.deepcopy(a[key]) for key in ('sha256', 'role', 'cast_ids')}
                     for a in projection['assets'] if a.get('cast_ids')
                     and a['role'] in {'identity_reference', 'start_frame', 'end_frame', 'payoff_board'}
@@ -3520,9 +3596,10 @@ def validate_policy_attempt(root, request, scope, frozen_contract, *, frozen_ope
     restored['governance'] = {'scope_id': scope['id'], 'shot_id': shot_id}
     restored['compiled_request_id'] = payload['compiled'].get('compiled_request_id', request['scope']['derived_from_policy'].get('compiled_request_id', 'historical'))
     restored['preparation_review_id'] = derived['preparation_review_id']
+    from lib.shot_contract import _standing_make_video
     try:
         preparation.validate_preparation_evidence(payload['compiled'], payload['review'], restored, native, profile,
-                                                  payload['source_packet'], historical=True)
+                                                  payload['source_packet'], historical=True, factory=_standing_make_video(root, policy))
     except ValueError as exc:
         raise AutonomyError(f'historical named preparation is incomplete: {exc}') from exc
     review = payload['review']

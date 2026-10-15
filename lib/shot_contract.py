@@ -711,7 +711,7 @@ def _validate_shot_contract(
             if not isinstance((selected_upstream or {}).get(upstream_id), dict):
                 warnings.append(f"{label}: upstream not selected (ordering note only)")
             continue
-        elif shots[upstream_id]["endpoint_completion"] not in allowed_endpoints:
+        elif not report_only and shots[upstream_id]["endpoint_completion"] not in allowed_endpoints:
             errors.append(f"{label}: upstream endpoint_completion is not completed")
         selection = (selected_upstream or {}).get(upstream_id)
         if not isinstance(selection, dict):
@@ -734,5 +734,5 @@ def _validate_shot_contract(
         except (OSError, ValueError, TypeError, KeyError) as exc:
             errors.append(f"{label}: selected review changed or missing ({exc})")
             continue
-        check_review(review, selection_digest(selection), UPSTREAM_PREDICATES, f"{label}.review", allow_draft=True, selection=selection, upstream_id=upstream_id)
+        check_review(review, selection_digest(selection), UPSTREAM_PREDICATES, f"{label}.review", allow_draft=True, selection=selection, upstream_id=upstream_id, gating=not report_only)
     return result()

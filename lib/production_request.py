@@ -882,7 +882,14 @@ def prepare_compiled_request(inputs, native, profile, *, coverage, timing, revie
         return value
     bound = _bind_preparation_review(inputs, packet, value, review)
     if require_passing_review:
-        validate_preparation_evidence(value, bound, inputs, native, profile, packet)
+        validate_preparation_evidence(value, bound, inputs, native, profile, packet, factory=False)
+    elif persist:
+        from lib.shot_contract import factory_project
+        if factory_project(root):
+            # Report-only verdicts still need complete truthful, current factual
+            # bindings before immutable publication. A bad draft must not strand
+            # this factory's deterministic preparation IDs before admission.
+            validate_preparation_evidence(value, bound, inputs, native, profile, packet, factory=True)
     if persist:
         from lib.production_execution import _artifact_path, _inside, _write_new
         records = [(_id(inputs.get('compiled_request_id')), 'compiled_request-', value),
@@ -1274,22 +1281,34 @@ def validate_preparation(inputs, native, profile):
     return validate_preparation_evidence(compiled, review, inputs, native, profile, packet)
 
 
-def validate_preparation_evidence(compiled, review, inputs, native, profile, packet, *, historical=False):
+def validate_preparation_evidence(compiled, review, inputs, native, profile, packet, *, historical=False, factory=None):
     """Validate supplied preparation evidence; callers own loading and authority.
 
-    Current and retained historical callers share these exact compiled/native,
-    semantic-review and live-evidence requirements. This does not choose a source
-    packet, relax current planning checks, or grant dispatch authority.
+    Current and retained historical callers share exact compiled requests,
+    source/native bindings and live-evidence requirements. Activated standing factories
+    retain semantic unknowns/failures as report-only observations. Historical
+    readers use frozen standing authority; generic manifests remain strict.
     """
     _validate_compiled(compiled, inputs, native, profile, packet, historical=historical)
     _schema('preparation_review', review)
     if review['review_id'] != inputs['preparation_review_id']:
         raise ValueError('named review ID differs from selected preparation ID')
-    if review['subject_sha256'] != digest(compiled) or review['status'] != 'pass':
+    from lib.shot_contract import factory_project, frozen_factory_authority
+    if factory is None and historical:
+        from lib.production_execution import _read
+        path = Path(inputs['project_dir']) / 'production_scopes.json'
+        scopes = _read(path).get('scopes', []) if path.exists() else []
+        matches = [scope for scope in scopes if scope.get('id') == inputs.get('governance', {}).get('scope_id')]
+        report_only = len(matches) == 1 and frozen_factory_authority(inputs['project_dir'], matches[0])
+    else:
+        report_only = factory_project(inputs['project_dir']) if factory is None else factory
+    if review['subject_sha256'] != digest(compiled) or (not report_only and review['status'] != 'pass'):
         raise ValueError('stale or nonpassing preparation review')
     names = [p['name'] for p in review['predicates']]
-    if len(names) != len(PREDICATES) or set(names) != PREDICATES or any(p['status'] != 'pass' for p in review['predicates']):
+    if len(names) != len(PREDICATES) or set(names) != PREDICATES or (not report_only and any(p['status'] != 'pass' for p in review['predicates'])):
         raise ValueError('all named critical preparation predicates must pass exactly once')
+    if report_only and review['status'] == 'pass' and any(p['status'] != 'pass' for p in review['predicates']):
+        raise ValueError('passing preparation verdict contradicts its predicates')
     if profile['source'] == 'real' and review['evidence_kind'] != 'reviewed':
         raise ValueError('fixture-only preparation review cannot qualify live provider')
     return {'compiled_sha256': digest(compiled), 'review_sha256': digest(review)}
@@ -1438,8 +1457,10 @@ def _validate_frozen_preparation(request, frozen, project_dir, *, current_requir
         stable = set(packet['binding']) - {'contract_sha256', 'reviews_sha256'}
         if any(current['binding'][key] != packet['binding'][key] for key in stable):
             raise ValueError('stale source/reference/review/upstream bindings')
+    from lib.shot_contract import frozen_factory_authority
     validate_preparation_evidence(data['compiled'], data['review'], inputs,
-        frozen['native'], frozen['profile'], packet, historical=historical)
+        frozen['native'], frozen['profile'], packet, historical=historical,
+        factory=frozen_factory_authority(project_dir, request.get('scope')))
     return proof
 
 
