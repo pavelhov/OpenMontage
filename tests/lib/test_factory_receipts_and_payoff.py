@@ -550,7 +550,7 @@ def test_collected_original_advances_without_selection_review(lifecycle, monkeyp
     assert file_bytes(root) == before
 
 
-def test_pending_poll_does_not_hide_a_later_uncertain_original(lifecycle, monkeypatch):
+def test_independent_board_prep_precedes_pending_poll_and_uncertain_original(lifecycle, monkeypatch):
     root, _ = pending_openart_with_boards(lifecycle)
     write(root, 'production_attempts/uncertain-original/request.json', {
         'attempt_id': 'uncertain-original', 'cli_session_id': 'retained-local-original',
@@ -563,8 +563,13 @@ def test_pending_poll_does_not_hide_a_later_uncertain_original(lifecycle, monkey
         key=lambda row: row['provider'] != 'openart_mcp' if 'provider' in row else True))
     before = file_bytes(root)
     action = execution.next_production_action(root)
-    assert (action['kind'], action['subject']) == ('collect_grok_original', 'uncertain-original')
-    assert action['inputs']['original_id'] == 'retained-local-original'
+    # The current scheduler completes its finite independent board-preparation
+    # queue before collecting an uncertain CLI original. Neither original is
+    # polled or resubmitted by this read-only projection.
+    assert (action['kind'], action['subject']) == ('prepare_board_image', 'future1')
+    uncertain = [row for row in execution._attempts(root) if row.get('cli_session_id')]
+    assert len(uncertain) == 1 and uncertain[0]['cli_session_id'] == 'retained-local-original'
+    assert uncertain[0]['attempt_id'] == 'uncertain-original'
     assert file_bytes(root) == before
 
 

@@ -236,8 +236,8 @@ def test_pending_original_resume_observes_then_collects_same_attempt(pending_ori
     with monkeypatch.context() as observer:
         observer.setattr(execution, 'next_production_action', lambda root: action)
         pending = execution.advance(p.root)
-    assert pending['status'] == 'blocked' and pending['action'] == action
-    assert pending['provider_calls'] == 0 and 'still pending' in pending['reason']
+    assert pending['status'] == 'pending' and pending['action'] == action
+    assert pending['provider_calls'] == 0 and 'no terminal result yet' in pending['reason']
     assert {path: path.read_bytes() for path in p.root.rglob('*.json')} == frozen
     original_log(folder, aid, p.pending_events, shape)
     recovered = execution.resume_original_attempt(p.root, aid, request_sha256=request['request_sha256'])

@@ -140,14 +140,15 @@ def test_generic_action_prefix_preserves_old_original_prompt_matching_without_ed
     action=next(row for row in packet['occurrences'] if row['source_pointer'].endswith('/dominant_action'))
     action['value']='A sign says Main action: DO NOT MOVE; '+prep.REFERENCE_MAPPING_HEADER+'Required payoff.'
     canonical=prep._compile_provider_packet(packet,provider='openart_cli',historical=True)
-    legacy=canonical['_historical_prompt_variants'][1]
+    legacy=canonical['_historical_prompt_variants'][2]
+    legacy_coverage=next(row['coverage'] for row in canonical['_historical_compilations']
+                         if row['prompt']==legacy)
     assert 'Main action (one continuous beat): A sign says Main action: DO NOT MOVE' in legacy
     assert prep.historical_prompt_matches(canonical['prompt'],canonical)
     assert prep.historical_prompt_matches(legacy,canonical)
     assert not prep.historical_prompt_matches(canonical['prompt'].split(prep.REFERENCE_MAPPING_HEADER)[0],canonical)
     assert not prep.historical_prompt_matches(legacy.replace('Main action: DO NOT MOVE','Main action (one continuous beat): DO NOT MOVE'),canonical)
     assert canonical['_historical_compilations'][0]['coverage'] != canonical['_historical_compilations'][1]['coverage']
-    legacy_coverage=canonical['_historical_compilations'][1]['coverage']
     assert prep.historical_preparation_matches(legacy,legacy_coverage,canonical)
     assert not prep.historical_preparation_matches(legacy,canonical['coverage'],canonical)
     assert not prep.historical_preparation_matches(canonical['prompt'],legacy_coverage,canonical)

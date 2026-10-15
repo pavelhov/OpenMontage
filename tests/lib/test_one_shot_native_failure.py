@@ -88,13 +88,13 @@ def test_native_unavailable_reply_defers_and_exact_late_receive_stays_valid(neut
 
 
 @pytest.mark.parametrize('provider,state,expected', [
-    ('grok_cli', 'uncertain', 'compose_cut'),
+    ('grok_cli', 'uncertain', 'collect_grok_original'),
     ('grok_cli', 'submitted', 'collect_grok_original'),
     ('openart_mcp', 'submitted', 'poll_openart_original'),
 ])
 def test_partial_before_uncertain_cli_collection_keeps_known_job_priority(
         lifecycle, monkeypatch, provider, state, expected):
-    """Only uncertain CLI recovery escapes to partial; healthy polls still run."""
+    """Resolve known originals before assembly, including uncertain CLI returns."""
     from lib import production_draft as draft, openart_mcp_jobs as jobs
     root, _, _, _, _, _, _ = lifecycle
     shot_id = execution.load_shot_contract(root)['shots'][0]['id']
@@ -111,12 +111,11 @@ def test_partial_before_uncertain_cli_collection_keeps_known_job_priority(
     action = execution.next_production_action(root)
     assert action['kind'] == expected
     assert file_bytes(root) == before
-    if expected == 'compose_cut':
-        [pending] = action['inputs']['recoverable_originals']
-        assert pending['subject'] == original['attempt_id']
-        assert pending['binding']['counted_original'] is True
-        # Existing current partial suppresses this escape, leaving collection.
+    if provider == 'grok_cli':
+        assert action['subject'] == original['attempt_id']
+        assert action['binding']['counted_original'] is True
+        # A current partial does not change the same-original recovery priority.
         monkeypatch.setattr(draft, 'latest_first_cut', lambda _: {'status': 'partial'})
         monkeypatch.setattr(draft, 'first_cut_media_status', lambda *args: {'status': 'current'})
-        assert execution.next_production_action(root) == pending
+        assert execution.next_production_action(root) == action
     assert execution._attempts(root) == [original]
