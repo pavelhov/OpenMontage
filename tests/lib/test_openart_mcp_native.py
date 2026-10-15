@@ -206,6 +206,46 @@ def test_all_45_native_builders_use_canonical_ready_source_receipts(source_proje
             assert native['body']['params']['environmentReferenceImageUrl']=='https://fixture.example.test/1'
 
 
+def test_observed_h3_turbo_nullable_end_frame_keeps_both_exact_source_receipts(source_project, observations, monkeypatch):
+    """2026-10-15 MCP form, distinct from the CLI's first-frame-only contract."""
+    from lib import production_request as preparation
+    root, assets, _, result = source_project
+    raw = (Path(__file__).parents[1] / 'fixtures/openart/mcp_h3_turbo_nullable_end_frame.json').read_bytes()
+    (observations / '2026-10-07-schema-observation.json').write_bytes(raw)
+    monkeypatch.setenv('OPENMONTAGE_OPENART_MCP_EXPECTED_SHA256_SCHEMA', hashlib.sha256(raw).hexdigest())
+    profile = mcp.load_profile('fal-h3-max-turbo', 'image2video', require='candidate')
+    end_schema = profile['form']['jsonSchema']['properties']['endFrame']
+    assert end_schema['anyOf'][1] == {'type': 'null'}
+    assert all(profile['native_capabilities']['roles'][role]['supported']
+               for role in ('first_frame', 'last_frame'))
+    inputs = {'project_dir': str(root), 'model': profile['model'], 'mode': profile['mode'],
+        'operation': 'first_last_frame', 'openart_project_id': 'fixture-project',
+        'prompt': 'SYNTHETIC observed-form endpoint regression',
+        'native_params': {'duration': 5, 'resolution': '768P'},
+        'input_assets': [{'role': role, **assets[name]}
+                         for role, name in [('first_frame', 'start'), ('last_frame', 'end')]]}
+    before = copy.deepcopy(inputs)
+    native = preparation.prep_builder('openart_mcp')(inputs, profile)
+    assert inputs == before
+    assert mcp.validate_native_request(native, profile) == native
+    for index, (field, role, name) in enumerate([
+            ('startFrame', 'first_frame', 'start'), ('endFrame', 'last_frame', 'end')]):
+        receipt = result['results'][index]['visualReference']
+        assert native['body']['params'][field] == {key: value for key, value in receipt.items() if key != 'metadata'}
+        bound = native['input_assets'][index]
+        assert bound['role'] == role
+        assert bound['source_path'] == assets[name]['source_path']
+        assert bound['source_sha256'] == hashlib.sha256(Path(bound['source_path']).read_bytes()).hexdigest()
+        assert bound['upload_id'] == receipt['id']
+        assert bound['receipt_sha256']
+    assert set(native['body']['params']) == {'prompt', 'duration', 'resolution', 'startFrame', 'endFrame'}
+    # A schema-valid nullable endpoint never permits an unreceipted replacement.
+    forged = copy.deepcopy(inputs)
+    forged['input_assets'][1]['upload_id'] = 'SYNTHETIC-unrecorded-end-frame'
+    with pytest.raises(mcp.OpenArtMCPError):
+        preparation.prep_builder('openart_mcp')(forged, profile)
+
+
 def source_only_native_after_second_upload(source_project):
     from lib import openart_mcp_jobs as jobs
     root,assets,_,result=source_project

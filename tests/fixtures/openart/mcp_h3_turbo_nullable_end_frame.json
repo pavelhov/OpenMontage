@@ -1,0 +1,176 @@
+{
+  "classification": "synthetic_fixture_exact_observed_form_2026_10_15",
+  "transport": "openart_mcp",
+  "catalog": {
+    "tool": "openart_model_list",
+    "arguments": {},
+    "data": {
+      "models": [
+        {
+          "id": "fal-h3-max-turbo",
+          "displayName": "MiniMax H3 Max Turbo",
+          "description": "MiniMax H3 Max Turbo by fal is an even faster and cheaper H3 Max option. Pick it for the quickest, lowest-cost proof-of-concept iterations when a slight quality tradeoff is acceptable and reference/element-to-video is not needed. It generates 5-15s clips at 480P, 768P, or 1080P with optional first/last-frame control. Text-to-video and image-to-video.",
+          "modes": {
+            "video": [
+              {
+                "mode": "text2video",
+                "description": "Text to video \u2014 generate a video from a text prompt only (no input image).",
+                "totalCredits": 75,
+                "affordable": true
+              },
+              {
+                "mode": "image2video",
+                "description": "Image to video \u2014 animate a provided image as the literal FIRST FRAME \u2014 same subject, SAME framing/background, the video starts from that exact picture and moves. Use ONLY when the user wants that specific picture to come alive. Do NOT use when the subject should appear in a new scene, background, place, or action \u2014 that is element2video. This model also accepts an optional `endFrame` beside the required `startFrame`: pass both for a start-to-end frame transition that begins on the first picture and lands on the second.",
+                "totalCredits": 75,
+                "affordable": true
+              }
+            ]
+          }
+        }
+      ]
+    }
+  },
+  "forms": [
+    {
+      "tool": "openart_model_form_get",
+      "arguments": {
+        "model": "fal-h3-max-turbo",
+        "mode": "image2video"
+      },
+      "data": {
+        "model": "fal-h3-max-turbo",
+        "mode": "image2video",
+        "media": "video",
+        "jsonSchema": {
+          "type": "object",
+          "properties": {
+            "prompt": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 6000
+            },
+            "videoCount": {
+              "default": 1,
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8
+            },
+            "duration": {
+              "default": 5,
+              "type": "integer",
+              "minimum": 5,
+              "maximum": 15
+            },
+            "resolution": {
+              "default": "480P",
+              "type": "string",
+              "enum": [
+                "480P",
+                "768P",
+                "1080P"
+              ]
+            },
+            "startFrame": {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "const": "image"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "url": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "imageUrl": {
+                  "type": "string"
+                },
+                "thumbnailUrl": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "id",
+                "url",
+                "label"
+              ],
+              "additionalProperties": false
+            },
+            "endFrame": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "const": "image"
+                    },
+                    "id": {
+                      "type": "string"
+                    },
+                    "url": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "imageUrl": {
+                      "type": "string"
+                    },
+                    "thumbnailUrl": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "id",
+                    "url",
+                    "label"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "seed": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "promptExpansionMode": {
+              "default": "balanced",
+              "type": "string",
+              "enum": [
+                "balanced"
+              ]
+            }
+          },
+          "required": [
+            "prompt",
+            "startFrame"
+          ],
+          "additionalProperties": false
+        }
+      }
+    }
+  ]
+}
