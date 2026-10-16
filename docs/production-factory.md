@@ -31,13 +31,23 @@ Declare useful images only; optional capacity is not a requirement to fill.
 
 For one reference-guided whole-story request, author one shot with the route's
 supported total duration and the timestamped internal cuts in its action text.
-Declare a small ordered set of `reference_image` consumers; descriptive source
+Declare the useful ordered set of `reference_image` consumers; descriptive source
 filenames and the actual upload receipt labels retain their identities. Internal
 cuts are instructions within this one original, not additional video slots.
 Native references guide objects/cast/style rather than pinning exact cut frames.
 The optional single-video `quoted_credit_budget` policy retains a creator budget
 against an exact host-observed connector quote before scope admission; its shape
 and honest price/ceiling distinction are owned by [OPENART_MCP](OPENART_MCP.md).
+
+The compact package's `payoff_asset_id` is optional. A reference-guided story can
+use only existing character references with `boards: []` and explicit native
+consumers; no payoff-design image or image generation is required. Plan useful
+missing images eagerly using the existing
+[inventory and prompt-pack method](../skills/creative/visual-development.md#current-board-inventory-and-prompt-pack),
+within the selected route and current call authority. A deliberately planned
+payoff board still keeps its explicit asset binding and story role. If
+`payoff_asset_id` is supplied, it must name a declared `payoff_board`.
+Generic manifest contracts retain their required payoff bindings.
 
 The compact package supports optional shot `roles` entries with `asset_id`,
 canonical `role` (`start_frame`, `end_frame`, `timed_keyframe` or `reference_image`)
@@ -142,6 +152,7 @@ sidecar IDs and source-transfer arguments. For OpenArt `input_assets` and suppor
 root frame aliases, it validates and pins existing uploads by receipt SHA; shared boundary bytes are
 transferred once. `upload_authority_kwargs.files` contains only missing sources.
 Do not copy all `frames` into another upload batch.
+Numeric upload snapshot labels such as `0.png` are normal: the compiler adds the exact retained source mapping to the native prompt, so use that emitted prompt unchanged without renaming labels or mutating receipts.
 
 ```python
 draft = execution.draft_motion_preparation(project, action)
@@ -177,14 +188,16 @@ backend deduplication. Unbound errors, access/policy denials, standalone one-bat
 authority, exhausted allowance, and another retry remain blocked. This grants
 no image or video generation retry.
 
-For a current singleton Grok `prepare_motion` action, complete it with
+For a current singleton Grok or OpenArt MCP `prepare_motion` action, complete it with
 `outcome={"preparation": {"timing": timing, "review": judgment}}`. The existing
-`complete_action` drafts the exact retained inputs, observes the registered CLI,
-builds the native request, validates the authored timing and exactly bound
+`complete_action` drafts the exact retained inputs, observes the registered Grok
+CLI or loads the current supported OpenArt model/mode profile and resolves its
+already retained upload receipts, builds the native request, validates the authored timing and exactly bound
 judgment, and retains both immutable sidecars before normal scope admission and
 dispatch. Supply actual image judgment, including unknowns or failures; semantic findings
 are report-only in this activated factory. This convenience creates no predicates
-or timing estimates. Modified/stale actions reject, and retrying after dispatch does
+or timing estimates and performs no upload. Complete the upload handoff above
+first when sources are missing. Modified/stale actions reject, and retrying after dispatch does
 not regenerate. Interrupted preparation retains the same IDs and exact records.
 Fresh observations at later admission/dispatch boundaries remain required.
 Other routes continue with their explicit prepared inputs and provider.

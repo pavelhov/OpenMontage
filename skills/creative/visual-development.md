@@ -136,6 +136,21 @@ inherit, attributes/background/people to ignore, scene or time-range scope,
 priority, and temporal use (`first_frame`, `last_frame`, `key_state`, or
 `style_only`) when relevant.
 
+For the one-shot factory, query `registry.describe_video_inputs` for the exact
+provider/model/mode/operation before choosing image roles. Bind literal openings
+to `start_frame`, required endings to `end_frame`, supported intermediate states
+to `timed_keyframe` with their times, and untimed appearance/action guidance to
+ordered `reference_image` consumers. A semantic role such as `payoff_board` is
+not a native pin. Grok CLI's `first_last_frame` route currently supports up to
+four middle frames and fourteen references alongside its endpoints; use those
+controls when they help the action. Seedance OpenArt `element2video` accepts
+untimed `visualReferences`; its separate `image2video` start/end controls do not
+turn element references into timed frames. Recheck the current route capability
+answer and Layer 3 guidance; missing limits stay unknown, and capacity is never
+a quota to fill. Declare every useful supported input in the existing shot
+roles so native compilation preserves its role, order and time. Explicit required
+controls remain requirements when an unsupported route cannot carry them.
+
 ## Continuity Ledger for Clip Boundaries
 
 For a sequence of clips, maintain
@@ -165,6 +180,24 @@ new images. Each reused reference keeps exact current bytes, story/role
 applicability and its original observation. One image can serve multiple roles
 when the observation covers each state. Explicit missing slots stay unresolved;
 a pre-board packet is not a reviewed-motion packet.
+
+For the one-shot factory, make the useful-image decisions while authoring that
+same inventory and prompt pack. Inspect the actual existing references against
+the complete brief: character silhouette/views, prop construction, environment,
+critical contact or action states, and the completed payoff when its geometry
+needs visual design. Author missing useful images eagerly within the selected
+route and existing image authority; zero new images is valid when clean existing
+references already cover the brief. Do not invent a payoff image to satisfy a
+field or minimize useful preparation to a fixed image count. Choose the images
+for the story and model, without an arbitrary minimum or quality ceiling.
+
+Each image prompt states visible geometry, possession/contact and what changes
+from its source; its intended role does not prove those facts. Inspect generated
+bytes before using them and retain the actual observation. A board showing wrong
+physics must not be passed as the required action state merely because its label
+says “payoff.” The factory reports defects within its once-only plan and existing
+authority; this method adds no correction, retry or approval loop. Manifest
+pipelines keep their existing reviewed preparation gates below.
 
 Schedule image dependencies separately: an end-from-start image needs the
 actual imported start image, while unrelated prompts/nodes can proceed. Shared

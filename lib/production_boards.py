@@ -312,7 +312,7 @@ def _validate_spec(root, spec):
         if [s["id"] for s in template["shots"]] != shot_ids:
             raise ValueError("motion template must cover the exact ordered board shot IDs")
         asset_ids = {a["id"] for a in assets}
-        if template.get("payoff_asset_id") not in asset_ids:
+        if "payoff_asset_id" in template and template["payoff_asset_id"] not in asset_ids:
             raise ValueError("motion payoff must name a declared contract asset")
         aliases = {}
         for aid in nodes.keys() | references.keys():

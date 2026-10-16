@@ -757,9 +757,11 @@
         }
       },
       "else": {
-        "required": [
-          "payoff_asset_id"
-        ],
+        "if": {
+          "required": ["planning_mode"],
+          "properties": {"planning_mode": {"const": "shot_local_v1"}}
+        },
+        "else": {"required": ["payoff_asset_id"]},
         "properties": {
           "assets": {
             "minItems": 1

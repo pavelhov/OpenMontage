@@ -3752,31 +3752,39 @@ def complete_action(project_dir, action, *, outcome):
     elif kind == 'prepare_motion':
         if set(outcome) == {'preparation'}:
             # Authored timing and actual image judgment stay with the producer;
-            # mechanical binding and the native CLI observation belong here.
+            # mechanical binding and the current native projection belong here.
             preparation = outcome['preparation']
             if not isinstance(preparation, dict) or set(preparation) != {'timing', 'review'}:
                 _fail('motion preparation requires exact authored timing and review')
             draft = draft_motion_preparation(root, action)
-            if draft['provider'] != 'grok_cli':
-                _fail('authored preparation convenience requires the retained singleton Grok route')
-            from tools.tool_registry import registry
-            from tools._grok_cli_media import observe_grok_cli_compatibility, DEFAULT_GROK_PATH
             from lib.production_request import prep_builder, prepare_compiled_request
             from lib.shot_contract import factory_project
-            import os
-            registry.ensure_discovered('tools.video')
-            tool = registry.get('grok_cli_video')
-            if tool is None:
-                _fail('exact registered production tool unavailable')
             inputs = draft['inputs']
-            configured = getattr(tool, '_grok_path', None) or os.environ.get('GROK_CLI_PATH', DEFAULT_GROK_PATH)
-            observation = observe_grok_cli_compatibility(configured, cwd=inputs.get('cwd') or root)
-            native = prep_builder('grok_cli')(inputs, observation)
-            profile = {'source': 'real'}
+            provider = draft['provider']
+            observation = None
+            if provider == 'grok_cli':
+                from tools.tool_registry import registry
+                from tools._grok_cli_media import observe_grok_cli_compatibility, DEFAULT_GROK_PATH
+                import os
+                registry.ensure_discovered('tools.video')
+                tool = registry.get('grok_cli_video')
+                if tool is None:
+                    _fail('exact registered production tool unavailable')
+                configured = getattr(tool, '_grok_path', None) or os.environ.get('GROK_CLI_PATH', DEFAULT_GROK_PATH)
+                observation = observe_grok_cli_compatibility(configured, cwd=inputs.get('cwd') or root)
+                native = prep_builder(provider)(inputs, observation)
+                profile = {'source': 'real'}
+            elif provider == 'openart_mcp':
+                from lib import openart_mcp as connector
+                profile = connector.load_profile(inputs['model'], inputs['mode'], require='supported')
+                native = prep_builder(provider)(inputs, profile)
+            else:
+                _fail('authored preparation requires a retained singleton Grok or OpenArt MCP route')
             prepare_compiled_request(inputs, native, profile, coverage=draft['coverage'],
                 timing=preparation['timing'], review=preparation['review'], persist=True,
                 require_passing_review=not factory_project(root))
-            outcome = {'inputs': inputs, 'provider': 'grok_cli', 'observation': observation}
+            outcome = {'inputs': inputs, 'provider': provider,
+                       **({'observation': observation} if observation is not None else {})}
         if set(outcome) - {'inputs', 'provider', 'observation'} or not {'inputs', 'provider'} <= set(outcome):
             _fail('motion preparation requires exact inputs and approved provider')
         from lib import production_autonomy as autonomy

@@ -1525,7 +1525,8 @@ def _expand_compact_package(package):
     header = package.get('compact')
     fields = {'reviewer', 'story', 'approval', 'references', 'story_meaning',
               'late_cast_ids', 'payoff_speaker_ids', 'payoff_asset_id'}
-    if not isinstance(header, dict) or set(header) != fields:
+    if (not isinstance(header, dict) or not fields - {'payoff_asset_id'} <= set(header)
+            or set(header) - fields):
         raise ValueError('compact package requires explicit bindings and story meaning')
     if not isinstance(header['reviewer'], str) or not header['reviewer'].strip():
         raise ValueError('compact package requires a named reviewer')
@@ -1654,12 +1655,13 @@ def _expand_compact_package(package):
     for shot in authored:
         if isinstance(shot['cast'], list) and any(c not in identity_cast for c in shot['cast']):
             raise ValueError('compact cast requires explicit identity_reference source metadata')
-    payoff = next((a for a in assets if a['id'] == header['payoff_asset_id']), None)
-    if payoff is None or payoff['role'] != 'payoff_board':
-        raise ValueError('compact payoff asset must name an explicitly authored or supplied payoff_board')
+    if 'payoff_asset_id' in header:
+        payoff = next((a for a in assets if a['id'] == header['payoff_asset_id']), None)
+        if payoff is None or payoff['role'] != 'payoff_board':
+            raise ValueError('compact payoff asset must name an explicitly authored or supplied payoff_board')
     template = {'version': '1.0', 'planning_mode': 'shot_local_v1',
         'reference_mode': 'frame_conditioned', 'story': copy.deepcopy(header['story_meaning']),
-        **{k: copy.deepcopy(header[k]) for k in ('late_cast_ids', 'payoff_speaker_ids', 'payoff_asset_id')},
+        **{k: copy.deepcopy(header[k]) for k in ('late_cast_ids', 'payoff_speaker_ids', 'payoff_asset_id') if k in header},
         'assets': assets, 'shots': contracts, 'project_review': unknown('project', PROJECT_PREDICATES)}
     result = {k: copy.deepcopy(v) for k, v in package.items() if k not in {'authoring_form', 'compact'}}
     result['shots'] = shots

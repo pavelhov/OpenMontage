@@ -8,7 +8,7 @@ import pytest
 from lib import production_request as request, production_images as images
 from lib.shot_contract import PROJECT_PREDICATES, SHOT_PREDICATES
 from tests.lib.test_production_request import neutral_package  # noqa: F401
-from tests.lib.test_production_factory import file_bytes, write, standing_treatment_fixture, guided_observations  # noqa: F401
+from tests.lib.test_production_factory import file_bytes, write, creator_fixture, standing_treatment_fixture, guided_observations  # noqa: F401
 from lib import production_autonomy as pa, production_execution as execution
 
 
@@ -186,6 +186,134 @@ def supplied_payoff_package(root, base):
         references.append(reference)
     compact['compact'].update(references=references, payoff_asset_id='R1')
     return compact
+
+
+def test_compact_character_references_only_reaches_compiled_motion_without_images(neutral_package):
+    """Public author-once path needs no invented payoff design or image call."""
+    from lib import production_boards as boards
+    root, base, bind = neutral_package
+    compact = supplied_payoff_package(root, base)
+    compact['shots'][0]['script'] = 'SYNTHETIC exact supplied context'
+    del compact['compact']['payoff_asset_id']
+    compact['compact']['references'] = compact['compact']['references'][:2]
+    # Deliberately differ from lexical asset order: native consumer order is authored.
+    compact['shots'][0]['roles'] = [{'asset_id': aid, 'role': 'reference_image'}
+                                    for aid in ('partner', 'actor')]
+    settings = {'provider': 'grok_cli', 'operation': 'reference_to_video'}
+    templates = request.build_video_request_templates(compact, settings)
+    binding = bind(compact)
+    before = file_bytes(root)
+    projection = request.compile_package(root, binding)
+    assert file_bytes(root) == before
+    assert projection['spec']['image_nodes'] == []
+    assert 'payoff_asset_id' not in projection['spec']['motion_binding']['contract_template']
+    request.prepare_package(root, binding)
+    kwargs = standing_treatment_fixture(root)
+    kwargs['baselines']['s1']['planned_request_template'] = execution.planned_request_template(
+        templates['s1'], project_dir=root)
+    assert pa.activate_standing_run(root, **kwargs)['provider_calls'] == 0
+    action = execution.advance(root)['action']
+    assert action['kind'] == 'prepare_motion'
+    draft = execution.draft_motion_preparation(root, action, provider='grok_cli')
+    inputs = draft['inputs']
+    paths = [str(root / r['path']) for aid in ('partner', 'actor')
+             for r in compact['compact']['references'] if r['id'] == aid]
+    assert inputs['reference_image_paths'] == paths
+    native = request.prepare_grok_native(inputs, {'cli_version': '1.0.34', 'grok_path': '/SYNTHETIC/offline/grok'})
+    assert [(r['role'], r['path']) for r in native['request']['input_assets']] == [
+        ('reference', path) for path in paths]
+    timing = {'method': 'segmented_estimate', 'duration_seconds': 5, 'language': 'en', 'margin_seconds': .5,
+        'rationale': 'SYNTHETIC offline fixture', 'overlap_policy': 'serial',
+        'overlap_rationale': 'SYNTHETIC serial', 'segments': [],
+        'action_windows': [{'source_pointer': '/shot_contract/shots/0/' + key,
+            'start_seconds': start, 'end_seconds': end, 'rationale': 'SYNTHETIC offline fixture'}
+            for key, start, end in [('dominant_action', .1, 3), ('completed_end_state', 3.1, 4.4)]]}
+    compiled = request.prepare_compiled_request(inputs, native, {'source': 'real'},
+        coverage=draft['coverage'], timing=timing)
+    assert {r['id'] for r in compiled['source_binding']['references']} == {'actor', 'partner'}
+    assert all(r['role'] == 'reference_image' for r in compiled['source_binding']['references'])
+    assert boards.load_board_pack(root)['prompt_pack'] == {}
+    assert images.image_usage(root)['total'] == 0 and execution._attempts(root) == []
+    assert request.file_sha256(root / binding['path']) == binding['sha256']
+
+
+def test_compact_reference_only_openart_authored_preparation_uses_retained_uploads(neutral_package, guided_observations, monkeypatch):
+    """The existing preparation outcome seals real native inputs, with no host call."""
+    from lib import openart_mcp as mcp, openart_mcp_jobs as jobs, production_provenance as provenance
+    monkeypatch.setattr(mcp, '_ALLOW_FIXTURE_PRODUCTION', True)
+    monkeypatch.setattr(provenance, '_ALLOW_OPENART_FIXTURE_PROVENANCE', True)
+    root, base, bind = neutral_package
+    compact = supplied_payoff_package(root, base)
+    compact['shots'][0]['script'] = 'SYNTHETIC exact supplied context'
+    del compact['compact']['payoff_asset_id']
+    compact['compact']['references'] = compact['compact']['references'][:2]
+    compact['shots'][0]['roles'] = [{'asset_id': aid, 'role': 'reference_image'}
+                                    for aid in ('partner', 'actor')]
+    settings = {'provider': 'openart_mcp', 'model': 'byte-plus-seedance-2-mini',
+        'mode': 'element2video', 'operation': 'reference_to_video', 'resolution': '720p'}
+    templates = request.build_video_request_templates(compact, settings)
+    request.prepare_package(root, bind(compact))
+    kwargs = standing_treatment_fixture(root, guided_routes=[{'model': settings['model'], 'mode': settings['mode']}])
+    next(p for p in kwargs['policy']['providers'] if p['id'] == 'openart_mcp')['uid_sha256'] = mcp.account_summary()['uid_sha256']
+    setup = json.loads((root / kwargs['standing_setup']['path']).read_text()); setup.pop('authorization')
+    setup['providers'] = copy.deepcopy(kwargs['policy']['providers'])
+    kwargs['standing_setup'] = creator_fixture(root, 'standing', setup)
+    command = json.loads((root / kwargs['run_command']['path']).read_text()); command.pop('authorization')
+    command['standing_setup_sha256'] = kwargs['standing_setup']['sha256']
+    kwargs['run_command'] = creator_fixture(root, 'command', command)
+    kwargs['baselines']['s1']['planned_request_template'] = execution.planned_request_template(templates['s1'], project_dir=root)
+    pa.activate_standing_run(root, **kwargs)
+    action = execution.advance(root)['action']
+    draft = execution.draft_motion_preparation(root, action)
+    authority = pa.derive_standing_upload_authority(root, **draft['upload_authority_kwargs'])
+    upload = jobs.prepare_upload(root, files=draft['upload_authority_kwargs']['files'],
+        billing_declaration={'upload_authorization_id': authority['upload_id']},
+        openart_project_id=draft['inputs']['openart_project_id'])
+    jobs.record_upload_receipt(root, upload_id=upload['upload_id'], result={
+        'projectId': draft['inputs']['openart_project_id'], 'results': [
+            {'fileId': 'SYNTHETIC-file-' + str(i), 'status': 'SUCCESS', 'visualReference': {
+                'id': 'SYNTHETIC-reference-' + str(i), 'type': 'image',
+                'url': 'https://fixture.invalid/' + str(i) + '.png', 'label': 'SYNTHETIC ' + str(i),
+                'imageUrl': 'https://fixture.invalid/' + str(i) + '.png',
+                'thumbnailUrl': 'https://fixture.invalid/' + str(i) + '.png', 'metadata': {'fixture_only': True}}}
+            for i in range(2)]})
+    ready = execution.draft_motion_preparation(root, action)
+    assert ready['upload_authority_kwargs']['files'] == [] and len(ready['reused_uploads']) == 2
+    timing = {'method': 'segmented_estimate', 'duration_seconds': 5, 'language': 'en', 'margin_seconds': .5,
+        'rationale': 'SYNTHETIC offline fixture', 'overlap_policy': 'serial',
+        'overlap_rationale': 'SYNTHETIC serial', 'segments': [],
+        'action_windows': [{'source_pointer': '/shot_contract/shots/0/' + key,
+            'start_seconds': start, 'end_seconds': end, 'rationale': 'SYNTHETIC offline fixture'}
+            for key, start, end in [('dominant_action', .1, 3), ('completed_end_state', 3.1, 4.4)]]}
+    judgment = {'version': '1.0', 'reviewer': 'SYNTHETIC offline reviewer', 'status': 'unknown',
+        'evidence_kind': 'fixture_only', 'predicates': [{'name': name, 'status': 'unknown',
+            'severity': 'critical', 'evidence': 'SYNTHETIC unobserved ' + name} for name in sorted(request.PREDICATES)]}
+    result = execution.complete_action(root, action, outcome={'preparation': {'timing': timing, 'review': judgment}})
+    assert result['status'] == 'dispatched' and result['result']['success'], result
+    assert result['dry_run']['provider_calls'] == 0
+    assert result['action']['kind'] == 'begin_openart_original'
+    [attempt] = execution._attempts(root)
+    assert attempt['shot_id'] == 's1'
+    record_id = ready['inputs']['compiled_request_id']
+    compiled = json.loads((root / ('artifacts/compiled_request-' + record_id + '.json')).read_text())
+    retained_review = json.loads((root / ('artifacts/preparation_review-' + record_id + '.json')).read_text())
+    assert retained_review['status'] == 'unknown' and retained_review['reviewer'] == judgment['reviewer']
+    native = jobs.frozen_request(root, attempt['attempt_id'])['native']
+    assert request.digest(native['body']) == compiled['native_binding']['native_body_sha256']
+    assert [(a['role'], a['source_sha256']) for a in native['input_assets']] == [
+        ('reference_image', r['sha256']) for aid in ('partner', 'actor')
+        for r in compact['compact']['references'] if r['id'] == aid]
+    assert len(native['body']['params']['visualReferences']) == 2
+    assert images.image_usage(root)['total'] == 0
+
+
+def test_payoff_omission_does_not_relax_legacy_motion_template(neutral_package):
+    root, base, bind = neutral_package
+    del base['boards']['motion_binding']['contract_template']['payoff_asset_id']
+    binding = bind(base); before = file_bytes(root)
+    with pytest.raises(ValueError, match="payoff_asset_id.*required"):
+        request.compile_package(root, binding)
+    assert file_bytes(root) == before
 
 
 def test_compact_all_supplied_payoff_reaches_motion_preparation_without_images(neutral_package, guided_observations, monkeypatch):
