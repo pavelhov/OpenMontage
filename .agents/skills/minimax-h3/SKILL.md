@@ -106,10 +106,11 @@ to this two-frame envelope:
    scale, camera and light; change the necessary pose, contact and object state.
    Independent endpoint illustrations can introduce a contradictory scene.
    A natural reaction or open ending often needs only the start image and prompt.
-4. Write the motion between the real states: one dominant physical event, its
-   visible consequence and a brief decision or reaction. Keep dependent movements
-   few; omit incidental taps, regrips and camera shifts. Let the frame carry
-   appearance and staging, and keep the camera direction concise.
+4. Write the motion between the real states: the dominant action, material
+   behavior only when important, the visible result and a brief purposeful
+   decision or realization. Keep dependent movements few; omit incidental taps,
+   regrips and camera shifts. Let the frame carry appearance and staging; add
+   camera direction only when it helps clarity.
 
 Plan the intended finished shot and its selected resolution from the outset;
 Turbo speed does not call for a low-resolution trial followed by a keeper rerun.
@@ -155,13 +156,16 @@ Illustrative video prompt:
 One continuous static medium-wide shot in the clay kitchen shown in the opening
 image. Brisk real-time physical comedy, clear robot silhouette and toast edges.
 Opening 0–2s: the toaster fires the buttered toast straight into the leaning
-robot's face. Payoff 2–5s: the toast stays stuck over its eyes; the robot turns
-toward the camera in offended disbelief. Spring clack and sticky slap;
+robot's face. Payoff 2–5s: the butter makes the toast stick over its eyes;
+the robot pushes the toaster away in firm refusal. End as that decision lands.
+Spring clack and sticky slap;
 no background music.
 ```
 
 Use the brief's actual duration and audio intent; this example preserves a
-no-background-music choice. A natural reaction needs no compulsory `endFrame`.
+no-background-music choice. Choose enough meaningful action for the route's
+minimum duration, then end when the payoff lands; do not stretch a reaction or
+fill time with incidental gestures. A reaction needs no compulsory `endFrame`.
 When an exact endpoint matters, derive it from the same scene under the method
 above. Preparation adds no reroll or approval stage.
 

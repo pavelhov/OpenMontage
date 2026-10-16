@@ -181,13 +181,18 @@ Source ancestry records how the image was made; only the actual native input
 binding establishes what the video model receives.
 
 For fast physical action, use concise action windows: one dominant physical event,
-its visible consequence, then a brief character decision or reaction. Start ready
+its visible consequence, then a brief purposeful decision or visible realization.
+Describe material behavior only when it matters: a brief uneven squirt breaks
+into droplets and leaves streaks, or a rigid prop keeps its shape. Choose the
+behavior that serves this action. Start ready
 or already at the action; keep dependent movements few and contacts reachable.
 Omit needless taps, regrips, distances, gestures and camera shifts. Keep the camera
 stable or describe one useful move separately from subject motion, with readable
 silhouettes and prop edges. Longer stories earn time through causal escalation or
-purposeful coverage rather than stretching a gesture. Fit windows and duration to
-the story and route; these are prompting heuristics, not quotas or frame-accurate
+purposeful coverage rather than stretching a gesture. Choose enough meaningful
+action for the route's minimum duration and end when the payoff lands; do not pad
+a generic expression or add incidental gestures. Fit windows and duration to the
+story and route; these are prompting heuristics, not quotas or frame-accurate
 timing guarantees.
 
 When an ending image helps, derive it from the actual starting image and the same
