@@ -178,6 +178,17 @@ screen direction. A polished portrait is not automatically a playable opening.
 Source ancestry records how the image was made; only the actual native input
 binding establishes what the video model receives.
 
+For fast physical action, budget the action itself rather than relying on “fast”
+adjectives: brief anticipation, decisive contact, momentum/follow-through, then a
+short reaction. Give contact and completion short local time windows suited to
+the action; a simple gag may need only 5–8 seconds when the route permits. Start
+ready or already at the first action, with reachable contacts and a free movement
+path. Add a new causal consequence when more duration is needed instead of
+stretching a gesture. Use a few concrete physical verbs and readable silhouettes
+and prop edges, with limited smearing. Keep the camera stable or give its movement
+a separate type, extent and speed so it does not obscure subject motion. These
+are prompting heuristics, not frame-accurate timing guarantees or new controls.
+
 When an ending image helps, derive it from the actual starting image and the same
 relevant identity/prop references, preserving the scene, geometry, camera, scale,
 light and object construction while changing the intended action state. Do not

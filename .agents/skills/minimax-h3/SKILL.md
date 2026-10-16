@@ -130,36 +130,42 @@ single continuous shot for first/last-frame work and natural camera verbs, with
 speed and travel extent when those details matter. These are family-level writing
 guidelines, not verified OpenArt Turbo results or extra native fields.
 
+The official [animation shot spec](https://github.com/MiniMax-AI/MiniMax-H3/blob/main/skills/3d-animation-short-generator/references/shot-table-spec.md)
+also separates action beats from camera direction. For a quick gag, use short
+local contact/completion windows under the shared preparation method, rather
+than asking the model to be “4x faster.” OpenArt exposes no native playback-speed,
+FPS or shutter control here; a sharp-shutter look is an aesthetic request, not a
+timing fix. The short windows below are authoring heuristics, not measured Turbo
+reliability or frame-accurate guarantees.
+
 The separate [full-reference guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md)
 distinguishes reusable subject information from concrete frame anchors. Its
 multi-source labeling format belongs to reference-capable routes; do not treat
 those labels as an OpenArt Turbo reference-array feature.
 
-**Illustrative worked preparation — not generated or independently tested:**
-The shot needs a clay courier to put a cream envelope into a small blue robot's
-tray. Use the courier source for face/costume, robot source for its body/tray,
-and a separate look source only if it adds needed clay texture or lighting.
-Generate a medium-wide start: courier left, robot right, tray facing courier at
-counter height, envelope held level with its opening, hands and empty tray visible,
-with an unobstructed gap between them. Preserve each source's assigned subject,
-not its original background. Only the finished scene becomes `startFrame`.
+**Illustrative five-second gag — not generated or independently tested:**
+Prepare a medium-wide clay kitchen opening: a small robot leans over a toaster,
+its face just above the loaded slot, with a clear vertical path from toast to
+face, a plate below and room for its head to recoil. Use relevant robot, toaster
+and look sources to build that coherent scene;
+only the finished scene becomes `startFrame`.
 
 Illustrative video prompt:
 
 ```text
-One continuous medium-wide shot in the clay workshop shown in the opening image.
-The courier leans forward and slides the cream envelope into the blue robot's
-open tray. The courier releases it as it settles flat; the robot lowers its gaze
-toward the envelope. The camera remains still so the handoff stays visible.
+One continuous static medium-wide shot in the clay kitchen shown in the opening
+image. Brisk real-time physical comedy, clear robot silhouette and toast edges.
+0–1s: the toaster spring snaps up; the toast shoots straight into the leaning
+robot's face. 1–3s: the impact knocks its head back; the toast flips off its face
+and drops onto the plate below. 3–5s: the robot catches its balance, looks down at
+the toast, then gives the toaster one short offended glance. Crisp spring clack,
+soft toast slap and plate tap; no background music.
 ```
 
-**Optional endpoint for the same example:** If the story specifically needs the
-envelope resting fully inside that tray, edit the start image to that state,
-with the courier's released hand nearby and the same robot, counter, spacing and
-camera. Attach that edit as `endFrame` and describe the handoff reaching it. If
-only the handoff/reaction matters, omit the endpoint rather than inventing another
-image task. Keep any already-planned dialogue or sound intent under its existing
-owner; this example does not change audio policy.
+Use the brief's actual duration and audio intent; this example preserves a
+no-background-music choice. A natural reaction needs no compulsory `endFrame`.
+When an exact endpoint matters, derive it from the same scene under the method
+above. Preparation adds no reroll or approval stage.
 
 ## Quality evidence and source limits
 
