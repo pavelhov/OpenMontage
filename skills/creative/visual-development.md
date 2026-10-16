@@ -172,9 +172,12 @@ answer and the selected model's Layer-3 skill:
 | **Separate references consumed by video** — for example Seedance 2.5 reference mode | Supply the useful character, prop and setting references directly to the supported reference inputs. Add an action-staging image when it clarifies a difficult pose, contact or spatial relationship. Label each input's narrow job, what it preserves and which subjects it represents. Keep reference order bound to the prompt. These are untimed references unless the exact route independently exposes native timed controls. |
 | **Composed starting image consumed by video** — for example H3 Max Turbo image mode | Supply the useful character, prop, setting and staging references to IMAGEGEN to construct one consistent, filmable opening. The video model receives that actual starting image, plus an ending image only when useful and supported. It does not receive the separate identity references merely because IMAGEGEN used them. |
 
-For the composed-image route, design the opening as the first instant of the
-action: the needed people and objects are visible at useful scale, the relevant
-hands/contacts read, and the framing leaves space for the movement. Inspect the
+For the composed-image route, fast briefs open partway into a physically visible
+event, rather than poised to begin. Set one early observable progression target
+suited to the brief, without demanding precise micro-deadlines. Include only the
+on-screen cast needed for the event, with clear actor identifiers. Keep a necessary
+bystander outside the active footprint, with visible floor/support separation.
+The relevant hands/contacts read and the framing leaves space for movement. Inspect the
 image itself for identity, relative scale, possession, geometry, occlusion and
 screen direction. A polished portrait is not automatically a playable opening.
 Source ancestry records how the image was made; only the actual native input
@@ -184,8 +187,7 @@ For fast physical action, use concise action windows: one dominant physical even
 its visible consequence, then a brief purposeful decision or visible realization.
 Describe material behavior only when it matters: a brief uneven squirt breaks
 into droplets and leaves streaks, or a rigid prop keeps its shape. Choose the
-behavior that serves this action. Start ready
-or already at the action; keep dependent movements few and contacts reachable.
+behavior that serves this action. Keep dependent movements few and contacts reachable.
 Omit needless taps, regrips, distances, gestures and camera shifts. Keep the camera
 stable or describe one useful move separately from subject motion, with readable
 silhouettes and prop edges. Longer stories earn time through causal escalation or

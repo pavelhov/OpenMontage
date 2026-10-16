@@ -135,7 +135,7 @@ also separates action beats from camera direction. For a quick gag, use a few
 concise action windows under the shared preparation method, rather
 than asking the model to be “4x faster.” OpenArt exposes no native playback-speed,
 FPS or shutter control here; a sharp-shutter look is an aesthetic request, not a
-timing fix. The short windows below are authoring heuristics, not measured Turbo
+timing fix. The early target below is an authoring heuristic, not measured Turbo
 reliability or frame-accurate guarantees.
 
 The separate [full-reference guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md)
@@ -145,8 +145,8 @@ those labels as an OpenArt Turbo reference-array feature.
 
 **Illustrative five-second gag — not generated or independently tested:**
 Prepare a medium-wide clay kitchen opening: a small robot leans over a toaster,
-its face just above the loaded buttered toast, with a clear path from slot to
-face. Use relevant robot, toaster and look sources to build that coherent scene;
+buttered toast already rising from its slot toward the robot's face along a clear
+path. Use relevant robot, toaster and look sources to build that coherent scene;
 only the finished scene becomes `startFrame`. Resolve the face-to-slot geometry
 in this image rather than adding a catch or repositioning to the video prompt.
 
@@ -155,8 +155,8 @@ Illustrative video prompt:
 ```text
 One continuous static medium-wide shot in the clay kitchen shown in the opening
 image. Brisk real-time physical comedy, clear robot silhouette and toast edges.
-Opening 0–2s: the toaster fires the buttered toast straight into the leaning
-robot's face. Payoff 2–5s: the butter makes the toast stick over its eyes;
+The already-rising buttered toast hits the leaning robot's face within the first
+second. The butter makes the toast stick over its eyes;
 the robot pushes the toaster away in firm refusal. End as that decision lands.
 Spring clack and sticky slap;
 no background music.
