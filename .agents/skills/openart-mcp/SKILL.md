@@ -7,6 +7,14 @@ description: Generate video through the installed, signed-in OpenArt connector u
 
 Use this skill when an approved plan selects OpenArt's agent-mediated MCP route. OpenMontage owns governed execution; MCP and CLI are provider connections. Choose the connection during proposal from the required controls and availability in the current agent environment. MCP calls require the installed connector in that environment; terminal Python or the CLI alone cannot invoke MCP. Official OpenArt CLI 0.1.1 supports simpler text-to-video and start-frame image-to-video requests, while MCP exposes full exact-form controls such as ending frames, reference roles, or audio where supported. This does not establish a quality advantage for MCP on the same model. Never silently switch transport, account, or billing route.
 
+For image preparation, use the existing
+[route-specific visual-development method](../../../skills/creative/visual-development.md#prepare-references-for-the-selected-video-route).
+Then read the selected model's instructions: [Seedance 2.5](../seedance-2-5/SKILL.md)
+or [H3 Max Turbo](../minimax-h3/SKILL.md#openart-h3-max-turbo-exact-route-and-frame-roles).
+Direct video references and references used only to compose a starting image
+are different inputs; keep those roles in the existing package. These instructions
+do not change the selected transport, authority or once-only factory contract.
+
 ## Choose and prepare a route
 
 1. Refresh stale discovery and account observations through the signed-in connector, not HTTP or local credentials. Call `mcp__codex_apps__openart_openart_model_list({})`, call `mcp__codex_apps__openart_openart_model_form_get({model, mode})` for each listed video model/mode, and call `mcp__codex_apps__openart_openart_account_get({})`. Preserve each exact `structuredContent` result and its tool name, arguments, and observation time.

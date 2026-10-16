@@ -151,6 +151,97 @@ a quota to fill. Declare every useful supported input in the existing shot
 roles so native compilation preserves its role, order and time. Explicit required
 controls remain requirements when an unsupported route cannot carry them.
 
+## Prepare References for the Selected Video Route
+
+Plan for the strongest useful visual evidence within the current image/source
+authority. Do not optimize preparation for the fewest cheap images or fill every
+available slot. Reuse clean references when they cover the shot; author additional
+views or action states when they resolve a real ambiguity in silhouette, prop
+construction, contact, scale or staging. A character sheet, a composed opening
+and an ending image have different jobs even when they share source artwork.
+
+Use the existing inventory, shot roles and prompt pack; this guidance adds no
+artifact, mandatory payoff field, generation allowance or approval boundary.
+Choose between these treatments using the exact route's current capability
+answer and the selected model's Layer-3 skill:
+
+| Treatment | Preparation and actual video inputs |
+| --- | --- |
+| **Separate references consumed by video** — for example Seedance 2.5 reference mode | Supply the useful character, prop and setting references directly to the supported reference inputs. Add an action-staging image when it clarifies a difficult pose, contact or spatial relationship. Label each input's narrow job, what it preserves and which subjects it represents. Keep reference order bound to the prompt. These are untimed references unless the exact route independently exposes native timed controls. |
+| **Composed starting image consumed by video** — for example H3 Max Turbo image mode | Supply the useful character, prop, setting and staging references to IMAGEGEN to construct one consistent, filmable opening. The video model receives that actual starting image, plus an ending image only when useful and supported. It does not receive the separate identity references merely because IMAGEGEN used them. |
+
+For the composed-image route, design the opening as the first instant of the
+action: the needed people and objects are visible at useful scale, the relevant
+hands/contacts read, and the framing leaves space for the movement. Inspect the
+image itself for identity, relative scale, possession, geometry, occlusion and
+screen direction. A polished portrait is not automatically a playable opening.
+Source ancestry records how the image was made; only the actual native input
+binding establishes what the video model receives.
+
+When an ending image helps, derive it from the actual starting image and the same
+relevant identity/prop references, preserving the scene, geometry, camera, scale,
+light and object construction while changing the intended action state. Do not
+independently invent two attractive but incompatible endpoints. An ending used
+only as planning evidence is not a last-frame pin; declare a native end consumer
+only when the chosen treatment supports it. If the brief requires an exact native
+endpoint, retain that requirement under the existing pinned-frame owner below.
+
+For either treatment, the motion text carries the ordered change over time,
+subject/object bindings, causal contacts, camera behavior and final observable
+state. An image of a later state can guide untimed reference generation but
+cannot schedule that state at a second. Keep useful time ranges in the shot text
+without describing them as native timed image pins. Use provider-supported labels
+and syntax; a website's `@Image` convention does not establish MCP token support.
+
+**Same simple action, two handoffs.** A small courier places a red parcel on a
+counter and releases it, leaving the parcel standing upright.
+
+- **Reference mode:** send a courier identity view, a parcel construction view
+  and the counter/room reference directly; include a contact/staging view if the
+  courier-to-parcel scale or grip is ambiguous. Assign each a precise role. The
+  text stages the courier screen-left and clear counter space screen-right,
+  then gives the approach, parcel-base contact, release and held finish in order.
+- **Image mode:** IMAGEGEN consumes those same useful references to build the
+  actual opening: courier screen-left holding the parcel above the visible
+  counter, correct scale and clear landing space. Video receives this composed
+  opening and the placement/release instructions. If the upright final geometry
+  needs an endpoint, derive it in the same scene and bind it to the supported
+  native end input; otherwise the final state stays in the motion text.
+
+This is an illustrative planning example, not an observed successful generation
+or a guarantee of physical correctness. Review the returned action honestly.
+The one-shot factory keeps its once-only authored attempts and same-original
+recovery; the method never authorizes rerolls or repairs. Generic manifest
+pipelines keep their existing authority and review requirements.
+
+**Story fit and cost snapshot — 2026-10-15, America/New_York.** A bounded product
+interaction or reaction can suit H3 Max Turbo when a strong opening carries the
+needed identity and geometry; that route is not automatically lower quality.
+A story that needs 20–30 seconds in one generation or several separately supplied
+visual elements can fit Seedance 2.5 reference mode. H3's observed one-generation
+maximum is 15 seconds; its image form supplies one required start and an optional
+end, with no aspect-ratio or audio switch. Seedance's observed reference form
+allows 4–30 seconds, including 1080p, and an audio switch. Recheck current forms
+and eligible authority before selecting either treatment.
+
+| Read-only OpenArt quote | Credits |
+| --- | ---: |
+| H3 Max Turbo, `image2video`, 10s, `768P`, one video | 200 |
+| H3 Max Turbo, `image2video`, 15s, `768P`, one video | 300 |
+| Seedance 2.5, `element2video`, 10s, `720p`, 9:16, audio on, one video | 1300 |
+| Seedance 2.5, `element2video`, 20s, `720p`, 9:16, audio on, one video | 2605 |
+
+These are dated connector estimates, not a price guarantee or a like-for-like
+quality test: resolution and exposed audio controls differ. The quotes omit
+specific reference assets and image-generation costs; changed settings can change
+the charge. Do not convert these credits into invented dollar prices or treat
+the snapshot as dispatch authority. Use the current quote/account bindings under
+[OPENART_MCP](../../docs/OPENART_MCP.md). Provider details belong in
+[Seedance 2.5](../../.agents/skills/seedance-2-5/SKILL.md) and
+[MiniMax H3](../../.agents/skills/minimax-h3/SKILL.md); the Seedance owner links
+official model guidance, worked vendor demos and prompt recipes separately from
+empirical evidence.
+
 ## Continuity Ledger for Clip Boundaries
 
 For a sequence of clips, maintain

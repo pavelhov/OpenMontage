@@ -1,19 +1,24 @@
 ---
 name: seedance-2-5
 description: |
-  Generate 4-30 second cinematic video with ByteDance Seedance 2.5 through fal.ai, Volcengine Ark, Runway, or ComfyUI Partner Nodes. Use for long single generations, synchronized audio, and large multimodal reference sets (up to 30 images, 10 videos, and 10 audio clips). Also covers the 2.5 prompt contract: section order, multi-shot "Hard cut" breakdown, named locks for continuity across cuts, the asset and character-sheet method, voice conditioning, and iteration discipline.
+  Prepare ByteDance Seedance 2.5 video through the exact registered provider route, including OpenArt reference mode. Covers labelled character/prop/setting/staging references, timed shot text, continuity, native input distinctions and evidence-qualified prompt recipes. Existing production authority governs every generation.
 ---
 
 # Seedance 2.5
 
-Seedance 2.5 extends the Seedance 2 family to 4–30 second 480p/720p clips and
-larger multimodal reference sets. It is hosted; there are no local model
-weights in OpenMontage.
+Seedance 2.5 extends the Seedance 2 family to longer clips and larger multimodal
+reference sets. It is hosted; there are no local model weights in OpenMontage.
+Read the shared [visual-development](../../../skills/creative/visual-development.md)
+owner for the quality-first reference/image preparation method and two-route
+story-fit/cost comparison. This provider skill translates that method into the
+selected route's actual inputs. Examples and vendor capabilities never expand
+the current production contract, image allowance or source-transfer authority.
 
 ## Choose a supported route
 
 | Route | Tool call | Notes |
 |-------|-----------|-------|
+| OpenArt MCP | `openart_mcp_video`, model `byte-plus-seedance-2-5`, mode `element2video` | Separate, untimed reference inputs through the current exact connector form; see [OPENART_MCP](../../../docs/OPENART_MCP.md) |
 | fal.ai | `seedance_video`, `model_version: "2.5"` | T2V, I2V, and reference-to-video |
 | Volcengine Ark | `seedance_ark`, `model: "2.5"` | First-party model ID `doubao-seedance-2-5-260628`; custom token price required for cost estimates |
 | Runway | `runway_video`, `model: "seedance2_5"` | T2V, I2V, V2V; 480p/720p |
@@ -22,29 +27,57 @@ weights in OpenMontage.
 Do not invent a Replicate, HeyGen, or Higgsfield identifier when their current
 public API schema does not list Seedance 2.5.
 
-> **Resolution note.** The supported routes above expose 480p and 720p. The model
-> generates 1080p natively on the vendor's own web platform, which is not an
-> OpenMontage route. If a vendor blog cites 1080p or 4K, check which surface it means
-> before promising it in a pipeline.
+> **Route evidence, not a universal capability promise.** The OpenArt MCP
+> `element2video` form checked 2026-10-15 exposes 4–30 second integer durations,
+> 480p/720p/1080p, aspect ratios including 9:16, and `generateAudio` (default true).
+> The current fal native API also documents 1080p; a registered adapter may expose
+> a narrower subset. Recheck the registry and exact selected form before authoring.
+> Never import another provider's resolution, mode or controls by analogy.
 
-## Reference limits
+## Reference inputs, labels and limits
 
-- Up to 30 reference images.
-- Up to 10 reference videos.
-- Up to 10 reference audio clips.
+- ByteDance's published model ceilings are 30 reference images, 10 reference
+  videos and 10 reference audio clips. These are not proof of the selected
+  connector's accepted maximum or of consumption in a particular result.
 - Keep combined reference video/audio duration within the provider's documented
   ceiling; Runway caps it at 30 seconds.
 - For Runway video-to-video, the source video consumes one video slot.
 
-Reference inputs are provider-specific. fal.ai uses `image_urls`, `video_urls`,
-and `audio_urls` internally. Runway uses `references`, `referenceVideos`, and
-`referenceAudio`. Ark uses typed content entries with roles. Always call the
-OpenMontage tool instead of constructing a provider payload manually.
+Reference inputs are provider-specific. fal.ai documents `image_urls`,
+`video_urls` and `audio_urls`, addressed in its prompt as `@Image1`, `@Video1`
+and `@Audio1` in array order. Runway uses `references`, `referenceVideos` and
+`referenceAudio`; Ark uses typed content entries with roles. Always call the
+registered OpenMontage tool instead of constructing a provider payload manually.
 
-**50 assets is a ceiling to use deliberately, not to max out.** A cluttered reference
-set with competing faces, props, and locations produces a *less* coherent result than a
-smaller, chosen one. Rule: one reference per element that must stay consistent — a face,
-a product, a location, a style.
+For OpenArt MCP, the current `element2video` form requires `visualReferences`
+with at least one entry. Each native entry requires `type`, `id`, `url` and
+`label`; no `maxItems` is published in that observed form. Retain actual upload
+labels, even unhelpful names such as `0.png`. The existing compiler's ordered
+`Reference 1`, `Reference 2`, … mapping binds those native labels to source IDs/files and cast IDs.
+Use that mapping to tell the prompt which file supplies which subject and job.
+Do not assume OpenArt's web examples using `@Image 1` create MCP token bindings.
+Preserve exact labels/order and the prepared native request; never rename a
+retained upload or invent a new token convention as a provider feature.
+Use the emitted native prompt unchanged at the governed host handoff; do not
+rewrite its mapping after the source-bound request is frozen.
+
+Capacity is not a quota. Use enough clean evidence to establish the needed
+identities, props, setting and difficult action geometry. More views of one
+character/object may help; state that they depict the same subject so they do
+not imply duplicates. Exclude unrelated people, backgrounds and incompatible
+states through narrow inherit/ignore directions. Do not impose one image per
+element as a maximum or add files just to fill slots.
+
+`element2video` references are **untimed guidance**, not start/end or intermediate
+frame pins. A staging image can explain a grip or final geometry while timed
+shot text describes when it happens. Separate `image2video` endpoint controls do
+not turn reference-mode images into native pins. Use the registry's exact input
+description; required native timing/endpoint controls cannot be replaced by prose.
+
+Submission is also distinct from observed consumption. A saved request with five
+references and a history card showing two thumbnails proves neither a two-image
+limit nor that all five were used. Retain consumption as unknown unless actual
+provider evidence resolves it; do not rerun to investigate under production authority.
 
 ---
 
@@ -58,8 +91,9 @@ scene has only one meaningful action.
 
 ### Section order
 
-One continuous block of text, broken into labeled sections. Skipping a section does not
-degrade the output generally — it breaks it in a specific, predictable way.
+The following is an optional organizing recipe for complex shots, not required
+syntax or a guarantee. A simple action can use a shorter prompt with clear
+reference jobs, opening geometry, ordered action, camera and sound direction.
 
 ```
 GLOBAL STYLE
@@ -101,27 +135,29 @@ AUDIO
   "No music, no discernible dialogue", unless the scene needs otherwise.
 ```
 
-The shape working prompts share: **one visual rule at the top, one sound rule at the
-bottom, everything in between broken into shots.** CHARACTERS can be short when a
-reference does that work; keep GLOBAL STYLE, the shot breakdown, and AUDIO regardless.
+Use the sections that carry real direction for this brief. CHARACTERS can be
+short when references establish appearance. Give multi-shot work explicit beat
+timing and cuts, but do not force internal cuts into a continuous action. Preserve
+the brief's audio choice and the exact route's actual audio controls.
 
 ### Genre, era, and lighting carry more than prose
 
-On vendor web platforms these are UI selectors, and changing genre alone shifts pacing,
-contrast, and camera behavior with the scene description held identical. **The API routes
-above expose no such selectors**, so on OpenMontage tool calls that intent has to be
-written into `GLOBAL STYLE` and `LIGHTING` explicitly — genre, decade, grain and color
-response, light source and its angle, and the emotional register. Leaving them implicit is
-the difference between a shot that reads as noir and one that is merely dark.
+Some vendor web recipes use UI selectors for genre and lighting. If the exact
+registered route exposes none, write the intended genre, era, grain/color,
+motivated light and emotional register in the prompt. Those descriptions guide
+appearance; they are not hidden API controls or proof of a particular result.
 
 ---
 
 ## Locks: continuity across cuts
 
-Constraints do not belong in a trailing negative prompt. They go in **named blocks**,
-usually phrased positively, stating what holds.
+For complex continuity, named blocks can make the preserve list easier to read.
+These are prompt organization, not enforced locks or native frame controls.
+Default to compact, clear actions. The coordinates, lens degrees and event tracks
+below are optional examples for a shot that benefits from that precision, not
+required fields or additional authoring chores. Use only relevant directions.
 
-| Lock | What it solves |
+| Optional block | Intended direction |
 |---|---|
 | `FIRST FRAME AND SPATIAL BLOCKING` | Positions as x/y percentages of frame, plus the reverse-angle note: when the camera crosses, who ends up on which side, so they never swap |
 | `SCREEN DIRECTION` | The axis. "Sea always screen-right, dune line always screen-left, never reverses" |
@@ -132,90 +168,102 @@ usually phrased positively, stating what holds.
 | `POSITIVE LOCKS` | Closing block restating in positive terms what holds across cuts |
 | `IDENTITY / NO-IP LOCK` | "A wholly original, invented face." No logos, no readable text, no recognizable melody |
 
-**State monotonicity.** The cheapest continuity trick available: states only advance,
-never reset. Wetness only accumulates. The cookie only shrinks — whole, bitten, two
-halves, finished — and never regrows. Writing the progression shot by shot stops the model
-from cleaning up your character on the next cut.
+**State progression.** Describe changes that should not reset across cuts:
+accumulating wetness, or a cookie progressing from whole to bitten to finished.
+Inspect the generated progression rather than assuming the wording enforces it.
 
 **One grammar per action.** When an action repeats, define one way to perform it and
 forbid the rest, then close the list: exactly five sword actions in the piece, each with
 its timestamp. Same for slow motion — allow-list it to named moments and nowhere else.
 
-**Event tracks.** Write ambient elements as a timestamped event list rather than as
-texture: each wave with its second and its spray height as a percentage of frame, at
-irregular intervals. Works for sea, wind, rain, traffic, and crowds.
+**Event tracks.** For a relevant ambient beat, describe its intended time and
+visible effect. Avoid micromanaging every wave, raindrop or crowd member; text
+timestamps remain direction rather than guaranteed event timing.
 
 **Substitute, don't only forbid.** If you forbid something, supply the concrete
-replacement. "No blood" is weak; "the cut edge glows orange, sparks blow out, the body
-crumbles to ash" is enforceable.
+replacement. For example, describe orange light, sparks and ash for an invented
+fantasy effect instead of relying only on an exclusion. This remains intent,
+not an enforceable simulation rule.
 
 ---
 
-## Assets
+## Assets for reference mode
 
-The piece is won or lost here, before any video generates.
+Supply the useful sources **directly to Seedance's supported reference inputs**:
 
-**Character sheet: three plates, face on only one.** Full body front with the face
-removed, full body back, and a 3/4 close-up carrying the face in two versions, smiling and
-neutral. The face is stripped from the full-body plates because in a wide shot it is small
-and blurry and the model copies that blur; if the only face in the set is a sharp
-close-up, that is the one it uses. Without the smiling version the model invents teeth.
+- Character: readable silhouette, costume, material and face/detail views where
+  those facts matter. Additional views must retain the same subject and proportions.
+- Prop: construction, scale and critical working parts; keep its owner and count
+  explicit, particularly when several angles depict one object.
+- Setting: scene layout, landmarks, light and a useful view of the action space.
+- Action staging when useful: the actual grip, contact, stance, separation or
+  target state that text alone leaves ambiguous. Identify the spatial fact to
+  inherit and the pose/state that must change during the clip.
 
-**One asset per state.** Variations are split into separate assets rather than noted in
-the prompt: clean jacket, soaked, and bloodied. Splitting is cheaper than arguing.
+Select or author these through the existing image plan and allowance. Inspect
+the actual bytes for their declared role before use. A role label does not prove
+the image has correct contact, anatomy or geometry. There is no compulsory face
+removal, character-sheet layout, image count, trial count, empty-location video
+or payoff image. Multiple useful views are welcome; unnecessary tests and new
+video generations are not preparation requirements.
 
-**The rule of 10.** Before accepting an asset, generate it ten times across different poses
-and lighting. It must stay recognizable all ten.
+Seedance reference mode can compose a scene from these elements; it need not
+receive a composite opening instead of them. If the brief selects literal
+image-to-video, use the actual composed start through that different native mode.
+Do not silently change treatments. H3's composed-start method and the same-action
+example live in the shared visual-development owner linked above.
 
-**Locations.** Do not generate a head-on still. Generate a video of the empty space with
-the camera moving slowly, then derive the other sides of the room from that footage. A
-still gives you a wall; a slow travelling gives you geometry.
+For a reference-mode prompt, assign narrow jobs first, then direct the action:
+character appearance only; parcel construction only; counter layout and light;
+optional staging view for grip/relative scale only. State where the character and
+parcel begin, how the base contacts the counter before the hands release, and
+what remains still at the finish. Express these jobs against the **actual route's
+ordered labels**, not unbound illustrative names. Timed text can pace approach,
+contact and release; the supplied stills remain untimed reference guidance.
 
 ---
 
 ## Voice
 
-Voice is a **conditioning sentence, not an asset**. Write it once with accent, tempo, and
-manner, then paste it verbatim — without changing a word — every time that character
-speaks. Rewording widens the sampling range and destabilizes the voice.
-
-Write accent phonetically, describing what the mouth does rather than where the speaker is
-from: `th going to f and v, dropped h, glottal t, -ing to -in'`.
-
-Keep audio tracks separate. Never voice and music in the same reference clip.
+A consistent conditioning sentence can describe a character's language, accent,
+tempo and manner. Reuse it across the sequence when continuity matters. A
+supported, authorized audio reference is a separate input and must keep its
+actual role and speaker binding. Prefer clean, isolated voice/music references
+when the brief and available sources permit; neither text nor audio guarantees
+identical performance. Do not invent audio-reference support on another route.
 
 ---
 
-## What the model cannot do
+## Known difficult cases
 
-| Failure | Workaround |
+| Risk | Preparation to consider within existing authority |
 |---|---|
-| **Singing** | Pre-record the track, cut it into 12-second files, and label each `THE TRACK THEY ARE PERFORMING`. The label states the audio's role in the scene; `audio guide, for sync only` is technically accurate and produces nothing usable |
-| **Sustained physical contact** | Fights and two bodies in constant contact. Shoot the reference on a phone and pass it as a motion reference; cheaper than twenty iterations |
-| **Multi-character scenes** | The hardest category. The more faces in one shot, the more reference material each needs to avoid drifting into a generic face by the third or fourth cut |
+| **Singing or exact voice performance** | Use an authorized audio reference only if the selected route accepts it; state performance and speaker roles. Neither a label nor a supplied recording guarantees exact audio reproduction. |
+| **Sustained physical contact** | Favor clear body/prop geometry and simple ordered contact. A rights-cleared staging or motion reference can help when supported; it is not proof that the generated contact is correct. |
+| **Multi-character scenes** | Bind each character's references and screen position explicitly, avoiding ambiguous pronouns and competing background faces. Inspect identity and interactions over the whole clip. |
 
 ---
 
 ## Chaining and correction
 
-Past 30 seconds, extend the previous clip or pass it as a video reference plus a
-description of what comes next — the second route also lets you introduce new characters
-or objects at the seam. Avoid vendor "long video" options that stitch several generations
-from one short prompt: there is not enough detail available for the runtime.
+Extension and editing are model/provider capabilities, not instructions to use
+them in every workflow. They are outside the one-shot factory's once-only video
+path, which recovers only the same original job and never opens a replacement or
+correction route. Generic pipelines may use them only when the exact registered
+route, manifest and retained authority explicitly permit that operation.
 
-For a single wrong element, edit rather than regenerate, stating what changes and what
-holds:
+Where such an edit is already supported and authorized, describe the narrow
+change and preserve list, for example:
 
 ```
 Around the 2-second mark, change only [X] from [before] to [after].
 Keep the characters, movement, camera, lighting, composition and timing unchanged.
 ```
 
-A repaired frame can also be passed as a start image for a short replacement segment.
-Note the tension: a published 110-minute Seedance production banned starting frames
-throughout, so continuity was carried by the assets rather than by the previous take's
-last frame, which drags its own drift. Treat the start-image repair as a point fix, not as
-a continuity method.
+This is an illustrative edit recipe, not a new repair entitlement. Preserve
+original bytes, attempts and provenance. Do not infer a production-wide ban on
+starting frames from another creator's workflow; select native roles for the
+current brief and route.
 
 ---
 
@@ -226,33 +274,63 @@ and review the result for identity continuity, cuts, lip sync, audio artifacts,
 and prompt adherence. ComfyUI Partner Nodes use prepaid Comfy credits and are
 not an offline fallback.
 
-Iteration discipline that keeps that cost bounded:
+Preparation and verification:
 
-- **Lock the assets before generating anything.** The model has no memory: re-describe
-  everything, every time.
-- **Change one thing per iteration**, or you will not know which change fixed it.
-- **At 10 to 15 failed iterations, simplify or split the scene, not the wording.**
-- Explore at the lowest resolution the route offers and only re-run what works.
-- Keep a log of version, what changed, and verdict.
+- Bind the useful current references and their jobs before dispatch. Each request
+  must carry its own necessary context.
+- Choose resolution and duration for the shot and authorized route. Cheap draft
+  modes, upgrades and experiments require their own existing allowance; they are
+  not automatic preliminary steps or a reason to cap preparation quality.
+- Keep actual request, reference order/bindings and result evidence in the existing
+  records. A transport success is not evidence that every reference was followed.
 - **Judge the whole clip, never a single frame.** A good still can come from a generation
   that falls apart at second 9.
-- Land cuts on movement, never on a still pose.
+- Let cut timing serve the action and edit rhythm; a cut on movement is an option,
+  not a requirement for every scene.
 
 ---
 
-## Reference
+## Primary guidance and worked examples
+
+Checked 2026-10-15. Keep the evidence classes separate:
+
+- [ByteDance launch and reference demonstrations](https://seed.bytedance.com/en/blog/one-take-creation-flexible-referencing-introducing-seedance-2-5)
+  (2026-07-31) pairs prompts with vendor-selected demos: the concert example
+  assigns venue, performers, instruments and audience to separate images; the
+  clay-render examples separate blocking/camera guidance from appearance. These
+  demonstrate a reference-led approach, not a guaranteed success rate. ByteDance
+  also acknowledges remaining instability in complex motion and interactions.
+- [OpenArt prompt guide](https://openart.ai/blog/seedance-2-5-prompt-guide/)
+  (2026-08-10) supplies illustrative recipes for narrow reference roles, multiple
+  angles of the same object, and timed action. Its two-character cafe example
+  separates character photos, cafe and camera feel. Treat its `@Image 1` web
+  syntax as surface-specific; these are recipes, not this project's empirical QC.
+- [OpenArt cinematic guide](https://openart.ai/blog/cinematic-ai-videos-with-seedance-2-5/)
+  (2026-08-12) discusses directly attached character/product/style references,
+  simple physical staging and checking live surface limits rather than assuming
+  the full native model capabilities.
+- [fal reference-to-video API](https://fal.ai/models/bytedance/seedance-2.5/reference-to-video/api)
+  documents its array fields, no-space `@Image1`/`@Video1`/`@Audio1` syntax and
+  task controls. Its request example is an API usage example, not proof of a
+  verified multi-reference production result or OpenArt's MCP behavior.
+
+No new live test was performed for this guidance. Provider claims, illustrative
+prompts, curated demos, an accepted native schema and actual per-result review
+are different kinds of evidence; none substitutes for the others.
+
+## Optional prompt reference
 
 [`reference/techniques.md`](reference/techniques.md) — ten prompt archetypes, the settings
-each used, why the combination works, and which technique each one introduces. Use it to
-pick the closest archetype before writing from scratch.
+each used, and the technique each one illustrates. Consult a relevant archetype
+when helpful; its stronger performance claims are vendor recipes, not required
+steps, API guarantees or authority for extra generation.
 
 ## Provenance
 
-The prompting method, lock patterns, and asset rules above are distilled from material the
-Higgsfield team published in August 2026 — an official Seedance 2.5 prompting guide of ten
-categories each tested across multiple generations, and the open-sourced production method
-of a 110-minute Seedance feature. No prompt from either source is reproduced verbatim; the
-technique is restated with original templates. Credit for the underlying work is theirs.
+The optional section/lock patterns and linked archetypes were adapted from the
+Higgsfield team's published prompting and production material. These are
+first-party workflow accounts and selected examples, not a model specification
+or independently reproduced quality evidence. No prompt is reproduced in full.
 
 - <https://higgsfield.ai/blog/seedance-2-5-prompting-guide>
 - <https://higgsfield.ai/original-series/cully-hill-boys/full-film>
