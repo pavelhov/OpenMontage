@@ -106,11 +106,10 @@ to this two-frame envelope:
    scale, camera and light; change the necessary pose, contact and object state.
    Independent endpoint illustrations can introduce a contradictory scene.
    A natural reaction or open ending often needs only the start image and prompt.
-4. Write the motion between the real states. Favor one readable causal
-   interaction with a result or reaction. Let the frame carry appearance and
-   staging; spend prompt detail on who acts, what moves, the contact/transfer and
-   the camera move that helps the viewer understand it. Avoid burying the action
-   under repeated prohibitions, aesthetic labels or competing camera moves.
+4. Write the motion between the real states: one dominant physical event, its
+   visible consequence and a brief decision or reaction. Keep dependent movements
+   few; omit incidental taps, regrips and camera shifts. Let the frame carry
+   appearance and staging, and keep the camera direction concise.
 
 Plan the intended finished shot and its selected resolution from the outset;
 Turbo speed does not call for a low-resolution trial followed by a keeper rerun.
@@ -131,8 +130,8 @@ speed and travel extent when those details matter. These are family-level writin
 guidelines, not verified OpenArt Turbo results or extra native fields.
 
 The official [animation shot spec](https://github.com/MiniMax-AI/MiniMax-H3/blob/main/skills/3d-animation-short-generator/references/shot-table-spec.md)
-also separates action beats from camera direction. For a quick gag, use short
-local contact/completion windows under the shared preparation method, rather
+also separates action beats from camera direction. For a quick gag, use a few
+concise action windows under the shared preparation method, rather
 than asking the model to be “4x faster.” OpenArt exposes no native playback-speed,
 FPS or shutter control here; a sharp-shutter look is an aesthetic request, not a
 timing fix. The short windows below are authoring heuristics, not measured Turbo
@@ -145,21 +144,20 @@ those labels as an OpenArt Turbo reference-array feature.
 
 **Illustrative five-second gag — not generated or independently tested:**
 Prepare a medium-wide clay kitchen opening: a small robot leans over a toaster,
-its face just above the loaded slot, with a clear vertical path from toast to
-face, a plate below and room for its head to recoil. Use relevant robot, toaster
-and look sources to build that coherent scene;
-only the finished scene becomes `startFrame`.
+its face just above the loaded buttered toast, with a clear path from slot to
+face. Use relevant robot, toaster and look sources to build that coherent scene;
+only the finished scene becomes `startFrame`. Resolve the face-to-slot geometry
+in this image rather than adding a catch or repositioning to the video prompt.
 
 Illustrative video prompt:
 
 ```text
 One continuous static medium-wide shot in the clay kitchen shown in the opening
 image. Brisk real-time physical comedy, clear robot silhouette and toast edges.
-0–1s: the toaster spring snaps up; the toast shoots straight into the leaning
-robot's face. 1–3s: the impact knocks its head back; the toast flips off its face
-and drops onto the plate below. 3–5s: the robot catches its balance, looks down at
-the toast, then gives the toaster one short offended glance. Crisp spring clack,
-soft toast slap and plate tap; no background music.
+Opening 0–2s: the toaster fires the buttered toast straight into the leaning
+robot's face. Payoff 2–5s: the toast stays stuck over its eyes; the robot turns
+toward the camera in offended disbelief. Spring clack and sticky slap;
+no background music.
 ```
 
 Use the brief's actual duration and audio intent; this example preserves a

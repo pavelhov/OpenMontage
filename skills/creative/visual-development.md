@@ -157,7 +157,9 @@ Plan for the strongest useful visual evidence within the current image/source
 authority. Do not optimize preparation for the fewest cheap images or fill every
 available slot. Reuse clean references when they cover the shot; author additional
 views or action states when they resolve a real ambiguity in silhouette, prop
-construction, contact, scale or staging. A character sheet, a composed opening
+construction, contact, orientation, grip, scale or free movement path. Stage the
+weakest physical relationship clearly; extra images should resolve that specific
+uncertainty. A character sheet, a composed opening
 and an ending image have different jobs even when they share source artwork.
 
 Use the existing inventory, shot roles and prompt pack; this guidance adds no
@@ -178,16 +180,15 @@ screen direction. A polished portrait is not automatically a playable opening.
 Source ancestry records how the image was made; only the actual native input
 binding establishes what the video model receives.
 
-For fast physical action, budget the action itself rather than relying on “fast”
-adjectives: brief anticipation, decisive contact, momentum/follow-through, then a
-short reaction. Give contact and completion short local time windows suited to
-the action; a simple gag may need only 5–8 seconds when the route permits. Start
-ready or already at the first action, with reachable contacts and a free movement
-path. Add a new causal consequence when more duration is needed instead of
-stretching a gesture. Use a few concrete physical verbs and readable silhouettes
-and prop edges, with limited smearing. Keep the camera stable or give its movement
-a separate type, extent and speed so it does not obscure subject motion. These
-are prompting heuristics, not frame-accurate timing guarantees or new controls.
+For fast physical action, use concise action windows: one dominant physical event,
+its visible consequence, then a brief character decision or reaction. Start ready
+or already at the action; keep dependent movements few and contacts reachable.
+Omit needless taps, regrips, distances, gestures and camera shifts. Keep the camera
+stable or describe one useful move separately from subject motion, with readable
+silhouettes and prop edges. Longer stories earn time through causal escalation or
+purposeful coverage rather than stretching a gesture. Fit windows and duration to
+the story and route; these are prompting heuristics, not quotas or frame-accurate
+timing guarantees.
 
 When an ending image helps, derive it from the actual starting image and the same
 relevant identity/prop references, preserving the scene, geometry, camera, scale,
