@@ -185,9 +185,13 @@ binding establishes what the video model receives.
 
 For fast physical action, use concise action windows: one dominant physical event,
 its visible consequence, then a brief purposeful decision or visible realization.
-Describe material behavior only when it matters: a brief uneven squirt breaks
-into droplets and leaves streaks, or a rigid prop keeps its shape. Choose the
-behavior that serves this action. Keep dependent movements few and contacts reachable.
+Describe the relevant body/material mechanic: a solid wooden torso moves as one
+piece while limbs rotate at their joints; a fluid may break into droplets.
+Stage the actual grip and contact surface clearly. For a push/pull, one continuous
+contact causes the object to move, followed by visible release/separation and
+where it comes to rest. Keep dependent movements few and contacts reachable.
+For a short single-event test, prefer a controlled interaction over a floor
+impact, recovery and kick chain; choose the action for this brief.
 Omit needless taps, regrips, distances, gestures and camera shifts. Keep the camera
 stable or describe one useful move separately from subject motion, with readable
 silhouettes and prop edges. Longer stories earn time through causal escalation or

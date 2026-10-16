@@ -98,8 +98,9 @@ to this two-frame envelope:
 2. Generate one coherent opening scene from those inputs. Identify which source
    supplies each character, object or look and which parts to ignore. Stage the
    intended action before its first contact: readable participants, correct
-   relative scale, usable hands/grips, clear object ownership, reachable target
-   and room for the movement. Show the actual opening, not a collage of source
+   relative scale, a clearly placed grip/contact surface, clear object ownership,
+   reachable target and room for movement. When rigid body construction matters,
+   use articulated motion under the shared method. Show the actual opening, not a collage of source
    sheets or a premature completed payoff.
 3. Add an end image only when its exact landing composition materially helps the
    shot. Prefer editing the start scene, preserving cast, costume, set geometry,
@@ -146,7 +147,8 @@ those labels as an OpenArt Turbo reference-array feature.
 **Illustrative five-second gag — not generated or independently tested:**
 Prepare a medium-wide clay kitchen opening: a small robot leans over a toaster,
 buttered toast already rising from its slot toward the robot's face along a clear
-path. Use relevant robot, toaster and look sources to build that coherent scene;
+path, one palm against the toaster's side and clear counter space beyond it.
+Use relevant robot, toaster and look sources to build that coherent scene;
 only the finished scene becomes `startFrame`. Resolve the face-to-slot geometry
 in this image rather than adding a catch or repositioning to the video prompt.
 
@@ -157,7 +159,8 @@ One continuous static medium-wide shot in the clay kitchen shown in the opening
 image. Brisk real-time physical comedy, clear robot silhouette and toast edges.
 The already-rising buttered toast hits the leaning robot's face within the first
 second. The butter makes the toast stick over its eyes;
-the robot pushes the toaster away in firm refusal. End as that decision lands.
+the robot pushes the toaster away with that palm, then releases it as it stops
+on the clear counter, a firm refusal. End as that decision lands.
 Spring clack and sticky slap;
 no background music.
 ```

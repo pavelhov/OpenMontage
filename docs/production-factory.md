@@ -22,10 +22,12 @@ may share prepared boundary-photo bytes when that is what the plan declares; thi
 does not make an unsupported native frame pin available. Unsupported required
 controls block the affected slot before dispatch.
 
-Before image prompt authoring, query
+Before image prompt authoring, obtain the exact selected-route answer from
 `registry.describe_video_inputs(provider, model=None, mode=None, operation=None)`
-for the exact selected route. The read-only answer describes start/end pins, timed
-middle frames and untimed references, requiredness, known limits, timing rules and
+or reuse its verified answer while model, mode, operation, connection and relevant
+form/adapter are unchanged. Mutable account readiness and applicable quotes still
+follow their existing admission/dispatch checks. The read-only answer describes
+start/end pins, timed middle frames and untimed references, requiredness, known limits, timing rules and
 exact native schema/readiness provenance. Missing maxima remain explicitly unknown.
 Declare useful images only; optional capacity is not a requirement to fill.
 
@@ -202,8 +204,10 @@ not regenerate. Interrupted preparation retains the same IDs and exact records.
 Fresh observations at later admission/dispatch boundaries remain required.
 Other routes continue with their explicit prepared inputs and provider.
 
-Pass `draft['inputs']` to `prep_builder(draft['provider'])` with the exact selected
-profile. Supply the producer's timing estimate and actual preparation judgment
+The explicit alternative below is for callers supplying prepared inputs, including
+other routes; skip it after the `preparation` outcome above. Pass `draft['inputs']`
+to `prep_builder(draft['provider'])` with the exact selected profile. Supply the
+producer's timing estimate and actual preparation judgment
 to `prepare_compiled_request(..., coverage=draft['coverage'], timing=timing,
 review=judgment, persist=True)`. This retains both validated sidecars under the
 IDs in the inputs using the exclusive immutable writer; exact existing records
