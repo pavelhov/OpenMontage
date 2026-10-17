@@ -109,9 +109,11 @@ to this two-frame envelope:
    A natural reaction or open ending often needs only the start image and prompt.
 4. Write the motion between the real states: the dominant action, material
    behavior only when important, the visible result and a brief purposeful
-   decision or realization. Keep dependent movements few; omit incidental taps,
-   regrips and camera shifts. Let the frame carry appearance and staging; add
-   camera direction only when it helps clarity.
+   reaction or realization. Use short, concrete phrases in action order; let
+   recognition follow the visible result at the beat's natural pace. Keep
+   dependent movements few; omit incidental taps, regrips and camera shifts.
+   Let the frame carry appearance and staging; add camera direction only when
+   it helps clarity.
 
 Plan the intended finished shot and its selected resolution from the outset;
 Turbo speed does not call for a low-resolution trial followed by a keeper rerun.
@@ -130,9 +132,10 @@ native prompt or manually add speaker tags. The projection uses
 order and wraps each exact utterance in `<d>…</d>`. Offscreen speech remains
 in-scene offscreen speech, not an invented voiceover. No language tag is inferred.
 First/last-picture alignment follows submitted native frame controls, not semantic
-board labels. Authored sound is literal `overall_soundscape`; the existing
-no-sound default becomes `non_diegetic_music: N/A`. Empty dialogue explicitly
-requests no spoken dialogue while preserving scene sound.
+board labels. Authored sound is literal `overall_soundscape`; an explicit
+“No background music” clause also becomes `non_diegetic_music: N/A`, as does
+the existing no-sound default. Preserve authored scene sounds and dialogue.
+Empty dialogue explicitly requests no spoken dialogue while preserving scene sound.
 
 Unspoken `script.text` context and `hard_cut` bookkeeping remain in canonical
 records and hash bindings, outside this native prompt. Put all intended visible

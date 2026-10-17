@@ -16,6 +16,7 @@ from tests.lib.test_production_request import neutral_package  # noqa: F401
 from tests.lib.test_first_cut import p, production  # noqa: F401
 from tests.integration.test_first_pass_workflow import attestation
 from tests.lib.test_openart_mcp_native import observations as guided_observations  # noqa: F401
+from tests.lib.test_trimmed_derivative import factory_trimmed  # noqa: F401
 
 
 def write(root, name, value):
@@ -3835,3 +3836,18 @@ def test_openart_completion_ingress_rejects_tampered_raw_evidence(tmp_path, monk
     raw['host_result']['structuredContent']['historyId'] = 'foreign'
     jobs._write(path, value)
     with pytest.raises(ValueError, match='retained raw host result changed'): jobs.resume_original(root, 'one')
+
+
+@pytest.mark.parametrize('status', ['unknown', 'fail'])
+def test_factory_registered_trim_relaxation_does_not_select_unedited_original(factory_trimmed, status):
+    from lib.shot_contract import selection_digest, UPSTREAM_PREDICATES, factory_project
+    value, aid, _, record, _ = factory_trimmed
+    assert factory_project(value.root)
+    selection = {'attempt_id': aid, 'output': record['parent_output'],
+                 'outgoing_frame': record['outgoing_frame']}
+    selection['review'] = attestation(selection_digest(selection), UPSTREAM_PREDICATES,
+        revision=value.story['story_revision'])
+    selection['review']['status'] = status
+    with pytest.raises(execution.ProductionGovernanceError, match='failed or stale'):
+        execution.record_selection(value.root, 'entry', selection)
+    assert execution.load_selected_attempts(value.root) == {}

@@ -93,6 +93,35 @@ def test_public_preparation_derives_only_authenticated_review_bindings(generated
         bind_generated_review(generated_carrier_preparation, incomplete)
 
 
+def test_supplied_preparation_review_defaults_kind_without_changing_unknown_judgment(generated_carrier_preparation):
+    root, inputs, native, profile, compiled, review = generated_carrier_preparation
+    judgment = copy.deepcopy(review)
+    del judgment['evidence_kind']
+    judgment['status'] = 'unknown'
+    for predicate in judgment['predicates']:
+        predicate['status'] = 'unknown'
+    original = copy.deepcopy(judgment)
+    built, bound = bind_generated_review(generated_carrier_preparation, judgment)
+    assert built == compiled
+    assert bound == {**original, 'evidence_kind': 'reviewed'}
+    assert judgment == original
+    with pytest.raises(ValueError, match='nonpassing preparation review'):
+        request.validate_preparation_evidence(built, bound, inputs, native, profile,
+            request.source_packet(root, 's1', provider='grok_cli', native=native), factory=False)
+
+
+@pytest.mark.parametrize('kind', ['fixture_only', 'reviewed', 'live', None])
+def test_supplied_preparation_review_preserves_or_rejects_explicit_kind(generated_carrier_preparation, kind):
+    judgment = copy.deepcopy(generated_carrier_preparation[-1])
+    judgment['evidence_kind'] = kind
+    if kind in {'fixture_only', 'reviewed'}:
+        _, bound = bind_generated_review(generated_carrier_preparation, judgment)
+        assert bound == judgment
+    else:
+        with pytest.raises(ValueError, match='preparation_review: invalid evidence_kind'):
+            bind_generated_review(generated_carrier_preparation, judgment)
+
+
 @pytest.mark.parametrize('damage', [None, 'review_status', 'predicate', 'duplicate_predicate',
                                    'live_fixture', 'timing', 'missing_review'])
 def test_passing_preparation_uses_one_current_packet_before_publication(generated_carrier_preparation, monkeypatch, damage):
@@ -1792,7 +1821,7 @@ def test_h3_projection_uses_native_pins_and_preserves_literal_occurrences(tmp_pa
     assert 'voiceover' not in prompt and 'lips' not in prompt and '[English]' not in prompt
     assert prompt.count('<d>Help me.</d>') == 2
     assert 'overall_soundscape: ' + shot['sound'] in prompt
-    assert 'non_diegetic_music: N/A' not in prompt  # authored sound is authoritative
+    assert prompt.endswith('non_diegetic_music: N/A\n')  # explicit music intent has its own native field
     assert 'Story context' not in prompt
     expected = [row for row in packet['occurrences'] if not request._h3_administrative_row(packet, row)]
     assert [row['occurrence_id'] for row in compiled['coverage']] == [row['occurrence_id'] for row in expected]
@@ -1819,6 +1848,45 @@ def test_h3_projection_uses_native_pins_and_preserves_literal_occurrences(tmp_pa
     assert request._compile_provider_packet(packet, provider='openart_mcp', model='byte-plus-seedance-2-mini') == generic
 
 
+@pytest.mark.parametrize('sound,no_music', [
+    ('One brief ceramic rattle, ice sliding, a dry wooden clonk and a small startled grunt. No background music.', True),
+    ('No background music; a cup clinks and the door creaks.', True),
+    ('Soft piano background music under dialogue and cutlery clatter.', False),
+    ('Dialogue and cutlery clatter.', False),
+    ('No background music is forbidden; play a jaunty piano score.', False),
+])
+def test_h3_projects_only_explicit_no_music_and_replays_old_native_prompt(tmp_path, sound, no_music):
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    root, contract = shootable_project(tmp_path)
+    contract['shots'][0]['sound'] = sound
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    for shot in contract['shots']:
+        shot['review']['subject_sha256'] = shot_review_subject(contract, shot['id'])
+    write(root / 'artifacts/shot_contract.json', contract)
+    packet = request.build_static_source_packet(root, 'entry', provider='openart_mcp')
+    original_packet = copy.deepcopy(packet)
+    compiled = request._compile_provider_packet(packet, provider='openart_mcp', model='fal-h3-max-turbo')
+    assert packet == original_packet
+    assert ('non_diegetic_music: N/A' in compiled['prompt']) is no_music
+    assert 'overall_soundscape: ' + sound + '\n' in compiled['prompt']
+    assert '<d>Help me.</d>' in compiled['prompt']
+    assert '<d>Bro, let go of the fork.</d>' in compiled['prompt']
+    for span in compiled['coverage']:
+        assert request.digest(compiled['prompt'][span['start']:span['end']]) == span['value_sha256']
+    # Frozen H3 requests predate the dedicated field for authored no-music sound.
+    old_prompt = compiled['prompt'].removesuffix('non_diegetic_music: N/A\n')
+    historical = request._compile_historical_provider_prompt(root, 'entry', provider='openart_mcp',
+        native={'model': 'fal-h3-max-turbo', 'body': {}})
+    before = copy.deepcopy(historical)
+    assert request.historical_preparation_matches(old_prompt, compiled['coverage'], historical)
+    assert request.historical_preparation_matches(compiled['prompt'], compiled['coverage'], historical)
+    assert historical == before
+    assert not request.historical_preparation_matches(old_prompt + ' Changed sound.\n', compiled['coverage'], historical)
+    generic = request._compile_packet(packet)
+    assert request._compile_provider_packet(packet, provider='openart_cli', model='fal-h3-max-turbo') == generic
+    assert request.historical_preparation_matches(generic['prompt'], generic['coverage'], historical)
+
+
 def test_h3_projection_preserves_no_music_default_and_rejects_missing_required_coverage(tmp_path):
     root, contract = shootable_project(tmp_path, cast=False)
     from lib.shot_contract import project_review_subject, shot_review_subject
@@ -1839,3 +1907,52 @@ def test_h3_projection_preserves_no_music_default_and_rejects_missing_required_c
     changed = copy.deepcopy(compiled['coverage'])
     changed[0]['start'] += 1
     assert not request.historical_preparation_matches(compiled['prompt'], changed, historical)
+
+
+def test_h3_frozen_preparation_replays_before_explicit_music_projection(reference_free_package, tmp_path, monkeypatch):
+    from lib import openart_mcp as mcp
+    from tests.integration.test_openart_mcp_governance import fixture_observations
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    fixture_observations.__wrapped__(tmp_path, monkeypatch)
+    root, _, _, _, _, review = reference_free_package
+    contract = json.loads((root / 'artifacts/shot_contract.json').read_text())
+    contract.update(planning_mode='shot_local_v1', prompt_compiler='shootable_v1', cast_names={})
+    contract['shots'][0].update(duration_seconds=5, sound='A plate clinks. No background music.')
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    for shot in contract['shots']:
+        shot['review']['subject_sha256'] = shot_review_subject(contract, shot['id'])
+    write(root / 'artifacts/shot_contract.json', contract)
+    inputs = {'project_dir': str(root), 'governance': {'scope_id': 'approved', 'shot_id': 'entry'},
+        'operation': 'text_to_video', 'model': 'fal-h3-max-turbo', 'mode': 'text2video',
+        'native_params': {'duration': 5, 'resolution': '768P'}, 'output_path': str(root / 'clip.mp4'),
+        'compiled_request_id': 'c1', 'preparation_review_id': 'r1'}
+    profile = mcp.load_profile(inputs['model'], inputs['mode'], require='candidate')
+    current_compile = request._compile_h3_packet
+    def previous_compile(*args, **kwargs):
+        compiled = current_compile(*args, **kwargs)
+        compiled['prompt'] = compiled['prompt'].removesuffix('non_diegetic_music: N/A\n')
+        return compiled
+    # Construct the actual immutable evidence using the prior compiler spelling.
+    with monkeypatch.context() as old:
+        old.setattr(request, '_compile_h3_packet', previous_compile)
+        authored = request.compile_provider_prompt(root, 'entry', provider='openart_mcp', model=inputs['model'])
+        inputs['prompt'] = authored['prompt']
+        native = mcp.prepare_native_request(execution._openart_mcp_controls(inputs), profile)
+        timing = {'method': 'segmented_estimate', 'duration_seconds': 5, 'language': 'en', 'margin_seconds': .05,
+            'rationale': 'Synthetic fixture', 'overlap_policy': 'serial', 'overlap_rationale': 'Synthetic fixture',
+            'segments': [], 'action_windows': [
+                {'source_pointer': '/shot_contract/shots/0/' + key,
+                 'value_sha256': request.digest(contract['shots'][0][key]),
+                 'start_seconds': start, 'end_seconds': end, 'rationale': 'Synthetic fixture'}
+                for key, start, end in [('dominant_action', 0, 2), ('completed_end_state', 2, 4.9)]]}
+        compiled = request.prepare_compiled_request(inputs, native, profile, coverage=authored['coverage'], timing=timing)
+        review['subject_sha256'] = request.digest(compiled)
+        publish((root, inputs, native, profile, compiled, review))
+        proof = request.freeze_preparation('att-h3-old-music', inputs, native, profile)
+    saved = {'attempt_id': 'att-h3-old-music', 'scope_id': 'approved', 'shot_id': 'entry',
+             'input_assets': [], 'openart': {'preparation_snapshot': proof}}
+    frozen = {'inputs': inputs, 'native': native, 'profile': profile}
+    assert request.validate_frozen_preparation_history(saved, frozen, root) == proof
+    assert request._validate_frozen_preparation_original(saved, frozen, root) == proof
+    with pytest.raises(ValueError, match='H3 prompt differs'):
+        request.validate_frozen_preparation(saved, frozen, root)

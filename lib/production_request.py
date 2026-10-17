@@ -10,6 +10,7 @@ import copy
 import hashlib
 import json
 import math
+import re
 from pathlib import Path
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
@@ -609,7 +610,7 @@ def _compile_h3_packet(packet, input_assets=None):
         span['end'] += len(prefix)
     if not shot['dialogue']:
         compiled['prompt'] += 'No spoken dialogue.\n'
-    if _no_music_default(packet):
+    if _no_music_default(packet) or _authored_no_background_music(packet):
         compiled['prompt'] += 'non_diegetic_music: N/A\n'
     return compiled
 
@@ -655,6 +656,21 @@ def _no_music_default(packet):
     """Authored shootable packages without a sound direction ask for no added music."""
     return (packet['binding'].get('prompt_compiler') == SHOOTABLE_COMPILER
             and 'sound' not in packet['shot'])
+
+
+def _authored_no_background_music(packet):
+    """Project an explicit sound clause, without interpreting other audio prose."""
+    return bool(re.search(r'(?:^|[.!?;\n])\s*no background music\s*(?:[.!?;\n]|$)',
+                          packet['shot'].get('sound', ''), re.IGNORECASE))
+
+
+def _historical_h3_prompts(packet, compiled):
+    prompts = [compiled['prompt']]
+    if _authored_no_background_music(packet):
+        # Earlier H3 projections kept this intent only in overall_soundscape.
+        # Its native bytes and coverage remain valid frozen evidence.
+        prompts.append(compiled['prompt'].removesuffix('non_diegetic_music: N/A\n'))
+    return prompts
 
 
 def historical_prompt_matches(prompt, canonical):
@@ -705,8 +721,9 @@ def _compile_provider_packet(packet, *, provider, model=None, historical=False, 
             compiled['_historical_compilations'].append({'prompt': legacy_prompt, 'coverage': legacy_compiled['coverage']})
     if historical and _h3_projection(packet, provider, model):
         native_compiled = _compile_h3_packet(packet, input_assets)
-        compiled['_historical_prompt_variants'].append(native_compiled['prompt'])
-        compiled['_historical_compilations'].append({key: native_compiled[key] for key in ('prompt', 'coverage')})
+        for prompt in _historical_h3_prompts(packet, native_compiled):
+            compiled['_historical_prompt_variants'].append(prompt)
+            compiled['_historical_compilations'].append({'prompt': prompt, 'coverage': native_compiled['coverage']})
     return compiled
 
 
@@ -917,8 +934,9 @@ def prepare_compiled_request(inputs, native, profile, *, coverage, timing, revie
     retains both validated records with the existing exclusive immutable writer;
     an exact existing record is reused and conflicting records reject before any
     publication. The two writes are individually atomic, not a transaction.
-    Reviewer, status, evidence kind and predicates remain supplied judgment,
-    including failures or unknowns. ``require_passing_review=True`` checks the
+    A supplied review defaults an omitted evidence kind to ``reviewed``; explicit
+    kinds, reviewer, status and predicates remain supplied judgment, including
+    failures or unknowns. ``require_passing_review=True`` checks the
     normal preparation gate against this same current packet before publication.
     Dispatch still performs its own fresh preparation/admission checks.
     """
@@ -1000,6 +1018,7 @@ def _bind_preparation_review(inputs, packet, compiled, review):
     if not isinstance(review, dict):
         raise ValueError('reviewer-authored preparation review must be an object')
     bound = copy.deepcopy(review)
+    bound.setdefault('evidence_kind', 'reviewed')
     expected = {'review_id': _id(inputs.get('preparation_review_id')),
                 'subject_sha256': digest(compiled)}
     root = Path(inputs['project_dir']).resolve()
@@ -1126,11 +1145,13 @@ def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=
     rows = _dialogue_rows(packet) if override is not None else packet['occurrences']
     if override is None and _h3_projection(packet, native.get('provider'), native.get('model')):
         h3 = _compile_h3_packet(packet, native.get('input_assets'))
-        expected = h3['prompt'] + _ready_mcp_reference_mapping(inputs['project_dir'], packet,
+        mapping = _ready_mcp_reference_mapping(inputs['project_dir'], packet,
             native.get('input_assets', []), native['body'].get('projectId'), native=native)
+        prompts = _historical_h3_prompts(packet, h3) if historical else [h3['prompt']]
+        expected = [prompt + mapping for prompt in prompts]
         # Frozen generic originals retain their original complete coverage.
-        if not historical or prompt == expected:
-            if prompt != expected:
+        if not historical or prompt in expected:
+            if prompt not in expected:
                 raise ValueError('H3 prompt differs from bound native roles or literal projection')
             rows = [row for row in rows if not _h3_administrative_row(packet, row)]
     coverage = compiled['coverage']

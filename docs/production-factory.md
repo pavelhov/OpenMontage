@@ -377,8 +377,15 @@ footage and use the registered `video_trimmer` with explicit retained intervals
 and reasons before assembly. Keep the completed gag and enough recognition time;
 never remove a fixed head interval or blindly cut at the planned completion time.
 Retain full originals and [canonical derived provenance](PRODUCTION_DERIVED_EDITS.md)
-under the project's existing edit and review/audio scope. This adds no generation
-attempt, repair authority or review gate.
+under the project's existing edit and review/audio scope. Register the edit with
+`record_derived_edit`, then retain its fresh exact-byte named observations with
+`record_selection`. For this activated factory and its standing-authorized parent,
+unknown/failed findings may select the registered cut without a strict pass. The
+existing candidates, `deliver_standalone` cut and Studio delivery then use that
+cut's actual duration and disclose its findings. `strict_selected` stays false
+for unknown/failed observations; certification remains separate. Repeating the
+same selection/cut is idempotent. Generic manifest selection gates remain strict.
+This adds no generation attempt, repair authority or review gate.
 
 Ready independent originals can dispatch concurrently. Before final assembly,
 collect each exact CLI original: a qualified nonterminal stream returns bounded

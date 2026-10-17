@@ -358,6 +358,31 @@ def _candidate(root, shot_id, attempt_id, output, revision, selected):
     timing = (proof or {}).get('derived_timing') if isinstance(proof, dict) else None
     duration = timing['duration_seconds'] if timing else _probe(path)['duration_seconds']
     review, findings = _current_findings(root, shot_id, attempt_id, output['sha256'], revision, selected)
+    if proof.get('derived_edit'):
+        # Disk-loaded editorial selections retain the same outgoing and review
+        # bindings as registration; a stale review cannot select changed bytes.
+        selection = selected.get(shot_id)
+        if (not isinstance(selection, dict) or selection.get('attempt_id') != attempt_id
+                or selection.get('output', {}).get('sha256') != output['sha256']
+                or selection.get('outgoing_frame') != proof['selected_outgoing_frame'] or review is None):
+            raise ValueError('derived selection outgoing frame or current review differs')
+        from lib.shot_contract import (factory_project, frozen_factory_authority,
+                                       required_review_predicates, UPSTREAM_PREDICATES, audio_review_disabled)
+        required = required_review_predicates(root, UPSTREAM_PREDICATES)
+        predicates = {item['name']: item for item in review['predicates']}
+        if (not required.issubset(predicates)
+                or any(predicates[name].get('severity') == 'cosmetic' for name in required)):
+            raise ValueError('derived selection has missing/invalid review predicates')
+        if review['status'] == 'pass':
+            if any(item['status'] != 'pass' for name, item in predicates.items()
+                   if not (name == 'speaker_source' and audio_review_disabled(root))
+                   and (item.get('severity', 'critical') == 'critical' or name in required)):
+                raise ValueError('derived selection has failed critical predicates')
+        elif (not provisional_audio_review(review, root)
+                and accepted_draft_predicate(selection, root, shot_id=shot_id) is None):
+            if (review['status'] not in {'unknown', 'fail'} or not factory_project(root)
+                    or not frozen_factory_authority(root, proof['request'].get('scope'))):
+                raise ValueError('derived selection lacks current factory observation authority')
     strict = review is not None and review['status'] == 'pass' and not historical
     status = review['status'] if review is not None else ('fail' if findings else 'unknown')
     if historical:

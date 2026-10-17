@@ -591,3 +591,135 @@ def test_recipe_cannot_strip_context_the_actual_cut_received(trimmed):
     reseal(record)
     with pytest.raises(ProductionGovernanceError, match='actual canonical command/return/bindings differ'):
         record_derived_edit(value.root, record)
+
+
+@pytest.fixture
+def factory_trimmed(tmp_path, monkeypatch):
+    """Real factory authority + native journals, synthetic provider, real FFmpeg media."""
+    if not REAL_WHICH('ffmpeg') or not REAL_WHICH('ffprobe'):
+        pytest.skip('offline real media fixture requires ffmpeg/ffprobe')
+    from unittest.mock import Mock
+    from lib import production_autonomy as autonomy
+    from lib.shot_contract import factory_project
+    from tests.integration.test_first_pass_workflow import NativeTransport
+    from tests.lib.test_production_factory import grok_final_fixture
+    from tests.lib.test_one_shot_frozen_authority import _board
+    from tools.video.grok_cli_video import GrokCLIVideo
+
+    root = tmp_path / 'offline-first-pass'; root.mkdir()
+    contract, inputs, observation = grok_final_fixture(root, allow_unknown_cost=True)
+    _board(root)
+    from lib import production_boards as boards
+    pack = read(root / boards.ARTIFACT)
+    pack['specification']['shots'] = []
+    pack['specification_sha256'] = _digest(pack['specification'])
+    save(root / boards.ARTIFACT, pack)
+    assert factory_project(root)
+    source = root / 'artifacts/offline-original.mp4'
+    REAL_RUN(['ffmpeg', '-v', 'error', '-y', '-f', 'lavfi', '-i',
+        'color=c=blue:s=1280x720:r=12:d=8', '-f', 'lavfi', '-i',
+        'sine=frequency=440:sample_rate=48000:duration=8', '-c:v', 'libx264',
+        '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', str(source)],
+        capture_output=True, check=True)
+    transport = NativeTransport(root)
+    network = Mock(side_effect=AssertionError('network forbidden in offline fixture'))
+    monkeypatch.setattr('socket.socket.connect', network)
+
+    def offline_run(argv, **kwargs):
+        if Path(str(argv[0])).name in {'ffmpeg', 'ffprobe'}:
+            return REAL_RUN(argv, **kwargs)
+        result = transport(argv, **kwargs)
+        if '--prompt-file' in argv:
+            sid = argv[argv.index('--session-id') + 1]
+            transport.original_sessions[sid]['artifact'].write_bytes(source.read_bytes())
+        return result
+
+    monkeypatch.setattr('subprocess.run', offline_run)
+    monkeypatch.setattr('shutil.which', lambda name: observation['grok_path'] if name == 'grok' else REAL_WHICH(name))
+    scope = autonomy.derive_scope(root, inputs, provider='grok_cli', observation=observation)
+    inputs['governance']['scope_id'] = scope['id']
+    result = GrokCLIVideo(grok_path='grok', sessions_root=str(root / 'sessions')).execute(inputs)
+    assert result.success, result.error
+    aid = result.data['production_attempt_id']
+    parent = read(root / 'production_attempts' / aid / 'result.json')['output']
+    value = SimpleNamespace(root=root, story=contract, transport=transport)
+    yield cut_fixture(value, aid, root / 'production_attempts' / aid, parent,
+        {'codec': 'libx264', 'audio': True, 'end': 3.5})
+    network.assert_not_called()
+
+
+@pytest.mark.parametrize('status', ['unknown', 'fail'])
+def test_factory_trim_flows_to_standard_delivery_without_strict_pass(factory_trimmed, status):
+    from lib import production_execution as execution, production_draft as draft
+    value, aid, directory, record, _ = factory_trimmed
+    originals = {path: path.read_bytes() for path in directory.rglob('*') if path.is_file()}
+    parent = Path(record['parent_output']['path']).read_bytes()
+    attempts = execution._attempts(value.root)
+    native_count = len(value.transport.native_requests)
+    record_derived_edit(value.root, record)
+    selection = {'attempt_id': aid, 'output': record['output'], 'outgoing_frame': record['outgoing_frame']}
+    review = attestation(selection_digest(selection), UPSTREAM_PREDICATES,
+        revision=value.story['story_revision'])
+    review['status'] = status
+    for predicate in review['predicates']:
+        predicate.update(status=status, evidence='SYNTHETIC observed gap retained; no AV certification.')
+    selection['review'] = review
+    assert record_selection(value.root, 'entry', selection) == selection
+    history = list((value.root / 'production_selections').glob('*.json'))
+    assert record_selection(value.root, 'entry', selection) == selection
+    assert list((value.root / 'production_selections').glob('*.json')) == history
+    candidate = draft.first_cut_candidates(value.root)[0]
+    assert candidate['status'] == 'candidate' and candidate['strict_selected'] is False
+    assert candidate['review'] == status and candidate['duration_seconds'] == 3.5
+    assert candidate['output']['sha256'] == record['output']['sha256']
+    assert all(f['status'] == status for f in candidate['findings'])
+    delivered = draft.deliver_standalone(value.root)
+    assert delivered['status'] == 'complete' and delivered['not_certification'] is True
+    assert delivered['provider_calls'] == 0 and delivered['posted'] is False
+    assert delivered['clips'][0]['output']['sha256'] == record['output']['sha256']
+    assert delivered['clips'][0]['review'] == status and delivered['clips'][0]['findings']
+    assert delivered['technical']['duration_seconds'] == pytest.approx(3.5, abs=.05)
+    exported = Path(delivered['export_path']).read_bytes()
+    replay = draft.deliver_standalone(value.root, compose=lambda _: pytest.fail('same cut re-encoded'))
+    assert replay['first_cut'] == delivered['first_cut']
+    assert Path(replay['export_path']).read_bytes() == exported
+    assert execution._attempts(value.root) == attempts
+    assert len(value.transport.native_requests) == native_count == 1
+    assert all(path.read_bytes() == raw for path, raw in originals.items())
+    assert Path(record['parent_output']['path']).read_bytes() == parent
+
+
+@pytest.mark.parametrize('change', ['stale_subject', 'stale_story', 'missing_predicate', 'duplicate_predicate',
+    'outgoing', 'output', 'parent', 'edit_authority', 'factory_authority', 'false_pass', 'invalid_provisional'])
+def test_factory_trim_report_only_selection_retains_exact_bindings(factory_trimmed, change):
+    import copy
+    from lib import production_execution as execution
+    from lib import production_draft as draft
+    value, aid, _, record, _ = factory_trimmed
+    record_derived_edit(value.root, record)
+    selection = {'attempt_id': aid, 'output': record['output'], 'outgoing_frame': record['outgoing_frame']}
+    selection['review'] = attestation(selection_digest(selection), UPSTREAM_PREDICATES,
+        revision=value.story['story_revision'])
+    selection['review']['status'] = 'unknown'
+    for predicate in selection['review']['predicates']:
+        predicate['status'] = 'unknown'
+    assert record_selection(value.root, 'entry', selection) == selection
+    changed = copy.deepcopy(selection)
+    if change == 'stale_subject': changed['review']['subject_sha256'] = '0' * 64
+    elif change == 'stale_story': changed['review']['story_revision'] = 'other'
+    elif change == 'missing_predicate': changed['review']['predicates'].pop()
+    elif change == 'duplicate_predicate': changed['review']['predicates'].append(changed['review']['predicates'][0])
+    elif change == 'false_pass': changed['review']['status'] = 'pass'
+    elif change == 'invalid_provisional': changed['review']['status'] = 'provisional'
+    elif change == 'outgoing': Path(record['outgoing_frame']['path']).write_bytes(b'changed outgoing frame')
+    elif change == 'output': Path(record['output']['path']).write_bytes(b'changed selected output')
+    elif change == 'parent': Path(record['parent_output']['path']).write_bytes(b'changed native original')
+    elif change == 'edit_authority': (value.root / 'artifacts/local-edit-authorization.txt').write_text('changed edit authority')
+    else: (value.root / 'test-package.json').write_text('changed factory package authority')
+    with pytest.raises((ProductionGovernanceError, OSError, ValueError)):
+        record_selection(value.root, 'entry', changed)
+    # Simulate a hand-edited selection file; read-side selection never trusts it.
+    save(value.root / 'artifacts/selected_attempts.json', {'entry': changed})
+    candidate = draft.first_cut_candidates(value.root)[0]
+    assert candidate['status'] != 'candidate' or candidate['output']['sha256'] != record['output']['sha256']
+    assert len(value.transport.native_requests) == len(execution._attempts(value.root)) == 1

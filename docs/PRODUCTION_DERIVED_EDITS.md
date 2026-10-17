@@ -45,11 +45,14 @@ skills before executing production edits.
 6. Call `record_derived_edit(project_dir, record)`. It retains separate preserved
    bytes at `production_derived_edits/<output_sha256>/output.mp4` and the immutable
    `record.json`. Keep native request/result journals unchanged.
-7. View the cut and actual outgoing image, listen to its retained audio where
-   present, and author a fresh review of the exact derived selection. Then call
+7. View the cut and actual outgoing image under the project's current review
+   scope. Listen to retained audio when that scope requires listening; report
+   unavailable or unperformed observations honestly. Author a fresh review of
+   the exact derived selection. Then call
    `record_selection(project_dir, shot_id, selection)`. All existing required
-   semantic/audio predicates remain in force. The original attempt's review
-   is stale for the cut.
+   semantic/audio predicates remain in force for generic manifest pipelines.
+   The activated one-shot factory retains truthful unknown/failed observations
+   as described below. The original attempt's review is stale for the cut.
 
 ## Exact recipe and execution envelope
 
@@ -137,6 +140,31 @@ construct `{attempt_id: parent_attempt_id, output: output, outgoing_frame:
 outgoing}` and add a fresh reviewer-authored review bound to
 `selection_digest(selection)` and the current story revision before calling
 `record_selection`. The example supplies no automatic passing review.
+
+## Existing factory delivery
+
+For an activated standing `make_video` project whose parent attempt retains its
+standing factory authority, use the same `record_derived_edit` and
+`record_selection` calls. A fresh named review must bind `selection_digest` and
+the current story revision, include each required predicate once, and retain
+actual `unknown` or `fail` observations. Required predicates cannot be marked
+cosmetic. The factory accepts those findings for this registered local edit
+without a semantic approval loop; generic manifest selection remains strict.
+A claimed `pass` still follows the strict passing-selection checks.
+
+The selected cut becomes the existing `first_cut_candidates` row with its actual
+derived duration and `strict_selected=False` for an unknown/failed review. Then
+use `deliver_standalone(project)` or the existing Studio delivery entry. The
+standard final cut, per-clip disclosure and Studio handoff use those derived
+bytes; no separate manual short-cut export or additional generation is needed.
+Repeated selection and delivery of the same bytes reuse existing records and
+cut operation. An existing operation ID bound to different clips still rejects.
+
+This remains an editorial selection, not audiovisual certification or publishing
+authority. Exact current parent, output, approval, outgoing frame, native and
+local-tool provenance remain mandatory on registration and read. A changed or
+stale derived selection cannot silently retain its eligibility; an intact
+original may remain available under the factory's existing candidate rules.
 
 ## Audio and cut boundaries
 

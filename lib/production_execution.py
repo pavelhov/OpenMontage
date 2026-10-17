@@ -2813,7 +2813,9 @@ def record_selection(project_dir, shot_id, selection):
     """Publish a reviewer-authored selection after factual provenance checks.
 
     The passed review supplies semantic judgment; this helper only validates its
-    binding and current evidence. Each superseding selection remains in history.
+    binding and current evidence. Activated factory cuts may retain unknown/failed
+    observations for an approved derived edit; they are not strict selections.
+    Each superseding selection remains in history.
     """
     from lib.shot_contract import selection_digest, UPSTREAM_PREDICATES, provisional_audio_review, required_review_predicates, audio_review_disabled
     from schemas.artifacts import load_schema
@@ -2852,14 +2854,28 @@ def record_selection(project_dir, shot_id, selection):
         failures = list(Draft202012Validator({'$defs':schema['$defs'],'$ref':'#/$defs/review'}).iter_errors(review))
         if failures:
             _fail('selection requires a valid named review: ' + failures[0].message)
+        # A registered local cut in the activated one-shot factory is an
+        # editorial choice, not a semantic acceptance gate. Keep the same exact
+        # provenance, outgoing bytes and fresh named review, with honest findings.
+        from lib.shot_contract import factory_project, frozen_factory_authority
+        required = required_review_predicates(root, UPSTREAM_PREDICATES)
+        predicates = {item['name']: item for item in review['predicates']}
+        if (validated.get('derived_edit') and factory_project(root)
+                and frozen_factory_authority(root, request.get('scope'))
+                and review['status'] in {'unknown', 'fail'}):
+            if (review['subject_sha256'] != selection_digest(selection)
+                    or review['story_revision'] != marker['story_revision']):
+                _fail('selection review is failed or stale')
+            if (len(predicates) != len(review['predicates']) or not required.issubset(predicates)
+                    or any(predicates[name].get('severity') == 'cosmetic' for name in required)):
+                _fail('selection has missing/invalid factory observation predicates')
+            return _publish_selection_locked(root, shot_id, selection)
         from lib.production_draft import accepted_draft_predicate
         accepted = accepted_draft_predicate(selection, root, shot_id=shot_id)
         audio_provisional = provisional_audio_review(review, root)
         provisional = audio_provisional or accepted is not None
         if (review['status'] != 'pass' and not provisional) or review['subject_sha256'] != selection_digest(selection) or review['story_revision'] != marker['story_revision']:
             _fail('selection review is failed or stale')
-        required = required_review_predicates(root, UPSTREAM_PREDICATES)
-        predicates = {item['name']:item for item in review['predicates']}
         if (len(predicates) != len(review['predicates']) or not required.issubset(predicates)
                 or any(item.get('severity') == 'cosmetic' for name, item in predicates.items() if name in required)
                 or any(item['status'] != 'pass' and not ((audio_provisional and name == 'speaker_source' and item['status'] == 'unknown') or (name == accepted and item['status'] == 'fail'))
