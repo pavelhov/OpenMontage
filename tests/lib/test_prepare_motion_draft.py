@@ -11,6 +11,7 @@ from tests.integration.test_first_pass_workflow import attestation
 from tests.lib.test_factory_frame_alias import original_frame_run
 from tests.lib.test_production_factory import file_bytes
 from tests.lib.test_production_request import neutral_package  # noqa: F401
+from tests.lib.test_openart_mcp_native import observations, source_project  # noqa: F401
 
 OBSERVATION = {'cli_version': '1.0.34', 'grok_path': '/SYNTHETIC/offline/grok'}
 
@@ -221,3 +222,122 @@ def test_failed_observation_never_rerolls(neutral_package, monkeypatch):
     action = execution.next_production_action(root)
     assert action['kind'] != 'prepare_motion' and 'repair' not in str(action.get('binding', {})), action
     assert len(transport.native_requests) == calls
+
+
+def _h3_draft_setup(source_project, observations, monkeypatch, tmp_path, layout):
+    """Actual retained policy and source receipts; all evidence is synthetic/offline."""
+    import hashlib
+    from lib import openart_mcp as mcp
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    from tests.lib.test_production_autonomy import install_existing, make_policy
+    from tests.lib.test_production_factory import write
+    from tests.lib.test_production_request import shootable_project
+
+    root, assets, _, _ = source_project
+    _, contract = shootable_project(tmp_path, cast=False)
+    contract['project_id'] = root.name
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    for shot in contract['shots']:
+        shot['review']['subject_sha256'] = shot_review_subject(contract, shot['id'])
+    write(root, 'artifacts/shot_contract.json', contract)
+    for name in ('scene_plan', 'script'):
+        (root / 'artifacts' / (name + '.json')).write_bytes(
+            (tmp_path / 'shootable/artifacts' / (name + '.json')).read_bytes())
+    raw = (Path(__file__).parents[1] / 'fixtures/openart/mcp_h3_turbo_nullable_end_frame.json').read_bytes()
+    (observations / '2026-10-07-schema-observation.json').write_bytes(raw)
+    monkeypatch.setenv('OPENMONTAGE_OPENART_MCP_EXPECTED_SHA256_SCHEMA', hashlib.sha256(raw).hexdigest())
+    monkeypatch.setattr(mcp, '_ALLOW_FIXTURE_PRODUCTION', True)
+    profile = mcp.load_profile('fal-h3-max-turbo', 'image2video', require='supported')
+    template = {'model': profile['model'], 'mode': profile['mode'], 'duration': 8,
+        'resolution': '768P', 'openart_project_id': 'fixture-project'}
+    first, last = assets['start']['source_path'], assets['end']['source_path']
+    if layout in ('path_aliases', 'first_only', 'first_frame_only'):
+        template['first_frame' if layout == 'first_frame_only' else 'image_path'] = first
+        if layout == 'path_aliases':
+            template['last_image_path'] = last
+    elif layout == 'frame_aliases':
+        template.update(first_frame=first, last_frame=last)
+    elif layout == 'explicit':
+        template['input_assets'] = [{'role': role, **assets[name]}
+            for role, name in [('first_frame', 'start'), ('last_frame', 'end')]]
+    elif layout == 'mixed':
+        template.update(image_path=first, input_assets=[{'role': 'last_frame', **assets['end']}])
+    else:
+        template.update(image_path=first, input_assets=[{'role': 'first_frame', **assets['start']}])
+    policy = make_policy()
+    policy.update(providers=[{'id': 'openart_mcp', 'billing': 'unknown_cost_no_ceiling',
+        'exposure_acknowledgement': 'no_enforceable_credit_ceiling',
+        'uid_sha256': mcp.account_summary()['uid_sha256'], 'project_id': 'fixture-project',
+        'routes': [{'model': profile['model'], 'mode': profile['mode']}]}],
+        locked={'cast': {}, 'dialogue': {}, 'sources': [], 'story_predicates': [], 'controls': {}},
+        flex={'duration_s': [], 'resolution': [], 'references': {'droppable_roles': [], 'substitutes': []}},
+        checkpoint_stages=[], model_selection_intents={'entry': {'mode': 'exact',
+            'provider': 'openart_mcp', 'model': profile['model'],
+            'approved_pool': [{'provider': 'openart_mcp', 'model': profile['model']}]}})
+    install_existing(root, policy, templates={'entry': execution.planned_request_template(template, project_dir=root)})
+    action = execution.next_production_action(root)
+    assert (action['kind'], action['subject']) == ('prepare_motion', 'entry')
+    return root, contract, profile, template, action
+
+
+@pytest.mark.parametrize('layout', ['path_aliases', 'frame_aliases', 'first_only', 'first_frame_only', 'explicit', 'mixed'])
+def test_h3_draft_frame_aliases_survive_preparation_and_root_proof(source_project, observations, monkeypatch, tmp_path, layout):
+    root, contract, profile, template, action = _h3_draft_setup(
+        source_project, observations, monkeypatch, tmp_path, layout)
+    before = file_bytes(root)
+    draft = execution.draft_motion_preparation(root, action)
+    assert file_bytes(root) == before and draft['provider_calls'] == 0
+    inputs = draft['inputs']
+    native = request.prep_builder('openart_mcp')(inputs, profile)
+    pins = 1 if layout in ('first_only', 'first_frame_only') else 2
+    # Compile through public preparation before checking anchors: this exposed the defect.
+    timing = {'method': 'segmented_estimate', 'duration_seconds': 8, 'language': 'en',
+        'margin_seconds': .5, 'rationale': 'SYNTHETIC fixture', 'overlap_policy': 'serial',
+        'overlap_rationale': 'SYNTHETIC fixture', 'segments': [], 'action_windows': [
+            {'source_pointer': '/shot_contract/shots/0/' + key, 'value_sha256': request.digest(contract['shots'][0][key]),
+             'start_seconds': start, 'end_seconds': end, 'rationale': 'SYNTHETIC fixture'}
+            for key, start, end in [('dominant_action', .1, 6), ('completed_end_state', 6.1, 7.4)]]}
+    review = {'version': '1.0', 'reviewer': 'SYNTHETIC offline reviewer', 'status': 'pass',
+        'evidence_kind': 'fixture_only', 'predicates': [{'name': name, 'status': 'pass', 'severity': 'critical',
+            'evidence': 'SYNTHETIC fixture only'} for name in sorted(request.PREDICATES)]}
+    request.prepare_compiled_request(inputs, native, profile,
+        coverage=draft['coverage'], timing=timing, review=review, persist=True)
+    assert request.validate_preparation(inputs, native, profile)
+    assert len(pa._root_lock_proof(root, 'entry', inputs=inputs, native=native, profile=profile)) == 64
+    assert inputs['prompt'].count('<Picture ') == pins
+    assert len(native['input_assets']) == pins
+    if 'input_assets' in template:
+        assert [(row['role'], row['source_path']) for row in inputs['input_assets']] == [
+            (row['role'], row['source_path']) for row in template['input_assets']]
+    assert inputs['prompt'].count('at 0.00 seconds') == 1
+    assert inputs['prompt'].count('at 8.00 seconds') == pins - 1
+    assert {key: inputs[key] for key in template if key != 'input_assets'} == {
+        key: value for key, value in template.items() if key != 'input_assets'}
+
+
+def test_h3_draft_aliases_do_not_need_uploaded_references(source_project, observations, monkeypatch, tmp_path):
+    from lib import openart_mcp as mcp
+    root, _, _, _, action = _h3_draft_setup(source_project, observations, monkeypatch, tmp_path, 'path_aliases')
+    # No ready upload may be required to author a draft. Source transfer stays a later action.
+    monkeypatch.setenv('OPENMONTAGE_OPENART_STATE_DIR', str(tmp_path / 'no-upload-state'))
+    for path in (root / 'openart_mcp/uploads').glob('*.json'):
+        path.unlink()
+    monkeypatch.setattr(mcp, 'prepare_native_request', lambda *a, **kw: pytest.fail('draft prepared native request'))
+    before = file_bytes(root)
+    draft = execution.draft_motion_preparation(root, action)
+    assert draft['inputs']['prompt'].count('<Picture ') == 2
+    assert set(draft['upload_authority_kwargs']['files']) == {
+        draft['inputs']['image_path'], draft['inputs']['last_image_path']}
+    assert file_bytes(root) == before and draft['provider_calls'] == 0
+
+
+def test_h3_draft_duplicate_frame_role_keeps_existing_conflict(source_project, observations, monkeypatch, tmp_path):
+    from lib import openart_mcp as mcp
+    root, _, _, template, action = _h3_draft_setup(source_project, observations, monkeypatch, tmp_path, 'duplicate')
+    before = file_bytes(root)
+    with pytest.raises(mcp.OpenArtMCPError, match='control_conflict: duplicate frame alias'):
+        execution.draft_motion_preparation(root, action)
+    profile = mcp.load_profile(template['model'], template['mode'], require='supported')
+    with pytest.raises(mcp.OpenArtMCPError, match='control_conflict: duplicate frame alias'):
+        mcp.prepare_native_request(dict(template, project_dir=str(root)), profile)
+    assert file_bytes(root) == before

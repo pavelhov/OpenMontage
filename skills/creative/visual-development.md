@@ -172,39 +172,59 @@ answer and the selected model's Layer-3 skill:
 | **Separate references consumed by video** — for example Seedance 2.5 reference mode | Supply the useful character, prop and setting references directly to the supported reference inputs. Add an action-staging image when it clarifies a difficult pose, contact or spatial relationship. Label each input's narrow job, what it preserves and which subjects it represents. Keep reference order bound to the prompt. These are untimed references unless the exact route independently exposes native timed controls. |
 | **Composed starting image consumed by video** — for example H3 Max Turbo image mode | Supply the useful character, prop, setting and staging references to IMAGEGEN to construct one consistent, filmable opening. The video model receives that actual starting image, plus an ending image only when useful and supported. It does not receive the separate identity references merely because IMAGEGEN used them. |
 
-For the composed-image route, fast briefs open partway into a physically visible
-event, rather than poised to begin. Set one early observable progression target
-suited to the brief, without demanding precise micro-deadlines. Include only the
-on-screen cast needed for the event, with clear actor identifiers. Keep a necessary
+For the composed-image route, fast briefs open on an active visible problem or
+the last instant before its decisive change, rather than a neutral portrait.
+Set one early observable progression target
+suited to the brief, without demanding precise micro-deadlines. Define what becomes
+newly visible as the action changes the situation. For a reveal, stage credible
+occlusion before that change; a clue or partial view is useful when the later
+reveal remains distinct. An immediate absurdity may be fully visible from the
+opening. Include only the on-screen cast needed for the event, with clear actor
+identifiers. Keep a necessary
 bystander outside the active footprint, with visible floor/support separation.
-The relevant hands/contacts read and the framing leaves space for movement. Inspect the
-image itself for identity, relative scale, possession, geometry, occlusion and
-screen direction. A polished portrait is not automatically a playable opening.
+The relevant hands/contacts read. Compose the intended movement envelope with
+margin around critical edges, rather than fitting only the starting pose. Inspect
+the image itself for identity, relative scale, possession, geometry, occlusion and
+screen direction; a static-camera request does not guarantee a fixed frame.
 Source ancestry records how the image was made; only the actual native input
 binding establishes what the video model receives.
 
 For fast physical action, use concise action windows: one dominant physical event,
 its visible consequence, then a brief purposeful decision or visible realization.
+Place short dialogue during one simple reaction as the event lands, without
+competing gestures or an idle late speaking window. Timed windows express intent,
+not frame locks; keep the joke visually readable if speech timing drifts. In
+canonical shot fields,
+keep exact spoken words in dialogue, nonverbal sounds in sound direction and
+motion in action; do not repeat the line in each. Preserve required source
+coverage and every intended utterance, then use the compiler's prompt unchanged.
 Describe the relevant body/material mechanic: a solid wooden torso moves as one
 piece while limbs rotate at their joints; a fluid may break into droplets.
-Stage the actual grip and contact surface clearly. For a push/pull, one continuous
-contact causes the object to move, followed by visible release/separation and
-where it comes to rest. Keep dependent movements few and contacts reachable.
-For a short single-event test, prefer a controlled interaction over a floor
-impact, recovery and kick chain; choose the action for this brief.
+Stage the actual grip and contact surface while keeping distinctive prop edges
+and silhouette visible. For a push/pull, one continuous contact causes movement,
+followed by visible release/separation and rest. For a flexible prop contacting a
+face, a short clear path and brief contact may preserve the joke without demanding
+wrapping or face-conforming deformation. These are staging options, not prop or
+genre bans. Keep dependent movements few and contacts reachable.
+For a short single-event test, simplify the mechanism while preserving its
+observable consequence or consequential response. A natural expression or return
+action can carry that meaning; inferred intention alone cannot replace it.
 Omit needless taps, regrips, distances, gestures and camera shifts. Keep the camera
 stable or describe one useful move separately from subject motion, with readable
 silhouettes and prop edges. Longer stories earn time through causal escalation or
-purposeful coverage rather than stretching a gesture. Choose enough meaningful
-action for the route's minimum duration and end when the payoff lands; do not pad
-a generic expression or add incidental gestures. Fit windows and duration to the
-story and route; these are prompting heuristics, not quotas or frame-accurate
-timing guarantees.
+purposeful coverage rather than stretching a gesture. Plan the natural beat
+length separately from native generation length: a two-second beat may require a
+valid five-second request, without stretching its action, speech or reaction or
+adding filler. Under existing edit authority, use the registered trim path at the
+actually observed payoff plus recognition time; retain originals and meaningful
+tails, and disclose unknown audio without adding an audio gate. Never cut blindly
+at a planned timestamp. Beat windows express intent, not frame-accurate guarantees.
 
 When an ending image helps, derive it from the actual starting image and the same
 relevant identity/prop references, preserving the scene, geometry, camera, scale,
-light and object construction while changing the intended action state. Do not
-independently invent two attractive but incompatible endpoints. An ending used
+light and object construction while changing the intended action state. An endpoint
+anchors the final arrangement, not transient contact geometry or impact timing.
+Do not independently invent two attractive but incompatible endpoints. An ending used
 only as planning evidence is not a last-frame pin; declare a native end consumer
 only when the chosen treatment supports it. If the brief requires an exact native
 endpoint, retain that requirement under the existing pinned-frame owner below.
@@ -275,10 +295,11 @@ camera position and lens impression, lighting/weather/time, background
 landmarks, palette/grade, and sound/rhythm. Include `previous_scene_id`,
 `next_scene_id`, `match_strategy`, and `boundary_risk`.
 
-Before generating the next clip, compare its entry state with the prior exit
-state. If a mismatch is intentional, state the editorial bridge (cutaway,
-match cut, dissolve, reset, or visible transition); do not disguise an
-uncontrolled discontinuity as style.
+For actual continuation, compare the next entry state with the prior exit state.
+For a fresh vignette, explicitly declare the reset rather than carrying unrelated
+pose, possession or contact forward. State any editorial bridge (cutaway, match
+cut, dissolve, reset or visible transition); do not disguise an uncontrolled
+discontinuity as style.
 
 Shot-local preparation and review may overlap only under the fixed-plan
 boundary described in [`../meta/shot-preparation-overlap.md`](../meta/shot-preparation-overlap.md).
@@ -286,6 +307,17 @@ This does not waive the target's dependency closure or shared reviews. A
 dependent shot must use the selected upstream attempt and observed outgoing
 frame, with required continuity review; a planned or prepared board cannot
 substitute for that evidence.
+
+For fresh H3 shootable packages, the existing compiler renders the native prompt
+from the same canonical fields. Write visible/audible meaning in action, dialogue,
+sound, initial/end state and invariants; `script.text` is unspoken story context.
+The H3 projection leaves that context and `hard_cut` bookkeeping in their bound
+records rather than sending them as motion instructions. Other transition
+rationales, including continuous movement, retain literal coverage. Do not repeat
+invariants inside action merely because they also appear in the native prompt,
+or manually paste a second H3 prompt. Actual first/last inputs determine picture
+alignment; a semantic payoff asset does not create a frame pin. This prospective
+projection preserves originals and makes no live quality claim.
 
 ## Current Board Inventory and Prompt Pack
 

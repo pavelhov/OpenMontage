@@ -122,6 +122,25 @@ route, exposure and once-only attempt rules with their existing owners.
 
 ## H3 motion wording and worked examples
 
+Fresh `shootable_v1` packages on OpenArt's `fal-h3` family use the existing
+compiler's native H3 projection automatically. Author action, dialogue, camera,
+end state and invariants once in their canonical fields; do not paste a second
+native prompt or manually add speaker tags. The projection uses
+`integrated_multimodal_description: [Shot 1]`, assigns `(S1)` IDs in speaking
+order and wraps each exact utterance in `<d>…</d>`. Offscreen speech remains
+in-scene offscreen speech, not an invented voiceover. No language tag is inferred.
+First/last-picture alignment follows submitted native frame controls, not semantic
+board labels. Authored sound is literal `overall_soundscape`; the existing
+no-sound default becomes `non_diegetic_music: N/A`. Empty dialogue explicitly
+requests no spoken dialogue while preserving scene sound.
+
+Unspoken `script.text` context and `hard_cut` bookkeeping remain in canonical
+records and hash bindings, outside this native prompt. Put all intended visible
+or audible content in action, dialogue, sound, initial/end state and relevant
+invariants. Other transition rationales retain literal coverage. Frozen generic
+prompts and their original coverage remain valid; this projection does not rewrite
+history or establish observed quality.
+
 MiniMax's official [base prompt guide](https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md)
 distinguishes motion developing from an opening image from a continuous path
 between two endpoints. Its examples include a passenger handling a letter and a
@@ -145,30 +164,40 @@ multi-source labeling format belongs to reference-capable routes; do not treat
 those labels as an OpenArt Turbo reference-array feature.
 
 **Illustrative five-second gag — not generated or independently tested:**
-Prepare a medium-wide clay kitchen opening: a small robot leans over a toaster,
-buttered toast already rising from its slot toward the robot's face along a clear
-path, one palm against the toaster's side and clear counter space beyond it.
-Use relevant robot, toaster and look sources to build that coherent scene;
-only the finished scene becomes `startFrame`. Resolve the face-to-slot geometry
-in this image rather than adding a catch or repositioning to the video prompt.
+Prepare one static medium-wide laundry-room opening: a wooden performer holds a
+blue iron flat on a white shirt over a striped ironing board, with smoke already
+curling from the iron's edges. The sole fully
+covers the damaged area; the surrounding shirt, handle grip, face and board remain
+readable, with space to lift. The performer looks pleased and the lift is about
+to begin. The opening establishes credible concealment, rather than displaying a
+small finished hole and asking motion to enlarge it. Use the relevant appearance,
+prop and staging sources to compose this one `startFrame`.
 
-Illustrative video prompt:
+Illustrative canonical field excerpts, not a runnable package:
 
-```text
-One continuous static medium-wide shot in the clay kitchen shown in the opening
-image. Brisk real-time physical comedy, clear robot silhouette and toast edges.
-The already-rising buttered toast hits the leaning robot's face within the first
-second. The butter makes the toast stick over its eyes;
-the robot pushes the toaster away with that palm, then releases it as it stops
-on the clear counter, a firm refusal. End as that decision lands.
-Spring clack and sticky slap;
-no background music.
-```
+- `action`: “The performer immediately lifts the iron clear, revealing an
+  iron-shaped hole through the shirt with the striped board visible underneath.
+  While the iron rises, the performer delivers the brief claim; the pleased smile
+  falls on seeing the missing fabric. Keep the iron rigid and the shirt flat.”
+- `dialogue`: the visible performer says “Perfect.” Give that single occurrence a
+  natural window suited to the action in the actual package.
+- `end_state`: “Iron held clear; the iron-shaped opening exposes the striped board;
+  the performer recognizes the ruined shirt.”
+- `camera`: “Static medium-wide view keeping iron, shirt opening and face readable.”
+- `sound`: “Brief iron hiss and cloth singe; no background music.”
 
-Use the brief's actual duration and audio intent; this example preserves a
-no-background-music choice. Choose enough meaningful action for the route's
-minimum duration, then end when the payoff lands; do not stretch a reaction or
-fill time with incidental gestures. A reaction needs no compulsory `endFrame`.
+The compiler supplies native H3 formatting; the author does not paste speaker or
+dialogue tags into these fields. The opening-to-reveal change is an intended
+staging choice, not evidence that a generated board or video realizes it.
+
+Use the brief's natural beat length and audio intent; this example preserves a
+no-background-music choice. OpenArt's five-second generation minimum still applies
+to a two-second beat: submit a valid request while keeping the central action at
+its natural short pace, without stretching speech or reactions or adding filler.
+Under existing edit authority, use the registered trim path at the actually
+observed payoff plus recognition time, preserving originals and meaningful tails.
+Choose from actual footage rather than a blind planned timestamp; disclose unknown
+audio without adding an audio gate. A reaction needs no compulsory `endFrame`.
 When an exact endpoint matters, derive it from the same scene under the method
 above. Preparation adds no reroll or approval stage.
 

@@ -32,6 +32,46 @@ def _id(value):
     if not isinstance(value, str) or not _ID.fullmatch(value): _fail('invalid_argument', 'invalid retained original ID')
     return value
 
+def completion_payload(result):
+    """Accept typed connector data only; display text never supplies job identity."""
+    if not isinstance(result, dict) or ('isError' in result and result['isError'] is not False):
+        _fail('completion_invalid', 'successful structured OpenArt result required')
+    if 'structuredContent' in result:
+        payload = result['structuredContent']
+        if (not isinstance(payload, dict) or 'error' in result or 'error_code' in result
+                or 'content' in result and not isinstance(result['content'], list)):
+            _fail('completion_invalid', 'typed OpenArt structuredContent required')
+        for key in ('historyId', 'status'):
+            if key in result and result[key] != payload.get(key):
+                _fail('completion_conflict', 'wrapper contradicts structured OpenArt ' + key)
+    else:
+        payload = result
+    if any(key in payload for key in ('structuredContent', 'content', 'isError')):
+        _fail('completion_invalid', 'plain OpenArt payload or one typed MCP wrapper required')
+    status = payload.get('status'); history = payload.get('historyId')
+    if not isinstance(status, str) or status not in {'PENDING', 'RUNNING', *TERMINAL}:
+        _fail('status_invalid', 'recognized original creation status required')
+    if not (status in {'FAILED', 'CANCELLED'} and history is None):
+        if not isinstance(history, str) or not history.strip():
+            _fail('completion_invalid', 'actual original historyId required')
+    return copy.deepcopy(payload)
+
+
+def _host_result_evidence(host_result, outcome):
+    if completion_payload(host_result) != outcome:
+        _fail('original_reply_mismatch', 'raw host result differs from normalized original payload')
+    return {'host_result': copy.deepcopy(host_result), 'host_result_sha256': mcp.digest(host_result),
+            'outcome_sha256': mcp.digest(outcome)}
+
+
+def _check_host_result_evidence(record, outcome):
+    if ('host_result' in record or 'host_result_sha256' in record) and (
+            record.get('host_result_sha256') != mcp.digest(record.get('host_result'))
+            or record.get('outcome_sha256') != mcp.digest(outcome)
+            or completion_payload(record.get('host_result')) != outcome):
+        _fail('original_reply_mismatch', 'retained raw host result changed')
+
+
 def _private_dir(path):
     path = Path(path)
     if path.is_symlink(): _fail('state_invalid', 'private state directory cannot be a symlink')
@@ -101,6 +141,7 @@ def _load(root, aid):
     reply_path=_path(root,aid).parent/'original-host-reply.json'
     if reply_path.exists():
         reply=_read(reply_path)
+        _check_host_result_evidence(reply, reply.get('outcome'))
         if (reply.get('attempt_id')!=aid or reply.get('frozen_sha256')!=state['frozen_sha256']
                 or reply.get('request_sha256')!=frozen['authority']['request_sha256']
                 or reply.get('begin_envelope_sha256')!=mcp.digest(state['begin_envelope'])
@@ -108,6 +149,11 @@ def _load(root, aid):
                 or state.get('receipt') is not None and not state.get('receipt_correction_sha256')
                     and state['receipt_sha256']!=reply.get('outcome_sha256')):
             _fail('original_reply_mismatch','original receipt differs from immutable retained host reply')
+    for observation in state.get('status_host_results', []):
+        index = observation.get('observation_index')
+        if type(index) is not int or not 0 <= index < len(state['status_observations']):
+            _fail('original_reply_mismatch', 'raw status lacks its original observation')
+        _check_host_result_evidence(observation, state['status_observations'][index])
     if state.get('download_receipt'):
         retained_download = _read(_path(root, aid).parent/'download-receipt.json')
         if mcp.digest(retained_download) != state.get('download_receipt_sha256') or mcp.digest(state['download_receipt']) != mcp.digest(retained_download):
@@ -276,8 +322,9 @@ def begin(project_dir, attempt_id, *, authority_fn):
         _save(root, aid, state)  # consumed durably before the agent can call the connector
         return envelope
 
-def receive(project_dir, attempt_id, *, outcome=None, error=None):
+def receive(project_dir, attempt_id, *, outcome=None, error=None, host_result=None):
     root = _root(project_dir); aid = _id(attempt_id)
+    evidence = _host_result_evidence(host_result, outcome) if host_result is not None else {}
     with _lock(root):
         state = _load(root, aid)
         if state['begin_envelope'] is None: _fail('not_begun', 'connector original was not begun')
@@ -285,6 +332,8 @@ def receive(project_dir, attempt_id, *, outcome=None, error=None):
         reply_path = _path(root, aid).parent / 'original-host-reply.json'
         if state['receipt'] is not None:
             if error is None and mcp.digest(outcome) == state['receipt_sha256']:
+                if evidence and reply_path.exists() and _read(reply_path).get('host_result', host_result) != host_result:
+                    _fail('receipt_exists', 'retained raw original host result cannot be replaced')
                 if outcome.get('status') in TERMINAL and not state['status_observations']:
                     _validate_original_metadata(state, outcome)
                     _retain_submission_terminal(state, outcome)
@@ -305,7 +354,7 @@ def receive(project_dir, attempt_id, *, outcome=None, error=None):
             reply = {'attempt_id': aid, 'frozen_sha256': state['frozen_sha256'],
                      'request_sha256': state['frozen']['authority']['request_sha256'],
                      'begin_envelope_sha256': mcp.digest(state['begin_envelope']),
-                     'outcome': copy.deepcopy(outcome), 'outcome_sha256': mcp.digest(outcome)}
+                     'outcome': copy.deepcopy(outcome), 'outcome_sha256': mcp.digest(outcome), **evidence}
             if reply_path.exists():
                 if _read(reply_path) != reply:
                     _fail('receipt_exists', 'retained original host reply cannot be replaced')
@@ -324,7 +373,7 @@ def _retain_submission_terminal(state, outcome):
         _event(state, 'status_observed', history_id=outcome.get('historyId'), status=outcome['status'])
         state['status'] = 'completed' if outcome['status'] == 'COMPLETED' else 'failed'
 
-def resume_original(project_dir, attempt_id, *, outcome=None, request_sha256=None, correct_receipt=False):
+def resume_original(project_dir, attempt_id, *, outcome=None, request_sha256=None, correct_receipt=False, host_result=None):
     """Inspect the original handoff, or replay its exact retrievable host reply.
 
     No plain inspection writes, connector calls, polling, new reservations or
@@ -412,7 +461,9 @@ def resume_original(project_dir, attempt_id, *, outcome=None, request_sha256=Non
             _fail('original_request_mismatch', 'original reply replay requires exact request digest')
         if reply is not None and mcp.digest(outcome) != reply['outcome_sha256']:
             _fail('original_reply_mismatch', 'retrieved reply differs from retained original reply')
-        return receive(root, aid, outcome=outcome)
+        if host_result is None and reply is not None:
+            host_result = reply.get('host_result')
+        return receive(root, aid, outcome=outcome, host_result=host_result)
     result = attempt_state(root, aid)
     result.update(request_sha256=original_request, provider_calls=0, reservations=0)
     if state['status'] == 'prepared' and state['begin_envelope'] is None:
@@ -453,8 +504,9 @@ def poll_args(project_dir, attempt_id):
         _fail('original_terminal', 'original terminal reply already retained; no polling or replacement')
     return {'tool':'mcp__codex_apps__openart_openart_creation_get', 'arguments':{'historyId':state['receipt']['historyId']}}
 
-def record_status(project_dir, attempt_id, *, result):
+def record_status(project_dir, attempt_id, *, result, host_result=None):
     root = _root(project_dir); aid = _id(attempt_id)
+    evidence = _host_result_evidence(host_result, result) if host_result is not None else None
     with _lock(root):
         state = _load(root, aid); receipt = state['receipt']
         if (_path(root,aid).parent/'receipt-correction.json').exists() and not state.get('receipt_correction_sha256'):
@@ -474,6 +526,9 @@ def record_status(project_dir, attempt_id, *, result):
                     _fail('terminal_changed', 'terminal original status cannot be replaced')
                 _validate_completion_enrichment([receipt, *previous], result)
         state['status_observations'].append(copy.deepcopy(result))
+        if evidence is not None:
+            state.setdefault('status_host_results', []).append(
+                {**evidence, 'observation_index': len(state['status_observations']) - 1})
         _event(state, 'status_observed', history_id=receipt['historyId'], status=result['status'])
         state['status'] = {'COMPLETED':'completed','FAILED':'failed','CANCELLED':'failed'}.get(result['status'],'submitted')
         _save(root, aid, state); return attempt_state(root, aid)
@@ -957,7 +1012,7 @@ def _validate_upload_retry(root, batch, receipt=None):
 
 
 def retry_upload_after_transport_error(project_dir, *, upload_id, observed_error):
-    """Reserve one same-envelope source retry after an evidenced HTTP send error.
+    """Reserve one same-envelope source retry after an evidenced transport failure.
 
     This neither proves the first transfer absent nor promises backend dedup.
     The extra invocation consumes standing transfer allowance before handoff.
@@ -980,14 +1035,18 @@ def retry_upload_after_transport_error(project_dir, *, upload_id, observed_error
         content = error.get('content', []) if isinstance(error, dict) else []
         text = '\n'.join(row.get('text', '') for row in content if isinstance(row, dict) and row.get('type') == 'text')
         envelope = frozen['envelope']
+        http_send_failure = all(term in text for term in ('Transport send error', 'HTTP request failed',
+            'error sending request for url'))
+        closed_transport = len(content) == 1 and text == (
+            'tool call error: tool call failed for `codex_apps/openart.openart_upload_import`'
+            '\n\nCaused by:\n    Transport closed')
         if (observation.get('tool_name') != envelope['tool'] or observation.get('arguments') != envelope['arguments']
                 or envelope['tool'] != 'mcp__codex_apps__openart_openart_upload_import'
                 or error.get('isError') is not True or set(error) != {'isError', 'content'}
                 or not content or any(not isinstance(row, dict) or row.get('type') != 'text' for row in content)
-                or not all(term in text for term in ('Transport send error', 'HTTP request failed',
-                    'error sending request for url'))
+                or not (http_send_failure or closed_transport)
                 or any(term in text.lower() for term in ('denied', 'policy', 'rejected', 'forbidden', 'unauthorized', 'permission', '401', '403'))):
-            _fail('upload_retry_invalid', 'only the exact source-upload HTTP send failure permits this retry')
+            _fail('upload_retry_invalid', 'only an exact evidenced source-upload HTTP send failure or closed transport permits this retry')
         account = mcp.account_summary()
         if account['uid_sha256'] != frozen['account']['uid_sha256']:
             _fail('account_changed', 'source retry account changed')

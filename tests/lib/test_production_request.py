@@ -432,6 +432,45 @@ def test_timing_and_review_block(package,change):
     with pytest.raises((ValueError,ValidationError)):request.validate_preparation(inputs,native,profile)
 
 
+@pytest.mark.parametrize('pause,should_fit', [(0.1, True), (0.10000001, False)])
+def test_estimated_speech_decimal_boundary(package, pause, should_fit):
+    root, _, native, _, compiled, _ = package
+    packet = request.source_packet(root, 'entry')
+    line = dict(packet['shot']['dialogue'][0], text='Three short words',
+                start_seconds=1.3, end_seconds=2.3)
+    packet['shot']['dialogue'] = [line]
+    timing = copy.deepcopy(compiled['timing'])
+    timing['segments'] = [dict(timing['segments'][0], text_sha256=request.digest(line['text']),
+                               word_count=3, words_per_minute=200, pause_seconds=pause)]
+    if should_fit:
+        assert 3 * 60 / 200 + pause > line['end_seconds'] - line['start_seconds']
+        request.validate_timing(timing, packet, root, request._body(native))
+    else:
+        with pytest.raises(ValueError, match='impossible dialogue timing'):
+            request.validate_timing(timing, packet, root, request._body(native))
+
+
+@pytest.mark.parametrize('field,value', [
+    ('words_per_minute', 0), ('words_per_minute', -1),
+    ('words_per_minute', float('nan')), ('words_per_minute', float('inf')),
+    ('words_per_minute', True), ('words_per_minute', '200'),
+    ('pause_seconds', -1), ('pause_seconds', float('nan')),
+    ('pause_seconds', float('inf')), ('pause_seconds', True),
+    ('start_seconds', -1), ('start_seconds', float('nan')),
+    ('start_seconds', 2), ('end_seconds', 1),
+])
+def test_estimated_speech_rejects_invalid_numbers_and_order(package, field, value):
+    root, _, native, _, compiled, _ = package
+    packet = request.source_packet(root, 'entry')
+    timing = copy.deepcopy(compiled['timing'])
+    if field in {'start_seconds', 'end_seconds'}:
+        packet['shot']['dialogue'][0][field] = value
+    else:
+        timing['segments'][0][field] = value
+    with pytest.raises(ValueError):
+        request.validate_timing(timing, packet, root, request._body(native))
+
+
 def test_unknown_control_is_not_stripped(package):
     _,inputs,_,profile,_,_=package
     inputs['unknown_control']=True
@@ -1719,3 +1758,84 @@ def test_proposed_package_preflight_uses_same_structural_core_without_writes(neu
         request.preflight_package(root, package, package_binding=binding)
     assert 'payoff: missing' in str(exc.value) and 'start: missing' in str(exc.value)
     assert _tree(root) == before
+
+
+@pytest.mark.parametrize('pins', [[], ['first_frame'], ['first_frame', 'last_frame'], ['last_frame', 'first_frame']])
+@pytest.mark.parametrize('transition', ['hard_cut', 'continuous'])
+def test_h3_projection_uses_native_pins_and_preserves_literal_occurrences(tmp_path, pins, transition):
+    root, contract = shootable_project(tmp_path)
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    shot = contract['shots'][0]
+    shot['transition'] = {'type': transition, 'rationale': 'The fork remains held across the boundary.'}
+    shot['cast_ids'].reverse()  # Speaker IDs follow speech order, not cast inventory order.
+    # Identical intended dialogue occurrences retain separate tags, speakers and spans.
+    shot['dialogue'][1]['text'] = shot['dialogue'][0]['text']
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    for value in contract['shots']:
+        value['review']['subject_sha256'] = shot_review_subject(contract, value['id'])
+    write(root / 'artifacts/shot_contract.json', contract)
+    packet = request.build_static_source_packet(root, 'entry', provider='openart_mcp')
+    assets = [{'role': role} for role in pins]
+    compiled = request._compile_provider_packet(packet, provider='openart_mcp',
+        model='fal-h3-max-turbo', input_assets=assets)
+    prompt = compiled['prompt']
+    assert compiled['source_binding'] == packet['binding']
+    assert prompt.count('<Picture ') == len(pins)  # semantic end asset is not an extra pin
+    if pins:
+        assert 'at 0.00 seconds' in prompt
+    if 'last_frame' in pins:
+        assert 'at 8.00 seconds' in prompt
+        assert prompt.index('at 0.00 seconds') < prompt.index('at 8.00 seconds')
+    assert 'integrated_multimodal_description: [Shot 1]' in prompt
+    assert '(S1) says: <d>Help me.</d>' in prompt
+    assert '(S2) (off screen, diegetic speech) says: <d>Help me.</d>' in prompt
+    assert 'voiceover' not in prompt and 'lips' not in prompt and '[English]' not in prompt
+    assert prompt.count('<d>Help me.</d>') == 2
+    assert 'overall_soundscape: ' + shot['sound'] in prompt
+    assert 'non_diegetic_music: N/A' not in prompt  # authored sound is authoritative
+    assert 'Story context' not in prompt
+    expected = [row for row in packet['occurrences'] if not request._h3_administrative_row(packet, row)]
+    assert [row['occurrence_id'] for row in compiled['coverage']] == [row['occurrence_id'] for row in expected]
+    omitted = {row['source_pointer'] for row in packet['occurrences']} - {
+        row['source_pointer'] for row in compiled['coverage']}
+    assert omitted == ({'/script/sections/0/text', '/shot_contract/shots/0/transition/rationale'}
+        if transition == 'hard_cut' else {'/script/sections/0/text'})
+    assert {'/shot_contract/shots/0/dominant_action', '/shot_contract/shots/0/completed_end_state',
+        '/shot_contract/shots/0/prop_body_invariants/0', '/shot_contract/shots/0/dialogue/0/text',
+        '/shot_contract/shots/0/dialogue/1/text', '/shot_contract/shots/0/sound'} <= {
+            row['source_pointer'] for row in compiled['coverage']}
+    end = 0
+    for row, span in zip(expected, compiled['coverage']):
+        assert span['start'] >= end
+        assert prompt[span['start']:span['end']] == row['value']
+        assert span['fragment_sha256'] == span['value_sha256'] == row['value_sha256']
+        end = span['end']
+    assert (shot['transition']['rationale'] in prompt) is (transition == 'continuous')
+    historical = request._compile_historical_provider_prompt(root, 'entry', provider='openart_mcp',
+        native={'model': 'fal-h3-max-turbo', 'input_assets': assets, 'body': {}})
+    assert request.historical_preparation_matches(prompt, compiled['coverage'], historical)
+    generic = request._compile_packet(packet)
+    assert request.historical_preparation_matches(generic['prompt'], generic['coverage'], historical)
+    assert request._compile_provider_packet(packet, provider='openart_mcp', model='byte-plus-seedance-2-mini') == generic
+
+
+def test_h3_projection_preserves_no_music_default_and_rejects_missing_required_coverage(tmp_path):
+    root, contract = shootable_project(tmp_path, cast=False)
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    del contract['shots'][0]['sound']
+    contract['shots'][0]['transition'] = {'type': 'hard_cut', 'rationale': 'Fresh plate vignette.'}
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    for shot in contract['shots']:
+        shot['review']['subject_sha256'] = shot_review_subject(contract, shot['id'])
+    write(root / 'artifacts/shot_contract.json', contract)
+    packet = request.build_static_source_packet(root, 'entry', provider='openart_mcp')
+    compiled = request._compile_provider_packet(packet, provider='openart_mcp', model='fal-h3-max-turbo')
+    assert compiled['prompt'].endswith('non_diegetic_music: N/A\n')
+    assert 'overall_soundscape' not in compiled['prompt']
+    assert compiled['prompt'].count('No spoken dialogue.') == 1
+    historical = request._compile_historical_provider_prompt(root, 'entry', provider='openart_mcp',
+        native={'model': 'fal-h3-max-turbo', 'body': {}})
+    assert not request.historical_preparation_matches(compiled['prompt'], compiled['coverage'][1:], historical)
+    changed = copy.deepcopy(compiled['coverage'])
+    changed[0]['start'] += 1
+    assert not request.historical_preparation_matches(compiled['prompt'], changed, historical)

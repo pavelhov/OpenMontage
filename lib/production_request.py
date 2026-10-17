@@ -494,7 +494,7 @@ def build_static_source_packet(project_dir, shot_id, *, provider):
 def compile_provider_prompt(project_dir, shot_id, *, provider, model=None,
                             input_assets=None, openart_project_id=None):
     packet = build_static_source_packet(project_dir, shot_id, provider=provider)
-    compiled = _compile_provider_packet(packet, provider=provider, model=model)
+    compiled = _compile_provider_packet(packet, provider=provider, model=model, input_assets=input_assets)
     if provider == 'openart_mcp' and input_assets:
         compiled['_mapping_free_prompt'] = compiled['prompt']
         compiled['prompt'] += _ready_mcp_reference_mapping(project_dir, packet,
@@ -545,6 +545,75 @@ def _ready_mcp_reference_mapping(project_dir, packet, input_assets, openart_proj
     return (REFERENCE_MAPPING_HEADER + '\n'.join(rows) + '\n') if rows else ''
 
 
+def _h3_projection(packet, provider, model):
+    return (provider == 'openart_mcp' and isinstance(model, str) and model.startswith('fal-h3')
+            and packet['binding'].get('prompt_compiler') == SHOOTABLE_COMPILER)
+
+
+def _h3_administrative_row(packet, row):
+    parts = row['source_pointer'].split('/')
+    return ((len(parts) == 5 and parts[1:3] == ['script', 'sections'] and parts[4] == 'text')
+            or (len(parts) == 6 and parts[1:3] == ['shot_contract', 'shots']
+                and parts[4:] == ['transition', 'rationale']
+                and packet['shot']['transition']['type'] == 'hard_cut'))
+
+
+def _h3_alignment(packet, input_assets=None):
+    # Legacy image_path is the existing single first-frame control projection.
+    roles = ([a['role'] for a in input_assets] if input_assets else
+             ['first_frame'] if packet['binding'].get('frame_input') else [])
+    pins = [role for role in ('first_frame', 'last_frame') if role in roles]
+    lines = []
+    for index, role in enumerate(pins, 1):
+        seconds = 0 if role == 'first_frame' else packet['shot']['duration_seconds']
+        target = '(from [Shot 1]) is fully referenced.' if role == 'first_frame' else 'is fully referenced as the final video image.'
+        lines.append(f'For the target video, at {seconds:.2f} seconds into the target video, '
+                     f'<Picture {index}> {target}')
+    return ('\n'.join(lines) + '\n\n') if lines else ''
+
+
+def _compile_h3_packet(packet, input_assets=None):
+    """Literal H3 rendering of the same bound shot; no rewriting or new authority."""
+    shot = packet['shot']
+    cast_ids = list(dict.fromkeys(line['speaker_id'] for line in shot['dialogue']))
+    speakers = {cast_id: 'S' + str(index + 1) for index, cast_id in enumerate(cast_ids)}
+    rows = []
+    for original in packet['occurrences']:
+        if _h3_administrative_row(packet, original):
+            continue
+        row = copy.deepcopy(original)
+        row['after'] = row['after'].replace('No spoken lines in this shot.\n', '')
+        pointer = row['source_pointer']
+        if '/cast_names/' in pointer:
+            cast_id = pointer.rsplit('/', 1)[1].replace('~1', '/').replace('~0', '~')
+            tag = '(' + speakers[cast_id] + ')' if cast_id in speakers else ''
+            if row['before'].startswith('Spoken line '):
+                # The following text occurrence stays separate, even for repeated lines.
+                number = int(row['before'].split()[2].rstrip(':')) - 1
+                line = shot['dialogue'][number]
+                row['before'] = f"From {_seconds(line['start_seconds'])} to {_seconds(line['end_seconds'])}, "
+                source = ' (off screen, diegetic speech)' if line['source'] == 'offscreen' else ''
+                row['after'] = ' ' + tag + source + ' says: <d>'
+            else:
+                row['after'] = (' ' + tag if tag else '') + row['after']
+        elif '/dialogue/' in pointer and pointer.endswith('/text'):
+            row['after'] = '</d>\n'
+        elif pointer.endswith('/sound'):
+            row['before'] = 'overall_soundscape: '
+        rows.append(row)
+    compiled = _compile_shootable({**packet, 'occurrences': rows}, '/params/prompt')
+    prefix = _h3_alignment(packet, input_assets) + 'integrated_multimodal_description: [Shot 1] '
+    compiled['prompt'] = prefix + compiled['prompt']
+    for span in compiled['coverage']:
+        span['start'] += len(prefix)
+        span['end'] += len(prefix)
+    if not shot['dialogue']:
+        compiled['prompt'] += 'No spoken dialogue.\n'
+    if _no_music_default(packet):
+        compiled['prompt'] += 'non_diegetic_music: N/A\n'
+    return compiled
+
+
 def _compile_historical_provider_prompt(project_dir, shot_id, *, provider, native):
     """Re-prove original source compilation, without prospective admission.
 
@@ -553,7 +622,8 @@ def _compile_historical_provider_prompt(project_dir, shot_id, *, provider, nativ
     the caller separately checks retained contract deltas and exact native proof.
     """
     packet = _historical_source_packet(project_dir, shot_id, provider=provider, native=native)
-    compiled = _compile_provider_packet(packet, provider=provider, model=native.get('model'), historical=True)
+    compiled = _compile_provider_packet(packet, provider=provider, model=native.get('model'), historical=True,
+        input_assets=native.get('input_assets'))
     original_compilations = compiled.get('_historical_compilations', [
         {key: compiled[key] for key in ('prompt', 'coverage')}])
     originals = compiled.get('_historical_prompt_variants', [compiled['prompt']])
@@ -566,10 +636,12 @@ def _compile_historical_provider_prompt(project_dir, shot_id, *, provider, nativ
             if _no_music_default(packet):
                 compiled['prompt'] += NO_MUSIC_DIRECTION
             compiled['prompt'] += mapping
-            variants.extend(value + (NO_MUSIC_DIRECTION if _no_music_default(packet) else '') + mapping
+            variants.extend(value + (NO_MUSIC_DIRECTION if _no_music_default(packet)
+                            and 'integrated_multimodal_description: [Shot 1]' not in value else '') + mapping
                             for value in originals)
             compilations.extend({**value,
-                'prompt': value['prompt'] + (NO_MUSIC_DIRECTION if _no_music_default(packet) else '') + mapping}
+                'prompt': value['prompt'] + (NO_MUSIC_DIRECTION if _no_music_default(packet)
+                    and 'integrated_multimodal_description: [Shot 1]' not in value['prompt'] else '') + mapping}
                 for value in original_compilations)
     compiled['_historical_prompt_variants'] = variants
     compiled['_historical_compilations'] = compilations
@@ -603,7 +675,9 @@ def historical_preparation_matches(prompt, coverage, canonical):
                for variant in canonical.get('_historical_compilations', [canonical]))
 
 
-def _compile_provider_packet(packet, *, provider, model=None, historical=False):
+def _compile_provider_packet(packet, *, provider, model=None, historical=False, input_assets=None):
+    if not historical and _h3_projection(packet, provider, model):
+        return _compile_h3_packet(packet, input_assets)
     compiled = _compile_packet(packet, native_pointer='/arguments/prompt' if provider == 'grok_cli' else ('/params/sceneDescription' if provider == 'openart_mcp' and model == 'smart-shot' else '/params/prompt'))
     if not historical and _no_music_default(packet):
         compiled['prompt'] += NO_MUSIC_DIRECTION
@@ -629,6 +703,10 @@ def _compile_provider_packet(packet, *, provider, model=None, historical=False):
                 legacy_prompt = validate_prompt(legacy_prompt)
             compiled['_historical_prompt_variants'].append(legacy_prompt)
             compiled['_historical_compilations'].append({'prompt': legacy_prompt, 'coverage': legacy_compiled['coverage']})
+    if historical and _h3_projection(packet, provider, model):
+        native_compiled = _compile_h3_packet(packet, input_assets)
+        compiled['_historical_prompt_variants'].append(native_compiled['prompt'])
+        compiled['_historical_compilations'].append({key: native_compiled[key] for key in ('prompt', 'coverage')})
     return compiled
 
 
@@ -782,7 +860,12 @@ def validate_timing(timing, packet, project_dir, body):
             rate = _number(segment['words_per_minute'], 'speech rate', 0.001)
             pause = _number(segment['pause_seconds'], 'pause')
             start, end = line['start_seconds'], line['end_seconds']
-            if not 0 <= start < end <= duration - margin or words * 60 / rate + pause > end - start:
+            speech_seconds = words * 60 / rate + pause
+            window_seconds = end - start
+            # Decimal interval subtraction can make an exact fit appear too long.
+            overrun = speech_seconds > window_seconds and not math.isclose(
+                speech_seconds, window_seconds, rel_tol=0, abs_tol=1e-9)
+            if not 0 <= start < end <= duration - margin or overrun:
                 raise ValueError('impossible dialogue timing')
             speech_windows.append((start, end))
     intervals = speech_windows + windows
@@ -1041,6 +1124,15 @@ def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=
             raise ValueError('creator prompt overrides are retired; originals use their authored prompt')
         _validate_historical_prompt_override(override, prompt, packet)
     rows = _dialogue_rows(packet) if override is not None else packet['occurrences']
+    if override is None and _h3_projection(packet, native.get('provider'), native.get('model')):
+        h3 = _compile_h3_packet(packet, native.get('input_assets'))
+        expected = h3['prompt'] + _ready_mcp_reference_mapping(inputs['project_dir'], packet,
+            native.get('input_assets', []), native['body'].get('projectId'), native=native)
+        # Frozen generic originals retain their original complete coverage.
+        if not historical or prompt == expected:
+            if prompt != expected:
+                raise ValueError('H3 prompt differs from bound native roles or literal projection')
+            rows = [row for row in rows if not _h3_administrative_row(packet, row)]
     coverage = compiled['coverage']
     if len(rows) != len(coverage):
         raise ValueError('coverage omits required occurrence')

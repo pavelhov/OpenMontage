@@ -3604,13 +3604,14 @@ def draft_motion_preparation(project_dir, action, *, output_path=None, compiled_
     if provider == 'openart_mcp':
         from lib import openart_mcp as connector
         profile = connector.load_profile(inputs.get('model'), inputs.get('mode'), require='supported')
+        prompt_assets = connector.normalize_input_assets(_openart_mcp_controls(inputs))
         if profile['source'] == 'real':
-            for asset in inputs.get('input_assets', []):
+            for asset in prompt_assets:
                 if connector.ROLES.get(asset.get('role'), (None, None))[1] == 'image':
                     connector.validate_image_source_dimensions(_inside(asset['source_path'], root),
                         model=profile['model'], mode=profile['mode'])
     authored = compile_provider_prompt(root, sid, provider=provider,
-        **({'model': inputs.get('model'), 'input_assets': inputs.get('input_assets'),
+        **({'model': inputs.get('model'), 'input_assets': prompt_assets,
             'openart_project_id': inputs.get('openart_project_id',
                 autonomy._provider_spec(policy, provider).get('project_id'))} if provider == 'openart_mcp' else {}))
     inputs.update(project_dir=str(root), governance={'shot_id': sid}, prompt=authored['prompt'])
@@ -3744,11 +3745,14 @@ def complete_action(project_dir, action, *, outcome):
     elif kind == 'poll_openart_original':
         if set(outcome) != {'result'}:
             _fail('original poll requires exact host result')
-        jobs.record_status(root, aid, result=outcome['result'])
+        jobs.record_status(root, aid, result=jobs.completion_payload(outcome['result']),
+            host_result=outcome['result'] if 'structuredContent' in outcome['result'] else None)
     elif kind == 'receive_openart_original':
         if set(outcome) != {'result'}:
             _fail('original receive requires exact host result')
-        jobs.resume_original(root, aid, outcome=outcome['result'], request_sha256=action['binding']['request_sha256'])
+        jobs.resume_original(root, aid, outcome=jobs.completion_payload(outcome['result']),
+            host_result=outcome['result'] if 'structuredContent' in outcome['result'] else None,
+            request_sha256=action['binding']['request_sha256'])
     elif kind == 'prepare_motion':
         if set(outcome) == {'preparation'}:
             # Authored timing and actual image judgment stay with the producer;

@@ -299,6 +299,17 @@ def validate_image_source_dimensions(path, *, model, mode):
               f'Seedance 2.5 image dimensions must be between 300px and 6000px per side; actual {width}x{height}')
 
 
+def normalize_input_assets(controls):
+    """Pure ordered role projection shared by prompt and native preparation."""
+    assets = copy.deepcopy(controls.get('input_assets', []))
+    if not isinstance(assets,list): _fail('control_invalid','input_assets must be an array')
+    for legacy,role in (('image_path','first_frame'),('first_frame','first_frame'),('last_image_path','last_frame'),('last_frame','last_frame')):
+        if legacy in controls:
+            if any(a.get('role') == role for a in assets): _fail('control_conflict','duplicate frame alias')
+            assets.append({'role':role,'source_path':controls[legacy]})
+    return assets
+
+
 def prepare_native_request(controls, profile, *, _retained_input_assets=None):
     _check_profile(profile)
     if not isinstance(controls, dict) or controls.get('model') != profile['model'] or controls.get('mode') != profile['mode']:
@@ -327,12 +338,7 @@ def prepare_native_request(controls, profile, *, _retained_input_assets=None):
             if native in params and digest(params[native]) != digest(controls[public]):
                 _fail('control_conflict', 'conflicting native and public control: ' + public)
             params[native] = copy.deepcopy(controls[public])
-    account = account_summary(); assets = copy.deepcopy(controls.get('input_assets', []))
-    if not isinstance(assets,list): _fail('control_invalid','input_assets must be an array')
-    for legacy,role in (('image_path','first_frame'),('first_frame','first_frame'),('last_image_path','last_frame'),('last_frame','last_frame')):
-        if legacy in controls:
-            if any(a.get('role') == role for a in assets): _fail('control_conflict','duplicate frame alias')
-            assets.append({'role':role,'source_path':controls[legacy]})
+    account = account_summary(); assets = normalize_input_assets(controls)
     if controls.get('operation') == 'first_last_frame' and (profile['mode'] != 'image2video' or not {'first_frame','last_frame'} <= {a.get('role') for a in assets}):
         _fail('missing_frame', 'first_last_frame requires both source-bound frame roles')
     if _retained_input_assets is not None and (not isinstance(_retained_input_assets,list) or len(_retained_input_assets)!=len(assets)):

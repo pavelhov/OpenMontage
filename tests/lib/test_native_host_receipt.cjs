@@ -77,7 +77,7 @@ test('optional bridge clocks separate host work and Node persistence without cha
   options.observeTiming = event => events.push(event);
   assert.deepEqual(await consumeNativeHostAction(f.tools, imageStep(f), options),
     {...doneStep, provider_calls: null});
-  assert.deepEqual(events.map(event => event.stage), ['native_return', 'retention_start', 'retention_end',
+  assert.deepEqual(events.map(event => event.stage), ['native_call', 'native_return', 'retention_start', 'retention_end', 'native_classified',
     'receipt_prepare_start', 'receipt_prepare_end', 'receipt_rpc_start', 'receipt_rpc_end',
     'node_receipt', 'completion_start', 'completion_end']);
   assert.ok(events.every(event => event.subject === 'original-call' && Number.isSafeInteger(event.at_ms)));
@@ -250,8 +250,10 @@ test('OpenArt return is durably retained before completing, and polling stays a 
   const f = await fixture(t);
   const step = {action: {kind: 'receive_openart_original', subject: 'motion-original'},
     host_envelope: {tool: 'mcp__codex_apps__openart_openart_generate_video', arguments: {prompt: 'actual', model: 'native-model'}}};
-  const result = {content: [{type: 'text', text: JSON.stringify({historyId: 'actual-job', status: 'pending'})}],
-    structuredContent: {future_field: ['retained', 1]}};
+  const payload = {historyId: 'actual-job', status: 'PENDING', future_field: ['retained', 1]};
+  const result = {content: [{type: 'text', text: JSON.stringify(payload)},
+    {type: 'text', text: 'Generation submitted; display-only instructions.'}],
+    structuredContent: payload, isError: false};
   let calls = 0;
   const options = hostOptions(f, async args => { calls++; assert.deepEqual(args, step.host_envelope.arguments); return result; }, async (action, outcome) => {
     assert.strictEqual(action, step.action); assert.strictEqual(outcome.result, result);
@@ -520,3 +522,36 @@ test('U2 Studio terminal composition states are progress without an invented act
       assert.throws(() => canonicalProductionStep(broken), /canonical production step/);
   }
 });
+
+for (const disposition of ['returned_result', 'error_result', 'exception']) {
+  test(`optional host boundary observations classify ${disposition} and same-original recovery`, async t => {
+    const f = await fixture(t), events = [];
+    const step = {action: {kind: 'receive_openart_original', subject: 'motion-original'},
+      host_envelope: {tool: 'mcp__codex_apps__openart_openart_generate_video', arguments: {prompt: 'actual'}}};
+    const result = disposition === 'error_result' ? {isError: true, content: [{type: 'text', text: 'Transport closed'}]}
+      : {structuredContent: {historyId: 'actual-job', status: 'PENDING'}, isError: false};
+    let calls = 0;
+    const options = hostOptions(f, async () => {
+      calls++;
+      if (disposition === 'exception') throw new Error('actual transport failure');
+      return result;
+    }, async () => doneStep);
+    options.nativeTool.tool_name = step.host_envelope.tool;
+    options.observeTiming = event => events.push(event);
+    await consumeNativeHostAction(f.tools, step, options);
+    assert.equal(events.filter(event => event.stage === 'native_call').length, 1);
+    assert.equal(events.filter(event => event.stage === 'native_return').length, 1);
+    assert.equal(events.find(event => event.stage === 'native_classified').disposition, disposition);
+    assert.ok(events.findIndex(event => event.stage === 'retention_end') <
+      events.findIndex(event => event.stage === 'native_classified'));
+    const original = await fs.readFile(f.receiptPath);
+    events.length = 0;
+    await consumeNativeHostAction(f.tools, step, options);
+    assert.equal(calls, 1);
+    assert.equal(events[0].stage, 'same_original_recovery');
+    assert.equal(events[1].stage, 'native_classified');
+    assert.equal(events[1].disposition, disposition);
+    assert.ok(!events.some(event => ['native_call', 'native_return'].includes(event.stage)));
+    assert.deepEqual(await fs.readFile(f.receiptPath), original);
+  });
+}

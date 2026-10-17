@@ -2640,7 +2640,7 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
         raise AutonomyError('preparation result sharing requires fresh rooted preparation')
     from lib import production_request as preparation
     from lib.shot_contract import _standing_make_video
-    from lib.production_execution import _paths, _clean, _artifact_path
+    from lib.production_execution import _paths, _clean, _artifact_path, _openart_mcp_controls
     # A retained historical payload is always genuine replay; otherwise only an
     # explicit retained-collection caller opts in (never policy_context alone).
     historical_replay = historical is not None or bool(historical_replay)
@@ -2795,8 +2795,11 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
     if historical is not None or policy_context is not None:
         canonical = preparation._compile_historical_provider_prompt(root, shot_id, provider=provider, native=native)
     else:
+        if provider == 'openart_mcp':
+            from lib.openart_mcp import normalize_input_assets
+            prompt_assets = normalize_input_assets(_openart_mcp_controls(inputs))
         canonical = preparation.compile_provider_prompt(root, shot_id, provider=provider,
-            **({'model': native['model'], 'input_assets': inputs.get('input_assets'),
+            **({'model': native['model'], 'input_assets': prompt_assets,
                 'openart_project_id': native['body'].get('projectId')} if provider == 'openart_mcp' else {}))
     body = preparation._body(native)
     prompt = body['params'].get('sceneDescription' if provider == 'openart_mcp' and native.get('prompt_param_path') == '/params/sceneDescription' else 'prompt')

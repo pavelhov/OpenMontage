@@ -193,8 +193,8 @@ async function consumeNativeHostAction(tools, step, options) {
   // return that exact step to the producer rather than calling advance again.
   // receiptPath is fixed per original across retries/restarts: changing it changes
   // ownership identity. Lost observations require canonical original collection.
-  // OpenArt completion callbacks select the actual structuredContent payload for
-  // the engine; the full raw connector result stays in the saved host receipt.
+  // OpenArt completion receives the exact connector result. The engine normalizes
+  // typed structuredContent; this receipt keeps the full raw result unchanged.
   if (!tools || typeof tools.mcp__node_repl__js !== 'function')
     throw new Error('A callable Node REPL bridge is required before native invocation');
   const {nativeTool, receiptPath, getObservation, retainObservation, completeAction} = options;
@@ -214,6 +214,7 @@ async function consumeNativeHostAction(tools, step, options) {
   const timing = typeof options.observeTiming === 'function'
     ? event => options.observeTiming({...event, subject: action.subject}) : undefined;
   let observed = await getObservation(key);
+  const recoveringOriginal = Boolean(observed);
   if (observed?.invocation_pending)
     throw new Error('Native invocation already attempted; collect original without replaying its envelope');
   if (!observed) {
@@ -230,6 +231,7 @@ async function consumeNativeHostAction(tools, step, options) {
     await claimNativeHostInvocation(tools, receiptPath, action,
       {tool_name: nativeTool.tool_name, arguments: argumentsSnapshot});
     let result, raised, didRaise = false;
+    observeNativeHostTiming(timing, 'native_call');
     try { result = await nativeTool.invoke(actualArguments); }
     catch (error) { raised = error; didRaise = true; }
     observeNativeHostTiming(timing, 'native_return', {raised: didRaise});
@@ -246,6 +248,9 @@ async function consumeNativeHostAction(tools, step, options) {
   if (observed.tool_name !== toolName
       || JSON.stringify(observed.arguments) !== JSON.stringify(envelope.arguments))
     throw new Error('Retained original invocation differs from emitted envelope');
+  if (recoveringOriginal) observeNativeHostTiming(timing, 'same_original_recovery');
+  observeNativeHostTiming(timing, 'native_classified', {disposition: observed.exception ? 'exception'
+    : observed.result?.isError === true ? 'error_result' : 'returned_result'});
   const receipt = nativeHostReceiptBinding(await saveNativeHostReceipt(tools, observed, receiptPath, timing));
   const complete = async outcome => {
     observeNativeHostTiming(timing, 'completion_start');

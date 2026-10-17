@@ -187,5 +187,7 @@ changed, imprecise or unsupported evidence remains a reported failure. Do not
 rewrite native journals, authority or an immutable derived record to force a
 passing selection.
 
-The parent must pass the existing native-parent provenance adapter. This change
-adds no new OpenArt/MCP parent adapter or non-AAC audio adapter.
+The parent must pass its existing native-parent provenance adapter, including
+OpenArt MCP's original connector proof. MCP cut bounds use the hash-bound
+original's probed duration, since requested duration is not observed media timing.
+No new provider adapter or non-AAC audio adapter is introduced.

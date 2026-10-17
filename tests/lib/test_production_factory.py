@@ -2136,7 +2136,7 @@ def test_mcp_standing_upload_final_batch_original_receipt_and_account_revalidati
             openart_project_id=args['openart_project_id'])
 
 
-def retryable_upload_fixture(root, max_batches=2):
+def retryable_upload_fixture(root, max_batches=2, *, error_kind='http_send'):
     from lib import openart_mcp as mcp, openart_mcp_jobs as jobs
     root.mkdir()
     account = mcp.account_summary()
@@ -2146,19 +2146,24 @@ def retryable_upload_fixture(root, max_batches=2):
     authority = pa.derive_standing_upload_authority(root, **args)
     upload = jobs.prepare_upload(root, files=args['files'],
         billing_declaration={'upload_authorization_id': authority['upload_id']}, openart_project_id=args['openart_project_id'])
+    message = ('tool call error: tool call failed for `codex_apps/openart.openart_upload_import`'
+        '\n\nCaused by:\n    Transport closed' if error_kind == 'closed' else
+        'Transport send error: Client error: HTTP request failed: error sending request for url (https://chatgpt.com/backend-api/ps/mcp)')
     error = write(root, 'notes/SYNTHETIC-upload-send-error.json', {'tool_name': upload['tool'],
-        'arguments': upload['arguments'], 'result': {'isError': True, 'content': [{'type':'text',
-            'text':'Transport send error: Client error: HTTP request failed: error sending request for url (https://chatgpt.com/backend-api/ps/mcp)'}]}})
+        'arguments': upload['arguments'], 'result': {'isError': True, 'content': [{'type':'text', 'text':message}]}})
     return args, upload, error
 
 
-def test_upload_transport_retry_reserves_same_envelope_once_and_counts_allowance(tmp_path, fixture_observations):
+@pytest.mark.parametrize('error_kind', ['http_send', 'closed'])
+def test_upload_transport_retry_reserves_same_envelope_once_and_counts_allowance(tmp_path, fixture_observations, error_kind):
     from lib import openart_mcp_jobs as jobs
-    root = tmp_path / 'retry-upload'; args, upload, error = retryable_upload_fixture(root)
+    root = tmp_path / 'retry-upload'; args, upload, error = retryable_upload_fixture(root, error_kind=error_kind)
+    assert pa._standing_upload_batch_count(root, 'openart_mcp') == 1
     retried = jobs.retry_upload_after_transport_error(root, upload_id=upload['upload_id'], observed_error=error)
     assert retried['arguments'] == upload['arguments'] and retried['tool'] == upload['tool']
     assert retried['upload_id'] == upload['upload_id'] and retried['source_transfer_invocation'] == 2
     assert retried['generation_enabled'] is False
+    assert pa._standing_upload_batch_count(root, 'openart_mcp') == 2
     assert len(list((root/'openart_mcp/uploads').glob('*.json'))) == 1
     with pytest.raises(ValueError, match='already reserved'):
         jobs.retry_upload_after_transport_error(root, upload_id=upload['upload_id'], observed_error=error)
@@ -2216,16 +2221,21 @@ def test_recorded_upload_retry_requires_retained_invocation_in_resolver_and_coun
 
 
 @pytest.mark.parametrize('defect', ['unknown_error', 'denial', 'generation_result', 'source', 'snapshot',
-    'account', 'project', 'allowance', 'standalone'])
+    'account', 'project', 'allowance', 'standalone', 'closed_denial', 'closed_generation_result',
+    'closed_wrong_tool', 'closed_allowance', 'closed_timeout'])
 def test_upload_transport_retry_refuses_other_errors_or_changed_authority(tmp_path, fixture_observations, monkeypatch, defect):
     from lib import openart_mcp as mcp, openart_mcp_jobs as jobs
-    root = tmp_path / 'retry-upload'; args, upload, error = retryable_upload_fixture(root, max_batches=1 if defect=='allowance' else 2)
+    root = tmp_path / 'retry-upload'; args, upload, error = retryable_upload_fixture(root,
+        max_batches=1 if defect in {'allowance', 'closed_allowance'} else 2,
+        error_kind='closed' if defect.startswith('closed_') else 'http_send')
     batch_path = root/'openart_mcp/uploads'/(upload['upload_id']+'.json')
     batch = json.loads(batch_path.read_text())
-    if defect in {'unknown_error','denial','generation_result'}:
+    if defect in {'unknown_error','denial','generation_result','closed_denial','closed_generation_result','closed_wrong_tool','closed_timeout'}:
         value = json.loads((root/error['path']).read_text())
         if defect=='unknown_error': value['result']['content'][0]['text']='timeout without original receipt'
-        elif defect=='denial': value['result']['content'][0]['text']+=' ACCESS_DENIED policy rejection'
+        elif defect in {'denial','closed_denial'}: value['result']['content'][0]['text']+=' ACCESS_DENIED policy rejection'
+        elif defect=='closed_wrong_tool': value['tool_name']='mcp__codex_apps__openart_openart_generate_video'
+        elif defect=='closed_timeout': value['result']['content'][0]['text']+=' due to timeout'
         else: value['result']['structuredContent']={'historyId':'foreign-generation'}
         error = write(root,error['path'],value)
     elif defect=='source': Path(args['files'][0]).write_bytes(b'SYNTHETIC changed source')
@@ -3708,3 +3718,120 @@ def test_standing_baselines_and_policy_build_the_activation_inputs_from_plain_va
         'evidence': {'path': 'e', 'sha256': 'f'}}
     policy['providers'][0]['id'] = 'mutated'
     assert setup['providers'][0]['id'] == 'p'
+
+
+def _openart_completion_fixture(tmp_path, monkeypatch, kind):
+    from tests.lib.test_openart_mcp_jobs import begun
+    from lib import openart_mcp_jobs as jobs
+    root, _, _ = begun(tmp_path)
+    if kind == 'poll_openart_original':
+        jobs.receive(root, 'one', outcome={'historyId': 'original', 'status': 'PENDING'})
+    frozen = copy.deepcopy(jobs._load(root, 'one')['frozen'])
+    action = execution._production_action(root, kind, subject='one', host=True,
+        binding={'attempt_id': 'one', 'request_sha256': frozen['authority']['request_sha256']})
+    monkeypatch.setattr(execution, 'next_production_action', lambda _: action)
+    return root, jobs, frozen, action
+
+
+def _openart_success_wrapper(payload):
+    # Actual C116 MCP shape, synthetic values. Text is display-only and never parsed.
+    return {'content': [{'type': 'text', 'text': json.dumps(payload)},
+        {'type': 'text', 'text': 'Generation submitted; display instructions are not authority.'}],
+        'structuredContent': copy.deepcopy(payload), 'isError': False}
+
+
+@pytest.mark.parametrize('kind', ['receive_openart_original', 'poll_openart_original'])
+@pytest.mark.parametrize('wrapped', [False, True])
+def test_openart_completion_ingress_normalizes_actual_wrapper_and_retains_raw(
+        tmp_path, monkeypatch, fixture_observations, kind, wrapped):
+    root, jobs, frozen, action = _openart_completion_fixture(tmp_path, monkeypatch, kind)
+    payload = {'historyId': 'original', 'status': 'RUNNING' if kind.startswith('poll') else 'PENDING',
+        'future_field': ['preserved', 1]}
+    result = _openart_success_wrapper(payload) if wrapped else copy.deepcopy(payload)
+    original = copy.deepcopy(result)
+    execution.complete_action(root, action, outcome={'result': result})
+    state = jobs._load(root, 'one')
+    assert result == original and state['frozen'] == frozen
+    retained = state['status_observations'][-1] if kind.startswith('poll') else state['receipt']
+    assert retained == payload and state['status'] == 'submitted'
+    assert jobs.poll_args(root, 'one')['arguments'] == {'historyId': 'original'}
+    if kind.startswith('poll'):
+        if not wrapped:
+            assert not state.get('status_host_results')
+            return
+        raw = state['status_host_results'][-1]
+    else:
+        raw = json.loads((jobs._path(root, 'one').parent / 'original-host-reply.json').read_text())
+        assert raw['request_sha256'] == frozen['authority']['request_sha256']
+        assert raw['begin_envelope_sha256'] == request.digest(state['begin_envelope'])
+    if not wrapped:
+        assert 'host_result' not in raw and raw['outcome'] == original
+        return
+    assert raw['host_result'] == original
+    assert raw['host_result_sha256'] == request.digest(original)
+    assert raw['outcome_sha256'] == request.digest(payload)
+
+
+@pytest.mark.parametrize('kind', ['receive_openart_original', 'poll_openart_original'])
+@pytest.mark.parametrize('defect', ['error', 'error_flag_type', 'missing_structured', 'nonobject_structured',
+    'missing_history', 'bad_history', 'missing_status', 'bad_status', 'conflicting_history',
+    'conflicting_status', 'nested_wrapper', 'plain_error', 'plain_malformed', 'foreign_prompt'])
+def test_openart_completion_ingress_rejects_bad_wrappers_before_writes(
+        tmp_path, monkeypatch, fixture_observations, kind, defect):
+    root, jobs, frozen, action = _openart_completion_fixture(tmp_path, monkeypatch, kind)
+    result = _openart_success_wrapper({'historyId': 'original', 'status': 'PENDING'})
+    if defect == 'error': result['isError'] = True
+    elif defect == 'error_flag_type': result['isError'] = 'false'
+    elif defect == 'missing_structured': result.pop('structuredContent')
+    elif defect == 'nonobject_structured': result['structuredContent'] = []
+    elif defect == 'missing_history': result['structuredContent'].pop('historyId')
+    elif defect == 'bad_history': result['structuredContent']['historyId'] = []
+    elif defect == 'missing_status': result['structuredContent'].pop('status')
+    elif defect == 'bad_status': result['structuredContent']['status'] = 'pending'
+    elif defect == 'conflicting_history': result['historyId'] = 'foreign'
+    elif defect == 'conflicting_status': result['status'] = 'COMPLETED'
+    elif defect == 'nested_wrapper': result['structuredContent'] = _openart_success_wrapper(result['structuredContent'])
+    elif defect == 'plain_error': result = {'isError': True, 'historyId': 'original', 'status': 'PENDING'}
+    elif defect == 'plain_malformed': result = {'historyId': 'original', 'status': []}
+    else: result['structuredContent']['prompt'] = 'foreign prompt'
+    before = file_bytes(root)
+    with pytest.raises(ValueError): execution.complete_action(root, action, outcome={'result': result})
+    assert file_bytes(root) == before and jobs._load(root, 'one')['frozen'] == frozen
+
+
+def test_openart_completion_ingress_interrupted_raw_reply_recovers_without_replacing_original(
+        tmp_path, monkeypatch, fixture_observations):
+    root, jobs, frozen, action = _openart_completion_fixture(tmp_path, monkeypatch, 'receive_openart_original')
+    payload = {'historyId': 'original', 'status': 'PENDING'}
+    result = _openart_success_wrapper(payload)
+    save = jobs._save
+    monkeypatch.setattr(jobs, '_save', lambda *args: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt): execution.complete_action(root, action, outcome={'result': result})
+    monkeypatch.setattr(jobs, '_save', save)
+    reply_path = jobs._path(root, 'one').parent / 'original-host-reply.json'
+    original_reply = reply_path.read_bytes()
+    recovery = jobs.resume_original(root, 'one')['next_action']
+    assert recovery['outcome'] == payload
+    execution.complete_action(root, action, outcome={'result': recovery['outcome']})
+    assert reply_path.read_bytes() == original_reply
+    assert jobs._load(root, 'one')['receipt'] == payload
+    before = file_bytes(root)
+    jobs.resume_original(root, 'one', outcome=payload, request_sha256=frozen['authority']['request_sha256'])
+    assert file_bytes(root) == before
+
+
+@pytest.mark.parametrize('kind', ['receive_openart_original', 'poll_openart_original'])
+def test_openart_completion_ingress_rejects_tampered_raw_evidence(tmp_path, monkeypatch, fixture_observations, kind):
+    root, jobs, _, action = _openart_completion_fixture(tmp_path, monkeypatch, kind)
+    payload = {'historyId': 'original', 'status': 'COMPLETED',
+        'resources': [{'id': 'video', 'mediaType': 'video', 'url': 'https://fixture.invalid/original.mp4'}]}
+    result = _openart_success_wrapper(payload); result.pop('isError')
+    result.update(historyId='original', status='COMPLETED')
+    execution.complete_action(root, action, outcome={'result': result})
+    assert jobs.resume_original(root, 'one')['next_action']['action'] == 'download_original'
+    path = jobs._path(root, 'one') if kind.startswith('poll') else jobs._path(root, 'one').parent / 'original-host-reply.json'
+    value = json.loads(path.read_text())
+    raw = value['status_host_results'][-1] if kind.startswith('poll') else value
+    raw['host_result']['structuredContent']['historyId'] = 'foreign'
+    jobs._write(path, value)
+    with pytest.raises(ValueError, match='retained raw host result changed'): jobs.resume_original(root, 'one')

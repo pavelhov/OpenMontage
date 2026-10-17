@@ -74,8 +74,12 @@ def _validate_trimmed_cut(value, recipe, receipt, native, bound, require, aac_sh
     start, end, codec = submitted['start_seconds'], submitted['end_seconds'], submitted['codec']
     require(type(start) in (int, float) and type(end) in (int, float)
             and math.isfinite(start) and math.isfinite(end)
-            and 0 <= start < end <= native['result']['result']['data']['duration_seconds'],
-            'bounded retained cut interval required')
+            and 0 <= start < end, 'bounded retained cut interval required')
+    # MCP retains the original bytes, not provider-reported media timing. Its
+    # upper bound is the hash-bound source probe below, not requested duration.
+    if 'connector_provenance' not in native:
+        require(end <= native['result']['result']['data']['duration_seconds'],
+                'bounded retained cut interval required')
     require(submitted['operation'] == 'cut' and submitted['input_path'] == value['parent_output']['path']
             and submitted['output_path'] == value['output']['path']
             and isinstance(codec, str) and bool(codec)

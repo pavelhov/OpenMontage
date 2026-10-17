@@ -772,7 +772,10 @@ def validate_derived_edit(project_dir, record_path, *, attempt_id, shot_id,
         require(value['output'] == expected_output, 'selected output differs from derived record')
         directory = root / 'production_derived_edits' / value['output']['sha256']
         require(path == directory / 'record.json', 'record must be hash-addressed outside native attempts')
-        native = _validate_attempt_provenance(root, attempt_id, shot_id=shot_id,
+        # Validate the original directly; derived lookup here would recurse.
+        parent_validator = (_validate_mcp_attempt
+            if (root / 'openart_mcp' / 'attempts' / attempt_id).is_dir() else _validate_attempt_provenance)
+        native = parent_validator(root, attempt_id, shot_id=shot_id,
             story_revision=story_revision, expected_output=value['parent_output'], _historical_source=_historical_source)
         require(value['project_id'] == native['request']['project_id'], 'project differs from native parent')
         output = bound(value['output'], 'derived output')

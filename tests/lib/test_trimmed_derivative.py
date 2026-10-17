@@ -6,15 +6,21 @@ from array import array
 from dataclasses import asdict
 from fractions import Fraction
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from lib.production_execution import (
     ProductionGovernanceError, _digest, record_derived_edit, record_selection,
 )
-from lib.production_provenance import _aac_sha256, trimmed_outgoing_timestamp, validate_attempt_provenance
+from lib.production_provenance import (
+    _aac_sha256, historical_source_provenance, trimmed_outgoing_timestamp, validate_attempt_provenance,
+)
 from lib.shot_contract import UPSTREAM_PREDICATES, file_sha256, selection_digest
 from tests.integration.test_first_pass_workflow import attestation
+from tests.integration.test_openart_mcp_governance import (
+    fixture_observations, install_fake_download, prepare_project,
+)
 from tests.lib.test_production_provenance import production, attempt, read, save
 from tools.tool_registry import registry
 
@@ -94,9 +100,15 @@ def trimmed(production, monkeypatch, request):
     monkeypatch.setattr('subprocess.run', offline_run)
     monkeypatch.setattr('shutil.which', lambda name: '/offline/grok' if name == 'grok' else REAL_WHICH(name))
     aid, directory, parent = attempt(production)
+    return cut_fixture(production, aid, directory, parent, options)
+
+
+def cut_fixture(production, aid, directory, parent, options):
+    root = production.root
     registry.discover()
     tool = registry.get('video_trimmer')
     output = root / 'assets/video/retained-cut.mp4'
+    output.parent.mkdir(parents=True, exist_ok=True)
     # Studio production_entry.dispatch submits its resolved project as context.
     contexts = {None: {}, 'correct': {'project_dir': str(root.resolve())},
         'wrong': {'project_dir': str(root.resolve().parent)},
@@ -147,6 +159,97 @@ def trimmed(production, monkeypatch, request):
         'derived_edit_sha256': _digest(record), 'authorization': binding(authority)})
     record['approval'] = {'approved_by': 'synthetic exact trim reviewer', 'evidence': binding(approval)}
     return production, aid, directory, record, result
+
+
+@pytest.fixture
+def mcp_trimmed(fixture_observations, tmp_path, monkeypatch, request):
+    """Canonical MCP journals/download with real local media; no connector calls."""
+    if not REAL_WHICH('ffmpeg') or not REAL_WHICH('ffprobe'):
+        pytest.skip('offline real media fixture requires ffmpeg/ffprobe')
+    from lib import openart_mcp_jobs as jobs, production_execution as execution
+    from lib import production_provenance as provenance
+    from tests.integration.test_openart_first_pass_workflow import real_av_clip
+
+    options = getattr(request, 'param', {})
+    inputs, _ = prepare_project(tmp_path / 'mcp-trim', duration=5)
+    root = Path(inputs['project_dir'])
+    aid = 'original'
+    jobs.prepare(root, attempt_id=aid, generation_inputs=inputs,
+        authority_fn=execution.prepare_openart_mcp_handoff)
+    jobs.begin(root, aid, authority_fn=execution.prepare_openart_mcp_handoff)
+    jobs.receive(root, aid, outcome={'historyId': 'original-history', 'status': 'PENDING'})
+    jobs.record_status(root, aid, result={'historyId': 'original-history', 'status': 'COMPLETED',
+        'resources': [{'id': 'original-video', 'mediaType': 'video', 'status': 'COMPLETED',
+            'url': 'https://fixture.invalid/original.mp4'}]})
+    downloaded = real_av_clip(tmp_path / 'fixture-download.mp4', seconds=options.get('source_duration', 5), size='1280x720')
+    install_fake_download(monkeypatch, jobs, downloaded)
+    concrete = jobs.download_original(root, aid)
+    jobs.collect(root, aid, downloaded_path=concrete['downloaded_path'])
+    monkeypatch.setattr(provenance, '_ALLOW_OPENART_FIXTURE_PROVENANCE', True)
+    value = SimpleNamespace(root=root, story=read(root / 'project.json'))
+    parent = binding(Path(inputs['output_path']))
+    # Establish parent proof before asking the existing derived path to use it.
+    assert validate_attempt_provenance(root, aid, shot_id='entry',
+        story_revision=value.story['story_revision'], expected_output=parent)['connector_provenance']['output'] == parent
+    return cut_fixture(value, aid, root / 'openart_mcp/attempts' / aid, parent,
+        {'codec': 'libx264', 'audio': True, 'end': options.get('end', 2)})
+
+
+def test_mcp_original_registers_two_second_trim_and_fresh_selection(mcp_trimmed):
+    value, aid, directory, record, result = mcp_trimmed
+    before = {path: path.read_bytes() for path in directory.rglob('*') if path.is_file()}
+    original = Path(record['parent_output']['path']).read_bytes()
+    checked = record_derived_edit(value.root, record)
+    assert checked['derived_timing']['duration_seconds'] == 2
+    assert result.data['cut_receipt']['input'] == record['parent_output']
+    assert check(value, record)['selected_output'] == record['output']
+    historical = historical_source_provenance(value.root, aid, shot_id='entry',
+        story_revision=value.story['story_revision'], expected_output=record['output'])
+    assert historical['historical_source_only'] is True
+    assert historical['selected_output'] == record['output']
+    selection = {'attempt_id': aid, 'output': record['output'], 'outgoing_frame': record['outgoing_frame']}
+    selection['review'] = attestation(selection_digest(selection), UPSTREAM_PREDICATES,
+        revision=value.story['story_revision'])
+    record_selection(value.root, 'entry', selection)
+    from lib.production_draft import first_cut_candidates
+    candidate = next(row for row in first_cut_candidates(value.root) if row['shot_id'] == 'entry')
+    assert candidate['status'] == 'candidate' and candidate['strict_selected'] is True
+    assert candidate['output']['sha256'] == record['output']['sha256']
+    assert candidate['duration_seconds'] == 2
+    assert all(path.read_bytes() == raw for path, raw in before.items())
+    assert Path(record['parent_output']['path']).read_bytes() == original
+    assert Path(record['preserved_output']['path']).read_bytes() == Path(record['output']['path']).read_bytes()
+    assert check(value, {**record, 'output': record['parent_output']})['result']['output'] == record['parent_output']
+
+
+@pytest.mark.parametrize('mcp_trimmed', [{'source_duration': 5.25, 'end': 5.125}], indirect=True)
+def test_mcp_cut_bound_uses_actual_original_not_requested_duration(mcp_trimmed):
+    value, _, _, record, _ = mcp_trimmed
+    checked = record_derived_edit(value.root, record)
+    assert checked['derived_timing']['duration_seconds'] == 5.125
+
+
+@pytest.mark.parametrize('mcp_trimmed', [{'source_duration': 5.25, 'end': 5.5}], indirect=True)
+def test_mcp_cut_cannot_exceed_actual_original_duration(mcp_trimmed):
+    value, _, _, record, _ = mcp_trimmed
+    with pytest.raises(ProductionGovernanceError, match='actual retained duration differs'):
+        record_derived_edit(value.root, record)
+
+
+@pytest.mark.parametrize('change', ['wrong_shot', 'parent_hash', 'native_authority'])
+def test_mcp_trim_retains_exact_parent_identity_hash_and_authority(mcp_trimmed, change):
+    value, aid, _, record, _ = mcp_trimmed
+    record_derived_edit(value.root, record)
+    if change == 'parent_hash':
+        Path(record['parent_output']['path']).write_bytes(b'changed original')
+    elif change == 'native_authority':
+        (value.root / 'approval.txt').write_text('changed retained native approval')
+    with pytest.raises(ProductionGovernanceError):
+        validate_attempt_provenance(value.root, aid, shot_id='other' if change == 'wrong_shot' else 'entry',
+            story_revision=value.story['story_revision'], expected_output=record['output'])
+    with pytest.raises(ProductionGovernanceError):
+        historical_source_provenance(value.root, aid, shot_id='other' if change == 'wrong_shot' else 'entry',
+            story_revision=value.story['story_revision'], expected_output=record['output'])
 
 
 def check(value, record):

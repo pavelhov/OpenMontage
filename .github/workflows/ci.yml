@@ -37,6 +37,11 @@ jobs:
             requirements.txt
             requirements-dev.txt
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
@@ -45,6 +50,9 @@ jobs:
 
       - name: Run lint smoke checks
         run: make lint
+
+      - name: Test native host completion and recovery
+        run: node --test tests/lib/test_native_host_receipt.cjs
 
       - name: Run test suite
         run: make test

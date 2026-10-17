@@ -162,7 +162,8 @@ def install_existing(root, policy, *, templates, selected=None, approved=True, m
         proj = pa.current_projection(root, shot_id)
         baselines[shot_id] = {'projection': proj, 'planned_request_template': copy.deepcopy(template),
             'script_snapshot': copy.deepcopy(script), 'dialogue_coverage': pa.dialogue_occurrences(proj),
-            'approval_plan_sha256': approval_plan_digest(contract)}
+            'approval_plan_sha256': approval_plan_digest(contract,
+                shot_id if contract.get('planning_mode') == 'shot_local_v1' else None)}
     policy = copy.deepcopy(policy)
     policy['project_id'] = contract['project_id']
     policy['story_revision'] = contract['story_revision']

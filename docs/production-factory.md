@@ -179,7 +179,8 @@ governed path layout and use the existing `image_upload_id`/`end_image_upload_id
 selectors. Only the native control projection converts them into ordered
 first/last frame rows. Historical frozen requests remain unchanged.
 
-For an actual source-upload HTTP send failure, `jobs.retry_upload_after_transport_error`
+For an actual source-upload HTTP send failure or the exact retained connector
+`Transport closed` error, `jobs.retry_upload_after_transport_error`
 accepts the retained upload ID and `observed_error={'path': ..., 'sha256': ...}`
 binding the saved full host response. It reserves one extra source-transfer
 invocation against remaining standing `max_batches` before returning the same
@@ -203,6 +204,25 @@ first when sources are missing. Modified/stale actions reject, and retrying afte
 not regenerate. Interrupted preparation retains the same IDs and exact records.
 Fresh observations at later admission/dispatch boundaries remain required.
 Other routes continue with their explicit prepared inputs and provider.
+
+After the actual image judgment, continue the existing upload, preparation and
+video actions in the same host execution where possible. Retain and consume exact
+JSON results; do not create a separate runner or retype the native request.
+Before invoking an upload, inspect its retained original observation/receipt.
+Recover a completed or interrupted transfer through the existing upload owner;
+never rerun a saved upload envelope merely because a later save/completion failed.
+Surface an actual returned error immediately. Only the evidenced transport retry
+above may authorize another transfer within remaining allowance.
+
+Studio's `complete_action` already advances a registered dispatch to its next host
+action. For that dispatch, standalone `lib.production_execution.complete_action`
+returns a dispatched step first; use its existing `advance` once to obtain the
+begin envelope. Once a
+completion has returned `host_envelope`, consume that exact envelope with
+`consumeNativeHostAction`; advancing again would lose its one invocation handoff.
+Use `consumeSavedNativeCompletion` below for an interrupted completion, preserving
+its saved JSON and original job. A new actual visual judgment remains an agent
+boundary.
 
 The explicit alternative below is for callers supplying prepared inputs, including
 other routes; skip it after the `preparation` outcome above. Pass `draft['inputs']`
@@ -275,11 +295,21 @@ codes, timestamps, host results or invocation envelopes.
 
 For bridge diagnosis, optionally pass a synchronous `observeTiming: event => ...`
 callback to `consumeNativeHostAction`. It receives local timestamps for native
-return, retention, receipt preparation, receipt RPC and completion, plus Node
+call/return, retention, returned-result/error-result/exception classification,
+same-original observation recovery, receipt preparation, receipt RPC and completion, plus Node
 read/hash/write/sync clocks through that same RPC. Keep these observations outside
 the canonical receipt. Missing or unmatched clocks remain unknown; RPC wall time
 includes host dispatch and return, and clocks do not establish a speed improvement.
 Observer exceptions do not change original recovery or completion.
+
+OpenArt `receive_openart_original` and `poll_openart_original` completion accept
+the plain typed provider payload or the actual MCP result containing object
+`structuredContent` and an absent/false `isError`. Pass `{result: actual_result}`
+unchanged through the existing completion callback. The engine normalizes once,
+retains the raw response and its digest beside original evidence, and checks the
+existing request/account/history bindings. Error results, missing or malformed
+identity/status, nested wrappers and conflicting wrapper identity/status are
+rejected; display text is never parsed for a history ID or treated as authority.
 
 There are no corrective takes, creative revisions, video route fallbacks or board
 corrections in this factory. The sole image exception is the creator-authorized
@@ -341,6 +371,14 @@ defect, missing coverage and actual duration. Missing or corrupt footage produce
 an honest partial cut; no usable clip produces an incomplete result. Findings are
 disclosures, not acceptance or repair gates. Preserve original media, rejected or
 superseded historical media, records and derived edits.
+
+When existing local-edit authority covers shortening dead space, review the actual
+footage and use the registered `video_trimmer` with explicit retained intervals
+and reasons before assembly. Keep the completed gag and enough recognition time;
+never remove a fixed head interval or blindly cut at the planned completion time.
+Retain full originals and [canonical derived provenance](PRODUCTION_DERIVED_EDITS.md)
+under the project's existing edit and review/audio scope. This adds no generation
+attempt, repair authority or review gate.
 
 Ready independent originals can dispatch concurrently. Before final assembly,
 collect each exact CLI original: a qualified nonterminal stream returns bounded
