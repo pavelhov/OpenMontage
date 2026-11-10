@@ -8,8 +8,6 @@ import sys
 import types
 from pathlib import Path
 
-import pytest
-
 from tools.base_tool import ToolStatus
 
 
@@ -28,35 +26,40 @@ def test_sora_video_is_discovered_as_openai_video_provider():
     assert tool.capability == "video_generation"
 
 
-def test_sora_video_loads_openai_key_from_repo_dotenv_when_process_env_is_empty():
-    env_path = PROJECT_ROOT / ".env"
-    if env_path.exists():
-        pytest.skip("Protect local .env contents; CI regression covers absent-.env checkout")
+def test_sora_video_loads_openai_key_from_repo_dotenv_when_process_env_is_empty(tmp_path):
+    checkout = tmp_path / "isolated-checkout"
+    # Copy the actual loader and provider unchanged; only this checkout's
+    # synthetic .env is involved, even when a developer has a real repo .env.
+    for relative in ("tools/__init__.py", "tools/base_tool.py",
+                     "tools/video/__init__.py", "tools/video/sora_video.py"):
+        destination = checkout / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes((PROJECT_ROOT / relative).read_bytes())
+    (checkout / ".env").write_text("OPENAI_API_KEY=test-openai-key\n", encoding="utf-8")
+    env = os.environ.copy()
+    env.pop("OPENAI_API_KEY", None)
 
-    env_path.write_text("OPENAI_API_KEY=test-openai-key\n", encoding="utf-8")
-    try:
-        env = os.environ.copy()
-        env.pop("OPENAI_API_KEY", None)
-        env["PYTHONPATH"] = str(PROJECT_ROOT)
-
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                (
-                    "import os; "
-                    "import tools.video.sora_video; "
-                    "print('set' if os.environ.get('OPENAI_API_KEY') else 'missing')"
-                ),
-            ],
-            cwd=PROJECT_ROOT,
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-    finally:
-        env_path.unlink(missing_ok=True)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            (
+                "import os, sys; from pathlib import Path; "
+                "sys.path.insert(0, os.getcwd()); "
+                "import tools.video.sora_video as sora; import tools.base_tool as base; "
+                "assert Path(sora.__file__).resolve() == Path('tools/video/sora_video.py').resolve(); "
+                "assert Path(base.__file__).resolve() == Path('tools/base_tool.py').resolve(); "
+                "print('set' if os.environ.get('OPENAI_API_KEY') == 'test-openai-key' else 'missing')"
+            ),
+        ],
+        cwd=checkout,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == "set"

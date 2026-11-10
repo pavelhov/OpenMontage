@@ -94,6 +94,7 @@ remotion-composer/public/demo-props/caption-burn-*
 
 venv/
 .venv/
+.venv311/
 
 # Backlot local cache (thumbnails)
 .backlot/

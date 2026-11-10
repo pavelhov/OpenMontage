@@ -1,7 +1,9 @@
-PYTHON_VERSION ?= 3.10
-VENV_DIR ?= .venv
+PYTHON_VERSION ?= 3.11
+override PYTHON_MIN_VERSION := 3.11
+PYTHON_VERSION_SUPPORTED := $(shell awk -F. -v version='$(PYTHON_VERSION)' -v minimum='$(PYTHON_MIN_VERSION)' 'BEGIN { split(version, v, "."); split(minimum, m, "."); if (v[1]+0 > m[1]+0 || (v[1]+0 == m[1]+0 && v[2]+0 >= m[2]+0)) print "yes"; else print "no" }')
+VENV_DIR ?= .venv311
 BASE_PYTHON ?= $(shell command -v python$(PYTHON_VERSION) 2>/dev/null || command -v python3 2>/dev/null || command -v python 2>/dev/null)
-RUN_PYTHON = $(shell for dir in "$$VIRTUAL_ENV" "$$CONDA_PREFIX" "$(VENV_DIR)"; do if [ -n "$$dir" ] && [ -x "$$dir/bin/python" ]; then printf "%s/bin/python" "$$dir"; exit 0; elif [ -n "$$dir" ] && [ -x "$$dir/Scripts/python.exe" ]; then printf "%s/Scripts/python.exe" "$$dir"; exit 0; fi; done; if [ "$(OS)" = "Windows_NT" ]; then printf "%s/Scripts/python.exe" "$(VENV_DIR)"; else printf "%s/bin/python" "$(VENV_DIR)"; fi)
+RUN_PYTHON = $(shell if [ "$(OS)" = "Windows_NT" ]; then printf "%s/Scripts/python.exe" "$(VENV_DIR)"; else printf "%s/bin/python" "$(VENV_DIR)"; fi)
 PIP = $(RUN_PYTHON) -m pip
 
 .DEFAULT_GOAL := setup
@@ -11,12 +13,12 @@ PIP = $(RUN_PYTHON) -m pip
 # ---- Virtual environment ----
 
 ensure-venv:
-	@if [ -n "$$VIRTUAL_ENV" ] && { [ -x "$$VIRTUAL_ENV/bin/python" ] || [ -x "$$VIRTUAL_ENV/Scripts/python.exe" ]; }; then \
-		echo "==> Using active virtual environment: $$VIRTUAL_ENV"; \
-	elif [ -n "$$CONDA_PREFIX" ] && { [ -x "$$CONDA_PREFIX/bin/python" ] || [ -x "$$CONDA_PREFIX/Scripts/python.exe" ]; }; then \
-		echo "==> Using active conda environment: $$CONDA_PREFIX"; \
-	elif [ -x "$(VENV_DIR)/bin/python" ] || [ -x "$(VENV_DIR)/Scripts/python.exe" ]; then \
-		echo "==> Using existing virtual environment: $(VENV_DIR)"; \
+	@if [ "$(PYTHON_VERSION_SUPPORTED)" != "yes" ]; then \
+		echo "ERROR: OpenMontage requires Python $(PYTHON_MIN_VERSION)+; requested $(PYTHON_VERSION)."; \
+		exit 1; \
+	fi
+	@if [ -x "$(VENV_DIR)/bin/python" ] || [ -x "$(VENV_DIR)/Scripts/python.exe" ]; then \
+		echo "==> Using project virtual environment: $(VENV_DIR)"; \
 	elif command -v uv >/dev/null 2>&1; then \
 		echo "==> Creating virtual environment with uv (Python $(PYTHON_VERSION)+): $(VENV_DIR)"; \
 		uv venv --python $(PYTHON_VERSION) "$(VENV_DIR)"; \
@@ -26,7 +28,7 @@ ensure-venv:
 			exit 1; \
 		fi; \
 		"$(BASE_PYTHON)" -c "import sys; required=tuple(map(int, '$(PYTHON_VERSION)'.split('.')[:2])); raise SystemExit(0 if sys.version_info[:2] >= required else 1)" || { \
-			echo "ERROR: OpenMontage requires Python $(PYTHON_VERSION)+."; \
+			echo "ERROR: OpenMontage requires requested Python $(PYTHON_VERSION)+."; \
 			echo "Install uv or Python $(PYTHON_VERSION)+, then run make again."; \
 			exit 1; \
 		}; \
@@ -37,9 +39,9 @@ ensure-venv:
 		}; \
 	fi
 	@$(RUN_PYTHON) -c "import sys; required=tuple(map(int, '$(PYTHON_VERSION)'.split('.')[:2])); raise SystemExit(0 if sys.version_info[:2] >= required else 1)" || { \
-		echo "ERROR: OpenMontage requires Python $(PYTHON_VERSION)+."; \
-		echo "Current interpreter is $$($(RUN_PYTHON) -c 'import sys; print(\".\".join(map(str, sys.version_info[:3])))' 2>/dev/null || echo unavailable): $(RUN_PYTHON)"; \
-		echo "Activate a compatible environment or remove it so make can create $(VENV_DIR)."; \
+		echo "ERROR: OpenMontage requires requested Python $(PYTHON_VERSION)+."; \
+		echo "Current interpreter is $$($(RUN_PYTHON) -c 'import sys; print(sys.version_info[0], sys.version_info[1], sys.version_info[2], sep=chr(46))' 2>/dev/null || echo unavailable): $(RUN_PYTHON)"; \
+		echo "Set VENV_DIR to a compatible environment or recreate $(VENV_DIR)."; \
 		exit 1; \
 	}
 	@$(RUN_PYTHON) -m pip --version >/dev/null 2>&1 || $(RUN_PYTHON) -m ensurepip --upgrade >/dev/null
@@ -47,7 +49,7 @@ ensure-venv:
 venv: ensure-venv
 	@echo "==> Virtual environment ready."
 	@echo "    Python: $(RUN_PYTHON)"
-	@if [ -z "$$VIRTUAL_ENV" ] && [ -z "$$CONDA_PREFIX" ]; then if [ "$(OS)" = "Windows_NT" ]; then echo "    Activate with: $(VENV_DIR)\\Scripts\\Activate.ps1"; else echo "    Activate with: source $(VENV_DIR)/bin/activate"; fi; fi
+	@if [ "$(OS)" = "Windows_NT" ]; then echo "    Activate with: $(VENV_DIR)\\Scripts\\Activate.ps1"; else echo "    Activate with: source $(VENV_DIR)/bin/activate"; fi
 
 # ---- One-command setup ----
 

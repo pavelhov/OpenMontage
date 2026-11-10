@@ -12,4 +12,4 @@ codex plugin marketplace add /path/to/OpenMontage
 codex plugin add openmontage@openmontage
 ```
 
-Start a new Codex task after installation and invoke `$openmontage`. The isolated package under `.codex/plugin/` is a routing layer only; this repository remains the authoritative engine and Backlot remains its canonical review surface. Cross-workspace runs use the checkout's `.venv/bin/python` when available, so run `make setup` first on a new checkout.
+Start a new Codex task after installation and invoke `$openmontage`. The isolated package under `.codex/plugin/` is a routing layer only; this repository remains the authoritative engine and Backlot remains its canonical review surface. Cross-workspace runs require the checkout's `.venv311/bin/python` (Windows: `.venv311\Scripts\python.exe`) at Python 3.11 or newer; if it is missing or incompatible, run `make setup`. Never fall back to `.venv` or silently install packages.

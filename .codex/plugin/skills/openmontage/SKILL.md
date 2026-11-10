@@ -16,7 +16,7 @@ Resolve the engine root before acting:
 
 Before doing OpenMontage work, read the resolved checkout's `AGENT_GUIDE.md` completely and follow every manifest, director, meta skill, and provider skill it routes the current request to.
 
-Run OpenMontage Python commands with `<engine-root>/.venv/bin/python` when that executable exists. This keeps cross-workspace tasks on the checkout's configured dependencies instead of the caller's unrelated Python environment. If the checkout virtual environment is absent, follow the repository setup documentation or report the missing dependency; do not silently install packages.
+Run OpenMontage Python commands with `<engine-root>/.venv311/bin/python` (Windows: `.venv311\Scripts\python.exe`). If it is missing or reports Python below 3.11, report the required Python version and direct the user to `make setup`. Do not fall back to `.venv` or silently install packages.
 
 For video production:
 

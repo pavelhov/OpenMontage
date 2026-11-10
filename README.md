@@ -187,7 +187,7 @@ And when a run is done, hit **▶ REPLAY RUN** — the whole production replays 
 
 ### Prerequisites
 
-- **Python 3.10+** — [python.org](https://www.python.org/downloads/)
+- **Python 3.11+** — [python.org](https://www.python.org/downloads/)
 - **FFmpeg** — `brew install ffmpeg` / `sudo apt install ffmpeg` / [ffmpeg.org](https://ffmpeg.org/download.html)
 - **Node.js 18+** — [nodejs.org](https://nodejs.org/)
 - **An AI coding assistant** — Claude Code, Cursor, Copilot, Windsurf, or Codex
@@ -215,7 +215,9 @@ codex plugin marketplace add /path/to/OpenMontage
 codex plugin add openmontage@openmontage
 ```
 
-Start a new Codex task after installation. The isolated wrapper under `.codex/plugin/` routes work to the OpenMontage checkout; it does not duplicate the engine or replace Backlot. It prefers the checkout's `.venv/bin/python`, so complete `make setup` before invoking it from another workspace.
+Start a new Codex task after installation. The isolated wrapper under `.codex/plugin/` routes work to the OpenMontage checkout; it does not duplicate the engine or replace Backlot. Cross-workspace runs require the checkout's `.venv311/bin/python` (Windows: `.venv311\Scripts\python.exe`) at Python 3.11 or newer; if missing or incompatible, complete `make setup` before invoking it. The Makefile defaults to this project runtime even when another virtual or conda environment is active; set `VENV_DIR` only to intentionally choose a different compatible environment. Maintained workflows never fall back to `.venv`.
+
+`make setup` installs the official SpicyAPI Python SDK as part of the engine dependencies. For a hash-verified SDK-only install in an existing Python 3.11+ environment, run `python -m pip install --require-hashes -r requirements-spicy.lock`. The lock pins `spicyapi==0.3.0` to the published wheel SHA-256; this SDK has no runtime dependencies.
 
 Or if you want the real-footage path:
 
@@ -225,9 +227,9 @@ Or if you want the real-footage path:
 
 That's it. The agent researches your topic with live web search, generates AI images, writes and narrates the script with voice direction, finds royalty-free background music automatically, burns in word-level subtitles, and renders the final video. Before you see anything, the system runs a multi-point self-review — ffprobe validation, frame sampling, audio level analysis, delivery promise verification, and subtitle checks. Every provider selection is scored across 7 dimensions with an auditable decision log. Every creative decision gets your approval.
 
-> **No `make`?** macOS/Linux: `python3 -m venv .venv && source .venv/bin/activate && python -m pip install -r requirements.txt && cd remotion-composer && npm install && cd .. && python -m pip install piper-tts && cp .env.example .env`
+> **No `make`?** macOS/Linux: `python3.11 -m venv .venv311 && source .venv311/bin/activate && python -m pip install -r requirements.txt && cd remotion-composer && npm install && cd .. && python -m pip install piper-tts && cp .env.example .env`
 >
-> Windows PowerShell: `py -3 -m venv .venv; .\.venv\Scripts\Activate.ps1; python -m pip install -r requirements.txt; cd remotion-composer; npm install; cd ..; python -m pip install piper-tts; Copy-Item .env.example .env`
+> Windows PowerShell: `py -3.11 -m venv .venv311; .\.venv311\Scripts\Activate.ps1; python -m pip install -r requirements.txt; cd remotion-composer; npm install; cd ..; python -m pip install piper-tts; Copy-Item .env.example .env`
 >
 > **Windows:** If `npm install` fails with `ERR_INVALID_ARG_TYPE`, use `npx --yes npm install` instead.
 
