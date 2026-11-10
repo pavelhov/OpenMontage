@@ -131,6 +131,17 @@ def install_fake_download(monkeypatch, jobs_module, media_path):
     monkeypatch.setattr(openart_download, '_PinnedHTTPSConnection', OriginalConnection)
 
 
+def refresh_account_observation(monkeypatch, *, uid=None):
+    """Keep the original private observation, then refresh mutable readiness."""
+    account = mcp.load_account()
+    account['data']['credits'] = 999
+    account['observed_at'] = '2026-10-22T00:00:00Z'
+    if uid is not None:
+        account['data']['user']['uid'] = uid
+    mcp.retain_observation('account', account)
+    monkeypatch.delenv('OPENMONTAGE_OPENART_MCP_EXPECTED_SHA256_ACCOUNT', raising=False)
+
+
 def test_wan3_generated_audio_is_not_reference_audio(fixture_observations, tmp_path):
     inputs, native = prepare_project(tmp_path / 'wan', model='wan3-0', duration=2, audio=True)
     authority = execution.prepare_openart_mcp_handoff(inputs)
@@ -173,6 +184,50 @@ def test_standalone_native_binding_rechecks_retained_mcp_request(fixture_observa
     native['body']['params']['prompt'] += ' changed'
     with pytest.raises(mcp.OpenArtMCPError, match='native_request_changed'):
         preparation._native_binding(native)
+
+
+@pytest.mark.parametrize('change', ['none', 'missing', 'tampered', 'native_uid', 'current_uid',
+                                  'controls', 'body', 'schema', 'observation_binding'])
+@pytest.mark.parametrize('observation_store', ['legacy', 'hash_addressed'])
+def test_historical_mcp_account_observation_is_authenticated_and_fresh_dispatch_stays_exact(
+        fixture_observations, tmp_path, monkeypatch, change, observation_store):
+    if observation_store == 'hash_addressed':
+        mcp.retain_observation('account', mcp.load_account())
+        monkeypatch.delenv('OPENMONTAGE_OPENART_MCP_EXPECTED_SHA256_ACCOUNT')
+    inputs, native = prepare_project(tmp_path / change)
+    root = Path(inputs['project_dir'])
+    compiled = json.loads((root / 'artifacts/compiled_request-original.json').read_text())
+    profile = mcp.load_profile(inputs['model'], inputs['mode'], require='candidate')
+    packet = preparation.source_packet(root, 'entry', provider='openart_mcp', native=native)
+    refresh_account_observation(monkeypatch, uid='different-user' if change == 'current_uid' else None)
+    original = fixture_observations / ('account-' + native['account_binding']['account_observation_sha256'] + '.json'
+        if observation_store == 'hash_addressed' else '2026-10-07-account-observation.json')
+    if change == 'missing':
+        original.unlink()
+    elif change == 'tampered':
+        original.write_text(original.read_text() + ' ')
+    elif change == 'native_uid':
+        native['account_binding']['uid_sha256'] = 'a' * 64
+    elif change == 'controls':
+        native['controls']['prompt'] += ' changed'
+    elif change == 'body':
+        native['body']['params']['duration'] = 2
+        native['body_sha256'] = mcp.digest(native['body'])
+    elif change == 'schema':
+        profile['form_sha256'] = 'a' * 64
+    elif change == 'observation_binding':
+        native['account_binding']['account_observation_sha256'] = 'a' * 64
+    if change == 'none':
+        preparation._validate_compiled(compiled, inputs, native, profile, packet, historical=True)
+        # Public/current rebuilds still bind the latest readiness observation.
+        current = mcp.prepare_native_request(execution._openart_mcp_controls(inputs), profile)
+        assert current['account_binding'] != native['account_binding']
+        assert current['body'] == native['body']
+    else:
+        with pytest.raises(ValueError):
+            preparation._validate_compiled(compiled, inputs, native, profile, packet, historical=True)
+    with pytest.raises(ValueError):
+        preparation._validate_compiled(compiled, inputs, native, profile, packet)
 
 
 @pytest.mark.parametrize('matching', [True, False])

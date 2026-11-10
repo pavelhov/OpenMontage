@@ -182,13 +182,16 @@ first/last frame rows. Historical frozen requests remain unchanged.
 For an actual source-upload HTTP send failure or the exact retained connector
 `Transport closed` error, `jobs.retry_upload_after_transport_error`
 accepts the retained upload ID and `observed_error={'path': ..., 'sha256': ...}`
-binding the saved full host response. It reserves one extra source-transfer
+binding the saved full host response. It reserves an extra source-transfer
 invocation against remaining standing `max_batches` before returning the same
 snapshot paths and Project envelope. Invoke that returned envelope once, then
-record the actual result with the same upload ID. The first outcome stays
-uncertain; the second receipt is labeled a transport retry, with no claim of
+record the actual result with the same upload ID. At most three total transfer
+invocations are permitted: a third requires a separately retained full failure
+response from the second invocation, matching the same frozen envelope. Both error
+bindings remain in the existing retry record and all invocations count. Earlier outcomes stay
+uncertain; the successful receipt is labeled a transport retry, with no claim of
 backend deduplication. Unbound errors, access/policy denials, standalone one-batch
-authority, exhausted allowance, and another retry remain blocked. This grants
+authority, exhausted allowance, and a fourth invocation remain blocked. This grants
 no image or video generation retry.
 
 For a current singleton Grok or OpenArt MCP `prepare_motion` action, complete it with
@@ -372,10 +375,15 @@ an honest partial cut; no usable clip produces an incomplete result. Findings ar
 disclosures, not acceptance or repair gates. Preserve original media, rejected or
 superseded historical media, records and derived edits.
 
-When existing local-edit authority covers shortening dead space, review the actual
-footage and use the registered `video_trimmer` with explicit retained intervals
-and reasons before assembly. Keep the completed gag and enough recognition time;
-never remove a fixed head interval or blindly cut at the planned completion time.
+When existing local-edit authority covers shortening dead space, review actual
+useful intervals across the whole sequence, including otherwise clean clips, and
+use the registered `video_trimmer` with explicit retained intervals and reasons
+before assembly. Native duration supplies footage; the authored finished events
+and observed completion determine screen time. Keep completed action, consequential
+responses and enough recognition time; never remove a fixed head interval or
+blindly cut at the planned completion time. Retiming, where separately supported
+by the existing tool and edit authority, must suit the actual movement and audio;
+a blanket multiplier does not replace an edit.
 Retain full originals and [canonical derived provenance](PRODUCTION_DERIVED_EDITS.md)
 under the project's existing edit and review/audio scope. Register the edit with
 `record_derived_edit`, then retain its fresh exact-byte named observations with

@@ -649,7 +649,8 @@ def test_actual_native_json_type_drift_does_not_recompile_approval(lifecycle, va
                      authority_fn=execution.prepare_openart_mcp_handoff)
 
 
-def test_actual_policy_original_collection_provenance_and_unknown_cost_report(lifecycle, monkeypatch, tmp_path):
+@pytest.mark.parametrize('refresh_account', [False, True])
+def test_actual_policy_original_collection_provenance_and_unknown_cost_report(lifecycle, monkeypatch, tmp_path, refresh_account):
     root, policy, sha, inputs, _, _, jobs = lifecycle
     jobs.prepare(root, attempt_id='policy-original', generation_inputs=inputs,
                  authority_fn=execution.prepare_openart_mcp_handoff)
@@ -668,6 +669,9 @@ def test_actual_policy_original_collection_provenance_and_unknown_cost_report(li
     monkeypatch.setattr(provenance, '_ALLOW_OPENART_FIXTURE_PROVENANCE', True)
     expected = {'path': inputs['output_path'], 'sha256': hashlib.sha256(downloaded.read_bytes()).hexdigest()}
     from lib import openart_mcp as mcp
+    if refresh_account:
+        from tests.integration.test_openart_mcp_governance import refresh_account_observation
+        refresh_account_observation(monkeypatch)
     original_prepare = mcp.prepare_native_request
     native_checks = []
     def prepare(*args, **kwargs):
@@ -703,7 +707,8 @@ def test_actual_policy_original_collection_provenance_and_unknown_cost_report(li
         # full native comparison rejects drift even beyond journal integrity.
         with monkeypatch.context() as patch:
             patch.setattr(jobs, 'provenance_record', lambda *a: changed)
-            with pytest.raises(execution.ProductionGovernanceError, match='stale native body/controls/version/tier/form/defaults'):
+            with pytest.raises(execution.ProductionGovernanceError,
+                    match='retained account identity differs' if change == 'account' else 'stale native body/controls/version/tier/form/defaults'):
                 provenance.validate_attempt_provenance(root, 'policy-original', shot_id='entry',
                     story_revision=policy['story_revision'], expected_output=expected)
     from lib.production_autonomy_report import _mcp_policy_rows

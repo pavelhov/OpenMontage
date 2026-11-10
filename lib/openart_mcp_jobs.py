@@ -995,24 +995,61 @@ def prepare_upload(project_dir, *, files, billing_declaration, openart_project_i
             'frozen':frozen,'frozen_sha256':mcp.digest(frozen),'authorization_sha256':authority_sha,'result':None})
         return {'upload_id':uid,**envelope,'billing':{'kind':'unknown_upload_cost','enforceable_credit_ceiling':False,'delayed_charges_unknown':True},'generation_enabled':False}
 
+def _validate_upload_transport_error(root, batch, observed_error):
+    if (not isinstance(observed_error, dict) or set(observed_error) != {'path', 'sha256'}
+            or _sha(_inside(root, observed_error['path'])) != observed_error['sha256']):
+        _fail('upload_retry_invalid', 'reserved source retry error evidence changed')
+    observation = json.loads(_inside(root, observed_error['path']).read_text())
+    if not isinstance(observation, dict):
+        _fail('upload_retry_invalid', 'exact evidenced source-upload response required')
+    error = observation.get('result', {}); envelope = batch['frozen']['envelope']
+    content = error.get('content', []) if isinstance(error, dict) else []
+    if (not isinstance(content, list) or not content or any(not isinstance(row, dict)
+            or row.get('type') != 'text' or not isinstance(row.get('text'), str) for row in content)):
+        _fail('upload_retry_invalid', 'exact evidenced source-upload text response required')
+    text = '\n'.join(row['text'] for row in content)
+    http_send_failure = all(term in text for term in ('Transport send error', 'HTTP request failed',
+        'error sending request for url'))
+    file_send_failure = len(content) == 1 and any(text == (
+        f'tool call error: failed to upload `{snapshot["path"]}` for `files[{index}]`: '
+        'failed to send OpenAI file request to https://chatgpt.com/backend-api/files: '
+        'error sending request for url (https://chatgpt.com/backend-api/files)')
+        for index, snapshot in enumerate(batch['frozen']['source_snapshots']))
+    closed_transport = len(content) == 1 and text == (
+        'tool call error: tool call failed for `codex_apps/openart.openart_upload_import`'
+        '\n\nCaused by:\n    Transport closed')
+    if (observation.get('tool_name') != envelope['tool'] or observation.get('arguments') != envelope['arguments']
+            or envelope['tool'] != 'mcp__codex_apps__openart_openart_upload_import'
+            or error.get('isError') is not True or set(error) != {'isError', 'content'}
+            or not content or any(not isinstance(row, dict) or row.get('type') != 'text' for row in content)
+            or not (http_send_failure or file_send_failure or closed_transport)
+            or any(term in text.lower() for term in ('denied', 'policy', 'rejected', 'forbidden', 'unauthorized', 'permission', '401', '403'))):
+        _fail('upload_retry_invalid', 'only an exact evidenced source-upload HTTP send failure or closed transport permits this retry')
+
+
 def _validate_upload_retry(root, batch, receipt=None):
     retry = batch.get('transport_retry')
     if 'transport_retry' in batch:
-        if (not isinstance(retry, dict) or retry.get('source_transfer_invocation') != 2
+        if (not isinstance(retry, dict) or type(retry.get('source_transfer_invocation')) is not int
+                or retry['source_transfer_invocation'] not in {2, 3}
                 or retry.get('state') not in {'reserved_awaiting_receipt', 'recorded'}
                 or (batch.get('status') == 'recorded') != (retry['state'] == 'recorded')
-                or _sha(_inside(root, retry['observed_error']['path'])) != retry['observed_error']['sha256']
-                or batch.get('status') == 'recorded' and (retry['state'] != 'recorded'
-                    or batch.get('result_provenance') != 'actual_source_transport_retry')):
+                or ('second_observed_error' in retry) != (retry['source_transfer_invocation'] == 3)
+                or batch.get('status') == 'recorded' and batch.get('result_provenance') != 'actual_source_transport_retry'):
             _fail('upload_receipt_invalid', 'reserved source retry error evidence changed')
+        _validate_upload_transport_error(root, batch, retry.get('observed_error'))
+        if retry['source_transfer_invocation'] == 3:
+            _validate_upload_transport_error(root, batch, retry['second_observed_error'])
+            if _inside(root, retry['observed_error']['path']) == _inside(root, retry['second_observed_error']['path']):
+                _fail('upload_receipt_invalid', 'distinct second invocation error evidence required')
     if receipt is not None and (('source_transfer_invocation' in receipt) != (retry is not None)
-            or retry is not None and (receipt.get('source_transfer_invocation') != 2
+            or retry is not None and (receipt.get('source_transfer_invocation') != retry['source_transfer_invocation']
                 or receipt.get('result_provenance') != 'actual_source_transport_retry')):
         _fail('upload_receipt_invalid', 'source retry receipt differs from retained invocation')
 
 
 def retry_upload_after_transport_error(project_dir, *, upload_id, observed_error):
-    """Reserve one same-envelope source retry after an evidenced transport failure.
+    """Reserve a same-envelope source retry, at most three total invocations.
 
     This neither proves the first transfer absent nor promises backend dedup.
     The extra invocation consumes standing transfer allowance before handoff.
@@ -1022,31 +1059,18 @@ def retry_upload_after_transport_error(project_dir, *, upload_id, observed_error
     with execution._lock(root), _lock(root):
         path = root/'openart_mcp/uploads'/(uid+'.json')
         retained = _read(path); frozen = retained['frozen']
-        if 'transport_retry' in retained:
-            _fail('upload_consumed', 'source transport retry already reserved; recover its actual receipt')
         if (retained.get('upload_id') != uid or retained.get('status') != 'consumed_awaiting_original_receipt'
                 or retained.get('result') is not None or retained['frozen_sha256'] != mcp.digest(frozen)
                 or frozen['root'] != str(root)):
             _fail('upload_receipt_invalid', 'exact unresolved frozen upload required')
-        evidence = _inside(root, observed_error['path'])
-        if _sha(evidence) != observed_error['sha256']:
-            _fail('upload_retry_invalid', 'observed transport error bytes changed')
-        observation = json.loads(evidence.read_text()); error = observation.get('result', {})
-        content = error.get('content', []) if isinstance(error, dict) else []
-        text = '\n'.join(row.get('text', '') for row in content if isinstance(row, dict) and row.get('type') == 'text')
+        _validate_upload_retry(root, retained)
+        retry = retained.get('transport_retry')
+        if retry is not None and retry['source_transfer_invocation'] == 3:
+            _fail('upload_consumed', 'maximum three source transfer invocations already reserved; recover the actual receipt')
+        _validate_upload_transport_error(root, retained, observed_error)
+        if retry is not None and _inside(root, observed_error['path']) == _inside(root, retry['observed_error']['path']):
+            _fail('upload_consumed', 'source transport retry already reserved; distinct second invocation error evidence required')
         envelope = frozen['envelope']
-        http_send_failure = all(term in text for term in ('Transport send error', 'HTTP request failed',
-            'error sending request for url'))
-        closed_transport = len(content) == 1 and text == (
-            'tool call error: tool call failed for `codex_apps/openart.openart_upload_import`'
-            '\n\nCaused by:\n    Transport closed')
-        if (observation.get('tool_name') != envelope['tool'] or observation.get('arguments') != envelope['arguments']
-                or envelope['tool'] != 'mcp__codex_apps__openart_openart_upload_import'
-                or error.get('isError') is not True or set(error) != {'isError', 'content'}
-                or not content or any(not isinstance(row, dict) or row.get('type') != 'text' for row in content)
-                or not (http_send_failure or closed_transport)
-                or any(term in text.lower() for term in ('denied', 'policy', 'rejected', 'forbidden', 'unauthorized', 'permission', '401', '403'))):
-            _fail('upload_retry_invalid', 'only an exact evidenced source-upload HTTP send failure or closed transport permits this retry')
         account = mcp.account_summary()
         if account['uid_sha256'] != frozen['account']['uid_sha256']:
             _fail('account_changed', 'source retry account changed')
@@ -1069,10 +1093,14 @@ def retry_upload_after_transport_error(project_dir, *, upload_id, observed_error
             and t['account'] == setup['provider_accounts']['openart_mcp'])
         if autonomy._standing_upload_batch_count(root, 'openart_mcp') >= term['max_batches']:
             _fail('upload_consumed', 'standing source transfer batch allowance exhausted')
-        retained['transport_retry'] = {'source_transfer_invocation': 2, 'state': 'reserved_awaiting_receipt',
-            'observed_error': copy.deepcopy(observed_error), 'original_outcome': 'uncertain_transport_error'}
+        invocation = 3 if retry is not None else 2
+        if retry is not None:
+            retry.update(source_transfer_invocation=3, second_observed_error=copy.deepcopy(observed_error))
+        else:
+            retained['transport_retry'] = {'source_transfer_invocation': 2, 'state': 'reserved_awaiting_receipt',
+                'observed_error': copy.deepcopy(observed_error), 'original_outcome': 'uncertain_transport_error'}
         _write(path, retained)
-        return {'upload_id': uid, **copy.deepcopy(envelope), 'source_transfer_invocation': 2,
+        return {'upload_id': uid, **copy.deepcopy(envelope), 'source_transfer_invocation': invocation,
             'generation_enabled': False, 'billing': {'kind': 'unknown_upload_cost', 'enforceable_credit_ceiling': False,
                 'delayed_charges_unknown': True}}
 
@@ -1112,7 +1140,7 @@ def record_upload_receipt(project_dir, *, upload_id, result):
                 'source_index':len(receipts),'raw_result':copy.deepcopy(row),'visual_reference':copy.deepcopy(ref),
                 'authorization_sha256':frozen['authorization_sha256'],'source': 'fixture' if str(account.get('classification','')).startswith('synthetic_fixture') else 'real'}
             if 'transport_retry' in retained:
-                receipt['source_transfer_invocation'] = 2
+                receipt['source_transfer_invocation'] = retained['transport_retry']['source_transfer_invocation']
                 receipt['result_provenance'] = 'actual_source_transport_retry'
             receipt_sha=mcp.digest(receipt);receipt['receipt_sha256']=receipt_sha
             receipts.append(receipt)
@@ -1125,7 +1153,7 @@ def record_upload_receipt(project_dir, *, upload_id, result):
             retained['result_provenance'] = 'actual_source_transport_retry'
         _write(path,retained)
         return {'upload_id':uid,'status':'recorded','project_id':result['projectId'],
-            **({'source_transfer_invocation': 2} if 'transport_retry' in retained else {}),
+            **({'source_transfer_invocation': retained['transport_retry']['source_transfer_invocation']} if 'transport_retry' in retained else {}),
             'references':[{'upload_id':r['visual_reference']['id'],'reference_id':r['visual_reference']['id'],'receipt_sha256':r['receipt_sha256'],'source_sha256':r['source_sha256'],'source_path':r['source_path'],'type':r['visual_reference']['type']} for r in receipts]}
 
 def reuse_uploaded_input_asset(project_dir, asset, *, account_binding, openart_project_id):

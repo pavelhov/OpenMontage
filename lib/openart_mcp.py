@@ -30,12 +30,22 @@ def digest(value):
 def _fail(kind, message):
     raise OpenArtMCPError(kind, message)
 
-def _observation(kind):
+def _observation(kind, *, _retained_sha256=None):
     directory = Path(os.environ.get('OPENMONTAGE_OPENART_MCP_DISCOVERY_DIR', '~/.openmontage/openart/mcp-discovery')).expanduser()
     path = directory / f'2026-10-07-{kind}-observation.json'
     expected = os.environ.get('OPENMONTAGE_OPENART_MCP_EXPECTED_SHA256_' + kind.upper(), _PINS.get(kind))
     index = directory / 'current-observations.json'
-    if index.exists() and not os.environ.get('OPENMONTAGE_OPENART_MCP_EXPECTED_SHA256_' + kind.upper()):
+    if _retained_sha256 is not None:
+        if (not isinstance(_retained_sha256, str) or len(_retained_sha256) != 64
+                or any(char not in '0123456789abcdef' for char in _retained_sha256)):
+            _fail('observation_invalid', 'retained observation hash invalid')
+        expected = _retained_sha256
+        retained = directory / (kind + '-' + expected + '.json')
+        # Older pinned observations predate hash-addressed retention. Their
+        # original private file must still prove the exact requested hash.
+        if retained.exists() or retained.is_symlink():
+            path = retained
+    elif index.exists() and not os.environ.get('OPENMONTAGE_OPENART_MCP_EXPECTED_SHA256_' + kind.upper()):
         try:
             entry = json.loads(index.read_text())[kind]
             name = entry['file']
@@ -79,8 +89,8 @@ def load_cost_observation():
     # Catalog credit advertisements are not request-specific quotes.
     return {'kind': 'unknown_cost', 'credits': None, 'usd': None, 'guaranteed_ceiling': False}
 
-def account_summary():
-    value, sha = _observation('account')
+def account_summary(*, _retained_sha256=None):
+    value, sha = _observation('account', _retained_sha256=_retained_sha256)
     data = value.get('data', {})
     uid = data.get('user', {}).get('uid')
     if not isinstance(uid, str) or not uid:
@@ -310,7 +320,7 @@ def normalize_input_assets(controls):
     return assets
 
 
-def prepare_native_request(controls, profile, *, _retained_input_assets=None):
+def prepare_native_request(controls, profile, *, _retained_input_assets=None, _retained_account_binding=None):
     _check_profile(profile)
     if not isinstance(controls, dict) or controls.get('model') != profile['model'] or controls.get('mode') != profile['mode']:
         _fail('profile_changed', 'controls differ from exact profile model/mode')
@@ -339,6 +349,17 @@ def prepare_native_request(controls, profile, *, _retained_input_assets=None):
                 _fail('control_conflict', 'conflicting native and public control: ' + public)
             params[native] = copy.deepcopy(controls[public])
     account = account_summary(); assets = normalize_input_assets(controls)
+    if _retained_account_binding is not None:
+        # Original replay binds the observation used at dispatch. Still load
+        # current readiness and require the same UID; never accept caller-only
+        # historical account claims or relax source/form/body reconstruction.
+        if (_retained_input_assets is None or not isinstance(_retained_account_binding, dict)
+                or set(_retained_account_binding) != {'uid_sha256', 'account_observation_sha256'}):
+            _fail('native_request_changed', 'historical account binding requires retained native inputs')
+        original = account_summary(_retained_sha256=_retained_account_binding['account_observation_sha256'])
+        if original['uid_sha256'] != account['uid_sha256'] or original['uid_sha256'] != _retained_account_binding['uid_sha256']:
+            _fail('native_request_changed', 'retained account identity differs from current account')
+        account = original
     if controls.get('operation') == 'first_last_frame' and (profile['mode'] != 'image2video' or not {'first_frame','last_frame'} <= {a.get('role') for a in assets}):
         _fail('missing_frame', 'first_last_frame requires both source-bound frame roles')
     if _retained_input_assets is not None and (not isinstance(_retained_input_assets,list) or len(_retained_input_assets)!=len(assets)):

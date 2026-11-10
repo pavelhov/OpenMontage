@@ -1384,7 +1384,7 @@ def _standing_upload_batch_count(root, provider):
             batch = _json(path)
             if 'transport_retry' in batch:
                 jobs._validate_upload_retry(Path(root), batch)
-                count += 1
+                count += batch['transport_retry']['source_transfer_invocation'] - 1
         for path in (jobs._state_root(create=False) / 'mcp-uploads').glob('*.json'):
             receipt = _json(path)
             if receipt.get('project_root') == str(Path(root).resolve()) and 'source_transfer_invocation' in receipt:
@@ -3043,7 +3043,8 @@ def _scope_record(policy, sha, decision_id, *, shot_id, provider, request_digest
     return scope
 
 
-def _prepare_mcp_policy_native(root, policy, shot_id, inputs, *, _retained_input_assets=None):
+def _prepare_mcp_policy_native(root, policy, shot_id, inputs, *, _retained_input_assets=None,
+                               _retained_account_binding=None):
     """Qualified connector evidence is separate from CLI account and preview proof."""
     from lib import openart_mcp as mcp, production_execution as execution
     spec = _provider_spec(policy, 'openart_mcp')
@@ -3053,7 +3054,8 @@ def _prepare_mcp_policy_native(root, policy, shot_id, inputs, *, _retained_input
         raise AutonomyError('MCP route violates retained model selection intent')
     profile = mcp.load_profile(inputs.get('model'), inputs.get('mode'), require='supported')
     native = mcp.prepare_native_request(execution._openart_mcp_controls(inputs), profile,
-        **({'_retained_input_assets': _retained_input_assets} if _retained_input_assets is not None else {}))
+        **({'_retained_input_assets': _retained_input_assets} if _retained_input_assets is not None else {}),
+        **({'_retained_account_binding': _retained_account_binding} if _retained_account_binding is not None else {}))
     # The builder validates this fresh request; retained native requests are
     # rebuilt and compared at their later preparation/dispatch boundaries.
     _validate_mcp_policy_binding(spec, native, profile)
@@ -3182,13 +3184,14 @@ def rooted_policy_mcp_authority(root, inputs, scope, native, profile, *, exclude
 def validate_policy_mcp_attempt(root, scope, *, inputs, native, profile, authority=None, return_authority=False):
     """Reprove a retained connector policy origin without editing its journal."""
     policy, sha, decision_id, material = _scope_material(root, inputs, 'openart_mcp', derived_unknown_id=scope['id'],
-                                                         historical_scope=scope)
+                                                         historical_scope=scope, _retained_mcp_native=native)
     expected = _retained_scope_record(policy, sha, decision_id, scope,
         derivation_index=scope['derived_from_policy']['derivation_index'], **material)
     scopes = _json(Path(root) / 'production_scopes.json')['scopes']
     if scope != expected or len([s for s in scopes if s == expected]) != 1:
         raise AutonomyError('historical MCP scope differs from retained rooted policy')
-    current_profile, current_native = _prepare_mcp_policy_native(root, policy, inputs['governance']['shot_id'], inputs)
+    current_profile, current_native = _prepare_mcp_policy_native(root, policy, inputs['governance']['shot_id'], inputs,
+        _retained_input_assets=native['input_assets'], _retained_account_binding=native['account_binding'])
     if digest(current_native) != digest(native) or digest(current_profile) != digest(profile):
         raise AutonomyError('historical MCP native/account/form/source evidence changed')
     checked = _mcp_policy_terms(root, policy, sha, decision_id, scope, inputs, native)
@@ -3213,7 +3216,7 @@ def _validate_retained_packet_policy_mcp_attempt(root, scope, *, inputs, native,
                 inputs['governance']['shot_id'] if scope.get('planning_mode') == 'shot_local_v1' else None) != scope['approval_plan_sha256']):
         raise AutonomyError('historical MCP original planning differs from retained scope')
     current_profile, current_native = _prepare_mcp_policy_native(root, policy, shot_id, inputs,
-        _retained_input_assets=native['input_assets'])
+        _retained_input_assets=native['input_assets'], _retained_account_binding=native['account_binding'])
     if digest(current_native) != digest(native) or digest(current_profile) != digest(profile):
         raise AutonomyError('historical MCP native/account/form/source evidence changed')
     locks = _root_lock_proof(root, shot_id, inputs=inputs, native=native, profile=profile,
@@ -3265,7 +3268,10 @@ def _refuse_unknown_cost(inputs, *, derived_unknown_id=None, allow_evidence=Fals
         raise AutonomyError('unknown-cost Auto-continue is unavailable; use separate Strict approval')
 
 
-def _scope_material(root, inputs, provider, observation=None, *, derived_unknown_id=None, historical_scope=None, replay_scope_id=None):
+def _scope_material(root, inputs, provider, observation=None, *, derived_unknown_id=None, historical_scope=None,
+                    replay_scope_id=None, _retained_mcp_native=None):
+    if _retained_mcp_native is not None and (provider != 'openart_mcp' or historical_scope is None):
+        raise AutonomyError('retained MCP native evidence is historical-only')
     _refuse_unknown_cost(inputs, derived_unknown_id=derived_unknown_id, allow_evidence=True)
     from lib import production_request as preparation, production_execution as execution
     # Historical replay proves the retained approving policy; only new admission needs an active one.
@@ -3322,7 +3328,10 @@ def _scope_material(root, inputs, provider, observation=None, *, derived_unknown
         if unknown:
             jobs.native_reference_digest(inputs, profile, native=native)
     elif provider == 'openart_mcp':
-        profile, native = _prepare_mcp_policy_native(root, policy, shot_id, inputs)
+        profile, native = _prepare_mcp_policy_native(root, policy, shot_id, inputs,
+            **({'_retained_input_assets': _retained_mcp_native['input_assets'],
+                '_retained_account_binding': _retained_mcp_native['account_binding']}
+               if _retained_mcp_native is not None else {}))
     elif provider == 'grok_cli':
         if 'model' in policy['locked']['controls']:
             raise AutonomyError('Grok media model is unreported and cannot meet exact lock')

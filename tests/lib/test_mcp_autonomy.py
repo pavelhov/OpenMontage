@@ -5,6 +5,7 @@ history are exercised. The connector profile/preparation proof is an explicit
 fake; these tests never publish qualification or claim model readiness.
 """
 import copy
+import hashlib
 import json
 import sys
 import types
@@ -69,7 +70,12 @@ def seam(tmp_path, monkeypatch):
     native = {'provider': 'openart_mcp', 'model': inputs['model'], 'mode': inputs['mode'],
               'body': {'model': inputs['model'], 'mode': inputs['mode'],
                        'params': {'duration': 8}, 'projectId': MCP['project_id']},
-              'account_binding': {'uid_sha256': MCP['uid_sha256']},
+              'account_binding': {'uid_sha256': MCP['uid_sha256'],
+                                  'account_observation_sha256': H('fixture account observation')},
+              'input_assets': [{'role': 'first_frame', 'source_path': inputs['image_path'],
+                                'source_sha256': hashlib.sha256((tmp_path / 'assets/start.svg').read_bytes()).hexdigest(),
+                                'upload_id': 'SYNTHETIC-ready-reference',
+                                'receipt_sha256': H('fixture upload receipt')}],
               'body_sha256': H('fixture body'), 'source_binding_sha256': H('fixture source role'),
               'profile_sha256': profile['profile_sha256'], 'form_sha256': H('fixture form')}
     calls = []
@@ -79,7 +85,13 @@ def seam(tmp_path, monkeypatch):
         return profile
     fake = types.ModuleType('lib.openart_mcp')
     fake.load_profile = load
-    fake.prepare_native_request = lambda controls, profile: native
+    def prepare(controls, current_profile, *, _retained_input_assets=None, _retained_account_binding=None):
+        assert current_profile == profile
+        if _retained_input_assets is not None or _retained_account_binding is not None:
+            assert _retained_input_assets == native['input_assets']
+            assert _retained_account_binding == native['account_binding']
+        return native
+    fake.prepare_native_request = prepare
     fake.validate_native_request = lambda *args: None
     monkeypatch.setitem(sys.modules, 'lib.openart_mcp', fake)
     import lib
