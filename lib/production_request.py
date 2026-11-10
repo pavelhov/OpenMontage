@@ -2158,6 +2158,110 @@ def _validate_consumer_roles(roles, *, require_timing=True):
             _number(row['time_seconds'], 'consumer time_seconds')
 
 
+def compatible_video_input_branches(caps, roles):
+    """Keep native role alternatives separate for exact duration selection."""
+    branches = caps['branches'] or [{'roles': caps['roles'], 'settings': caps['settings']}]
+    fits = []
+    for branch in branches:
+        valid = True
+        for role_name, capability in branch['roles'].items():
+            count = sum(row['role'] == role_name for row in roles)
+            if (count and not capability['supported']
+                    or capability['required'] and count < max(1, capability['minimum'])
+                    or count and count < capability['minimum']
+                    or capability['maximum'] is not None and count > capability['maximum']):
+                valid = False
+        if valid:
+            fits.append(branch)
+    if not fits:
+        raise ValueError('declared consumer roles are unsupported or violate exact native limits/branch')
+    return fits
+
+
+def _duration_upper_bound(schema):
+    """Read finite duration bounds without flattening schema alternatives."""
+    bounds = []
+    for key in ('maximum', 'exclusiveMaximum', 'const'):
+        value = schema.get(key)
+        if type(value) in (int, float) and math.isfinite(value):
+            bounds.append(value)
+    if 'enum' in schema:
+        values = [v for v in schema['enum'] if type(v) in (int, float) and math.isfinite(v)]
+        if values:
+            bounds.append(max(values))
+    for child in schema.get('allOf', []):
+        bound = _duration_upper_bound(child)
+        if bound is not None:
+            bounds.append(bound)
+    for key in ('anyOf', 'oneOf'):
+        if key in schema:
+            alternatives = [_duration_upper_bound(child) for child in schema[key]]
+            if alternatives and all(bound is not None for bound in alternatives):
+                bounds.append(max(alternatives))
+    return min(bounds) if bounds else None
+
+
+def validate_action_duration(shot, *, branches, settings):
+    """Require the shortest exact-route whole second for prospective shootable work.
+
+    Callers own the prospective/replay boundary. This reads existing action and
+    dialogue fields and never rewrites authored planning or grants extra attempts.
+    """
+    sid = shot['id']
+    ranges = []
+    pattern = r'\s*(\d+(?:\.\d+)?)\s*(?:s|sec(?:onds?)?)?\s*[-–—]\s*(\d+(?:\.\d+)?)\s*(?:s|sec(?:onds?)?)?(?:\s*:\s*|\s+)\S.*'
+    for beat in re.split(r'[;\n]+', shot.get('dominant_action', shot.get('action', ''))):
+        if not beat.strip():
+            continue
+        match = re.fullmatch(pattern, beat, re.IGNORECASE)
+        if match is None:
+            raise ValueError(f'shot {sid} needs timed action ranges, e.g. 0–3s: grab; author timing before generation')
+        start, end = map(float, match.groups())
+        if not math.isfinite(end) or not 0 <= start < end:
+            raise ValueError(f'shot {sid} has invalid timed action range')
+        ranges.append((start, end))
+    if not ranges:
+        raise ValueError(f'shot {sid} needs timed action ranges before generation')
+    dialogue = shot.get('dialogue', shot.get('motion', {}).get('dialogue', []))
+    if not isinstance(dialogue, list):
+        raise ValueError(f'shot {sid} has invalid dialogue timing')
+    endings = [end for _, end in ranges]
+    for line in dialogue:
+        start = line.get('start_seconds') if isinstance(line, dict) else None
+        end = line.get('end_seconds') if isinstance(line, dict) else None
+        if (type(start) not in (int, float) or type(end) not in (int, float)
+                or not math.isfinite(start) or not math.isfinite(end) or not 0 <= start < end):
+            raise ValueError(f'shot {sid} has invalid dialogue timing')
+        endings.append(end)
+    required = math.ceil(max(endings) + .5)
+    schemas = []
+    for branch in branches:
+        selected = [(branch['settings'].get(key), settings[key])
+                    for key in ('resolution', 'aspect_ratio') if key in settings]
+        if 'schema' in branch:
+            props = branch['schema'].get('properties', {})
+            selected.extend((props.get(key), value) for key, value in settings.get('native_params', {}).items()
+                            if key not in {'duration', 'videoDuration'})
+        if all(schema is not None and Draft202012Validator(schema).is_valid(value) for schema, value in selected):
+            if 'duration' in branch['settings']:
+                schemas.append(branch['settings']['duration'])
+    if not schemas:
+        raise ValueError(f'shot {sid} selected route has no exact native duration schema')
+    bounds = [_duration_upper_bound(schema) for schema in schemas]
+    if any(bound is None for bound in bounds):
+        raise ValueError(f'shot {sid} selected route needs a bounded native duration schema')
+    validators = [Draft202012Validator(schema) for schema in schemas]
+    duration = next((value for value in range(required, math.floor(max(bounds)) + 1)
+                     if any(validator.is_valid(value) for validator in validators)), None)
+    if duration is None:
+        raise ValueError(f'shot {sid} needs at least {required}s including 0.5s tail, beyond the selected native duration choices; '
+                         'split the beat and rebase each clip timing before generation within existing authority')
+    if type(shot.get('duration_seconds')) not in (int, float) or shot['duration_seconds'] != duration:
+        raise ValueError(f'shot {sid} authored duration {shot.get("duration_seconds")}s includes excess padding or cuts off action/dialogue; '
+                         f'use {duration}s and rebase the authored plan before generation')
+    return duration
+
+
 def build_video_request_templates(package, settings):
     """Derive exact native inputs from existing board consumers, before image jobs.
 
@@ -2197,20 +2301,12 @@ def build_video_request_templates(package, settings):
             raise ValueError('selected image compiler cannot silently omit declared native media roles')
         if provider == 'grok_cli' and not declared:
             raise ValueError('Grok native operation requires at least one declared image consumer')
-        branches = caps['branches'] or [{'roles': caps['roles'], 'settings': caps['settings']}]
-        fits = []
-        for branch in branches:
-            valid = True
-            for role_name, capability in branch['roles'].items():
-                count = sum(r['role'] == role_name for r in declared)
-                if count and not capability['supported'] or capability['required'] and count < max(1, capability['minimum']) or count and count < capability['minimum'] or capability['maximum'] is not None and count > capability['maximum']:
-                    valid = False
-            if valid:
-                fits.append(branch)
-        if not fits:
-            raise ValueError('declared consumer roles are unsupported or violate exact native limits/branch')
+        fits = compatible_video_input_branches(caps, declared)
         duration = shot['duration_seconds']
+        shootable = package.get('planning_mode') == 'shot_local_v1' and package.get('prompt_compiler') == SHOOTABLE_COMPILER
         for key, value in [('duration', duration), *[(k, settings[k]) for k in ('resolution', 'aspect_ratio') if k in settings]]:
+            if key == 'duration' and shootable:
+                continue
             schema = caps['settings'].get(key)
             if schema is None:
                 schemas = [branch['settings'].get(key) for branch in fits]
@@ -2218,6 +2314,8 @@ def build_video_request_templates(package, settings):
                     raise ValueError('unsupported selected native setting: ' + key)
             elif not Draft202012Validator(schema).is_valid(value):
                 raise ValueError('unsupported selected native setting: ' + key)
+        if shootable:
+            validate_action_duration(shot, branches=fits, settings=settings)
         timed = [r for r in declared if r['role'] == 'timed_keyframe']
         timing = caps['roles']['timed_keyframe'].get('timing') or {}
         last = None

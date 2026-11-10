@@ -466,3 +466,157 @@ def test_upstream_reuse_needs_no_authored_image_prompt(neutral_package):
     assert node['prompt'] == 'Reuse s1 outgoing frame as start_frame.'
     assert images.image_usage(root)['total'] == 0
     assert file_bytes(root) == before
+
+
+@pytest.mark.parametrize('action,dialogue,duration,schema,error', [
+    ('0–1.5s: grab; 1.5–6.3s: fall', [], 7, {'type': 'integer', 'minimum': 5, 'maximum': 15}, None),
+    ('0–1.5s grab; 1.5–6.3s fall', [], 7, {'type': 'integer', 'minimum': 5, 'maximum': 15}, None),
+    ('0-1.5s: grab; 1.5-6.3s: fall', [], 10, {'type': 'integer', 'minimum': 5, 'maximum': 15}, 'use 7s'),
+    ('0–3s: grab', [], 5, {'type': 'integer', 'minimum': 5, 'maximum': 15}, None),
+    ('0–3s: grab', [], 10, {'type': 'integer', 'minimum': 5, 'maximum': 15}, 'use 5s'),
+    ('0–3s: grab', [], 4, {'type': 'integer', 'minimum': 4, 'maximum': 15}, None),
+    ('0–17s: fall', [], 15, {'type': 'integer', 'minimum': 5, 'maximum': 15}, 'split.*rebase'),
+    ('0–17s: fall', [], 17, {'type': 'integer', 'minimum': 5, 'maximum': 15}, 'split.*rebase'),
+    ('0–3s: grab', [{'start_seconds': 0.2, 'end_seconds': 6.3}], 7, {'type': 'integer', 'minimum': 5, 'maximum': 15}, None),
+    ('0–6.3s: fall', [], 10, {'type': 'integer', 'enum': [5, 10, 15]}, None),
+    ('0–6.3s: fall', [], 8, {'type': 'integer', 'minimum': 4, 'maximum': 16, 'multipleOf': 2}, None),
+    ('0–6.3s: fall', [], 8, {'anyOf': [{'const': 5}, {'type': 'integer', 'minimum': 8, 'maximum': 12, 'multipleOf': 2}]}, None),
+    ('Quiet intentional stillness', [], 5, {'type': 'integer', 'minimum': 5, 'maximum': 15}, 'timed action'),
+    ('0–oops: grab', [], 5, {'type': 'integer', 'minimum': 5, 'maximum': 15}, 'timed action'),
+    ('3–1s: grab', [], 5, {'type': 'integer', 'minimum': 5, 'maximum': 15}, 'timed action'),
+    ('0–3s: grab', [{'start_seconds': 4, 'end_seconds': 2}], 5, {'type': 'integer', 'minimum': 5, 'maximum': 15}, 'dialogue timing'),
+])
+def test_prospective_shootable_duration_uses_exact_route(neutral_package, monkeypatch, action, dialogue, duration, schema, error):
+    from tools.tool_registry import registry
+    root, base, bind = neutral_package
+    compact, _ = packages(base)
+    compact.update(prompt_compiler='shootable_v1', cast_names={})
+    for shot in compact['shots']:
+        shot.update(action=action, duration_seconds=duration)
+        shot['motion']['dialogue'] = dialogue
+    describe = registry.describe_video_inputs
+    def exact_duration(*args, **kwargs):
+        caps = describe(*args, **kwargs)
+        caps['settings']['duration'] = schema
+        return caps
+    monkeypatch.setattr(registry, 'describe_video_inputs', exact_duration)
+    before = copy.deepcopy(compact)
+    if error:
+        with pytest.raises(ValueError, match=error):
+            request.build_video_request_templates(compact, {'provider': 'grok_cli', 'operation': 'reference_to_video'})
+    else:
+        templates = request.build_video_request_templates(compact, {'provider': 'grok_cli', 'operation': 'reference_to_video'})
+        assert templates['s1']['duration'] == duration
+    assert compact == before
+
+
+@pytest.mark.parametrize('action,duration,error', [
+    ('0–3s: intentional still pose', 10, 'use 5s'),
+    ('0–17s: tumble', 15, 'split.*rebase'),
+    ('Untimed tumble', 10, 'timed action'),
+])
+def test_fresh_shootable_activation_duration_precedes_authority_and_images(neutral_package, monkeypatch, action, duration, error):
+    from tools.tool_registry import registry
+    root, base, bind = neutral_package
+    compact, _ = packages(base)
+    compact.update(prompt_compiler='shootable_v1', cast_names={})
+    for shot in compact['shots']:
+        shot.update(action=action, duration_seconds=duration)
+    request.prepare_package(root, bind(compact))
+    kwargs = standing_treatment_fixture(root)
+    for baseline in kwargs['baselines'].values():
+        baseline['planned_request_template']['inputs'].update(preferred_provider='grok_cli', operation='reference_to_video')
+    describe = registry.describe_video_inputs
+    def exact_duration(*args, **kw):
+        caps = describe(*args, **kw)
+        caps['settings']['duration'] = {'type': 'integer', 'minimum': 5, 'maximum': 15}
+        return caps
+    monkeypatch.setattr(registry, 'describe_video_inputs', exact_duration)
+    def forbidden(*args, **kw):
+        pytest.fail('duration must reject before authority/image validation')
+    monkeypatch.setattr(pa, '_validate_standing_basis', forbidden)
+    with execution._lock(root):
+        pass
+    before = file_bytes(root)
+    with pytest.raises((ValueError, pa.StandingSetupRequired), match=error):
+        pa.activate_standing_run(root, **kwargs)
+    assert file_bytes(root) == before
+    assert images.image_usage(root)['total'] == 0
+
+
+def test_generic_quiet_package_keeps_native_duration(neutral_package):
+    root, base, bind = neutral_package
+    compact, _ = packages(base)
+    for shot in compact['shots']:
+        shot.update(action='Intentional quiet stillness', duration_seconds=10)
+    assert request.build_video_request_templates(compact, {'provider': 'grok_cli', 'operation': 'reference_to_video'})['s1']['duration'] == 10
+
+
+def test_shootable_valid_standing_activation_and_frozen_replay(neutral_package, monkeypatch):
+    from tools.tool_registry import registry
+    root, base, bind = neutral_package
+    compact, _ = packages(base)
+    compact.update(prompt_compiler='shootable_v1', cast_names={})
+    for shot in compact['shots']:
+        shot.update(action='0–3s: intentional still pose', duration_seconds=5)
+    request.prepare_package(root, bind(compact))
+    kwargs = standing_treatment_fixture(root)
+    for baseline in kwargs['baselines'].values():
+        baseline['planned_request_template']['inputs'].update(preferred_provider='grok_cli', operation='reference_to_video')
+    describe = registry.describe_video_inputs
+    def exact_duration(*args, **kw):
+        caps = describe(*args, **kw)
+        caps['settings']['duration'] = {'type': 'integer', 'minimum': 5, 'maximum': 15}
+        return caps
+    monkeypatch.setattr(registry, 'describe_video_inputs', exact_duration)
+    activation = pa.activate_standing_run(root, **kwargs)
+    assert activation['provider_calls'] == 0
+    # A future descriptor or guard must never retime an already frozen run.
+    def changed_descriptor(*args, **kw):
+        pytest.fail('retained activation replay must skip prospective duration discovery')
+    monkeypatch.setattr(registry, 'describe_video_inputs', changed_descriptor)
+    before = file_bytes(root)
+    assert pa.activate_standing_run(root, **kwargs) == dict(activation, replayed=True)
+    assert file_bytes(root) == before
+
+
+@pytest.mark.parametrize('control', ['resolution', 'native_params'])
+def test_duration_keeps_selected_native_branch(neutral_package, monkeypatch, control):
+    from tools.tool_registry import registry
+    root, base, bind = neutral_package
+    compact, _ = packages(base)
+    compact.update(prompt_compiler='shootable_v1', cast_names={})
+    for shot in compact['shots']:
+        shot.update(action='0–6.3s: tumble', duration_seconds=10)
+    describe = registry.describe_video_inputs
+    def alternatives(*args, **kw):
+        caps = describe(*args, **kw)
+        caps['branches'] = []
+        for selected, duration in [('1080p', 7), ('720p', 10)]:
+            settings = {'duration': {'const': duration}, 'resolution': {'const': selected}}
+            caps['branches'].append({'roles': copy.deepcopy(caps['roles']), 'settings': settings,
+                'schema': {'properties': {'quality': {'const': selected}}}})
+        caps['settings'] = {}
+        return caps
+    monkeypatch.setattr(registry, 'describe_video_inputs', alternatives)
+    settings = {'provider': 'grok_cli', 'operation': 'reference_to_video'}
+    settings.update({'resolution': '720p'} if control == 'resolution' else {'native_params': {'quality': '720p'}})
+    assert request.build_video_request_templates(compact, settings)['s1']['duration'] == 10
+
+
+@pytest.mark.parametrize('duration,error', [(7, None), (10, 'use 7s')])
+def test_shootable_duration_uses_observed_h3_native_form(neutral_package, guided_observations, monkeypatch, duration, error):
+    from lib import openart_mcp as mcp
+    monkeypatch.setattr(mcp, '_ALLOW_FIXTURE_PRODUCTION', True)
+    root, base, bind = neutral_package
+    compact, _ = packages(base)
+    compact.update(prompt_compiler='shootable_v1', cast_names={})
+    for shot in compact['shots']:
+        shot.update(action='0–6.3s: tumble', duration_seconds=duration)
+    settings = {'provider': 'openart_mcp', 'model': 'fal-h3-max-turbo', 'mode': 'image2video',
+                'operation': 'image_to_video', 'native_params': {'resolution': '768P'}}
+    if error:
+        with pytest.raises(ValueError, match=error):
+            request.build_video_request_templates(compact, settings)
+    else:
+        assert request.build_video_request_templates(compact, settings)['s1']['duration'] == 7

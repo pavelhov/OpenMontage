@@ -41,6 +41,44 @@ Describe physical evidence rather than labels: an environmental pressure, a
 micro-action, and a sound anchor or recurring visual motif are more useful than
 words such as “cinematic,” “epic,” or “moody.”
 
+## Prospective Factory Action Timing
+
+For a new `shot_local_v1` package using `prompt_compiler: shootable_v1`,
+author rough clip-relative ranges in the existing `action` text. Separate beats
+with semicolons or newlines and give each a range and physical action, for example
+`0–1.5s: grab the rail; 1.5–6.3s: tumble through the open door`.
+ASCII hyphens and en/em dashes are accepted. Existing `motion.dialogue` entries
+retain their explicit `start_seconds` and `end_seconds`.
+
+Begin the physical action at zero. When dialogue is present, put the first line
+within the first second unless the brief explicitly calls for another rhythm.
+Use fast, motivated camera movement for kinetic work. Do not add slow, calm,
+tense or lingering pacing as default prompt language. Preserve explicitly
+intentional nonkinetic work and time its actual visible beat in the same fields.
+
+Choose duration after the action and dialogue are timed. Take the latest action
+or dialogue end, add 0.5 seconds, then round upward to the shortest supported
+whole second from `registry.describe_video_inputs` for the exact selected route.
+Honor its native minimum, maximum, enum and step choices within the branch
+matching the selected roles, resolution, aspect ratio and native controls. A 6.3-second action
+needs 7 seconds on a route accepting that value. A three-second action uses
+5 seconds when that route's minimum is 5. The default shown by the route is
+only a form default.
+
+`build_video_request_templates` rejects missing/invalid timing and any authored
+duration differing from that calculation before image work. Fresh standing-run
+activation repeats the check for clients supplying their own templates. Reauthor
+the plan using the recommended duration before freezing it. Neither check
+rewrites frozen planning. Generic packages outside this prospective shootable
+scope and already retained standing-run replay keep their existing behavior.
+
+If the completed beat plus its tail cannot fit the selected native choices,
+split it before generation. Rebase every new clip's action and dialogue intervals
+to that clip's zero, carry the physical transition through the cut, and recompute
+each duration. For example, a 17-second beat exceeds a 15-second route maximum.
+Keep the revised shot count and source transfers inside existing run authority
+and caps. A split instruction grants no extra generation allowance.
+
 ## Sidecars, Not Closed Artifact Items
 
 `scene_plan.scenes[]` and `asset_manifest.assets[]` are closed schemas. Keep

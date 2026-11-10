@@ -214,7 +214,7 @@ def test_compact_factory_mixed_supplied_identity_and_generated_reference_reaches
         refs.append(ref)
     package['compact']['references']=refs
     shot=package['shots'][0];shot.update(duration_seconds=30,cast=['tung','pickle'],
-        action='0-4s entrance; 4-8s hard cut; 8-12s hard cut; 12-16s hard cut; 16-20s hard cut; 20-25s hard cut; 25-30s payoff.')
+        action='0-4s entrance; 4-8s hard cut; 8-12s hard cut; 12-16s hard cut; 16-20s hard cut; 20-25s hard cut; 25-29.5s payoff.')
     shot['motion'].update(reference_mode='reference_guided');shot['motion'].pop('frame_input')
     shot['boards'][0].update(slot_id='R1',role='payoff_board',reference_ids=['tung','pickle'],cast_ids=['tung','pickle'])
     shot['roles']=[{'asset_id':aid,'role':'reference_image'} for aid in ('tung','pickle','R1')]

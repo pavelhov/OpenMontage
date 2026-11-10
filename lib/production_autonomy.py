@@ -590,6 +590,57 @@ def _validate_standing_basis_impl(root, policy, baselines, *, check_first_pass_c
     return setup, command
 
 
+def _validate_standing_action_durations(policy, baselines):
+    """Fresh shootable activation also covers clients supplying native templates."""
+    from lib import production_request as preparation
+    from tools.tool_registry import registry
+    capabilities = {}
+    for sid, baseline in baselines.items():
+        projection = baseline['projection']
+        contract = projection['contract_snapshot']
+        if (contract.get('planning_mode') != 'shot_local_v1'
+                or contract.get('prompt_compiler') != preparation.SHOOTABLE_COMPILER):
+            continue
+        inputs = baseline['planned_request_template']['inputs']
+        provider = inputs.get('preferred_provider', inputs.get('provider'))
+        if provider is None:
+            providers = [spec['id'] for spec in policy['providers']
+                         if any(route.get('model') == inputs.get('model') and route.get('mode') == inputs.get('mode')
+                                for route in spec.get('routes', []))
+                         or inputs.get('model') is None and spec['id'] == 'grok_cli']
+            if len(providers) != 1:
+                raise StandingSetupRequired(f'shot {sid} needs one exact selected route for action-derived duration')
+            provider = providers[0]
+        route = (provider, inputs.get('model'), inputs.get('mode'), inputs.get('operation'))
+        if route not in capabilities:
+            capabilities[route] = registry.describe_video_inputs(
+                provider, model=route[1], mode=route[2], operation=route[3])
+        caps = capabilities[route]
+        if caps['status'] != 'available':
+            raise StandingSetupRequired(f'shot {sid} selected duration inputs unavailable: {caps["blockers"]}')
+        try:
+            roles = [{'role': {'first_frame': 'start_frame', 'last_frame': 'end_frame'}.get(row['role'], row['role'])}
+                     for row in inputs.get('input_assets', [])]
+            for aliases, role in ((('first_frame', 'image_path', 'reference_image_path'), 'start_frame'),
+                                  (('last_frame', 'last_image_path'), 'end_frame'),
+                                  (('reference_image_paths',), 'reference_image'),
+                                  (('keyframes',), 'timed_keyframe')):
+                field = next((name for name in aliases if inputs.get(name) is not None), None)
+                if field is not None:
+                    values = inputs[field] if isinstance(inputs[field], list) else [inputs[field]]
+                    roles.extend({'role': role} for _ in values)
+            branches = preparation.compatible_video_input_branches(caps, roles)
+            preparation.validate_action_duration(projection['shot'], branches=branches, settings=inputs)
+            from lib.production_execution import explicit_motion_duration
+            duration_inputs = inputs
+            if provider == 'openart_mcp' and 'openart_project_id' not in inputs:
+                duration_inputs = {**inputs, 'openart_project_id': _provider_spec(policy, provider)['project_id']}
+            if explicit_motion_duration(duration_inputs, provider=provider) != projection['shot']['duration_seconds']:
+                raise ValueError(f'shot {sid} native duration differs from authored action-derived duration')
+        except ValueError as exc:
+            raise StandingSetupRequired(str(exc)) from None
+
+
 def activate_standing_run(project_dir, *, policy, baselines, standing_setup, run_command, identity_id):
     """Bind actual standing media authority + actual run command to authored work.
 
@@ -612,6 +663,7 @@ def activate_standing_run(project_dir, *, policy, baselines, standing_setup, run
                     # Resume uses the retained internally derived plan. Current
                     # observed board bytes never mint a replacement activation.
                     return {'policy_sha256': sha, 'decision_id': decision_id, 'replayed': True, 'provider_calls': 0}
+        _validate_standing_action_durations(policy, baselines)
         candidate = copy.deepcopy(policy)
         candidate['planning_mode'] = 'shot_local_v1'
         candidate['shots'] = {sid: baseline_descriptor(value, root) for sid, value in baselines.items()}
