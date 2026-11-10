@@ -52,6 +52,28 @@ def _scrub_unicode_dashes(value: Any) -> Any:
     return value
 
 
+def _spicy_menu_metadata(tool: BaseTool) -> dict[str, Any]:
+    """Static native contract, never account readiness or generation authority."""
+    from lib.spicy_catalog import VIDEO_MODEL, describe_video_inputs
+    descriptor = describe_video_inputs(model=VIDEO_MODEL, mode="image_to_video")
+    return {"code_status": tool.get_status().value, "status": "unavailable",
+            "production_available": False, "default_generation_enabled": False,
+            "account_readiness": "unproven", "selection": "explicit_exact_route_only",
+            "transport": "spicy_native_jobs_v1", "native_routes": [descriptor],
+            "schema_bound_video": {"transport": "spicy_native_jobs_v2", "default_enabled": False,
+                "catalog_source": "current_project_and_key_bound_account_observation",
+                "requires": ["exact_model_mode_schema_and_source_roles", "exact_native_input",
+                             "typed_project_source_pointers", "native_prompt_and_exact_positive_duration", "fresh_exact_request_quote"],
+                "source_only_transformations": "blocked_pending_source_led_authoring_and_timing_contract",
+                "non_video_output_tasks": "blocked", "timestamped_keyframe_semantics": "unsupported"},
+            "billing": {"kind": "quoted_usd_budget", "currency": "USD",
+                        "current_exact_request_quote_required": True},
+            "dispatch_readiness": {"ready": False, "authority": "none",
+                "requires": ["exact_active_factory_policy", "named_account_credential_binding",
+                             "fresh_authenticated_schema", "reviewed_source_transfer",
+                             "fresh_native_usd_quote", "total_and_per_attempt_usd_caps"]}}
+
+
 _OPENART_HELD_DEBIT = frozenset({"reserved", "unresolved"})
 _OPENART_PENDING_SLOTS = frozenset({"prepared", "ready", "submitting", "submitted", "uncertain"})
 
@@ -475,10 +497,11 @@ class ToolRegistry:
         """Get a tool by name."""
         return self._tools.get(name)
 
-    def describe_video_inputs(self, provider, model=None, mode=None, operation=None):
+    def describe_video_inputs(self, provider, model=None, mode=None, operation=None, *, project_dir=None, credential_ref=None):
         """Exact selected-route guidance, without full catalog discovery or mutation."""
         from lib.video_model_selection import describe_video_inputs
-        return describe_video_inputs(provider, model=model, mode=mode, operation=operation)
+        return describe_video_inputs(provider, model=model, mode=mode, operation=operation,
+                                     project_dir=project_dir, credential_ref=credential_ref)
 
     def list_all(self) -> list[str]:
         """List all registered tool names."""
@@ -639,7 +662,12 @@ class ToolRegistry:
                 if extra_key in info:
                     entry[extra_key] = info[extra_key]
 
-            if status == ToolStatus.AVAILABLE:
+            if tool.provider == "spicy":
+                # Installed native code cannot prove the supplied account, key,
+                # policy or quote. Discovery never activates or probes an account.
+                entry.update(_spicy_menu_metadata(tool))
+                menu[cap]["unavailable"].append(entry)
+            elif status == ToolStatus.AVAILABLE:
                 menu[cap]["available"].append(entry)
                 menu[cap]["configured"] += 1
             else:

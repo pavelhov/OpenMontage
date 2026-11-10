@@ -49,7 +49,7 @@
     "providers": {
       "type": "array",
       "minItems": 1,
-      "maxItems": 3,
+      "maxItems": 4,
       "items": {
         "oneOf": [
           {
@@ -66,6 +66,9 @@
           },
           {
             "$ref": "#/$defs/openart_mcp_quoted_credit_budget"
+          },
+          {
+            "$ref": "#/$defs/spicy_quoted_usd_budget"
           }
         ]
       }
@@ -455,7 +458,10 @@
         "timed_keyframe",
         "payoff_board",
         "observed_outgoing_frame",
-        "voice_reference"
+        "voice_reference",
+        "reference_image",
+        "reference_video",
+        "reference_audio"
       ]
     },
     "role_bytes": {
@@ -794,6 +800,167 @@
         },
         "cost_observation_path": {
           "$ref": "#/$defs/text"
+        }
+      }
+    },
+    "spicy_quoted_usd_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "billing",
+        "account_label",
+        "credential_ref",
+        "credential_digest",
+        "total_cap_usd",
+        "per_attempt_cap_usd",
+        "routes",
+        "qualified_storage_hosts"
+      ],
+      "properties": {
+        "id": {
+          "const": "spicy"
+        },
+        "billing": {
+          "const": "quoted_usd_budget"
+        },
+        "account_label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "credential_ref": {
+          "type": "string",
+          "pattern": "^env:[A-Z][A-Z0-9_]*$"
+        },
+        "credential_digest": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "total_cap_usd": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+        },
+        "per_attempt_cap_usd": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+        },
+        "routes": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "model",
+                  "mode"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "mode": {
+                    "const": "image_to_video"
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "model",
+                  "mode",
+                  "schema_sha256",
+                  "source_roles"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "mode": {
+                    "enum": [
+                      "text_to_video",
+                      "image_to_video",
+                      "reference_to_video",
+                      "video_edit",
+                      "video_extend",
+                      "character_animation",
+                      "upscale",
+                      "talking_avatar",
+                      "video_translate",
+                      "lip_sync"
+                    ]
+                  },
+                  "schema_sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "source_roles": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "role",
+                        "pointer",
+                        "media_kind",
+                        "mime"
+                      ],
+                      "properties": {
+                        "role": {
+                          "enum": [
+                            "first_frame",
+                            "last_frame",
+                            "reference_image",
+                            "reference_video",
+                            "reference_audio",
+                            "character_reference",
+                            "environment_reference",
+                            "source_video",
+                            "source_audio",
+                            "mask",
+                            "keyframe"
+                          ]
+                        },
+                        "pointer": {
+                          "type": "string",
+                          "minLength": 2,
+                          "maxLength": 2048,
+                          "pattern": "^/"
+                        },
+                        "media_kind": {
+                          "enum": [
+                            "image",
+                            "video",
+                            "audio"
+                          ]
+                        },
+                        "mime": {
+                          "type": "string",
+                          "pattern": "^[a-z0-9.+-]+/[a-z0-9.+-]+$"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "qualified_storage_hosts": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
+          }
         }
       }
     }

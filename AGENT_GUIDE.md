@@ -54,6 +54,7 @@ as current policy. Preserve useful cast/style/provider knowledge and history.
 | Route capabilities and intent for generic pipelines | [VIDEO_MODEL_SELECTION](docs/VIDEO_MODEL_SELECTION.md) |
 | Grok/OpenArt CLI authority, billing, original jobs and Auto-continue | [OPENART_CLI](docs/OPENART_CLI.md), selected tool's Layer 3 skill |
 | OpenArt connector forms, uploads, account/project and host handoff | [OPENART_MCP](docs/OPENART_MCP.md), selected tool's Layer 3 skill |
+| Spicy native video jobs, quoted USD authority and original recovery | [SPICY_API](docs/SPICY_API.md), selected tool's Layer 3 skill |
 | Retaining an approved trim and its new review | [PRODUCTION_DERIVED_EDITS](docs/PRODUCTION_DERIVED_EDITS.md) |
 | Runtime mechanics | [HyperFrames](skills/core/hyperframes.md), selected runtime's Layer 3 skill |
 | Bespoke/hero composition | [taste-direction](skills/meta/taste-direction.md), [bespoke-composition](skills/meta/bespoke-composition.md) |

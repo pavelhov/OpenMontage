@@ -154,7 +154,7 @@ async function claimNativeHostInvocation(tools, receiptPath, action, invocation)
 const CANONICAL_STEP_STATUSES = ['mechanical', 'host_action', 'ready_to_compose', 'complete', 'blocked', 'pending', 'dispatched'];
 const CANONICAL_ACTION_KINDS = ['restore_derived_views', 'prepare_board_image', 'begin_native_image',
   'promote_imported_board', 'receive_native_image', 'prepare_motion', 'bind_upstream_frame',
-  'collect_grok_original', 'collect_openart_original', 'begin_openart_original',
+  'collect_grok_original', 'collect_openart_original', 'collect_spicy_original', 'begin_openart_original',
   'receive_openart_original', 'poll_openart_original', 'download_openart_original',
   'compose_cut', 'complete', 'blocked'];
 // Studio's finished composition state is the other legitimate return form:

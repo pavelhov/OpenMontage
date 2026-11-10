@@ -687,6 +687,67 @@
               "pattern": "^[a-f0-9]{64}$"
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider",
+            "transport",
+            "model",
+            "request_sha256",
+            "sources_sha256"
+          ],
+          "properties": {
+            "provider": {
+              "const": "spicy"
+            },
+            "transport": {
+              "enum": [
+                "spicy_native_jobs_v1",
+                "spicy_native_jobs_v2"
+              ]
+            },
+            "model": {
+              "type": "string",
+              "minLength": 1
+            },
+            "request_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "sources_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "schema_sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "transport": {
+                    "const": "spicy_native_jobs_v2"
+                  }
+                }
+              },
+              "then": {
+                "required": [
+                  "schema_sha256"
+                ]
+              },
+              "else": {
+                "not": {
+                  "required": [
+                    "schema_sha256"
+                  ]
+                }
+              }
+            }
+          ]
         }
       ]
     },
@@ -723,7 +784,8 @@
             "enum": [
               "/params/prompt",
               "/arguments/prompt",
-              "/params/sceneDescription"
+              "/params/sceneDescription",
+              "/input/prompt"
             ]
           },
           "start": {

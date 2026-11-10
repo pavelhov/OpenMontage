@@ -2114,8 +2114,12 @@ def test_generic_internal_shot_preparation_rejects_changed_cut_time_outside_cove
         request.prepare_compiled_request(current, native, profile, coverage=authored['coverage'], timing=previous['timing'])
 
 
-def test_internal_shots_compact_and_full_packages_preserve_one_clip_and_reject_tampering(neutral_package):
+def test_internal_shots_compact_and_full_packages_preserve_one_clip_and_reject_tampering(neutral_package, tmp_path, monkeypatch):
+    from lib import openart_mcp as mcp
     from tests.lib.test_production_package_authoring import packages
+    from tests.integration.test_openart_mcp_governance import fixture_observations
+    fixture_observations.__wrapped__(tmp_path, monkeypatch)
+    monkeypatch.setattr(mcp, '_ALLOW_FIXTURE_PRODUCTION', True)
     root, base, bind = neutral_package
     compact, _ = packages(base)
     compact.update(prompt_compiler='shootable_v1', cast_names={})

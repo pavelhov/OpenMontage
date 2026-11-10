@@ -290,19 +290,19 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
         raise ValueError('contract project mismatch')
     index, shot = next((i, s) for i, s in enumerate(contract['shots']) if s['id'] == shot_id)
     reference_guided = (shot.get('reference_mode', contract.get('reference_mode')) == 'reference_guided')
-    if reference_guided and provider not in {'openart_mcp', 'grok_cli'}:
+    if reference_guided and provider not in {'openart_mcp', 'grok_cli', 'spicy'}:
         raise ValueError('reference-guided contract requires an explicit native reference route')
     frame_conditioned = shot.get('reference_mode', contract.get('reference_mode')) == 'frame_conditioned'
     frame_input = None
     if frame_conditioned:
         from lib.shot_contract import frame_conditioned_start
         frame_input = frame_conditioned_start(contract, shot, root)
-        if provider not in {'grok_cli', 'openart_mcp'}:
+        if provider not in {'grok_cli', 'openart_mcp', 'spicy'}:
             raise ValueError('frame-conditioned treatment requires Grok CLI or OpenArt MCP image2video')
     reference_free = (contract.get('reference_mode') == 'reference_free'
                       or shot.get('reference_mode') == 'reference_free')
-    if reference_free and provider not in {'openart_cli', 'openart_mcp'}:
-        raise ValueError('reference-free contract requires OpenArt text2video')
+    if reference_free and provider not in {'openart_cli', 'openart_mcp', 'spicy'}:
+        raise ValueError('reference-free contract requires OpenArt text2video or an exact schema-bound source-free Spicy text-to-video request')
     shootable = contract.get('prompt_compiler') == SHOOTABLE_COMPILER
     rows = []
     if shootable:
@@ -388,7 +388,7 @@ def _source_packet(project_dir, shot_id, *, provider, native, check_native_contr
         _schema('asset_manifest', manifest)
     if provider in {"openart_cli", "openart_mcp"} and check_native_controls:
         _check_required_native_controls(scene_plan, manifest, shot_id, native=native, project_dir=root)
-    elif provider not in {"grok_cli", "openart_cli", "openart_mcp"}:
+    elif provider not in {"grok_cli", "openart_cli", "openart_mcp", "spicy"}:
         raise ValueError("unsupported preparation provider")
     if reference_free:
         card = scene_plan.get('metadata', {}).get('visual_development', {}).get('shot_cards', {}).get(shot_id, {})
@@ -744,7 +744,7 @@ def historical_preparation_matches(prompt, coverage, canonical):
 def _compile_provider_packet(packet, *, provider, model=None, historical=False, input_assets=None):
     if not historical and _h3_projection(packet, provider, model):
         return _compile_h3_packet(packet, input_assets)
-    compiled = _compile_packet(packet, native_pointer='/arguments/prompt' if provider == 'grok_cli' else ('/params/sceneDescription' if provider == 'openart_mcp' and model == 'smart-shot' else '/params/prompt'))
+    compiled = _compile_packet(packet, native_pointer='/input/prompt' if provider == 'spicy' else '/arguments/prompt' if provider == 'grok_cli' else ('/params/sceneDescription' if provider == 'openart_mcp' and model == 'smart-shot' else '/params/prompt'))
     if not historical and _no_music_default(packet):
         compiled['prompt'] += NO_MUSIC_DIRECTION
     if provider == 'grok_cli':
@@ -777,7 +777,73 @@ def _compile_provider_packet(packet, *, provider, model=None, historical=False, 
     return compiled
 
 
+def spicy_factory_blockers(native):
+    """State the authored-factory subset before quotes or paid dispatch.
+
+    Source-only transforms need a different source-led authoring/timing proof;
+    the current literal prompt and fixed shot timing cannot certify them.
+    """
+    if native.get('provider') != 'spicy':
+        return []
+    payload = native.get('input', {})
+    blockers = []
+    if not isinstance(payload.get('prompt'), str) or not payload['prompt'].strip():
+        blockers.append({'code': 'canonical_prompt_unrepresentable',
+                         'message': 'Authored Spicy motion requires a native prompt; source-only transformations need a separate source-led preparation contract.'})
+    duration = payload.get('duration_seconds')
+    if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
+        blockers.append({'code': 'canonical_duration_unrepresentable',
+                         'message': 'Authored Spicy motion requires an exact positive native duration; missing, source-derived or automatic duration is unsupported.'})
+    return blockers
+
+
+def spicy_factory_coverage(rows):
+    """An upper bound on schema candidates, never account or dispatch readiness."""
+    from lib.spicy_routes import qualify_route
+    result = []
+    for item in rows:
+        if item.get('modality') != 'video':
+            continue
+        qualified = qualify_route(item)
+        props = item.get('inputSchema', {}).get('properties', {})
+        blockers = list(qualified.get('blockers', []))
+        if 'prompt' not in props:
+            blockers.append({'code': 'canonical_prompt_unrepresentable', 'message': 'Native schema has no authored prompt control.'})
+        if 'duration_seconds' not in props:
+            blockers.append({'code': 'canonical_duration_unrepresentable', 'message': 'Native schema has no exact authored duration control.'})
+        result.append({'model': item['model'], 'tasks': item.get('tasks', []),
+                       'native_schema_status': qualified['status'],
+                       'canonical_status': 'blocked' if blockers else 'schema_candidate_requires_exact_request_and_sources',
+                       'blockers': blockers, 'production_authority': 'none'})
+    return result
+
+
+def spicy_frame_pin_supported(model, mode, schema, field):
+    """An upload role alone never proves temporal pin semantics."""
+    if field not in {'image_url', 'last_image_url'} or mode not in ({'image_to_video'} if field == 'image_url' else {'image_to_video', 'reference_to_video', 'video_extend'}):
+        return False
+    from lib.spicy_catalog import VIDEO_MODEL
+    if model == VIDEO_MODEL:
+        return True  # The existing documented v1 exact-pin route.
+    description = schema.get('properties', {}).get(field, {}).get('description', '') if isinstance(schema, dict) else ''
+    if not isinstance(description, str):
+        return False
+    terms = ('opening', 'first', 'initial', 'starting', 'start') if field == 'image_url' else ('last', 'final', 'ending', 'end')
+    return bool(re.search(r'\b(?:' + '|'.join(terms) + r')[ -]+(?:video[ -]+)?frame\b', description, re.I))
+
+
 def _body(native):
+    if native.get('provider') == 'spicy':
+        params = copy.deepcopy(native['input'])
+        # Internal timing projection only; the exact native payload stays untouched.
+        duration = params.get('duration_seconds')
+        if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
+            raise ValueError('Spicy authored motion requires an exact positive native duration; automatic or unknown duration is unsupported')
+        params['duration'] = duration
+        blockers = spicy_factory_blockers(native)
+        if blockers:
+            raise ValueError('; '.join(row['code'] + ': ' + row['message'] for row in blockers))
+        return {'params': params}
     if native.get('provider') == 'grok_cli':
         return {'params': copy.deepcopy(native['request']['arguments'])}
     if native.get('provider') == 'openart_mcp':
@@ -796,6 +862,18 @@ def _body(native):
 
 
 def _native_binding(native):
+    if native.get('provider') == 'spicy':
+        binding = {'provider': 'spicy', 'transport': native['transport'],
+                'model': native['model'], 'request_sha256': native['request_sha256'],
+                'sources_sha256': digest([{k: a[k] for k in ('role', 'source_sha256')} for a in spicy_source_assets(native)])}
+        if native['transport'] == 'spicy_native_jobs_v2':
+            if digest(native['input_schema']) != native.get('schema_sha256'):
+                raise ValueError('Spicy exact native schema changed')
+            binding['schema_sha256'] = native['schema_sha256']
+            binding['sources_sha256'] = digest([{**{key: source[key] for key in
+                ('role', 'pointer', 'media_kind', 'mime', 'source_sha256')},
+                'transfer_binding_sha256': digest(source.get('transfer_binding'))} for source in spicy_source_assets(native)])
+        return binding
     if native.get('provider') == 'openart_mcp':
         from lib.openart_mcp import validate_native_request
         validate_native_request(native)
@@ -961,6 +1039,9 @@ def prepare_grok_native(inputs, observation):
 
 
 def prep_builder(provider):
+    if provider == 'spicy':
+        from lib.spicy_jobs import build_native_request
+        return lambda inputs, profile=None: build_native_request(inputs)
     if provider == 'grok_cli':
         return prepare_grok_native
     if provider == 'openart_cli':
@@ -1152,15 +1233,19 @@ def historical_creator_prompt_coverage(compiled, prompt, packet, *, native_point
     return coverage
 
 
-def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=False):
+def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=False, _spicy_snapshot_proof=None):
     from lib.production_execution import planned_request_digest
     _schema('compiled_request', compiled)
     grok = native.get('provider') == 'grok_cli'
     reference_free = packet['binding'].get('reference_mode') == 'reference_free'
-    if reference_free and (grok or native.get('mode') != 'text2video'):
-        raise ValueError('reference-free contract requires OpenArt text2video')
+    if reference_free and (grok or native.get('mode') not in ({'text_to_video'} if native.get('provider') == 'spicy' else {'text2video'})):
+        raise ValueError('reference-free contract requires OpenArt text2video or an exact schema-bound source-free Spicy text-to-video request')
     mcp = native.get('provider') == 'openart_mcp'
-    if mcp:
+    spicy = native.get('provider') == 'spicy'
+    if spicy:
+        actual_native = (_historical_spicy_native(inputs, native, _snapshot_proof=_spicy_snapshot_proof) if historical
+                         else prep_builder('spicy')(inputs, profile))
+    elif mcp:
         from lib.openart_mcp import prepare_native_request
         from lib.production_execution import _openart_mcp_controls
         actual_native = prepare_native_request(_openart_mcp_controls(inputs), profile,
@@ -1178,7 +1263,11 @@ def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=
         raise ValueError('stale native body/controls/version/tier/form/defaults')
     if digest(compiled['source_binding']) != digest(packet['binding']):
         raise ValueError('stale source/reference/review/upstream bindings')
-    if compiled['request_sha256'] != planned_request_digest(inputs, project_dir=inputs['project_dir']):
+    if spicy and historical and _spicy_snapshot_proof is not None:
+        request_digest = _spicy_snapshot_proof.request_digest(inputs)
+    else:
+        request_digest = planned_request_digest(inputs, project_dir=inputs['project_dir'])
+    if compiled['request_sha256'] != request_digest:
         raise ValueError('compiled request changed')
     # MCP was freshly rebuilt and compared above. Project that same validated
     # result; other binding callers still own their full native revalidation.
@@ -1235,7 +1324,7 @@ def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=
         if any(mapped[key] != row[key] for key in ('occurrence_id', 'source_pointer', 'value_sha256')):
             raise ValueError('coverage occurrence/source mismatch')
         start, end = mapped['start'], mapped['end']
-        expected_pointer = '/arguments/prompt' if grok else '/params/' + prompt_field
+        expected_pointer = '/input/prompt' if spicy else '/arguments/prompt' if grok else '/params/' + prompt_field
         if mapped['native_pointer'] != expected_pointer or not 0 <= start < end <= len(prompt):
             raise ValueError('coverage must target actual native prompt fragment')
         fragment = prompt[start:end]
@@ -1250,9 +1339,17 @@ def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=
     if reference_free:
         if packet['binding']['references'] or packet['binding']['upstream'] or native.get('image_upload') is not None:
             raise ValueError('reference-free native request contains image/reference obligations')
+        if spicy and spicy_source_assets(native):
+            raise ValueError('reference-free Spicy native request contains source obligations')
         media_fields = ('startFrame', 'endFrame', 'visualReferences', 'characterReferenceImageUrls', 'environmentReferenceImageUrl') if mcp else ('image', 'images', 'first_frame', 'last_frame', 'keyframes', 'references', 'voices', 'audio')
         if (mcp and (native.get('input_assets') or any(key in body['params'] and body['params'][key] not in ([], None) for key in media_fields))) or (not mcp and any(key in body['params'] for key in media_fields)):
             raise ValueError('reference-free native request contains image/reference controls')
+    elif spicy:
+        _validate_spicy_asset_roles(packet, native)
+        from lib.production_execution import _artifact_path
+        root = Path(inputs['project_dir']).resolve()
+        manifest = _read(root, 'asset_manifest.json') if _artifact_path(root, 'asset_manifest.json').exists() else None
+        _check_frame_hard_inputs(packet, native, _read(root, 'scene_plan.json'), manifest, root)
     elif grok and packet['binding'].get('reference_mode') == 'reference_guided':
         _validate_grok_guided_assets(packet, native)
         from lib.production_execution import _artifact_path
@@ -1283,7 +1380,7 @@ def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=
         _check_required_native_controls(scene, manifest, packet['binding']['shot_id'], native=native, project_dir=root)
         if packet['binding'].get('frame_input'):
             _check_frame_hard_inputs(packet, native, scene, manifest, root)
-    if not grok and not mcp and profile['source'] == 'real':
+    if not grok and not mcp and not spicy and profile['source'] == 'real':
         from lib import openart_jobs as jobs
         from tools import _openart_cli as cli
         entry = next(e for e in profile['captured_receipts'] if e['kind'] == 'form')
@@ -1311,7 +1408,26 @@ def route_treatment_error(projection, *, provider, model=None, mode=None, operat
     if treatment not in {'reference_guided', 'frame_conditioned'}:
         return None
     prefix = f"shot {shot['id']}, provider {provider}, model {model or 'unreported'}, mode {mode or 'unreported'}: "
+    if provider == 'spicy' and (native_capabilities or {}).get('schema_sha256'):
+        roles = {row['role'] for row in native_capabilities['source_roles']}
+        if treatment == 'frame_conditioned':
+            return None if mode == 'image_to_video' and 'first_frame' in roles else prefix + 'frame-conditioned Spicy v2 route requires its exact native starting image'
+        if mode not in {'reference_to_video', 'video_edit', 'video_extend', 'character_animation', 'talking_avatar', 'video_translate', 'lip_sync'}:
+            return prefix + 'reference-guided Spicy v2 treatment requires an explicit conditioned video task'
+        options = {'identity_reference': {'reference_image', 'character_reference', 'environment_reference'},
+                   'reference_image': {'reference_image', 'mask', 'keyframe'},
+                   'reference_video': {'reference_video', 'source_video'}, 'reference_audio': {'reference_audio', 'source_audio'}}
+        for asset in projection['assets']:
+            if asset['id'] in shot['asset_ids'] and asset['role'] in options and not options[asset['role']].intersection(roles):
+                return prefix + 'native schema/source allowance omits authored ' + asset['role']
+        return None
     if treatment == 'frame_conditioned':
+        if provider == 'spicy':
+            from lib.spicy_catalog import describe_video_inputs
+            descriptor = describe_video_inputs(model=model, mode=mode, operation=operation)
+            if descriptor['status'] != 'available' or not descriptor['roles']['start_frame']['supported']:
+                return prefix + 'frame-conditioned treatment requires a supported exact native start frame'
+            return None
         if provider == 'grok_cli':
             return None
         if provider != 'openart_mcp' or mode != 'image2video':
@@ -1342,11 +1458,19 @@ def route_treatment_error(projection, *, provider, model=None, mode=None, operat
 
 def _validate_frame_native(packet, native, *, submitted=None):
     """One starting image carries the exact reviewed composition, without aliases."""
-    if native.get('provider') != 'grok_cli' and (native.get('provider') != 'openart_mcp' or native.get('mode') != 'image2video'):
-        raise ValueError('frame-conditioned treatment requires Grok CLI or OpenArt MCP image2video')
-    refs = packet['binding']['references']
-    frame = packet['binding']['frame_input']
     submitted = native.get('input_assets', []) if submitted is None else submitted
+    if native.get('provider') not in {'grok_cli', 'spicy'} and (native.get('provider') != 'openart_mcp' or native.get('mode') != 'image2video'):
+        raise ValueError('frame-conditioned treatment requires Grok CLI or OpenArt MCP image2video')
+    if native.get('provider') == 'spicy' and native.get('transport') == 'spicy_native_jobs_v2':
+        if not spicy_frame_pin_supported(native.get('model'), native.get('mode'), native.get('input_schema'), 'image_url'):
+            raise ValueError('frame-conditioned Spicy v2 route has no documented exact starting-frame semantics')
+        if any(source.get('role') == 'first_frame' and source.get('pointer') != '/image_url' for source in submitted or []):
+            raise ValueError('Spicy starting-frame role is not bound to its exact native pin slot')
+    refs = packet['binding']['references']
+    if native.get('transport') == 'spicy_native_jobs_v2' and any(ref['role'] == 'end_frame' and ref.get('native_required') for ref in refs):
+        if not spicy_frame_pin_supported(native.get('model'), native.get('mode'), native.get('input_schema'), 'last_image_url'):
+            raise ValueError('Spicy required end-frame pin has no documented exact native semantics')
+    frame = packet['binding']['frame_input']
     starts = [a for a in submitted if a.get('role') == 'first_frame']
     if (len(starts) != 1 or starts[0].get('source_sha256') != frame['sha256']
             or Path(starts[0].get('source_path', '')).resolve() != Path(frame['path']).resolve()):
@@ -1383,7 +1507,7 @@ def _validate_grok_guided_assets(packet, native):
 
 def _check_frame_hard_inputs(packet, native, scene, manifest, root):
     """Keep separately authored native obligations independent of treatment."""
-    submitted = native.get('input_assets', [])
+    submitted = (spicy_source_assets(native) if native.get('provider') == 'spicy' else native.get('input_assets', []))
     if native.get('provider') == 'grok_cli':
         submitted = [{'role': {'reference': 'reference_image', 'keyframe': 'timed_keyframe'}.get(a['role'], a['role']),
                       'source_sha256': a['sha256']} for a in native['request']['input_assets']]
@@ -1472,7 +1596,7 @@ def validate_preparation(inputs, native, profile):
     return validate_preparation_evidence(compiled, review, inputs, native, profile, packet)
 
 
-def validate_preparation_evidence(compiled, review, inputs, native, profile, packet, *, historical=False, factory=None):
+def validate_preparation_evidence(compiled, review, inputs, native, profile, packet, *, historical=False, factory=None, _spicy_snapshot_proof=None):
     """Validate supplied preparation evidence; callers own loading and authority.
 
     Current and retained historical callers share exact compiled requests,
@@ -1480,7 +1604,7 @@ def validate_preparation_evidence(compiled, review, inputs, native, profile, pac
     retain semantic unknowns/failures as report-only observations. Historical
     readers use frozen standing authority; generic manifests remain strict.
     """
-    _validate_compiled(compiled, inputs, native, profile, packet, historical=historical)
+    _validate_compiled(compiled, inputs, native, profile, packet, historical=historical, _spicy_snapshot_proof=_spicy_snapshot_proof)
     _schema('preparation_review', review)
     if review['review_id'] != inputs['preparation_review_id']:
         raise ValueError('named review ID differs from selected preparation ID')
@@ -2346,7 +2470,7 @@ def build_video_request_templates(package, settings):
     Existing production preparation resolves/hashes/uploads those same sources.
     """
     from tools.tool_registry import registry
-    if not isinstance(settings, dict) or set(settings) - {'provider', 'preferred_provider', 'allowed_providers', 'model', 'mode', 'operation', 'resolution', 'aspect_ratio', 'native_params', 'allow_unknown_cost', 'timeout_seconds', 'openart_project_id'}:
+    if not isinstance(settings, dict) or set(settings) - {'provider', 'preferred_provider', 'allowed_providers', 'model', 'mode', 'operation', 'resolution', 'aspect_ratio', 'native_params', 'allow_unknown_cost', 'timeout_seconds', 'openart_project_id', 'generate_audio', 'account_label', 'credential_ref', 'project_dir', 'native_input', 'spicy_source_bindings'}:
         raise ValueError('unsupported selected video setting')
     package = _expand_compact_package(package) if 'authoring_form' in package or 'compact' in package else copy.deepcopy(package)
     spec = package['boards']
@@ -2357,6 +2481,10 @@ def build_video_request_templates(package, settings):
     provider = settings.get('provider', settings.get('preferred_provider'))
     if settings.get('preferred_provider', provider) != provider or settings.get('allowed_providers', [provider]) != [provider]:
         raise ValueError('selected provider constraints conflict')
+    if provider == 'spicy' and 'native_input' in settings:
+        return _build_spicy_v2_templates(package, settings)
+    if any(key in settings for key in ('native_input', 'spicy_source_bindings')):
+        raise ValueError('schema-bound Spicy controls require the explicit Spicy v2 route')
     caps = registry.describe_video_inputs(provider, model=settings.get('model'),
         mode=settings.get('mode'), operation=settings.get('operation'))
     if caps['status'] != 'available':
@@ -2420,6 +2548,15 @@ def build_video_request_templates(package, settings):
             refs = [source(r) for r in declared if r['role'] == 'reference_image']
             if refs:
                 native['reference_image_paths'] = refs
+        elif provider == 'spicy':
+            mapping = {'start_frame': 'first_frame', 'end_frame': 'last_frame', 'reference_image': 'reference_image'}
+            native['preferred_provider'] = 'spicy'
+            native['allowed_providers'] = ['spicy']
+            native['input_assets'] = [{'role': mapping[row['role']], 'source_path': source(row)} for row in declared]
+            if 'generate_audio' not in settings or type(settings['generate_audio']) is not bool:
+                raise ValueError('Spicy requires an explicit generate_audio choice')
+            if settings.get('native_params'):
+                raise ValueError('Spicy requires exact public controls, not opaque native_params')
         else:
             from lib import openart_mcp as mcp
             mapping = {'start_frame': 'first_frame', 'end_frame': 'last_frame', 'reference_image': 'reference_image'}
@@ -2455,6 +2592,93 @@ def build_video_request_templates(package, settings):
                 raise ValueError('native settings/roles violate exact selected form: ' + errors[0].message)
             if 'videoCount' in params and (type(params['videoCount']) is not int or params['videoCount'] != 1):
                 raise ValueError('one governed shot requires videoCount exactly one')
+        result[shot['id']] = native
+    return result
+
+
+def _build_spicy_v2_templates(package, settings):
+    """Compile authored motion through an observed schema and explicit media slots.
+
+    Source pointers are authored, never inferred from filenames or array order.
+    Their byte/type proofs are supplied later by the canonical project builder.
+    """
+    from lib import spicy_catalog, spicy_routes
+    root = settings.get('project_dir')
+    model, mode = settings.get('model'), settings.get('mode')
+    if not root or not isinstance(model, str) or not isinstance(mode, str):
+        raise ValueError('Spicy v2 templates require an exact project/model/mode observation')
+    observation = spicy_catalog.load_account_observation_v2(root, model, settings.get('credential_ref', 'env:SPICY_API_KEY'))
+    if not observation:
+        raise ValueError('Spicy v2 templates require a current project/key-bound schema observation')
+    schema = observation['input_schema']
+    route = spicy_routes.describe_route(schema)
+    if route.get('status') == 'blocked':
+        raise ValueError('Spicy v2 template schema is unsupported')
+    observed_mode = observation.get('mode') or str(observation.get('task', '')).replace('-', '_')
+    if observed_mode != mode:
+        raise ValueError('Spicy v2 exact native mode differs from current observed task')
+    if mode in {'video_analyze', 'video_to_audio'}:
+        raise ValueError('Selected Spicy native task does not produce governed video')
+    bindings = settings.get('spicy_source_bindings', {})
+    if not isinstance(bindings, dict) or set(bindings) - {shot['id'] for shot in package['shots']}:
+        raise ValueError('Spicy source bindings must address exact authored shot IDs')
+    consumers = {row['shot_id']: row['roles'] for row in package['boards']['shots']}
+    mapping = {'start_frame': 'first_frame', 'end_frame': 'last_frame', 'reference_image': 'reference_image',
+               'reference_video': 'reference_video', 'reference_audio': 'reference_audio', 'timed_keyframe': 'timed_keyframe'}
+    result = {}
+    for shot in package['shots']:
+        declared = [row for row in consumers.get(shot['id'], []) if row['role'] in mapping]
+        if any(row['role'] == 'timed_keyframe' for row in declared):
+            raise ValueError('Spicy v2 timestamped keyframe semantics require a typed timestamp proof')
+        sources = bindings.get(shot['id'], [])
+        if not isinstance(sources, list):
+            raise ValueError('Spicy native source slots must be an ordered list')
+        expected = sorted((row['asset_id'], mapping[row['role']]) for row in declared)
+        actual = []
+        pointers = set()
+        assets = []
+        for source in sources:
+            if (not isinstance(source, dict) or set(source) != {'asset_id', 'role', 'pointer', 'media_kind', 'mime'}
+                    or not isinstance(source['pointer'], str) or not source['pointer'].startswith('/')
+                    or re.search(r'~(?![01])', source['pointer']) or source['pointer'] in pointers
+                    or source['media_kind'] not in {'image', 'video', 'audio'}):
+                raise ValueError('Spicy source slot must bind exact role/pointer/type/MIME')
+            pointers.add(source['pointer'])
+            canonical_role = {'source_video': 'reference_video', 'source_audio': 'reference_audio',
+                              'mask': 'reference_image', 'keyframe': 'reference_image'}.get(source['role'], source['role'])
+            actual.append((source['asset_id'], canonical_role))
+            if not any(re.fullmatch(re.escape(leaf['pointer_template']).replace(r'\*', r'(?:0|[1-9][0-9]*)'), source['pointer'])
+                       and leaf['media_kind'] == source['media_kind'] and source['mime'] in leaf['mimes'] for leaf in route.get('media', [])):
+                raise ValueError('Spicy source pointer/type/MIME is outside the observed schema')
+            assets.append({'role': source['role'], 'pointer': source['pointer'],
+                           'source_path': {'$board': {'asset_id': source['asset_id']}}})
+        if sorted(actual) != expected:
+            raise ValueError('Spicy native source slots differ from authored consumer roles')
+        if mode == 'text_to_video' and sources:
+            raise ValueError('Spicy text-to-video templates cannot carry reference sources')
+        payload = copy.deepcopy(settings['native_input'])
+        if not isinstance(payload, dict):
+            raise ValueError('Spicy native_input must be an exact object')
+        if 'duration_seconds' not in schema.get('properties', {}):
+            raise ValueError('Spicy authored timing requires a native duration_seconds control')
+        if 'duration_seconds' in payload and payload['duration_seconds'] != shot['duration_seconds']:
+            raise ValueError('Spicy native duration differs from authored shot')
+        payload['duration_seconds'] = shot['duration_seconds']
+        if not Draft202012Validator(schema['properties']['duration_seconds']).is_valid(payload['duration_seconds']):
+            raise ValueError('Spicy native duration is outside the observed schema')
+        if 'prompt' in schema.get('properties', {}):
+            payload.setdefault('prompt', shot['action'])
+        else:
+            raise ValueError('Spicy authored video requires a native prompt control')
+        if 'generate_audio' in schema.get('properties', {}) and type(payload.get('generate_audio')) is not bool:
+            raise ValueError('Spicy requires an explicit generate_audio choice when the schema exposes audio')
+        native = {key: copy.deepcopy(value) for key, value in settings.items()
+                  if key not in {'provider', 'native_input', 'spicy_source_bindings', 'resolution', 'aspect_ratio', 'generate_audio'}}
+        for key in ('resolution', 'aspect_ratio', 'generate_audio'):
+            if key in settings and payload.get(key) != settings[key]:
+                raise ValueError('Spicy public/native control aliases differ')
+        native.update(native_input=payload, input_assets=assets, operation=settings.get('operation', mode),
+                      preferred_provider='spicy', allowed_providers=['spicy'])
         result[shot['id']] = native
     return result
 
@@ -2506,3 +2730,167 @@ def _replay_reference_projection(root, shot_id, scene_plan, references, retained
             raise ValueError('retained reference fields differ from supported original projection')
         output.append(row)
     return output
+
+
+def _validate_spicy_asset_roles(packet, native):
+    """Bind every submitted Spicy pin to the exact reviewed shot source."""
+    assets = spicy_source_assets(native)
+    if packet['binding'].get('frame_input'):
+        _validate_frame_native(packet, native, submitted=assets)
+        return
+    v2 = native.get('transport') == 'spicy_native_jobs_v2'
+    if v2 and any(source['role'] == 'timed_keyframe' for source in assets):
+        raise ValueError('Spicy timestamped keyframe semantics require a typed native timestamp proof')
+    mapping = {'start_frame': 'first_frame', 'end_frame': 'last_frame',
+               'reference_image': 'reference_image', **({'reference_video': 'reference_video',
+                    'reference_audio': 'reference_audio', 'timed_keyframe': 'timed_keyframe'} if v2 else {})}
+    refs = packet['binding']['references']
+    if v2 and any(ref['role'] == 'end_frame' and ref.get('native_required') for ref in refs):
+        if not spicy_frame_pin_supported(native.get('model'), native.get('mode'), native.get('input_schema'), 'last_image_url'):
+            raise ValueError('Spicy required end-frame pin has no documented exact native semantics')
+    options = ({'start_frame': {'first_frame'}, 'end_frame': {'last_frame'},
+                'reference_image': {'reference_image', 'mask', 'keyframe'},
+                'reference_video': {'reference_video', 'source_video'},
+                'reference_audio': {'reference_audio', 'source_audio'},
+                'identity_reference': {'reference_image', 'character_reference', 'environment_reference'}}
+               if v2 else {key: {value} for key, value in mapping.items()})
+    allowed = {(role, ref['sha256']) for ref in refs for role in options.get(ref['role'], set())}
+    if any((a['role'], a['source_sha256']) not in allowed for a in assets):
+        raise ValueError('Spicy native source role/hash differs from reviewed consumer')
+    if (not v2 or native.get('mode') == 'image_to_video') and not any(a['role'] == 'first_frame' for a in assets):
+        raise ValueError('Spicy image-to-video requires its reviewed start frame')
+    if v2 and native.get('mode') == 'text_to_video' and (assets or refs):
+        raise ValueError('Spicy reference-free text-to-video cannot carry reference obligations')
+    if v2 and native.get('mode') != 'text_to_video' and not assets:
+        raise ValueError('Spicy conditioned video requires its reviewed native sources')
+    for ref in refs:
+        if ref.get('native_required') and not any((role, ref['sha256']) in {(a['role'], a['source_sha256']) for a in assets}
+                                                for role in options.get(ref['role'], set())):
+            raise ValueError('Spicy native request omits a required reviewed source')
+
+
+def spicy_source_assets(native):
+    """Canonical local role/hash view of the provider's immutable source receipt."""
+    return [{**a, 'source_path': a.get('source_path', a.get('path')),
+             'source_sha256': a.get('source_sha256', a.get('sha256'))} for a in native['sources']]
+
+
+def _historical_spicy_native(inputs, native, *, _snapshot_proof=None):
+    """Reprove frozen native/source content without refreshing expired upload URLs."""
+    if native.get('transport') == 'spicy_native_jobs_v2':
+        if (not isinstance(_snapshot_proof, _SpicySnapshotProof)
+                or _snapshot_proof.request.get('spicy_native') != native):
+            raise ValueError('Spicy v2 frozen native requires its exact canonical original snapshot')
+        from lib.spicy_jobs import require_original_v2
+        require_original_v2(native)
+        _snapshot_proof.request_digest(inputs)
+        for source in spicy_source_assets(native):
+            if _snapshot_proof.source_sha(source['role'], source['source_path'], pointer=source['pointer']) != source['source_sha256']:
+                raise ValueError('Spicy v2 frozen native source bytes changed')
+        return copy.deepcopy(native)
+    from lib.spicy_catalog import validate_native_input
+    validate_native_input(native['model'], native['input'])
+    if native['request_sha256'] != digest({'model': native['model'], 'input': native['input']}):
+        raise ValueError('Spicy frozen native request digest changed')
+    if inputs.get('model') != native['model']:
+        raise ValueError('Spicy frozen native model differs')
+    for key, field in [('prompt', 'prompt'), ('duration', 'duration_seconds'),
+                       ('resolution', 'resolution'), ('generate_audio', 'generate_audio')]:
+        if inputs.get(key) != native['input'].get(field):
+            raise ValueError('Spicy frozen native control differs: ' + key)
+    sources = spicy_source_assets(native)
+    if _snapshot_proof is not None:
+        if not isinstance(_snapshot_proof, _SpicySnapshotProof):
+            raise ValueError('Spicy historical snapshot proof must be canonical internal evidence')
+        _snapshot_proof.request_digest(inputs)
+    def source_sha(role, path):
+        return (_snapshot_proof.source_sha(role, path) if _snapshot_proof is not None
+                else file_sha256(Path(path)))
+    for asset in sources:
+        if source_sha(asset['role'], asset['source_path']) != asset['source_sha256']:
+            raise ValueError('Spicy frozen native source bytes changed')
+    actual = inputs.get('input_assets', [])
+    if not actual:
+        actual = [{'role': role, 'source_path': inputs[key]} for key, role in
+                  [('image_path', 'first_frame'), ('last_image_path', 'last_frame')] if key in inputs]
+    if [(a['role'], source_sha(a['role'], a['source_path'])) for a in actual] != [(a['role'], a['source_sha256']) for a in sources]:
+        raise ValueError('Spicy frozen source role/order differs')
+    return copy.deepcopy(native)
+
+
+class _SpicySnapshotProof:
+    """Private byte proof loaded from the canonical original, never caller JSON."""
+    def __init__(self, root, request):
+        from lib import production_execution as execution
+        self.root = Path(root).resolve()
+        directory = execution._inside(Path('production_attempts') / request['attempt_id'], self.root)
+        if (execution._read(directory / 'request.json') != request
+                or request.get('scope', {}).get('provider') != 'spicy'):
+            raise ValueError('Spicy historical proof requires exact retained original request')
+        self.request = copy.deepcopy(request)
+        self.records = copy.deepcopy(request['input_assets'])
+        self.directory = directory
+
+    def _reconstruct(self, visitor):
+        from lib import production_execution as execution
+        records = iter(self.records)
+        def bind(role, path):
+            row = next(records, None)
+            if (not isinstance(row, dict) or row['role'] != role
+                    or execution._inside(row['path'], self.root) != path
+                    or not path.is_relative_to(self.directory / 'inputs')
+                    or file_sha256(path) != row['sha256']):
+                raise ValueError('Spicy canonical historical input snapshot differs')
+            original = execution._inside(row['original_path'], self.root)
+            return visitor(original, row['sha256'])
+        inputs = execution._clean(self.request['submitted_inputs'])
+        inputs.pop('cli_session_id', None)
+        result = execution._paths(inputs, self.root, bind)
+        if next(records, None) is not None:
+            raise ValueError('Spicy historical snapshot has extra input occurrences')
+        return result
+
+    def request_digest(self, inputs):
+        from lib import production_execution as execution
+        actual = execution._clean(inputs)
+        actual.pop('cli_session_id', None)
+        restored = self._reconstruct(lambda path, sha: str(path))
+        if actual != restored:
+            raise ValueError('Spicy historical input controls differ from canonical original')
+        result = execution._digest(self._reconstruct(lambda path, sha: {'path': str(path), 'sha256': sha}))
+        if result != self.request['request_sha256']:
+            raise ValueError('Spicy historical snapshot request digest differs')
+        return result
+
+    def source_sha(self, role, path, *, pointer=None):
+        from lib import production_execution as execution
+        path = execution._inside(path, self.root)
+        aliases = {'first_frame': {'first_frame', 'image_path'},
+                   'last_frame': {'last_frame', 'last_image_path'},
+                   'reference_image': {'reference_image_paths'}, 'reference_video': {'reference_video_paths'},
+                   'reference_audio': {'reference_audio_paths'}, 'source_video': {'reference_video_paths'},
+                   'source_audio': {'reference_audio_paths'}, 'mask': {'reference_image_paths'}, 'keyframe': {'reference_image_paths'},
+                   'character_reference': {'reference_image_paths'}, 'environment_reference': {'reference_image_paths'}}
+        if pointer is not None:
+            inputs = self.request.get('submitted_inputs', {}).get('input_assets', [])
+            exact = [source for source in inputs if source.get('pointer') == pointer and source.get('role') == role]
+            if len(exact) != 1:
+                raise ValueError('Spicy typed original lacks an exact native source pointer')
+            target = execution._inside(exact[0]['source_path'], self.root)
+            matches = [row for row in self.records if row['role'] in aliases.get(role, set())
+                       and execution._inside(row['original_path'], self.root) == path
+                       and execution._inside(row['path'], self.root) == target]
+            if not matches or any(row['sha256'] != matches[0]['sha256'] for row in matches):
+                raise ValueError('Spicy typed original source pointer/snapshot differs')
+            if file_sha256(target) != matches[0]['sha256']:
+                raise ValueError('Spicy typed original source snapshot bytes changed')
+            return matches[0]['sha256']
+        matches = [row for row in self.records if row['role'] in aliases.get(role, set())
+                   and execution._inside(row['original_path'], self.root) == path]
+        if len(matches) != 1:
+            raise ValueError('Spicy historical native source lacks exact role/path snapshot')
+        row = matches[0]
+        snapshot = execution._inside(row['path'], self.root)
+        if not snapshot.is_relative_to(self.directory / 'inputs') or file_sha256(snapshot) != row['sha256']:
+            raise ValueError('Spicy historical native snapshot bytes changed')
+        return row['sha256']

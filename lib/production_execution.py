@@ -28,7 +28,7 @@ from typing import Any
 
 from lib.shot_contract import contract_digest, file_sha256, validate_shot_contract
 
-GOVERNANCE_KEYS = {'governance', 'project_dir', 'shot_id', 'scope_id', 'production_phase', 'shot_contract_path', 'compiled_request_id', 'preparation_review_id', 'credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256', 'unknown_cost_authorization_id', 'unknown_cost_evidence_id'}
+GOVERNANCE_KEYS = {'spicy_quote_id', 'governance', 'project_dir', 'shot_id', 'scope_id', 'production_phase', 'shot_contract_path', 'compiled_request_id', 'preparation_review_id', 'credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256', 'unknown_cost_authorization_id', 'unknown_cost_evidence_id'}
 INPUT_PATH_KEYS = {'image', 'image_path', 'image_paths', 'reference_image_path', 'reference_image_paths',
                    'first_frame', 'last_frame', 'last_image_path', 'images', 'audio_path',
                    'reference_audio_path', 'reference_audio_paths', 'video_path', 'reference_video_path',
@@ -181,6 +181,13 @@ def _clean(inputs):
 def _paths(inputs, root, visitor, *, allow_upstream=False):
     """Visit supported provider local-asset fields without modifying caller data."""
     def walk(value, key=None):
+        if key == 'native_input':
+            # Spicy v2 owns schema/media-pointer validation. Only its explicit
+            # input_assets carry local bytes; exact nonmedia controls remain in
+            # the planned request digest and native request/quote binding.
+            if not isinstance(value, dict):
+                _fail('native_input must be an exact object')
+            return copy.deepcopy(value)
         if key in {'workflow_path', 'workflow_json'}:
             _fail('strict production cannot bind opaque workflow media dependencies')
         if key in STRICT_UNENCODED_NATIVE_KEYS:
@@ -192,6 +199,8 @@ def _paths(inputs, root, visitor, *, allow_upstream=False):
             names = {'first_frame': 'first_frame', 'last_frame': 'last_frame',
                      'reference_image': 'reference_image_paths', 'reference_video': 'reference_video_paths',
                      'reference_audio': 'reference_audio_paths',
+                     'source_video': 'reference_video_paths', 'source_audio': 'reference_audio_paths',
+                     'mask': 'reference_image_paths', 'keyframe': 'reference_image_paths',
                      'environment_reference': 'reference_image_paths', 'character_reference': 'reference_image_paths'}
             result = []
             for item in value:
@@ -516,6 +525,8 @@ def approved_request_digest(value, *, project_dir, selected_attempts=None):
             names = {'first_frame': 'first_frame', 'last_frame': 'last_frame',
                      'reference_image': 'reference_image_paths', 'reference_video': 'reference_video_paths',
                      'reference_audio': 'reference_audio_paths',
+                     'source_video': 'reference_video_paths', 'source_audio': 'reference_audio_paths',
+                     'mask': 'reference_image_paths', 'keyframe': 'reference_image_paths',
                      'environment_reference': 'reference_image_paths', 'character_reference': 'reference_image_paths'}
             if not isinstance(item, list):
                 _fail('template input_assets must be ordered canonical role bindings')
@@ -627,6 +638,15 @@ def explicit_motion_duration(inputs, *, provider=None):
     values = []
     if 'duration' in inputs:
         values.append(inputs['duration'])
+    if provider == 'spicy' and 'duration_seconds' in inputs:
+        values.append(inputs['duration_seconds'])
+    if provider == 'spicy' and 'native_input' in inputs:
+        native_input = inputs['native_input']
+        if not isinstance(native_input, dict) or 'duration_seconds' not in native_input:
+            _fail('Spicy authored motion requires an explicit native duration_seconds')
+        values.append(native_input['duration_seconds'])
+        if len(values) > 1 and all(type(item) is type(values[0]) and item == values[0] for item in values):
+            values = values[:1]
     for key in ('duration', 'videoDuration'):
         if key in params:
             if key == 'videoDuration' and inputs.get('model') != 'smart-shot':
@@ -748,7 +768,7 @@ def _compiled_request_check(inputs, native, profile):
     try:
         return validate_preparation(inputs, native, profile)
     except (ValueError, OSError, KeyError, TypeError, ValidationError) as exc:
-        _fail('OpenArt preparation: ' + str(exc))
+        _fail(('Spicy' if native.get('provider') == 'spicy' else 'OpenArt') + ' preparation: ' + str(exc))
 
 
 _OPENART_COMPILED_REQUEST_CHECK = _compiled_request_check
@@ -832,6 +852,13 @@ def preflight(tool, inputs, *, _local_continuation=None):
     """Perform the same factual checks used by dispatch, without writing or calling."""
     if _local_continuation is None and isinstance(inputs.get('governance'), dict) and 'continue_local_attempt_id' in inputs['governance']:
         return _check_local_grok_continuation(tool, inputs)['checked']
+    spicy = tool.provider == 'spicy' or (tool.provider == 'selector' and inputs.get('preferred_provider') == 'spicy')
+    if spicy:
+        root = discover_project(inputs)
+        if root is None or _read(root / 'project.json').get('governance', {}).get('mode') != 'strict':
+            _fail('Spicy requires explicit strict enrollment and exact approved authority')
+        if tool.name not in {'spicy_video', 'video_selector'} or inputs.get('preferred_provider', 'spicy') != 'spicy' or inputs.get('allowed_providers', ['spicy']) != ['spicy']:
+            _fail('Spicy requires its canonical singleton native video route')
     mcp = tool.provider == 'openart_mcp' or (tool.provider == 'selector' and inputs.get('preferred_provider') == 'openart_mcp')
     unknown_keys = ('unknown_cost_authorization_id', 'unknown_cost_evidence_id')
     if mcp:
@@ -917,6 +944,8 @@ def preflight(tool, inputs, *, _local_continuation=None):
     scope = matches[0]
     if 'derived_from_policy' in scope and not isinstance(scope['derived_from_policy'], dict):
         _fail('malformed derived_from_policy')
+    if spicy and 'derived_from_policy' not in scope:
+        _fail('Spicy requires its canonical derived policy scope and cumulative attempt caps')
     if scope.get('status') != 'approved' or not scope.get('approved_by'):
         _fail('scope lacks explicit approval provenance')
     evidence = scope.get('evidence', {})
@@ -974,7 +1003,9 @@ def preflight(tool, inputs, *, _local_continuation=None):
             _fail('shot contract project mismatch')
         scoped_shot = next((shot for shot in contract.get('shots', []) if shot.get('id') == shot_id), {})
         if scoped_shot.get('reference_mode', contract.get('reference_mode')) == 'reference_guided':
-            if provider != 'openart_mcp' and not (provider == 'grok_cli' and inputs.get('operation') == 'reference_to_video'):
+            spicy_guided = (provider == 'spicy' and 'native_input' in inputs and inputs.get('mode') in {
+                'reference_to_video', 'video_edit', 'video_extend', 'character_animation', 'talking_avatar', 'video_translate', 'lip_sync'})
+            if provider != 'openart_mcp' and not spicy_guided and not (provider == 'grok_cli' and inputs.get('operation') == 'reference_to_video'):
                 _fail('reference-guided production requires its explicit native reference route')
         checked = validate_shot_contract(contract, project_dir=root, shot_id=shot_id,
             story_revision=marker['story_revision'], selected_upstream=load_selected_attempts(root))
@@ -998,7 +1029,7 @@ def preflight(tool, inputs, *, _local_continuation=None):
             _check_local_render_inputs(contract, shot_id, _clean(inputs), root)
         else:
             if policy_validated:
-                _check_motion_inputs(contract, shot_id, _clean(inputs), root, policy_composite=True, provider=tool.provider)
+                _check_motion_inputs(contract, shot_id, _clean(inputs), root, policy_composite=True, provider=provider)
             else:
                 _check_motion_inputs(contract, shot_id, _clean(inputs), root, provider=tool.provider)
     allowance = scope.get('attempts_per_shot', {}).get(shot_id)
@@ -1057,6 +1088,12 @@ def preflight(tool, inputs, *, _local_continuation=None):
     if any(_inside(item.get('submitted_inputs', {}).get('output_path', ''), root) == output
            for item in attempts if _local_continuation is None or item['attempt_id'] != _local_continuation['attempt_id']):
         _fail('output path already reserved; reconcile the original attempt')
+    if spicy:
+        from lib import spicy_jobs, production_autonomy as autonomy
+        native = spicy_jobs.build_native_request(inputs)
+        profile = {'source': 'real'}
+        _compiled_request_check(inputs, native, profile)
+        autonomy.verify_spicy_dispatch(root, inputs, native)
     if mcp:
         from lib import openart_mcp as connector
         profile = connector.load_profile(inputs.get('model'), inputs.get('mode'), require='candidate' if qualification else 'supported')
@@ -1129,6 +1166,14 @@ def _lock(root):
 
 def _provider_inputs(tool, inputs, session_id):
     result = _clean(inputs)
+    if tool.provider == 'spicy':
+        active = _ACTIVE.get()
+        owner = active['submitted_inputs'] if active and active.get('provider') == 'spicy' else inputs
+        for key in ('project_dir', 'governance', 'compiled_request_id', 'preparation_review_id', 'spicy_quote_id',
+                    'preferred_provider', 'allowed_providers', 'preferred_tool', 'hosting_provider'):
+            if key in owner:
+                result[key] = copy.deepcopy(owner[key])
+        result['cli_session_id'] = session_id
     if 'cli_session_id' in getattr(tool, 'input_schema', {}).get('properties', {}):
         result['cli_session_id'] = session_id
     return result
@@ -1686,9 +1731,9 @@ def _execute_governed(tool, inputs, invoke):
                 _check_local_render_inputs(checked['contract'], checked['shot_id'], submitted, root)
             else:
                 if checked.get('policy_validated'):
-                    _check_motion_inputs(checked['contract'], checked['shot_id'], submitted, root, policy_composite=True, provider=tool.provider)
+                    _check_motion_inputs(checked['contract'], checked['shot_id'], submitted, root, policy_composite=True, provider=checked['scope']['provider'])
                 else:
-                    _check_motion_inputs(checked['contract'], checked['shot_id'], submitted, root, provider=tool.provider)
+                    _check_motion_inputs(checked['contract'], checked['shot_id'], submitted, root, provider=checked['scope']['provider'])
         # Rebind actual submitted snapshot bytes to ORIGINAL approved locations.
         # Rereading original files alone is insufficient if they changed then reverted.
         bindings = iter(asset_records)
@@ -1701,6 +1746,13 @@ def _execute_governed(tool, inputs, invoke):
         if _digest(snapshot_request) != checked['request_sha256']:
             _fail('input changed during reservation')
         submitted = _provider_inputs(tool, submitted, session_id)
+        if checked['scope']['provider'] == 'spicy':
+            # _clean removed administrative fields before immutable snapshotting;
+            # the native adapter still needs the exact canonical reservation owner.
+            for key in ('project_dir', 'governance', 'compiled_request_id', 'preparation_review_id', 'spicy_quote_id'):
+                if key in inputs:
+                    submitted[key] = copy.deepcopy(inputs[key])
+            submitted['cli_session_id'] = session_id
         if openart_binding:
             for key in ('compiled_request_id', 'preparation_review_id', 'credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256', 'unknown_cost_authorization_id', 'unknown_cost_evidence_id'):
                 if key in inputs:
@@ -1735,18 +1787,23 @@ def _execute_governed(tool, inputs, invoke):
             request['submitted_inputs'] = _openart_public_inputs(submitted)
         if openart_prepared:
             credit_dispatch.reserve_dispatch(openart_prepared, checked, request, frozen)
-        if 'derived_from_policy' in scope and scope['provider'] == 'grok_cli':
+        if 'derived_from_policy' in scope and scope['provider'] in {'grok_cli', 'spicy'}:
             from lib import production_request as preparation
             from lib.production_autonomy import current_projection
-            native_policy = preparation.prepare_grok_native(inputs, _GROK_COMPATIBILITY.get())
+            native_policy = (preparation.prep_builder('spicy')(inputs) if scope['provider'] == 'spicy'
+                             else preparation.prepare_grok_native(inputs, _GROK_COMPATIBILITY.get()))
             compiled_policy = preparation._read(root, 'compiled_request-' + preparation._id(inputs['compiled_request_id']) + '.json')
             review_policy = preparation._read(root, 'preparation_review-' + preparation._id(inputs['preparation_review_id']) + '.json')
             payload = {'compiled': compiled_policy, 'review': review_policy,
-                       'source_packet': preparation.source_packet(root, checked['shot_id'], provider='grok_cli'),
+                       'source_packet': preparation.source_packet(root, checked['shot_id'], provider=scope['provider']),
                        'native': native_policy, 'projection': current_projection(root, checked['shot_id'])}
             snapshot_path = directory / 'autonomy_preparation.json'
             _write_new(snapshot_path, payload)
             request['autonomy_preparation'] = {'path': str(snapshot_path), 'sha256': file_sha256(snapshot_path)}
+        if scope['provider'] == 'spicy':
+            from lib import spicy_jobs, production_autonomy as autonomy
+            request['spicy_native'] = spicy_jobs.build_native_request(inputs)
+            request['spicy_authority'] = autonomy.verify_spicy_dispatch(root, inputs, request['spicy_native'])
         _write_new(directory / 'request.json', request)
         evidence_path = _inside(scope['evidence']['path'], root)
         evidence_copy = directory / ('approval-evidence' + evidence_path.suffix)
@@ -1758,6 +1815,19 @@ def _execute_governed(tool, inputs, invoke):
         if checked['contract']:
             _write_new(directory / 'shot_contract.json', checked['contract'])
         _write_new(directory / 'selected_attempts.json', load_selected_attempts(root))
+        if scope['provider'] == 'spicy':
+            # The canonical counted reservation must survive before its native
+            # subjournal can ever send createTask. Keep old route I/O unchanged.
+            import os
+            from lib.spicy_catalog import _fsync_dir
+            for retained_file in directory.rglob('*'):
+                if retained_file.is_file():
+                    with retained_file.open('rb') as stream:
+                        os.fsync(stream.fileno())
+            _fsync_dir(directory / 'inputs')
+            _fsync_dir(directory)
+            _fsync_dir(directory.parent)
+            _fsync_dir(root)
         if openart_prepared:
             credit_dispatch.journal_ready(session_id)
     active = {'provider':scope['provider'], 'provider_called':tool.provider != 'selector',
@@ -2418,6 +2488,8 @@ def reconcile_attempt(project_dir, attempt_id, result, *, request_sha256):
     directory = _inside(Path('production_attempts') / attempt_id, root)
     with _lock(root):
         request = _read(directory / 'request.json')
+        if request['scope']['provider'] == 'spicy':
+            _fail('Spicy reconciliation requires collect_spicy_attempt on the same original journal')
         if request['scope']['provider'] == 'openart_cli':
             _fail('OpenArt reconciliation requires collect_openart_attempt on the original attempt')
         if _state(root, request)['status'] != 'uncertain' or result.data.get('original_session_recovery'):
@@ -3054,6 +3126,8 @@ def resume_original_attempt(project_dir, attempt_id, *, request_sha256, dry_run=
         if request.get('attempt_id') != attempt_id or request.get('request_sha256') != request_sha256:
             _fail('original resume request/attempt binding differs')
         provider = request['scope']['provider']
+        if provider == 'spicy':
+            return collect_spicy_attempt(root, attempt_id, request_sha256=request_sha256, dry_run=dry_run)
         if provider == 'grok_cli' and request.get('media_kind') == 'motion':
             if (directory / 'reconciliation.json').exists():
                 with _lock(root):
@@ -3106,7 +3180,7 @@ def resume_original_attempt(project_dir, attempt_id, *, request_sha256, dry_run=
 
 ACTION_KINDS = frozenset({'restore_derived_views', 'prepare_board_image', 'begin_native_image',
     'promote_imported_board', 'receive_native_image', 'prepare_motion', 'bind_upstream_frame',
-    'collect_grok_original', 'collect_openart_original', 'begin_openart_original',
+    'collect_grok_original', 'collect_openart_original', 'collect_spicy_original', 'begin_openart_original',
     'receive_openart_original', 'poll_openart_original', 'download_openart_original',
     'compose_cut', 'complete', 'blocked'})
 
@@ -3177,6 +3251,33 @@ def _production_action(root, kind, *, subject, binding, inputs=None, reason=None
     value['host_required'] = host
     value['action_id'] = _digest(value)
     return value
+
+
+def _spicy_primary_selection_action(root, request, binding):
+    """Project byte-verified original choices without polling or choosing one."""
+    if request.get('spicy_native', {}).get('transport') != 'spicy_native_jobs_v2':
+        return None
+    from lib import spicy_jobs, spicy_lifecycle
+    try:
+        inventory = spicy_lifecycle.collected_outputs(root, request['attempt_id'])
+    except spicy_jobs.SpicyError:
+        # Before succeeded collection the ordinary same-original collector owns
+        # readiness and errors. This projection grants no collection authority.
+        return None
+    if not inventory.get('requires_primary_selection') or inventory.get('unresolved_asset_count') != 0:
+        return None
+    choices = [{key: row[key] for key in ('key', 'path', 'sha256', 'bytes', 'mime')}
+               for row in inventory['outputs'] if row['mime'].startswith('video/')]
+    if not choices:
+        _fail('Spicy primary selection inventory has no verified video')
+    return _production_action(root, 'blocked', subject=request['attempt_id'],
+        binding={**binding, 'inventory_sha256': _digest(inventory)},
+        inputs={'attempt_id': request['attempt_id'], 'request_sha256': request['request_sha256'],
+                'action': 'select_primary_original_video', 'selectable_outputs': choices,
+                'selection_helper': 'lib.spicy_lifecycle.select_primary_output',
+                'selection_arguments': ['project_dir', 'attempt_id', 'asset_key'],
+                'counted_original': True, 'provider_calls': 0, 'reservations': 0},
+        reason='All original assets are collected. Select one exact retained video key as primary, then resume this original; no new generation is needed.')
 
 
 def _validated_upstream_binding(root, contract, shot_id, upstream_id, selection):
@@ -3349,7 +3450,12 @@ def next_production_action(project_dir):
             'state_sha256': _digest(observed), 'counted_original': True}
         if observed.get('status') in {'uncertain', 'submitted', 'reserved'}:
             provider = request.get('scope', {}).get('provider')
-            kind = {'grok_cli': 'collect_grok_original', 'openart_cli': 'collect_openart_original'}.get(provider, 'blocked')
+            selection_action = (_spicy_primary_selection_action(root, request, binding)
+                                if provider == 'spicy' else None)
+            if selection_action is not None:
+                remember_motion(selection_action)
+                continue
+            kind = {'grok_cli': 'collect_grok_original', 'openart_cli': 'collect_openart_original', 'spicy': 'collect_spicy_original'}.get(provider, 'blocked')
             candidate = action(kind, aid, binding, inputs={'attempt_id': aid,
                 'request_sha256': request['request_sha256'], 'original_id': request.get('cli_session_id', aid),
                 'provider': provider}, reason=('Unsupported strict original collection; preserve original ID/count and never replace.' if kind == 'blocked' else None))
@@ -3517,7 +3623,7 @@ def advance(project_dir, *, max_steps=8):
                 return {'status': 'host_action', 'action': _native_original_action(root,
                             images.image_call_status(root, action['subject'])),
                         'host_envelope': envelope, 'steps': step + 1, 'provider_calls': 0}
-            elif kind in {'collect_grok_original', 'collect_openart_original'}:
+            elif kind in {'collect_grok_original', 'collect_openart_original', 'collect_spicy_original'}:
                 collected = resume_original_attempt(root, action['subject'], request_sha256=action['binding']['request_sha256'])
                 if isinstance(collected, dict) and collected.get('status') == 'pending':
                     return {'status': 'pending', 'action': action, 'steps': step + 1,
@@ -3631,7 +3737,9 @@ def draft_motion_preparation(project_dir, action, *, output_path=None, compiled_
             'openart_project_id': inputs.get('openart_project_id',
                 autonomy._provider_spec(policy, provider).get('project_id'))} if provider == 'openart_mcp' else {}))
     inputs.update(project_dir=str(root), governance={'shot_id': sid}, prompt=authored['prompt'])
-    if provider in ('grok_cli', 'openart_mcp'):
+    if provider == 'spicy' and 'native_input' in inputs:
+        inputs['native_input']['prompt'] = authored['prompt']
+    if provider in ('grok_cli', 'openart_mcp', 'spicy'):
         # Administrative names are deterministic for this exact action. Native
         # upload receipts and preparation judgment remain their existing owners.
         record_id = 'motion-' + current['action_id'][:24]
@@ -3794,6 +3902,30 @@ def complete_action(project_dir, action, *, outcome):
                 observation = observe_grok_cli_compatibility(configured, cwd=inputs.get('cwd') or root)
                 native = prep_builder(provider)(inputs, observation)
                 profile = {'source': 'real'}
+            elif provider == 'spicy':
+                from lib import spicy_jobs, production_autonomy as autonomy
+                policy, _, _ = autonomy.require_active_policy(root, shot_id=aid)
+                spec = autonomy._provider_spec(policy, provider)
+                if spec is None or not policy.get('activation_basis'):
+                    _fail('Spicy factory preparation requires exact activated source-transfer authority')
+                if inputs.get('account_label') != spec['account_label'] or inputs.get('credential_ref') != spec['credential_ref']:
+                    _fail('Spicy preparation account binding differs from retained policy')
+                autonomy.verify_spicy_account(root, inputs, inputs['model'], spec)
+                profile = {'source': 'real'}
+                native = prep_builder(provider)(inputs, profile)
+                from lib.production_request import spicy_factory_blockers
+                blockers = spicy_factory_blockers(native)
+                if blockers:
+                    _fail('; '.join(row['code'] + ': ' + row['message'] for row in blockers))
+                if native.get('sources'):
+                    autonomy._validate_standing_transfer(root, policy, inputs, provider)
+                if native.get('payload_state') == 'needs_upload':
+                    client = spicy_jobs.client_for_credential(spec['credential_ref'],
+                        qualified_storage_hosts=spec['qualified_storage_hosts'])
+                    spicy_jobs.upload_sources(root, inputs, client=client)
+                    native = prep_builder(provider)(inputs, profile)
+                quote = spicy_jobs.quote_native_request(root, native, account_label=spec['account_label'], credential_ref=spec['credential_ref'])
+                inputs['spicy_quote_id'] = quote['quote_id']
             elif provider == 'openart_mcp':
                 from lib import openart_mcp as connector
                 profile = connector.load_profile(inputs['model'], inputs['mode'], require='supported')
@@ -3870,3 +4002,73 @@ def prepare_openart_mcp_handoff(inputs, *, attempt_id=None):
                 'output_path': str(_inside(inputs['output_path'], checked['root']))}
     finally:
         _MCP_REVALIDATING.reset(token)
+
+
+def collect_spicy_attempt(project_dir, attempt_id, *, request_sha256, dry_run=False):
+    """Recover/poll/collect the same native task without a new production reservation."""
+    from lib import spicy_jobs
+    root = Path(project_dir).resolve()
+    directory = _inside(Path('production_attempts') / attempt_id, root)
+    request = _read(directory / 'request.json')
+    if (request.get('attempt_id') != attempt_id or request.get('request_sha256') != request_sha256
+            or request.get('scope', {}).get('provider') != 'spicy'):
+        _fail('Spicy original resume request/attempt binding differs')
+    selection_action = _spicy_primary_selection_action(root, request, {
+        'attempt_id': attempt_id, 'request_sha256': request_sha256, 'counted_original': True})
+    if selection_action is not None:
+        return {'status': 'blocked', 'attempt_id': attempt_id, 'request_sha256': request_sha256,
+                'counted_original': True, 'reservations': 0, 'provider_calls': 0, 'action': selection_action}
+    if dry_run:
+        return {'status': _state(root, request)['status'], 'attempt_id': attempt_id,
+                'request_sha256': request_sha256, 'provider_calls': 0,
+                'reservations': 0, 'would_collect_original': True, 'counted_original': True}
+    retained_state = _state(root, request)
+    if (directory / 'reconciliation.json').exists() or retained_state.get('status') == 'generated':
+        if retained_state['status'] == 'generated':
+            collected = spicy_jobs.validate_collected_original(root, attempt_id)
+            if retained_state.get('output') != collected['output']:
+                _fail('Spicy retained original output differs')
+        return retained_state
+    result = spicy_jobs.resume_original(root, attempt_id)
+    if not result.success and result.data.get('dispatch_status') not in {'failed'}:
+        selection_action = _spicy_primary_selection_action(root, request, {
+            'attempt_id': attempt_id, 'request_sha256': request_sha256, 'counted_original': True})
+        if selection_action is not None:
+            return {'status': 'blocked', 'attempt_id': attempt_id, 'request_sha256': request_sha256,
+                    'counted_original': True, 'reservations': 0, 'provider_calls': 0, 'action': selection_action}
+        return {'status': 'pending', 'attempt_id': attempt_id, 'request_sha256': request_sha256,
+                'counted_original': True, 'reservations': 0, 'original': asdict(result)}
+    with _lock(root):
+        if (directory / 'reconciliation.json').exists():
+            return _read(directory / 'reconciliation.json')
+        if result.success:
+            collected = spicy_jobs.validate_collected_original(root, attempt_id)
+            native = request['spicy_native']
+            if (collected['native']['request_sha256'] != native['request_sha256']
+                    or collected['quote'] != request['spicy_authority']['quote']
+                    or result.data.get('conditioning_receipt') != collected['receipt']):
+                _fail('Spicy original task/quote/native receipt differs from reserved request')
+        prefix = 'spicy-original-' + uuid.uuid4().hex + '-'
+        if result.success:
+            output = collected['output']
+            source = _inside(output['path'], root)
+            if file_sha256(source) != output['sha256'] or str(source) not in result.artifacts:
+                _fail('Spicy original output bytes/artifact differ')
+            preserved = directory / ('output' + source.suffix)
+            if preserved.exists():
+                if file_sha256(preserved) != output['sha256']:
+                    _fail('Spicy preserved original output differs')
+            else:
+                _preserve_output(source, preserved, output['sha256'])
+            record = {'status': 'generated', 'result': asdict(result), 'output': output,
+                      'preserved_output': {'path': str(preserved), 'sha256': output['sha256']}, 'exception': None}
+            _write_new(directory / (prefix + 'raw_result.json'), asdict(result))
+            _write_new(directory / (prefix + 'result.json'), record)
+        else:
+            record = _save_result(directory, result=result, prefix=prefix)
+        from lib.spicy_catalog import atomic_write_json
+        reconciliation = directory / 'reconciliation.json'
+        atomic_write_json(reconciliation, record, exclusive=True)
+        reconciliation.chmod(0o444)
+        _observe_retained_output(root, request, record)
+        return record

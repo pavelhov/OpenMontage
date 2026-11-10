@@ -191,11 +191,13 @@ def _open_output_parent(output_path, output_root):
 def collect_output(url, output_path, *, allowed_hosts, output_root,
                    expected_sha256=None, max_bytes=536870912, timeout=30.0,
                    max_redirects=5, allow_public_redirects=False, retain_private_trace=False,
-                   before_publish=None):
+                   before_publish=None, expected_mime=None, accepted_mimes=None):
     """Download and atomically publish one result; returns verified local metadata.
 
     Root and destination parent must already exist and have no symlink ancestors.
     All errors are sanitized. Existing destination files are never replaced.
+    An explicit finite accepted_mimes set may reconcile a provider declaration,
+    but requires a prepublication byte validator. Default MIME matching is strict.
     """
     parent = None
     temporary = None
@@ -211,6 +213,20 @@ def collect_output(url, output_path, *, allowed_hosts, output_root,
             _fail("Invalid result redirect limit")
         if expected_sha256 is not None and (not isinstance(expected_sha256, str) or not re.fullmatch(r"[a-fA-F0-9]{64}", expected_sha256)):
             _fail("Invalid expected result digest")
+        if expected_mime is not None:
+            if (not isinstance(expected_mime, str)
+                    or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*/[A-Za-z0-9][A-Za-z0-9!#$&^_.+-]*", expected_mime)):
+                _fail("Invalid expected result media type")
+            expected_mime = expected_mime.split(";", 1)[0].strip().casefold()
+        if accepted_mimes is not None:
+            if (expected_mime is None or not callable(before_publish)
+                    or not isinstance(accepted_mimes, (set, frozenset, list, tuple))
+                    or not 0 < len(accepted_mimes) <= 16
+                    or any(not isinstance(mime, str) or not re.fullmatch(
+                        r"[a-z0-9][a-z0-9!#$&^_.+-]*/[a-z0-9][a-z0-9!#$&^_.+-]*", mime)
+                        for mime in accepted_mimes)
+                    or expected_mime not in accepted_mimes):
+                _fail("Invalid result media reconciliation policy")
         if not isinstance(allowed_hosts, (set, frozenset, list, tuple)) or not 0 < len(allowed_hosts) <= 100:
             _fail("Result hosts must be an explicit finite collection")
         if type(allow_public_redirects) is not bool or type(retain_private_trace) is not bool:
@@ -253,6 +269,14 @@ def collect_output(url, output_path, *, allowed_hosts, output_root,
                 continue
             if response.status != 200:
                 _fail("Result host did not return a successful download")
+            normalized_mime = None
+            if expected_mime is not None:
+                content_type = response.getheader("Content-Type")
+                if not isinstance(content_type, str):
+                    _fail("Result media type is missing")
+                normalized_mime = content_type.split(";", 1)[0].strip().casefold()
+                if normalized_mime not in (accepted_mimes if accepted_mimes is not None else (expected_mime,)):
+                    _fail("Result media type does not match original job evidence")
             if response.getheader("Content-Encoding") not in (None, "identity"):
                 _fail("Unsupported result content encoding")
             length = response.getheader("Content-Length")
@@ -284,6 +308,8 @@ def collect_output(url, output_path, *, allowed_hosts, output_root,
             _remaining(deadline)
             result = {"path": str(target), "size": size, "sha256": sha256,
                       "source_url": source_url, "source_host": original_host}
+            if expected_mime is not None:
+                result["mime"] = normalized_mime
             if retain_private_trace:
                 result.update(final_url=current, redirect_chain=private_trace)
             # The original-job owner durably binds the verified stream before

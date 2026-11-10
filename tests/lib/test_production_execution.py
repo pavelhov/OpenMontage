@@ -322,8 +322,10 @@ def test_approval_plan_preserves_semantics_while_observed_handoff_fills(tmp_path
 def test_windows_lock_branch_does_not_import_fcntl(tmp_path,monkeypatch):
     import sys
     import os
+    from importlib import import_module
     from types import SimpleNamespace
     from lib.production_execution import _lock
+    import_module('lib.production_autonomy')
     calls=[]
     fake=SimpleNamespace(LK_LOCK=1,LK_UNLCK=2,locking=lambda fd,mode,size:calls.append((mode,size)))
     with monkeypatch.context() as patch:

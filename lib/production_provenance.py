@@ -152,9 +152,11 @@ def _validate_attempt_provenance(
     local_render = request['media_kind'] == 'local_render'
     require(scope.get('phase') in ({'local_render'} if local_render else {'first_pass', 'repair'}), 'scope does not approve motion kind')
     openart = scope.get('provider') == 'openart_cli' and not local_render
-    require(scope.get('provider') in ({'hyperframes'} if local_render else {'grok_cli','openart_cli'}), 'provider has no qualified strict motion provenance adapter')
+    require(scope.get('provider') in ({'hyperframes'} if local_render else {'grok_cli','openart_cli','spicy'}), 'provider has no qualified strict motion provenance adapter')
     if local_render:
         require(request.get('tool_name') == 'hyperframes_compose', 'local render tool identity differs')
+    elif scope.get('provider') == 'spicy':
+        require(request.get('tool_name') in {'spicy_video', 'video_selector'}, 'Spicy canonical tool identity differs')
     elif not openart:
         require(request.get('tool_name') in {'grok_cli_video', 'video_selector'}, 'Grok tool identity differs')
     evidence = request['approval_evidence']
@@ -262,7 +264,12 @@ def _validate_attempt_provenance(
     shot = shots[0]
     project_reference_free = contract.get('reference_mode') == 'reference_free'
     reference_free = project_reference_free or shot.get('reference_mode') == 'reference_free'
-    require(not reference_free or openart, 'reference-free contract requires OpenArt text2video')
+    spicy_reference_free = (scope.get('provider') == 'spicy'
+        and request.get('spicy_native', {}).get('transport') == 'spicy_native_jobs_v2'
+        and request['spicy_native'].get('mode') == 'text_to_video'
+        and request['spicy_native'].get('sources') == [])
+    require(not reference_free or openart or spicy_reference_free,
+            'reference-free contract requires OpenArt text2video or an exact schema-bound source-free Spicy text-to-video request')
 
     # Report-only semantics follow the attempt's frozen standing make_video
     # authority, independent of later package/approval drift.
@@ -389,9 +396,9 @@ def _validate_attempt_provenance(
         execution._check_local_render_inputs(contract, shot_id, submitted, root)
     else:
         if policy_derived:
-            execution._check_motion_inputs(contract, shot_id, submitted, root, policy_composite=True)
+            execution._check_motion_inputs(contract, shot_id, submitted, root, policy_composite=True, provider=scope.get('provider'))
         else:
-            execution._check_motion_inputs(contract, shot_id, submitted, root)
+            execution._check_motion_inputs(contract, shot_id, submitted, root, provider=scope.get('provider'))
     expected_hashes = {assets[asset_id]['sha256'] for asset_id in shot['asset_ids']}
     require(all(item['sha256'] in expected_hashes or (local_render and item['role'] == 'workspace_path') for item in bindings), 'submitted input outside approved shot assets')
     if openart:
@@ -405,6 +412,8 @@ def _validate_attempt_provenance(
         elif not _ALLOW_OPENART_COMPONENT_PREPARATION:
             fail('OpenArt immutable preparation snapshot missing')
         return _validate_openart_result(root, directory, request, frozen_openart, expected_output, bound_file, read, require)
+    if scope.get('provider') == 'spicy':
+        return _validate_spicy_result(root, directory, request, expected_output, bound_file, read, require)
     if local_render:
         return _validate_local_render_result(root, directory, request, expected_output, bound_file, read, require)
 
@@ -1060,3 +1069,26 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
             **({'historical_upstream_changed': upstream_changed,
                 'historical_source_changed': source_changed or upstream_changed} if _historical_source else {}),
             'connector_provenance': retained}
+
+
+def _validate_spicy_result(root, directory, request, expected_output, bound_file, read, require):
+    """Use actual retained same-task transport evidence after common authority checks."""
+    from lib import spicy_jobs, production_execution as execution
+    native = request['spicy_native']
+    collected = spicy_jobs.validate_collected_original(root, request['attempt_id'])
+    require(collected['native']['request_sha256'] == native['request_sha256'],
+            'Spicy collected original native request differs')
+    authority = request.get('spicy_authority', {})
+    require(collected['quote'] == authority.get('quote'), 'Spicy original quote differs from reserved exposure')
+    require(collected['output'] == expected_output, 'Spicy original output differs')
+    result = execution.load_attempt_result(root, request['attempt_id'])
+    require(result.get('status') == 'generated' and result.get('output') == expected_output,
+            'Spicy original has no retained generated output')
+    payload = result.get('result', {})
+    require(payload.get('success') is True and payload.get('data', {}).get('conditioning_receipt') == collected['receipt'],
+            'Spicy returned receipt differs from retained original evidence')
+    output = bound_file(result.get('output'), root, 'Spicy collected output')
+    bound_file(result.get('preserved_output'), directory, 'Spicy preserved original')
+    require(result['preserved_output']['sha256'] == expected_output['sha256'] and str(output) in payload.get('artifacts', []),
+            'Spicy preserved output or artifact differs')
+    return {'request': request, 'result': result}

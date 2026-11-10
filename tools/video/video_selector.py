@@ -798,7 +798,17 @@ class VideoSelector(BaseTool):
         # explicit-only or disallowed provider.
         from tools.provider_routing import filter_explicit_route
 
-        candidates = filter_explicit_route(inputs, candidates)
+        explicit_candidates = []
+        for tool in candidates:
+            route_inputs = inputs
+            if self._spicy_exact_model_eligible(tool, inputs, inputs.get('model')):
+                # The shared static metadata filter cannot enumerate a current
+                # key/project schema route. Its exact model was checked above;
+                # keep the same tool and host constraints here.
+                route_inputs = {key: value for key, value in inputs.items()
+                                if key not in {'model', 'model_id', 'model_name'}}
+            explicit_candidates.extend(filter_explicit_route(route_inputs, [tool]))
+        candidates = explicit_candidates
         exact_model = inputs.get("model")
         if exact_model:
             model_matches = [
@@ -810,6 +820,7 @@ class VideoSelector(BaseTool):
                 .get("model", {})
                 .get("enum", [])
                 or exact_model in tool.get_info().get("model_catalog", {})
+                or self._spicy_exact_model_eligible(tool, inputs, exact_model)
             ]
             candidates = model_matches
 
@@ -981,9 +992,46 @@ class VideoSelector(BaseTool):
         ) or any(isinstance(row, dict) and row.get("role") == "last_frame" for row in inputs.get("input_assets", []))
 
     @staticmethod
+    def _spicy_exact_model_eligible(tool, inputs, model):
+        """A strict oneOf tool schema has no universal top-level model enum."""
+        if getattr(tool, 'provider', None) != 'spicy':
+            return False
+        try:
+            from lib import spicy_catalog
+            if 'native_input' not in inputs and inputs.get('transport') != 'spicy_native_jobs_v2':
+                spicy_catalog.route(model)
+                return True
+            if not inputs.get('project_dir'):
+                return False
+            observation = spicy_catalog.load_account_observation_v2(inputs['project_dir'], model, inputs.get('credential_ref', 'env:SPICY_API_KEY'))
+            return bool(observation and observation.get('model') == model and observation.get('mode') == inputs.get('mode'))
+        except (ValueError, TypeError, KeyError, OSError):
+            return False
+
+    @staticmethod
     def _final_frame_eligible(tool: BaseTool, inputs: dict[str, object]) -> bool:
         supports = getattr(tool, "supports", {})
         props = getattr(tool, "input_schema", {}).get("properties", {})
+        if getattr(tool, 'provider', None) == 'spicy' and ('native_input' in inputs or inputs.get('transport') == 'spicy_native_jobs_v2'):
+            # A generic image upload/reference label is not an ending-frame
+            # promise. Read only this project's current original-key schema;
+            # ordinary canonical builders retain byte/role/authority checks.
+            try:
+                from lib.spicy_catalog import load_account_observation_v2
+                from lib.production_request import spicy_frame_pin_supported
+                root = inputs.get('project_dir')
+                if not root:
+                    return False
+                observation = load_account_observation_v2(root, inputs.get('model'), inputs.get('credential_ref', 'env:SPICY_API_KEY'))
+                if not observation or inputs.get('mode') != observation.get('mode'):
+                    return False
+                if not spicy_frame_pin_supported(inputs.get('model'), inputs.get('mode'), observation['input_schema'], 'last_image_url'):
+                    return False
+                return any(isinstance(source, dict) and source.get('role') == 'last_frame'
+                           and source.get('pointer') == '/last_image_url' and isinstance(source.get('source_path'), str)
+                           and bool(source['source_path']) for source in inputs.get('input_assets', []))
+            except (ValueError, TypeError, KeyError, OSError):
+                return False
         if getattr(tool, 'provider', None) in {'openart_cli', 'openart_mcp'} and hasattr(tool, '_model_catalog'):
             entry = tool._model_catalog().get(inputs.get('model'), {}).get('modes', {}).get(inputs.get('mode')) or {}
             return (entry.get('production_ready') is True or VideoSelector._is_mcp_qualification(inputs, tool)) and entry.get('native_capabilities', {}).get('roles', {}).get('last_frame', {}).get('supported') is True

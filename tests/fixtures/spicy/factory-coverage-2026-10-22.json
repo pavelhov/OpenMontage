@@ -1,0 +1,1786 @@
+{
+  "observed_at": "2026-10-22",
+  "source": "catalogue-2026-10-22.json",
+  "authority": "none",
+  "limitations": "Schema candidates are an upper bound. Exact controls, typed sources, account, project, policy, quote and preparation remain mandatory. Native-only source transforms need source-led authoring/timing proof.",
+  "counts": {
+    "video_schema_records": 160,
+    "native_schema_eligible": 155,
+    "canonical_schema_candidates_upper_bound": 139
+  },
+  "items": [
+    {
+      "model": "kling/4.0/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/4.0/reference-to-video",
+      "tasks": [
+        "reference-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/4.0/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/4.0/video-edit",
+      "tasks": [
+        "video-edit"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/4.0/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "vidu/q4-preview/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "vidu/q4-preview/reference-to-video",
+      "tasks": [
+        "reference-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "vidu/q4-preview/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "minimax/h3-360-orbit/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "canonical_prompt_unrepresentable",
+          "message": "Native schema has no authored prompt control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "minimax/h3-character-swap/video-edit",
+      "tasks": [
+        "video-edit"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "pruna-ai/p-video-2-pro/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "pruna-ai/p-video-2-pro/reference-to-video",
+      "tasks": [
+        "reference-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "pruna-ai/p-video-2-pro/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "minimax/h3-singularity-lora/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "minimax/h3-singularity-lora/reference-to-video",
+      "tasks": [
+        "reference-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "minimax/h3-singularity-lora/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "minimax/h3-max/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "minimax/h3-max/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "minimax/h3-max/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "lightricks/ltx-2.5/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "lightricks/ltx-2.5/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0-prime/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0-prime/reference-to-video",
+      "tasks": [
+        "reference-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0-prime/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0-prime/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0/reference-to-video",
+      "tasks": [
+        "reference-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0-pro-prime/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0-pro-prime/reference-to-video",
+      "tasks": [
+        "reference-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0-pro-prime/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0-pro-prime/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0-pro/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0-pro/reference-to-video",
+      "tasks": [
+        "reference-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0-pro/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0-pro/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0-spicy/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0-prime-spicy/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0-spicy/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-3.0-prime-spicy/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "black-forest-labs/flux-3/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "black-forest-labs/flux-3/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "black-forest-labs/flux-3/upscale",
+      "tasks": [
+        "upscale"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "black-forest-labs/flux-3/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "minimax/h3-lora/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "minimax/h3-lora/reference-to-video",
+      "tasks": [
+        "reference-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "minimax/h3-lora/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "minimax/h3-lora/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.5-spicy/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.5-spicy/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.5/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.5/reference-to-video",
+      "tasks": [
+        "reference-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.5/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "minimax/h3-spicy/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.5/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "minimax/h3-spicy/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "minimax/h3/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "minimax/h3/reference-to-video",
+      "tasks": [
+        "reference-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "minimax/h3/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "minimax/h3/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/happyhorse-1.1/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/happyhorse-1.1/reference-to-video",
+      "tasks": [
+        "reference-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/happyhorse-1.1/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/3.0-turbo/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/3.0-turbo/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.0-mini-spicy/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.0-mini-spicy/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.0-mini/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.0-mini/reference-to-video",
+      "tasks": [
+        "reference-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.0-mini/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.0-mini/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.7-spicy/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.7-spicy/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "lightricks/ltx-2.3-spicy/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "lightricks/ltx-2.3-spicy-lora/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "lightricks/ltx-2.3-spicy/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "lightricks/ltx-2.3-lora/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "lightricks/ltx-2.3-lora/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "lightricks/ltx-2.3-spicy-lora/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.0-spicy/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.0-spicy/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.0/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.0/reference-to-video",
+      "tasks": [
+        "reference-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.0/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.0-fast-spicy/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.0/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.0-fast-spicy/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.0-fast/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.0-fast/reference-to-video",
+      "tasks": [
+        "reference-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.0-fast/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-2.0-fast/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "vidu/q3-turbo/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "vidu/q3-turbo/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/o3/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/o3/reference-to-video",
+      "tasks": [
+        "reference-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/o3/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/o3/video-edit",
+      "tasks": [
+        "video-edit"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/3.0/character-animation",
+      "tasks": [
+        "character-animation"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/3.0/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/3.0/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "vidu/q3-spicy/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "vidu/q3-spicy/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "vidu/q3/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "vidu/q3-pro/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "lightricks/ltx-2-19b/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "lightricks/ltx-2-19b/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "lightricks/ltx-2-19b-lora/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "lightricks/ltx-2-19b-lora/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "lightricks/ltx-2-19b/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-1.5-pro-spicy/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-1.5-pro-spicy/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-1.5-pro/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-1.5-pro/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "bytedance/seedance-1.5-pro/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.6-flash/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.6-flash/reference-to-video",
+      "tasks": [
+        "reference-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.6-spicy/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.6/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.6/reference-to-video",
+      "tasks": [
+        "reference-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.6/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/avatar-2.0/talking-avatar",
+      "tasks": [
+        "talking-avatar"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/2.6/character-animation",
+      "tasks": [
+        "character-animation"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/2.6/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/2.6/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "tencent/hunyuan-video-1.5/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "tencent/hunyuan-video-1.5/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.5/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.5/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.5/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.2-animate/character-animation",
+      "tasks": [
+        "character-animation"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/2.5-turbo/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/2.5-turbo/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.2-spicy/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.2-spicy-lora/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.2-spicy-lora/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.2-spicy/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.2-lora/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.2-lora/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.2-lora/video-extend",
+      "tasks": [
+        "video-extend"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.2/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.2/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.2-5b-lora/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.2-5b-lora/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/2.1-master/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/2.1-master/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "kling/2.1/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.1-lora/image-to-video",
+      "tasks": [
+        "image-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.1-lora/text-to-video",
+      "tasks": [
+        "text-to-video"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "alibaba/wan-2.1-lora/video-edit",
+      "tasks": [
+        "video-edit"
+      ],
+      "native_schema_status": "partial",
+      "canonical_status": "schema_candidate_requires_exact_request_and_sources",
+      "blockers": [],
+      "production_authority": "none"
+    },
+    {
+      "model": "spicyapi/character-swap-v1/video-analyze",
+      "tasks": [
+        "video-analyze"
+      ],
+      "native_schema_status": "blocked",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "nonvideo_output",
+          "message": "operation has no supported video-output contract"
+        },
+        {
+          "code": "canonical_prompt_unrepresentable",
+          "message": "Native schema has no authored prompt control."
+        },
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "spicyapi/character-swap-v1/video-edit",
+      "tasks": [
+        "video-edit"
+      ],
+      "native_schema_status": "blocked",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "required_external_source",
+          "pointer": "/analysis_task_id",
+          "field": "analysis_task_id",
+          "required": true,
+          "reason": "analysis provenance unavailable"
+        },
+        {
+          "code": "required_external_source",
+          "pointer": "/swap_targets/*/image_urls/*",
+          "field": "image_urls",
+          "required": true,
+          "reason": "external source workflow unsupported"
+        },
+        {
+          "code": "canonical_prompt_unrepresentable",
+          "message": "Native schema has no authored prompt control."
+        },
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "spicyapi/head-swap-video-v1/video-analyze",
+      "tasks": [
+        "video-analyze"
+      ],
+      "native_schema_status": "blocked",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "nonvideo_output",
+          "message": "operation has no supported video-output contract"
+        },
+        {
+          "code": "canonical_prompt_unrepresentable",
+          "message": "Native schema has no authored prompt control."
+        },
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "spicyapi/head-swap-video-v1/video-edit",
+      "tasks": [
+        "video-edit"
+      ],
+      "native_schema_status": "blocked",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "required_external_source",
+          "pointer": "/analysis_task_id",
+          "field": "analysis_task_id",
+          "required": true,
+          "reason": "analysis provenance unavailable"
+        },
+        {
+          "code": "required_external_source",
+          "pointer": "/swap_targets/*/image_urls/*",
+          "field": "image_urls",
+          "required": true,
+          "reason": "external source workflow unsupported"
+        },
+        {
+          "code": "canonical_prompt_unrepresentable",
+          "message": "Native schema has no authored prompt control."
+        },
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "spicyapi/face-swap-video-v1/video-edit",
+      "tasks": [
+        "video-edit"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "canonical_prompt_unrepresentable",
+          "message": "Native schema has no authored prompt control."
+        },
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "spicyapi/video-upscaler-v1/upscale",
+      "tasks": [
+        "upscale"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "canonical_prompt_unrepresentable",
+          "message": "Native schema has no authored prompt control."
+        },
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "spicyapi/video-translator-v1/video-translate",
+      "tasks": [
+        "video-translate"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "canonical_prompt_unrepresentable",
+          "message": "Native schema has no authored prompt control."
+        },
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "spicyapi/talking-avatar-v1/talking-avatar",
+      "tasks": [
+        "talking-avatar"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "spicyapi/lip-sync-v1/lip-sync",
+      "tasks": [
+        "lip-sync"
+      ],
+      "native_schema_status": "supported",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "canonical_prompt_unrepresentable",
+          "message": "Native schema has no authored prompt control."
+        },
+        {
+          "code": "canonical_duration_unrepresentable",
+          "message": "Native schema has no exact authored duration control."
+        }
+      ],
+      "production_authority": "none"
+    },
+    {
+      "model": "spicyapi/foley-v1/video-to-audio",
+      "tasks": [
+        "video-to-audio"
+      ],
+      "native_schema_status": "blocked",
+      "canonical_status": "blocked",
+      "blockers": [
+        {
+          "code": "nonvideo_output",
+          "message": "operation has no supported video-output contract"
+        }
+      ],
+      "production_authority": "none"
+    }
+  ]
+}

@@ -203,6 +203,8 @@ def _cost(tool, info, metadata, inputs):
 
 
 def _candidate(tool, item, inputs):
+    if tool.provider == 'spicy':
+        return _spicy_candidate(tool, item, inputs)
     info = tool.get_info()
     props = getattr(tool, "input_schema", {}).get("properties", {})
     supports = info.get("supports") or getattr(tool, "supports", {})
@@ -603,7 +605,7 @@ def request_delta(original, proposed):
             if key not in ignored and original.get(key) != proposed.get(key)}
 
 
-def describe_video_inputs(provider, model=None, mode=None, operation=None):
+def describe_video_inputs(provider, model=None, mode=None, operation=None, *, project_dir=None, credential_ref=None):
     """Read one exact route's native image contract; never refresh or authorize it."""
     result = {'provider': provider, 'tool': None, 'model': model, 'model_policy': 'exact',
               'mode': mode, 'operation': operation, 'status': 'unavailable', 'roles': {},
@@ -615,6 +617,47 @@ def describe_video_inputs(provider, model=None, mode=None, operation=None):
                 'maximum_status': 'known' if maximum is not None else 'unknown', 'timing': timing}
     result['roles'] = {name: role() for name in ('start_frame', 'end_frame', 'timed_keyframe', 'reference_image')}
     try:
+        if provider == 'spicy':
+            from lib.spicy_catalog import describe_video_inputs as describe_spicy
+            if project_dir is None:
+                return describe_spicy(model=model, mode=mode, operation=operation)
+            from lib.spicy_catalog import load_account_observation_v2
+            observation = load_account_observation_v2(project_dir, model, credential_ref or 'env:SPICY_API_KEY')
+            described = describe_spicy(model=model, mode=mode, operation=operation,
+                                       project_dir=project_dir, credential_ref=credential_ref or 'env:SPICY_API_KEY', observation=observation)
+            if described.get('status') == 'blocked':
+                result['blockers'] = deepcopy(described.get('blockers', []))
+                return result
+            task = described.get('task', model.rsplit('/', 1)[-1])
+            native_mode = described.get('mode', task.replace('-', '_'))
+            if mode is not None and mode != native_mode:
+                raise ValueError('Spicy exact model/mode differs from current native task')
+            result.update(tool='spicy_video', status='available', model=model, mode=native_mode,
+                          operation=operation or native_mode, native_media=deepcopy(described.get('media', [])),
+                          root_schema=deepcopy(observation['input_schema']),
+                          schema_sha256=observation['schema_sha256'], blocked_controls=deepcopy(described.get('blocked_controls', [])))
+            controls = described.get('controls', [])
+            if isinstance(controls, list):
+                result['settings'] = {('duration' if row['field'] == 'duration_seconds' else row['field']): deepcopy(row['schema'])
+                                      for row in controls if row.get('pointer') == '/' + row.get('field', '')}
+            else:
+                result['settings'] = {('duration' if key == 'duration_seconds' else key): deepcopy(value) for key, value in controls.items()}
+            result['readiness'] = {'account': 'observed', 'source': 'project_key_bound_schema', 'production_authority': 'unproven'}
+            result['provenance'] = {'schema_sha256': observation['schema_sha256'], 'source': 'authenticated_account_observation'}
+            # Generic convenience aliases are claimed only for exact native
+            # single starting/ending frame fields. Other sources use the
+            # explicit typed native_media pointer contract.
+            for leaf in result['native_media']:
+                pointer = leaf.get('pointer_template')
+                key = ('start_frame' if pointer == '/image_url' and native_mode == 'image_to_video'
+                       else 'end_frame' if pointer == '/last_image_url' else None)
+                if key:
+                    from lib.production_request import spicy_frame_pin_supported
+                    field = 'image_url' if key == 'start_frame' else 'last_image_url'
+                    supported = spicy_frame_pin_supported(model, native_mode, observation['input_schema'], field)
+                    result['roles'][key] = role(supported, supported and leaf.get('required') is True, leaf.get('field'),
+                                               int(supported and leaf.get('required') is True), int(supported))
+            return result
         if provider == 'grok_cli':
             from tools.video.grok_cli_video import GrokCLIVideo, _PINNED_FRAME_OPERATIONS
             from tools._grok_cli_media import MODEL_PROVENANCE, FRAME_PIN_MIN_CLI_VERSION, MIN_CLI_VERSION
@@ -696,3 +739,56 @@ def describe_video_inputs(provider, model=None, mode=None, operation=None):
     except (ValueError, KeyError, TypeError, OSError) as exc:
         result['blockers'] = [{'code': getattr(exc, 'kind', 'selected_route_unavailable'), 'message': str(exc)}]
     return result
+
+
+def _spicy_candidate(tool, item, inputs):
+    """Pure exact-input fit, separate from account/budget/dispatch authority."""
+    from lib import spicy_catalog, spicy_jobs
+    model = item.get('model')
+    if 'native_input' in inputs or inputs.get('transport') == 'spicy_native_jobs_v2':
+        request = deepcopy(inputs)
+        request.pop('model_selection_intent', None)
+        request.pop('target_operation', None)
+        request.update(model=model, preferred_provider='spicy', allowed_providers=['spicy'], preferred_tool=tool.name)
+        try:
+            native = spicy_jobs.build_native_request(request)
+            from lib.production_request import spicy_factory_blockers
+            blockers = spicy_factory_blockers(native)
+            if blockers:
+                return None, 'unsupported_canonical_inputs:' + ','.join(row['code'] for row in blockers)
+            if native.get('transport') != 'spicy_native_jobs_v2' or native.get('payload_state') not in {'ready', 'needs_upload'}:
+                return None, 'unsupported_exact_native_route'
+            if item.get('mode', native['mode']) != native['mode']:
+                return None, 'unsupported_exact_native_mode'
+        except (ValueError, KeyError, TypeError, OSError) as exc:
+            return None, 'unsupported_native_inputs:' + str(getattr(exc, 'kind', type(exc).__name__))
+        if tool.get_status() != ToolStatus.AVAILABLE:
+            return None, 'route_unavailable'
+        return {'provider': 'spicy', 'tool': tool.name, 'model': model,
+                'fit_score': len(_requested_controls(inputs)), 'fit_basis': FIT_BASIS,
+                'cost': {'status': 'unknown', 'amount': None, 'unit': 'USD', 'basis': 'exact_request_quote_required_at_dispatch'},
+                'request': request}, None
+    descriptor = spicy_catalog.describe_video_inputs(model=model,
+        mode=inputs.get('mode', item.get('mode')), operation=inputs.get('operation'))
+    if descriptor['status'] != 'available' or item.get('mode', descriptor['mode']) != descriptor['mode']:
+        return None, 'unsupported_exact_native_route'
+    request = deepcopy(inputs)
+    request.pop('model_selection_intent', None)
+    request.pop('target_operation', None)
+    if 'native_audio' in request:
+        return None, 'unsupported_setting:native_audio_use_generate_audio'
+    request.update(model=model, mode=descriptor['mode'], operation=descriptor['operation'],
+                   preferred_provider='spicy', allowed_providers=['spicy'], preferred_tool=tool.name)
+    try:
+        native = spicy_jobs.build_native_request(request)
+        if native.get('payload_state') not in {'ready', 'needs_upload'}:
+            return None, 'missing_controls:first_frame'
+    except (ValueError, KeyError, TypeError, OSError) as exc:
+        return None, 'unsupported_native_inputs:' + str(getattr(exc, 'kind', type(exc).__name__))
+    if tool.get_status() != ToolStatus.AVAILABLE:
+        return None, 'route_unavailable'
+    return {'provider': 'spicy', 'tool': tool.name, 'model': model,
+            'fit_score': len(_requested_controls(inputs)), 'fit_basis': FIT_BASIS,
+            'cost': {'status': 'unknown', 'amount': None, 'unit': 'USD',
+                     'basis': 'exact_request_quote_required_at_dispatch'},
+            'request': request}, None

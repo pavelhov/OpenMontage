@@ -520,6 +520,9 @@ def _validate_standing_basis_impl(root, policy, baselines, *, check_first_pass_c
     if not isinstance(accounts, dict) or any(not isinstance(accounts.get(provider['id']), str)
             or not accounts[provider['id']].strip() for provider in policy['providers']):
         raise StandingSetupRequired('named configured account context required for every provider')
+    if any(provider['id'] == 'spicy' and provider.get('account_label') != accounts['spicy']
+           for provider in policy['providers']):
+        raise StandingSetupRequired('Spicy named account must match its exact source-transfer account context')
     if (not isinstance(setup['caps'], dict) or any(type(setup['caps'].get(key)) is not int
             or policy['caps'][key] > setup['caps'][key] for key in policy['caps'])
             or not set(policy['checkpoint_stages']).issubset(setup['checkpoint_stages'])
@@ -1212,6 +1215,9 @@ def _validate_standing_transfer(root, policy, inputs, provider, *, exclude_scope
     execution._paths(execution._clean(inputs), Path(root).resolve(), bind)
     if len(actual) > term['max_files'] or sum(size for _, size in actual) > term['max_batch_bytes']:
         raise StandingSetupRequired('actual source batch exceeds retained transfer limit')
+    # Spicy's native upload owner reserves actual missing-file batches through
+    # reserve_spicy_source_transfer before any ticket, under this same project
+    # lock. Reusing committed sources consumes no additional transfer batch.
     # Grok transfers local bytes inline with each original motion call. OpenArt
     # reuses separately uploaded remote sources; its existing upload authorities
     # and owners count those batches, not every generation using their URLs.
@@ -1796,7 +1802,7 @@ def _load_historical_policy(root, scope, *, _source_shot_id=None):
 
 UNKNOWN_BILLING = 'unknown_cost_no_ceiling'
 UNKNOWN_ACKNOWLEDGEMENT = 'no_enforceable_credit_ceiling'
-ROUTE_TOOLS = {'openart_cli': 'openart_cli_video', 'grok_cli': 'grok_cli_video', 'openart_mcp': 'openart_mcp_video'}
+ROUTE_TOOLS = {'openart_cli': 'openart_cli_video', 'grok_cli': 'grok_cli_video', 'openart_mcp': 'openart_mcp_video', 'spicy': 'spicy_video'}
 
 
 def _provider_spec(policy, provider):
@@ -1858,9 +1864,9 @@ def _intent_conflicts(policy):
             elif provider == 'grok_cli':
                 if provider not in providers or 'model' in item:
                     out.append(f'conflict: intent pool Grok route outside policy for {shot_id}')
-            elif provider in {'openart_cli', 'openart_mcp'}:
+            elif provider in {'openart_cli', 'openart_mcp', 'spicy'}:
                 spec = providers.get(provider)
-                names = ({r['model'] for r in spec['routes']} if _is_unknown(spec) or _is_mcp_quoted(spec) else set(spec['models'])) if spec else set()
+                names = ({r['model'] for r in spec['routes']} if _is_unknown(spec) or _is_mcp_quoted(spec) or provider == 'spicy' else set(spec['models'])) if spec else set()
                 if item.get('model') not in names:
                     out.append(f'conflict: intent pool OpenArt model outside policy for {shot_id}')
             else:
@@ -1883,6 +1889,15 @@ def policy_conflicts(policy, baselines=None):
     if _mcp_billing_supported(mcp_spec) and 'model' in policy['locked']['controls'] and not any(_model_lock_allows(policy['locked']['controls']['model'], route['model']) for route in mcp_spec['routes']):
         out.append('conflict: exact model lock excludes every approved MCP route')
     spec = _openart_spec(policy)
+    spicy_spec = _provider_spec(policy, 'spicy')
+    if spicy_spec is not None:
+        try:
+            total = _spicy_decimal(spicy_spec['total_cap_usd'], 'total cap')
+            per_attempt = _spicy_decimal(spicy_spec['per_attempt_cap_usd'], 'per attempt cap')
+            if total <= 0 or per_attempt <= 0 or per_attempt > total:
+                out.append('conflict: Spicy USD caps must be positive and per-attempt within total')
+        except (ValueError, KeyError) as exc:
+            out.append('conflict: invalid Spicy quoted USD policy: ' + str(exc))
     if spec is not None and spec.get('billing') == UNKNOWN_BILLING and not _is_unknown(spec):
         out.append('conflict: unknown-cost billing lacks no-ceiling acknowledgement')
     if _is_unknown(spec) and 'model' in policy['locked']['controls'] and not any(
@@ -1940,6 +1955,9 @@ def _validate_standing_route_treatments(policy, baselines):
                     rejected.append(prefix + 'per-shot model selection intent excludes route')
                     continue
                 capabilities = None
+                if provider == 'spicy' and 'schema_sha256' in route:
+                    capabilities = {'schema_sha256': route['schema_sha256'],
+                                    'source_roles': copy.deepcopy(route['source_roles'])}
                 if provider == 'openart_mcp' and (mode in preparation.REFERENCE_GUIDED_MODES or treatment == 'frame_conditioned' and mode == 'image2video'):
                     from lib import openart_mcp as mcp
                     key = (model, mode)
@@ -2344,7 +2362,33 @@ def eligible_routes(policy, shot_id, menu):
     eligible, excluded = [], []
     for row in menu:
         provider = row.get('provider')
-        if provider == 'openart_mcp':
+        if provider == 'spicy':
+            from lib.spicy_catalog import describe_video_inputs
+            spec = providers.get(provider)
+            if spec is None or spec.get('billing') != 'quoted_usd_budget':
+                excluded.append({'provider': provider, 'reason': 'no approved quoted USD budget'})
+                continue
+            for route in spec['routes']:
+                if 'schema_sha256' in route:
+                    if not _intent_allows(policy, shot_id, provider, route['model']):
+                        excluded.append({'provider': provider, **route, 'reason': 'model intent excludes exact schema route'})
+                        continue
+                    if 'model' in locks and not _model_lock_allows(locks['model'], route['model']):
+                        excluded.append({'provider': provider, **route, 'reason': 'exact model lock excludes route'})
+                        continue
+                    eligible.append({'provider': provider, **route, 'pending_lock_proof': sorted(locks),
+                                     'readiness': {'account': 'requires_project_key_schema_observation', 'authority': 'none'}})
+                    continue
+                descriptor = describe_video_inputs(model=route['model'], mode=route['mode'])
+                if descriptor['status'] != 'available' or not _intent_allows(policy, shot_id, provider, route['model']):
+                    excluded.append({'provider': provider, **route, 'reason': 'unsupported exact route or model intent'})
+                    continue
+                if 'model' in locks and not _model_lock_allows(locks['model'], route['model']):
+                    excluded.append({'provider': provider, **route, 'reason': 'exact model lock excludes route'})
+                    continue
+                eligible.append({'provider': provider, **route, 'pending_lock_proof': sorted(locks),
+                                 'readiness': descriptor['readiness']})
+        elif provider == 'openart_mcp':
             spec = providers.get(provider)
             if not _mcp_billing_supported(spec) or row.get('production_available') is not True:
                 excluded.append({'provider': provider, 'reason': 'not approved or not production-ready'})
@@ -2899,6 +2943,12 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
                 actual_controls[alias] = actual_controls[key]
     else:
         actual_controls = dict(body['params'], model=native['model'])
+    if provider == 'spicy':
+        if 'duration_seconds' in actual_controls:
+            actual_controls['duration'] = actual_controls['duration_seconds']
+        for asset in preparation.spicy_source_assets(native):
+            for alias in {'first_frame': ('first_frame', 'start_frame'), 'last_frame': ('last_frame', 'end_frame')}.get(asset['role'], ()):
+                actual_controls[alias] = asset['source_path']
     if provider == 'openart_mcp':
         if 'aspectRatio' in actual_controls and 'videoAspectRatio' in actual_controls:
             raise AutonomyError('ambiguous duplicate native aspect ratio aliases')
@@ -3332,6 +3382,11 @@ def _scope_material(root, inputs, provider, observation=None, *, derived_unknown
             **({'_retained_input_assets': _retained_mcp_native['input_assets'],
                 '_retained_account_binding': _retained_mcp_native['account_binding']}
                if _retained_mcp_native is not None else {}))
+    elif provider == 'spicy':
+        from lib import spicy_jobs
+        native = spicy_jobs.build_native_request(inputs)
+        profile = {'source': 'real'}
+        verify_spicy_dispatch(root, inputs, native, policy=policy)
     elif provider == 'grok_cli':
         if 'model' in policy['locked']['controls']:
             raise AutonomyError('Grok media model is unreported and cannot meet exact lock')
@@ -3735,7 +3790,7 @@ def validate_policy_attempt(root, request, scope, frozen_contract, *, frozen_ope
         payload = _json(cli.state_dir() / 'preparation' / request['attempt_id'] / 'review.json')
         submitted = copy.deepcopy(frozen_openart['inputs'])
         native, profile = frozen_openart['native'], frozen_openart['profile']
-    elif scope['provider'] == 'grok_cli':
+    elif scope['provider'] in {'grok_cli', 'spicy'}:
         proof = request['autonomy_preparation']
         path = _inside(root, proof['path'])
         if path != directory / 'autonomy_preparation.json' or hashlib.sha256(path.read_bytes()).hexdigest() != proof['sha256']:
@@ -3764,7 +3819,9 @@ def validate_policy_attempt(root, request, scope, frozen_contract, *, frozen_ope
     from lib.shot_contract import _standing_make_video
     try:
         preparation.validate_preparation_evidence(payload['compiled'], payload['review'], restored, native, profile,
-                                                  payload['source_packet'], historical=True, factory=_standing_make_video(root, policy))
+                                                  payload['source_packet'], historical=True, factory=_standing_make_video(root, policy),
+                                                  **({'_spicy_snapshot_proof': preparation._SpicySnapshotProof(root, request)}
+                                                     if scope['provider'] == 'spicy' else {}))
     except ValueError as exc:
         raise AutonomyError(f'historical named preparation is incomplete: {exc}') from exc
     review = payload['review']
@@ -3963,6 +4020,14 @@ def _append_route_decisions_locked(root, policy, sha, decision_id, shot_id, prov
     citation = f'[policy:{sha} activation:{decision_id}]'
     entries = [('provider_selection', f'Production route for {shot_id}', provider,
                 'Chosen eligible exact approved route ' + citation)]
+    if provider == 'spicy':
+        spec = _provider_spec(policy, provider)
+        entries[0] = ('provider_selection', f'Production route for {shot_id}', provider,
+            'Exact approved native route ' + inputs['model'] + '/' + inputs['mode']
+            + '; phase first_pass; named account ' + spec['account_label']
+            + '; quote ' + str(inputs.get('spicy_quote_id'))
+            + '; per attempt USD cap ' + spec['per_attempt_cap_usd']
+            + '; cumulative USD cap ' + spec['total_cap_usd'] + ' ' + citation)
     if provider == 'openart_mcp':
         counts = root_attempt_counts(root, policy)
         caps = effective_standing_caps(root, policy)
@@ -4012,6 +4077,16 @@ def _append_route_decisions_locked(root, policy, sha, decision_id, shot_id, prov
 
 def _explicit_aspect_ratio(inputs, provider):
     """One explicit transport control; aliases never create additional authority."""
+    if provider == 'spicy' and 'native_input' in inputs:
+        params = inputs['native_input']
+        if not isinstance(params, dict):
+            raise AutonomyError('Spicy native_input must be exact controls')
+        if 'aspect_ratio' in inputs and inputs['aspect_ratio'] != params.get('aspect_ratio'):
+            raise AutonomyError('Spicy native/public aspect ratio aliases differ')
+        ratio = params.get('aspect_ratio')
+        if ratio is not None and (not isinstance(ratio, str) or not ratio):
+            raise AutonomyError('aspect ratio must be an explicit native string')
+        return ratio
     params = inputs.get('native_params', {})
     if not isinstance(params, dict):
         raise AutonomyError('native_params must be an exact controls object')
@@ -4193,7 +4268,7 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider, *, policy_c
                             delivery_approval=None, native_audio_off_approval=None, historical=False):
     """Compare rooted actual inputs with exact retained layout and approved flex."""
     from lib import production_execution as execution
-    if not _intent_allows(policy, shot_id, provider, inputs.get('model') if provider in {'openart_cli', 'openart_mcp'} else None):
+    if not _intent_allows(policy, shot_id, provider, inputs.get('model') if provider in {'openart_cli', 'openart_mcp', 'spicy'} else None):
         raise AutonomyError('request route violates approved per-shot model selection intent')
     retained = retained_baselines(root, policy)[shot_id]
     template = retained['planned_request_template']
@@ -4233,6 +4308,10 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider, *, policy_c
     selected = execution.load_selected_attempts(root)
     dynamic = []
     def resolve(value, pointer='', key=None):
+        if key == 'native_input':
+            if not isinstance(value, dict):
+                raise AutonomyError('Spicy native_input must be exact controls')
+            return copy.deepcopy(value)
         if isinstance(value, dict) and '$board' in value:
             binding = execution._board_binding(value)
             if key not in execution.INPUT_PATH_KEYS:
@@ -4272,6 +4351,8 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider, *, policy_c
             names = {'first_frame': 'first_frame', 'last_frame': 'last_frame',
                      'reference_image': 'reference_image_paths', 'reference_video': 'reference_video_paths',
                      'reference_audio': 'reference_audio_paths',
+                     'source_video': 'reference_video_paths', 'source_audio': 'reference_audio_paths',
+                     'mask': 'reference_image_paths', 'keyframe': 'reference_image_paths',
                      'environment_reference': 'reference_image_paths', 'character_reference': 'reference_image_paths'}
             if not isinstance(value, list):
                 raise AutonomyError('input_assets must be ordered canonical role bindings')
@@ -4337,6 +4418,13 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider, *, policy_c
     if execution.explicit_motion_duration(inputs, provider=provider) != current_projection(root, shot_id)['shot']['duration_seconds']:
         raise AutonomyError('request duration does not match approved deterministic planning')
     def explicit_resolution(value):
+        if provider == 'spicy' and 'native_input' in value:
+            params = value['native_input']
+            if not isinstance(params, dict):
+                raise AutonomyError('Spicy native_input must be exact controls')
+            if 'resolution' in value and value['resolution'] != params.get('resolution'):
+                raise AutonomyError('Spicy native/public resolution aliases differ')
+            return params.get('resolution')
         params = value.get('native_params', {})
         if not isinstance(params, dict):
             raise AutonomyError('native_params must be an exact controls object')
@@ -4376,6 +4464,11 @@ def _validate_request_delta(root, policy, shot_id, inputs, provider, *, policy_c
         bound_actual['native_params'].pop('generateAudio')
     for value in (expected, bound_actual):
         value.pop('aspect_ratio', None)
+        if provider == 'spicy' and isinstance(value.get('native_input'), dict):
+            # These controls were independently compared against authored
+            # timing, canonical prompt coverage and retained flex above.
+            for field in ('prompt', 'duration_seconds', 'resolution', 'aspect_ratio'):
+                value['native_input'].pop(field, None)
         if isinstance(value.get('native_params'), dict):
             value['native_params'].pop('duration', None)
             value['native_params'].pop('resolution', None)
@@ -4501,3 +4594,249 @@ def _apply_reference_planning_flex(policy, expected, current):
     needed.update(actor_bound)
     needed.update(a['id'] for a in expected['assets'] if a['role'] == 'identity_reference')
     expected['assets'] = [a for a in expected['assets'] if a['id'] in current_assets or a['id'] in needed or a['role'] not in droppable]
+
+
+def _spicy_decimal(value, label):
+    from decimal import Decimal, InvalidOperation
+    import re
+    if not isinstance(value, str) or not re.fullmatch(r'(0|[1-9][0-9]*)(\.[0-9]+)?', value):
+        raise AutonomyError(label + ' must be an exact nonnegative decimal USD string')
+    try:
+        result = Decimal(value)
+    except InvalidOperation:
+        raise AutonomyError(label + ' is not a decimal') from None
+    if not result.is_finite():
+        raise AutonomyError(label + ' must be finite')
+    return result
+
+
+def _spicy_usd_arithmetic(left, right, *, subtract=False):
+    # Retained decimal strings have no fixed scale. Never let the ambient
+    # Decimal precision round away a small remaining quote reservation.
+    from decimal import localcontext
+    with localcontext() as context:
+        context.prec = len(format(left, 'f')) + len(format(right, 'f')) + 2
+        return left - right if subtract else left + right
+
+
+def _spicy_approved_route(spec, native):
+    """A v1 allowance never grants a schema-bound v2 route or source role."""
+    transport = native.get('transport', 'spicy_native_jobs_v1')
+    routes = [route for route in spec.get('routes', [])
+              if route.get('model') == native.get('model') and route.get('mode') == native.get('mode')]
+    if transport == 'spicy_native_jobs_v1':
+        matches = [route for route in routes if set(route) == {'model', 'mode'}]
+    elif transport == 'spicy_native_jobs_v2':
+        schema = native.get('input_schema')
+        if not isinstance(schema, dict) or digest(schema) != native.get('schema_sha256'):
+            raise AutonomyError('Spicy native schema binding changed')
+        actual = []
+        for source in native.get('sources', []):
+            if not isinstance(source, dict) or any(key not in source for key in ('role', 'pointer', 'media_kind', 'mime')):
+                raise AutonomyError('Spicy typed source binding is incomplete')
+            actual.append({key: source[key] for key in ('role', 'pointer', 'media_kind', 'mime')})
+        order = lambda row: (row['pointer'], row['role'], row['media_kind'], row['mime'])
+        if len({row['pointer'] for row in actual}) != len(actual):
+            raise AutonomyError('Spicy native source pointer is bound more than once')
+        matches = [route for route in routes if set(route) == {'model', 'mode', 'schema_sha256', 'source_roles'}
+                   and route.get('schema_sha256') == native['schema_sha256']
+                   and sorted(route.get('source_roles', []), key=order) == sorted(actual, key=order)]
+    else:
+        raise AutonomyError('Spicy native transport is unsupported')
+    if len(matches) != 1:
+        raise AutonomyError('Spicy exact model/mode/schema/source roles are outside approved route')
+    return matches[0]
+
+
+def verify_spicy_dispatch(project_dir, inputs, native, profile=None, *, policy=None):
+    """Read exact active authority and reserve quotes against the canonical journals.
+
+    Call under the existing production lock at reservation and again immediately
+    before transport. No network, writes, implicit activation or credential output.
+    Pending/uncertain attempts retain their entire quoted maximum exposure.
+    """
+    from lib import spicy_jobs, spicy_catalog
+    from datetime import datetime, timezone
+    root = Path(project_dir).resolve()
+    shot_id = inputs.get('governance', {}).get('shot_id')
+    if policy is None:
+        policy, _, _ = require_active_policy(root, shot_id=shot_id)
+    spec = _provider_spec(policy, 'spicy')
+    if spec is None or spec.get('billing') != 'quoted_usd_budget':
+        raise AutonomyError('Spicy is disabled until exact quoted USD authority is retained')
+    _spicy_approved_route(spec, native)
+    if not _intent_allows(policy, shot_id, 'spicy', native.get('model')):
+        raise AutonomyError('Spicy exact model/mode is outside approved route')
+    account_proof = verify_spicy_account(root, inputs, native['model'], spec)
+    if native.get('transport') == 'spicy_native_jobs_v2' and account_proof.get('schema_sha256') != native['schema_sha256']:
+        raise AutonomyError('Spicy current account schema differs from the exact native request')
+    quote_id = inputs.get('spicy_quote_id')
+    if not isinstance(quote_id, str) or not quote_id:
+        raise AutonomyError('Spicy requires its retained exact native request quote')
+    quote = spicy_jobs.load_quote_artifact(root, quote_id)
+    if (quote.get('currency') != 'USD'
+            or quote.get('native_request_sha256') != native.get('request_sha256')
+            or quote.get('credential_digest') != spec['credential_digest']
+            or quote.get('account_label') != spec['account_label'] or quote.get('model') != native['model']):
+        raise AutonomyError('Spicy quote request/account/model binding differs')
+    try:
+        obtained = datetime.fromisoformat(quote['obtained_at'].replace('Z', '+00:00'))
+        expires = datetime.fromisoformat(quote['expires_at'].replace('Z', '+00:00'))
+        now = datetime.now(timezone.utc)
+        age = (now - obtained).total_seconds()
+        if age < 0 or age > 300 or now >= expires:
+            raise AutonomyError('Spicy exact quote is stale')
+    except (KeyError, ValueError, TypeError):
+        raise AutonomyError('Spicy quote has invalid freshness evidence') from None
+    maximum = _spicy_decimal(quote.get('max_charge_usd'), 'quoted maximum')
+    estimate = _spicy_decimal(quote.get('estimated_cost_usd'), 'quoted estimate')
+    per_attempt = _spicy_decimal(spec['per_attempt_cap_usd'], 'per attempt cap')
+    total = _spicy_decimal(spec['total_cap_usd'], 'total cap')
+    if maximum < 0 or estimate < 0 or maximum < estimate or maximum > per_attempt or total <= 0 or per_attempt <= 0:
+        raise AutonomyError('Spicy exact quote exceeds per attempt USD cap')
+    spent = _spicy_decimal('0', 'reserved')
+    from lib.production_execution import _ACTIVE
+    active = _ACTIVE.get()
+    own = (active['session_id'] if active and active.get('provider') == 'spicy'
+           and Path(active['root']).resolve() == root
+           and inputs.get('cli_session_id') == active['session_id'] else None)
+    for path in sorted((root / 'production_attempts').glob('*/request.json')):
+        request = _json(path)
+        if request.get('scope', {}).get('provider') != 'spicy':
+            continue
+        retained = request.get('spicy_authority')
+        if request.get('attempt_id') == own:
+            if (request.get('shot_id') != shot_id or request.get('scope_id') != inputs.get('governance', {}).get('scope_id')
+                    or request.get('spicy_native', {}).get('request_sha256') != native['request_sha256']
+                    or not isinstance(retained, dict) or retained.get('quote') != quote):
+                raise AutonomyError('Spicy self-reservation exclusion lacks exact original binding')
+            continue
+        if not isinstance(retained, dict):
+            raise AutonomyError('Spicy attempt lacks retained quote reservation')
+        # A different credential/account can never release this policy's budget.
+        if retained.get('account_label') != spec['account_label'] or retained.get('credential_digest') != spec['credential_digest']:
+            raise AutonomyError('Spicy reservation account differs')
+        spent = _spicy_usd_arithmetic(spent, _spicy_decimal(retained['quote']['max_charge_usd'], 'retained reserved maximum'))
+    if _spicy_usd_arithmetic(spent, maximum) > total:
+        raise AutonomyError('Spicy cumulative reserved USD cap exhausted')
+    return {'provider': 'spicy', 'billing': 'quoted_usd_budget', 'account_label': spec['account_label'],
+            'account_observation_sha256': account_proof['account_observation_sha256'],
+            'schema_sha256': account_proof.get('schema_sha256'),
+            'qualified_storage_hosts': sorted(spec['qualified_storage_hosts']),
+            'credential_ref': spec['credential_ref'], 'credential_digest': spec['credential_digest'],
+            'per_attempt_cap_usd': format(per_attempt, 'f'), 'total_cap_usd': format(total, 'f'),
+            'spent_or_reserved_usd': format(spent, 'f'), 'remaining_total_usd': format(_spicy_usd_arithmetic(total, spent, subtract=True), 'f'),
+            'quote': copy.deepcopy(quote)}
+
+
+def verify_spicy_account(project_dir, inputs, model, spec):
+    """Check named fresh credential/account/schema before even source transfer."""
+    from lib import spicy_jobs, spicy_catalog
+    if not spec['account_label'].strip() or inputs.get('account_label') != spec['account_label'] or inputs.get('credential_ref') != spec['credential_ref']:
+        raise AutonomyError('Spicy named account or credential reference differs')
+    hosts = spec.get('qualified_storage_hosts')
+    import re
+    if (not isinstance(hosts, list) or not hosts
+            or any(not isinstance(h, str) or not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+', h) for h in hosts) or len(set(hosts)) != len(hosts)):
+        raise AutonomyError('Spicy requires exact qualified storage hosts in retained account authority')
+    binding = spicy_jobs.credential_binding(spec['credential_ref'])
+    if binding['credential_digest'] != spec['credential_digest']:
+        raise AutonomyError('Spicy credential differs from retained named account binding')
+    if spicy_jobs.billing_anomalies(Path(project_dir).resolve(), credential_digest=spec['credential_digest']):
+        raise AutonomyError('Spicy new dispatch/source transfer is frozen by retained billing anomaly; collect the original only')
+    observation = (spicy_catalog.load_account_observation_v2(Path(project_dir).resolve(), model, spec['credential_ref'])
+                   if 'native_input' in inputs or inputs.get('transport') == 'spicy_native_jobs_v2'
+                   else spicy_catalog.load_account_observation(Path(project_dir).resolve(), model))
+    if not observation:
+        raise AutonomyError('Spicy requires authenticated account/schema observation')
+    if observation.get('credential_binding', {}).get('credential_digest') != spec['credential_digest']:
+        raise AutonomyError('Spicy authenticated observation is for a different credential')
+    return {**binding, 'account_observation_sha256': digest(observation),
+            'schema_sha256': observation.get('schema_sha256')}
+
+
+def reserve_spicy_source_transfer(project_dir, inputs):
+    """Reserve one once-only upload batch before any ticket or byte transfer.
+
+    The native upload owner must retain its per-source send/ticket/commit journal
+    and recover that same transfer. Replayed intent never permits resending an
+    uncertain ticket/PUT. Successful, failed and uncertain batches all count.
+    Cached committed sources need no new reservation.
+    """
+    from lib import production_execution as execution, production_request as preparation
+    root = Path(project_dir).resolve()
+    shot_id = inputs.get('governance', {}).get('shot_id')
+    with execution._lock(root):
+        policy, sha, _ = require_active_policy(root, shot_id=shot_id)
+        spec = _provider_spec(policy, 'spicy')
+        if spec is None or spec.get('billing') != 'quoted_usd_budget' or not policy.get('activation_basis'):
+            raise StandingSetupRequired('Spicy source transfer requires exact active standing authority')
+        v2 = 'native_input' in inputs or inputs.get('transport') == 'spicy_native_jobs_v2'
+        native = None
+        if v2:
+            from lib import spicy_jobs
+            native = spicy_jobs.build_native_request(inputs)
+            _spicy_approved_route(spec, native)
+        elif {'model': inputs.get('model'), 'mode': inputs.get('mode')} not in spec['routes']:
+            raise StandingSetupRequired('Spicy upload route is outside retained authority')
+        if not _intent_allows(policy, shot_id, 'spicy', inputs.get('model')):
+            raise StandingSetupRequired('Spicy source transfer route is outside retained authority')
+        verify_spicy_account(root, inputs, inputs['model'], spec)
+        _validate_standing_transfer(root, policy, inputs, 'spicy')
+        setup = effective_standing_setup(root, policy)
+        account = setup['provider_accounts']['spicy']
+        if account != spec['account_label']:
+            raise StandingSetupRequired('Spicy upload account differs from source-transfer account')
+        terms = [t for t in setup['source_transfer'] if t['provider'] == 'spicy' and t['account'] == account]
+        if len(terms) != 1:
+            raise StandingSetupRequired('Spicy upload requires one exact source-transfer term')
+        files = []
+        def retain(role, path):
+            role = {'image_path': 'first_frame', 'last_image_path': 'last_frame'}.get(role, role)
+            files.append({'role': role, 'path': str(path), 'sha256': execution._input_sha256(path),
+                          'bytes': path.stat().st_size})
+            return str(path)
+        execution._paths(execution._clean(inputs), root, retain)
+        if v2:
+            # Match the owner's typed, schema-pointer-bound native bytes to the
+            # same canonical project source visitor before retaining transfer.
+            typed = []
+            for source in native['sources']:
+                if source.get('uri') is not None:
+                    continue  # Reusing a verified typed receipt sends no bytes.
+                matches = [item for item in files if item['path'] == source['source_path'] and item['sha256'] == source['source_sha256']]
+                if not matches:
+                    raise StandingSetupRequired('Spicy typed source differs from its canonical project source')
+                typed.append({key: source[key] for key in ('role', 'pointer', 'media_kind', 'mime')}
+                             | {'path': source['source_path'], 'sha256': source['source_sha256'], 'bytes': source['bytes']})
+            files = typed
+        if not files:
+            raise StandingSetupRequired('Spicy upload batch has no exact local sources')
+        preparation_id = preparation._id(inputs.get('compiled_request_id'))
+        binding = {'version': '1.0', 'provider': 'spicy', 'purpose': 'source_transfer_only',
+                   'account_label': account, 'credential_digest': spec['credential_digest'],
+                   'credential_ref': spec['credential_ref'],
+                   'qualified_storage_hosts': sorted(spec['qualified_storage_hosts']),
+                   'model': inputs['model'], 'shot_id': shot_id, 'preparation_id': preparation_id,
+                   'files': files, 'policy_sha256': sha}
+        batch_id = 'spicy-' + digest({k: v for k, v in binding.items() if k != 'policy_sha256'})[:40]
+        path = root / 'artifacts' / ('spicy_source_transfer-' + batch_id + '.json')
+        record = {**binding, 'batch_id': batch_id}
+        if path.exists():
+            if _json(path) != record:
+                raise StandingSetupRequired('Spicy original upload batch authority changed')
+            return {**copy.deepcopy(record), 'replayed': True}
+        prior = []
+        for previous in sorted((root / 'artifacts').glob('spicy_source_transfer-*.json')):
+            value = _json(previous)
+            if (value.get('version') != '1.0' or value.get('provider') != 'spicy'
+                    or value.get('purpose') != 'source_transfer_only' or not value.get('batch_id')
+                    or value.get('account_label') != account):
+                raise StandingSetupRequired('Spicy source-transfer ledger has an unbound batch')
+            prior.append(value)
+        if len(prior) >= terms[0]['max_batches']:
+            raise StandingSetupRequired('Spicy source transfer max_batches exhausted including uncertain originals')
+        from lib.spicy_catalog import atomic_write_json
+        atomic_write_json(path, record, exclusive=True)
+        path.chmod(0o444)
+        return {**copy.deepcopy(record), 'replayed': False}

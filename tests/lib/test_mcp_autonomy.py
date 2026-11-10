@@ -50,7 +50,9 @@ def test_fresh_three_provider_policy_does_not_migrate_old_hash():
     assert pa.policy_sha256(old, {}) == before
     assert pa.policy_sha256(fresh, {}) != before
     fresh['providers'].append(copy.deepcopy(MCP))
-    assert pa.schema_errors(fresh) and pa.policy_conflicts(fresh)
+    # Four provider rows fit the schema; duplicate identities remain a policy conflict.
+    assert pa.schema_errors(fresh) == []
+    assert 'conflict: duplicate policy provider' in pa.policy_conflicts(fresh)
 
 
 @pytest.fixture
