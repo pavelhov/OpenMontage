@@ -15,7 +15,7 @@ from pathlib import Path
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 from schemas.artifacts import load_schema
-from lib.shot_contract import contract_digest, file_sha256, review_digest, validate_shot_contract
+from lib.shot_contract import contract_digest, file_sha256, review_digest, validate_shot_contract, validate_internal_shots
 
 METADATA = frozenset({'compiled_request_id', 'preparation_review_id', 'credit_authorization_id', 'credit_quote_id', 'credit_qualification_sha256'})
 PREDICATES = frozenset({'coverage', 'reference_suitability', 'native_compatibility', 'continuity', 'feasibility'})
@@ -161,8 +161,9 @@ def _shootable_rows(contract, shot, index, reference_free):
             rows.append(_row(contract['story'][key], '/shot_contract/story/' + key, 'Story ' + key + ': '))
     rows.append(_row(shot['initial_state'], base + '/initial_state', 'Opening frame: '))
     rows.append(_row(shot['dominant_action'], base + '/dominant_action', 'Main action: '))
-    rows.append(_row(shot['completed_end_state'], base + '/completed_end_state',
-                     'End of clip: '))
+    if 'internal_shots' not in shot:
+        rows.append(_row(shot['completed_end_state'], base + '/completed_end_state',
+                         'End of clip: '))
     cast = shot['cast_ids']
     for n, cast_id in enumerate(cast):
         rows.append(name(cast_id, 'Characters in this shot: ' if n == 0 else ' and ',
@@ -182,14 +183,28 @@ def _shootable_rows(contract, shot, index, reference_free):
     rows.append(_row(shot['transition']['rationale'], base + '/transition/rationale',
                      'Continuity from the previous shot: ' if shot['transition']['type'] == 'continuous'
                      else 'Shot opening after the cut: '))
+    dialogue_rows = []
     for n, line in enumerate(shot['dialogue']):
         where = {'visible': 'on screen', 'offscreen': 'off screen, voice only'}.get(line['source'])
         if where is None:
             raise ValueError('shootable prompt cannot render dialogue source ' + repr(line['source']))
-        rows.append(name(line['speaker_id'], 'Spoken line %d: ' % (n + 1),
+        dialogue_rows.append([name(line['speaker_id'], 'Spoken line %d: ' % (n + 1),
             ' (%s), from %s to %s, says exactly: "' % (where, _seconds(line['start_seconds']),
-                                                       _seconds(line['end_seconds']))))
-        rows.append(_row(line['text'], f'{base}/dialogue/{n}/text', '', '"\n'))
+                                                       _seconds(line['end_seconds']))),
+            _row(line['text'], f'{base}/dialogue/{n}/text', '', '"\n')])
+    if 'internal_shots' in shot:
+        for n, view in enumerate(shot['internal_shots']):
+            rows.append(_row(view['action'], f'{base}/internal_shots/{n}/action',
+                f'Internal shot {n + 1} at {_seconds(view["start_seconds"])}: '))
+            if 'camera' in view:
+                rows.append(_row(view['camera'], f'{base}/internal_shots/{n}/camera', 'Camera: '))
+            end = shot['internal_shots'][n + 1]['start_seconds'] if n + 1 < len(shot['internal_shots']) else shot['duration_seconds']
+            for line, pair in zip(shot['dialogue'], dialogue_rows):
+                if view['start_seconds'] <= line['start_seconds'] < end:
+                    rows.extend(pair)
+        rows.append(_row(shot['completed_end_state'], base + '/completed_end_state', 'End of clip: '))
+    else:
+        rows.extend(row for pair in dialogue_rows for row in pair)
     if not shot['dialogue']:
         rows[-1]['after'] += 'No spoken lines in this shot.\n'
     if 'sound' in shot:
@@ -568,6 +583,8 @@ def _h3_alignment(packet, input_assets=None):
     for index, role in enumerate(pins, 1):
         seconds = 0 if role == 'first_frame' else packet['shot']['duration_seconds']
         target = '(from [Shot 1]) is fully referenced.' if role == 'first_frame' else 'is fully referenced as the final video image.'
+        if role == 'last_frame' and 'internal_shots' in packet['shot']:
+            target = f'(from [Shot {len(packet["shot"]["internal_shots"])}]) is fully referenced as the final video image.'
         lines.append(f'For the target video, at {seconds:.2f} seconds into the target video, '
                      f'<Picture {index}> {target}')
     return ('\n'.join(lines) + '\n\n') if lines else ''
@@ -576,7 +593,9 @@ def _h3_alignment(packet, input_assets=None):
 def _compile_h3_packet(packet, input_assets=None):
     """Literal H3 rendering of the same bound shot; no rewriting or new authority."""
     shot = packet['shot']
-    cast_ids = list(dict.fromkeys(line['speaker_id'] for line in shot['dialogue']))
+    dialogue = (sorted(shot['dialogue'], key=lambda line: line['start_seconds'])
+                if 'internal_shots' in shot else shot['dialogue'])
+    cast_ids = list(dict.fromkeys(line['speaker_id'] for line in dialogue))
     speakers = {cast_id: 'S' + str(index + 1) for index, cast_id in enumerate(cast_ids)}
     rows = []
     for original in packet['occurrences']:
@@ -597,21 +616,52 @@ def _compile_h3_packet(packet, input_assets=None):
                 row['after'] = ' ' + tag + source + ' says: <d>'
             else:
                 row['after'] = (' ' + tag if tag else '') + row['after']
+        elif '/internal_shots/' in pointer and pointer.endswith('/action'):
+            index = int(pointer.split('/internal_shots/')[1].split('/')[0])
+            millis = round(shot['internal_shots'][index]['start_seconds'] * 1000)
+            minutes, remainder = divmod(millis, 60000)
+            seconds, milliseconds = divmod(remainder, 1000)
+            row['before'] = ('Action in this view: ' if index == 0 else
+                f'[Shot {index + 1}] At {minutes:02d}:{seconds:02d}.{milliseconds:03d}, the camera cuts to the next view. ')
         elif '/dialogue/' in pointer and pointer.endswith('/text'):
             row['after'] = '</d>\n'
         elif pointer.endswith('/sound'):
             row['before'] = 'overall_soundscape: '
         rows.append(row)
-    compiled = _compile_shootable({**packet, 'occurrences': rows}, '/params/prompt')
     prefix = _h3_alignment(packet, input_assets) + 'integrated_multimodal_description: [Shot 1] '
-    compiled['prompt'] = prefix + compiled['prompt']
-    for span in compiled['coverage']:
-        span['start'] += len(prefix)
-        span['end'] += len(prefix)
-    if not shot['dialogue']:
-        compiled['prompt'] += 'No spoken dialogue.\n'
-    if _no_music_default(packet) or _authored_no_background_music(packet):
-        compiled['prompt'] += 'non_diegetic_music: N/A\n'
+    def render(items):
+        compiled = _compile_shootable({**packet, 'occurrences': items}, '/params/prompt')
+        compiled['prompt'] = prefix + compiled['prompt']
+        for span in compiled['coverage']:
+            span['start'] += len(prefix)
+            span['end'] += len(prefix)
+        if not shot['dialogue']:
+            compiled['prompt'] += 'No spoken dialogue.\n'
+        if _no_music_default(packet) or _authored_no_background_music(packet):
+            compiled['prompt'] += 'non_diegetic_music: N/A\n'
+        return compiled
+
+    compiled = render(rows)
+    views = shot.get('internal_shots', [])
+    # Keep valid original bytes unchanged. Only one exactly repeated view may
+    # shed compiler duplication to fit the H3 connector's 6000-character prompt.
+    if (len(compiled['prompt']) > 6000 and len(views) == 1 and views[0]['start_seconds'] == 0
+            and views[0]['action'] == shot['dominant_action']
+            and 'camera' in views[0] and views[0]['camera'] == shot.get('camera')):
+        aliases = {}
+        by_pointer = {row['source_pointer']: row for row in rows}
+        for row in rows:
+            for leaf, target in (('action', 'dominant_action'), ('camera', 'camera')):
+                suffix = '/internal_shots/0/' + leaf
+                if row['source_pointer'].endswith(suffix):
+                    source = by_pointer[row['source_pointer'][:-len(suffix)] + '/' + target]
+                    aliases[row['occurrence_id']] = source['occurrence_id']
+        reduced = render([row for row in rows if row['occurrence_id'] not in aliases])
+        if len(reduced['prompt']) <= 6000:
+            spans = {span['occurrence_id']: span for span in reduced['coverage']}
+            reduced['coverage'] = [{**spans[aliases.get(row['occurrence_id'], row['occurrence_id'])],
+                **{key: row[key] for key in ('occurrence_id', 'source_pointer', 'value_sha256')}} for row in rows]
+            return reduced
     return compiled
 
 
@@ -1143,6 +1193,18 @@ def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=
             raise ValueError('creator prompt overrides are retired; originals use their authored prompt')
         _validate_historical_prompt_override(override, prompt, packet)
     rows = _dialogue_rows(packet) if override is not None else packet['occurrences']
+    allowed_h3_aliases = set()
+    if (not historical and 'internal_shots' in packet['shot']
+            and not _h3_projection(packet, native.get('provider'), native.get('model'))):
+        # Internal cut times are generated wrappers, outside literal text spans.
+        # Bind their full fresh projection too; historical originals keep replay rules.
+        expected = _compile_provider_packet(packet, provider=native.get('provider', 'openart_cli'),
+            model=native.get('model'), input_assets=native.get('input_assets'))['prompt']
+        if mcp:
+            expected += _ready_mcp_reference_mapping(inputs['project_dir'], packet,
+                native.get('input_assets', []), native['body'].get('projectId'), native=native)
+        if prompt != expected:
+            raise ValueError('internal-shot prompt differs from exact authored projection')
     if override is None and _h3_projection(packet, native.get('provider'), native.get('model')):
         h3 = _compile_h3_packet(packet, native.get('input_assets'))
         mapping = _ready_mcp_reference_mapping(inputs['project_dir'], packet,
@@ -1154,6 +1216,16 @@ def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=
             if prompt not in expected:
                 raise ValueError('H3 prompt differs from bound native roles or literal projection')
             rows = [row for row in rows if not _h3_administrative_row(packet, row)]
+            canonical = {span['source_pointer']: span for span in h3['coverage']}
+            for pointer, alias in canonical.items():
+                for leaf, target in (('action', 'dominant_action'), ('camera', 'camera')):
+                    suffix = '/internal_shots/0/' + leaf
+                    if pointer.endswith(suffix):
+                        source = canonical.get(pointer[:-len(suffix)] + '/' + target)
+                        if source and all(alias[key] == source[key] for key in ('start', 'end', 'value_sha256')):
+                            allowed_h3_aliases.add(alias['occurrence_id'])
+            if allowed_h3_aliases and compiled['coverage'] != h3['coverage']:
+                raise ValueError('H3 shared literal coverage differs from exact canonical projection')
     coverage = compiled['coverage']
     if len(rows) != len(coverage):
         raise ValueError('coverage omits required occurrence')
@@ -1171,7 +1243,7 @@ def _validate_compiled(compiled, inputs, native, profile, packet, *, historical=
         expected = str(row['value']) if isinstance(row['value'], str) else json.dumps(row['value'], ensure_ascii=False)
         if fragment != expected:
             raise ValueError('literal source occurrence dropped/changed in native prompt')
-        if any(max(start, a) < min(end, b) for a, b in spans):
+        if any(max(start, a) < min(end, b) for a, b in spans) and row['occurrence_id'] not in allowed_h3_aliases:
             raise ValueError('duplicate coverage reuses a native fragment')
         spans.append((start, end))
     if reference_free:
@@ -1661,7 +1733,7 @@ def _expand_compact_package(package):
                     'required_predicates', 'transparent_background', 'cast_ids'}
     for shot in authored:
         if (not isinstance(shot, dict) or not required_shot <= set(shot)
-                or set(shot) - required_shot - {'pinned_initial_frame', 'pinned_final_frame', 'camera', 'sound', 'roles'}):
+                or set(shot) - required_shot - {'pinned_initial_frame', 'pinned_final_frame', 'camera', 'sound', 'roles', 'internal_shots'}):
             raise ValueError('compact shot needs explicit content, motion, boards and dependencies')
         sid = shot['id']
         if (not isinstance(sid, str) or not sid.strip() or Path(sid).name != sid
@@ -1874,7 +1946,7 @@ def _compile_package_value(root, package, package_binding):
                 **({'completed_end_state': shot['end_state']} if 'end_state' in shot else {}),
                 **({'cast_ids': shot['cast']} if 'cast' in shot else {}),
                 **({'prop_body_invariants': shot['preserve']} if 'preserve' in shot else {}),
-                **{k: shot[k] for k in ('camera', 'sound') if k in shot},
+                **{k: shot[k] for k in ('camera', 'sound', 'internal_shots') if k in shot},
                 **motion}
             original = copy.deepcopy(originals.get(sid, {}))
             for key, value in values.items():
@@ -1912,7 +1984,7 @@ def _compile_package_value(root, package, package_binding):
     clock = 0
     for shot in shots:
         if set(shot) - {'id', 'script', 'action', 'duration_seconds', 'end_state', 'preserve',
-                'pinned_initial_frame', 'pinned_final_frame', 'cast', 'motion', 'camera', 'sound'}:
+                'pinned_initial_frame', 'pinned_final_frame', 'cast', 'motion', 'camera', 'sound', 'internal_shots'}:
             raise ValueError('unsupported authored shot field')
         if ({'camera', 'sound'} & set(shot)) and package.get('prompt_compiler') != SHOOTABLE_COMPILER:
             raise ValueError('authored camera/sound directions require prompt_compiler shootable_v1')
@@ -1927,6 +1999,9 @@ def _compile_package_value(root, package, package_binding):
         duration = shot['duration_seconds']
         if (type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0):
             raise ValueError('shot duration must be finite and positive')
+        validate_internal_shots(shot, prompt_compiler=package.get('prompt_compiler'))
+        if 'internal_shots' in shot and package.get('planning_mode') != 'shot_local_v1':
+            raise ValueError('internal_shots require prospective shot_local_v1 package authoring')
         card = {k: shot[k] for k in ('end_state', 'preserve') if k in shot}
         if ('end_state' in card and (not isinstance(card['end_state'], str) or not card['end_state'].strip())
                 or 'preserve' in card and (not isinstance(card['preserve'], list)

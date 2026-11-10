@@ -12,6 +12,8 @@ from __future__ import annotations
 import hashlib
 import copy
 import json
+import math
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,37 @@ SHOT_PREDICATES = frozenset({"cast_identity", "cast_count", "completed_action", 
 ASSET_PREDICATES = frozenset({"asset_quality", "cast_identity"})
 UPSTREAM_PREDICATES = SHOT_PREDICATES | {"outgoing_frame"}
 CRITICAL_PREDICATES = PROJECT_PREDICATES | SHOT_PREDICATES | ASSET_PREDICATES | UPSTREAM_PREDICATES
+
+
+def validate_internal_shots(shot, *, prompt_compiler):
+    """Optional authored views within one clip; never infer cuts from prose."""
+    if 'internal_shots' not in shot:
+        return
+    views = shot['internal_shots']
+    duration = shot.get('duration_seconds')
+    if (prompt_compiler != 'shootable_v1' or not isinstance(views, list) or not views
+            or type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0):
+        raise ValueError('internal_shots require shootable_v1, a nonempty list and finite clip duration')
+    previous = -1
+    for index, view in enumerate(views):
+        if (not isinstance(view, dict) or not {'start_seconds', 'action'} <= set(view)
+                or set(view) - {'start_seconds', 'action', 'camera'}
+                or any(not isinstance(view.get(key), str) or not view[key].strip()
+                       for key in ('action', 'camera') if key == 'action' or key in view)):
+            raise ValueError('internal_shots require exact start_seconds/action and optional camera text')
+        start = view['start_seconds']
+        if (type(start) not in (int, float) or not math.isfinite(start)
+                or not 0 <= start < duration or index == 0 and start != 0 or start <= previous
+                or Decimal(str(start)) * 1000 != (Decimal(str(start)) * 1000).to_integral_value()):
+            raise ValueError('internal_shots starts must begin at zero, increase within clip duration and use milliseconds')
+        previous = start
+    dialogue = shot.get('dialogue', shot.get('motion', {}).get('dialogue', []))
+    for line in dialogue:
+        start, end = line.get('start_seconds'), line.get('end_seconds')
+        if (type(start) not in (int, float) or type(end) not in (int, float)
+                or not math.isfinite(start) or not math.isfinite(end) or not 0 <= start < end <= duration
+                or any(start < view['start_seconds'] < end for view in views[1:])):
+            raise ValueError('internal_shots dialogue must fit wholly within one internal view; crossing-cut speech is unsupported')
 
 
 def _digest(value: Any) -> str:
@@ -588,6 +621,10 @@ def _validate_shot_contract(
         assets[asset["id"]] = asset
     shots = {}
     for shot in contract["shots"]:
+        try:
+            validate_internal_shots(shot, prompt_compiler=contract.get('prompt_compiler'))
+        except ValueError as exc:
+            errors.append(f"shots.{shot['id']}.internal_shots: {exc}")
         if shot["id"] in shots:
             errors.append(f"shots.{shot['id']}: duplicate shot id")
         shots[shot["id"]] = shot

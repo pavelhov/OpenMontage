@@ -76,6 +76,11 @@ ending composition, not a spare identity, style or prop reference. Naming hidden
 source sheets in the video prompt does not send them to the motion backend.
 Preserve their influence by building the actual frame from them first. Keep the
 source-to-image provenance distinct from the images actually attached to video.
+Later internal views reconstruct subjects from this frame and text; the original
+image-generation sources are not separately supplied as identity references.
+Use purposeful limited viewpoints and a fresh composed start when a major view
+or action needs stronger staging, rather than assuming more identity adjectives
+will preserve it. This is not a blanket single-shot rule.
 
 Direct fal's [Turbo I2V schema](https://fal.ai/models/minimax/h3-max-turbo/image-to-video/api)
 is a different surface: it exposes `image_url`, `end_image_url`, optional
@@ -92,16 +97,23 @@ for reference roles, casting, composition and motion handoff. Apply that method
 to this two-frame envelope:
 
 1. Choose the useful character, prop and look inputs for **image generation**.
+   Reuse one selected clean appearance anchor per recurring character in every
+   board, matching the creator-selected actual source rather than trusting a
+   regenerated master's lineage; preserve face, silhouette, base hue, material
+   and style.
+   Earlier scene images supply only named props, costume or settings unless
+   selected as that common anchor; do not chain changing character interpretations.
    A distinct second character or important object can need its own source;
    one useful image per role is a sound starting point. Omit redundant views and
    unrelated backgrounds. Available input capacity is never a quota to fill.
 2. Generate one coherent opening scene from those inputs. Identify which source
    supplies each character, object or look and which parts to ignore. Stage the
-   intended action before its first contact: readable participants, correct
-   relative scale, a clearly placed grip/contact surface, clear object ownership,
+   intended action before its decisive contact or choice: readable participants,
+   correct relative scale, a clearly placed grip/contact surface, clear object ownership,
    reachable target and room for movement. When rigid body construction matters,
    use articulated motion under the shared method. Show the actual opening, not a collage of source
-   sheets or a premature completed payoff.
+   sheets or a premature completed grip, snag or payoff. Keep the expression at
+   this point in the story so motion can carry its emotional change.
 3. Add an end image only when its exact landing composition materially helps the
    shot. Prefer editing the start scene, preserving cast, costume, set geometry,
    scale, camera and light; change the necessary pose, contact and object state.
@@ -112,8 +124,13 @@ to this two-frame envelope:
    reaction or realization. Use short, concrete phrases in action order; let
    recognition follow the visible result at the beat's natural pace. Keep
    dependent movements few; omit incidental taps, regrips and camera shifts.
-   Let the frame carry appearance and staging; add camera direction only when
-   it helps clarity.
+   Let the frame carry detailed appearance and staging; retain short hard-to-infer
+   identity/material traits in existing invariants (`shots[].preserve` in shootable
+   packages), including across internal cuts. A name and “consistent” alone leave
+   those traits unspecified. Add camera direction only when it helps clarity;
+   omit incidental headwear handling and unnecessary view changes while keeping
+   the physical action brisk. Compare prepared boards with the common appearance
+   anchor during the existing inspection, without adding a gate or reroll.
 
 Plan the intended finished shot and its selected resolution from the outset;
 Turbo speed does not call for a low-resolution trial followed by a keeper rerun.
@@ -152,6 +169,36 @@ physical path, rather than two disconnected still descriptions. It recommends a
 single continuous shot for first/last-frame work and natural camera verbs, with
 speed and travel extent when those details matter. These are family-level writing
 guidelines, not verified OpenArt Turbo results or extra native fields.
+
+Its sections 3.1 and 4.2 also call for identity, clothing and color continuity from
+the opening and sequential later shot labels with increasing cut times. In a fresh
+`shootable_v1` package, optionally author `shots[].internal_shots` as:
+
+```json
+[
+  {"start_seconds": 0, "action": "The courier snatches the parcel.", "camera": "Medium-wide view."},
+  {"start_seconds": 2, "action": "The same courier reveals the empty box.", "camera": "Close view of the box and face."}
+]
+```
+
+For one continuous view, use the ordinary action and camera fields and omit
+`internal_shots`; a single entry repeating those fields adds prompt length without
+new direction. Use the list when there are actual authored view changes.
+
+Each entry requires `start_seconds` and exact `action`; `camera` is optional.
+The first start is zero; later finite millisecond-precision starts strictly increase
+and fall inside the clip duration. Keep `shots[].action` as a brief dominant-action
+summary, with detailed events authored once in the list. The compiler renders
+`[Shot 1]` without a start timestamp and later headings such as
+`[Shot 2] At 00:02.000, the camera cuts to the next view.` It places each exact timed
+utterance in its containing view; for this optional form, dialogue must fit wholly
+inside one view. Crossing-cut speech is rejected rather than guessed or rewritten.
+Shared identity invariants and initial composition remain clip-wide, with one
+completed end state and sound plan. These are prompt directions within one video
+request, not native timed frame controls or extra generation attempts. Generic
+shootable prompts retain the same literal internal actions/cameras and times.
+Packages without the list retain their existing prompt bytes. Do not guess cuts
+from prose, duplicate a full native prompt or change frozen historical requests.
 
 The official [animation shot spec](https://github.com/MiniMax-AI/MiniMax-H3/blob/main/skills/3d-animation-short-generator/references/shot-table-spec.md)
 also separates action beats from camera direction. For a quick gag, use a few

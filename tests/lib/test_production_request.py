@@ -1848,6 +1848,297 @@ def test_h3_projection_uses_native_pins_and_preserves_literal_occurrences(tmp_pa
     assert request._compile_provider_packet(packet, provider='openart_mcp', model='byte-plus-seedance-2-mini') == generic
 
 
+@pytest.mark.parametrize('pins', [[], ['first_frame'], ['first_frame', 'last_frame']])
+def test_h3_internal_shots_render_timed_views_with_literal_coverage_and_dialogue(tmp_path, pins):
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    root, contract = shootable_project(tmp_path)
+    shot = contract['shots'][0]
+    shot['internal_shots'] = [
+        {'start_seconds': 0, 'action': 'Tung pulls the fork away.', 'camera': 'Medium two-shot.'},
+        {'start_seconds': 2, 'action': 'The same Tung turns toward the nurse.', 'camera': 'Close view of Tung.'},
+        {'start_seconds': 4.5, 'action': 'The fork rests safely on the table.'}]
+    # Deliberately store dialogue out of timeline order; IDs follow actual speech.
+    shot['dialogue'].reverse()
+    shot['dialogue'][0]['text'] = shot['dialogue'][1]['text']
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    for value in contract['shots']:
+        value['review']['subject_sha256'] = shot_review_subject(contract, value['id'])
+    write(root/'artifacts/shot_contract.json', contract)
+    before = _tree(root)
+    packet = request.build_static_source_packet(root, 'entry', provider='openart_mcp')
+    assets = [{'role': role} for role in pins]
+    compiled = request._compile_provider_packet(packet, provider='openart_mcp', model='fal-h3-max-turbo', input_assets=assets)
+    prompt = compiled['prompt']
+    second = '[Shot 2] At 00:02.000, the camera cuts to the next view. '
+    third = '[Shot 3] At 00:04.500, the camera cuts to the next view. '
+    assert 'integrated_multimodal_description: [Shot 1] Opening frame: ' in prompt
+    assert '[Shot 1] At ' not in prompt
+    assert prompt.index('Tung pulls the fork away.') < prompt.index('<d>Help me.</d>') < prompt.index(second)
+    assert prompt.index(second) < prompt.rindex('<d>Help me.</d>') < prompt.index(third)
+    assert '(S1) says: <d>Help me.</d>' in prompt
+    assert '(S2) (off screen, diegetic speech) says: <d>Help me.</d>' in prompt
+    assert prompt.count('<d>Help me.</d>') == 2
+    assert prompt.index('must be clearly visible') < prompt.index('Tung pulls the fork away.')
+    assert prompt.index(third) < prompt.index('End of clip: ' + shot['completed_end_state'])
+    assert shot['prop_body_invariants'][0] in prompt
+    assert prompt.endswith('non_diegetic_music: N/A\n')
+    if 'last_frame' in pins:
+        assert '<Picture 2> (from [Shot 3]) is fully referenced as the final video image.' in prompt
+    assert prompt.count('<Picture ') == len(pins)
+    covered = {span['source_pointer']: span for span in compiled['coverage']}
+    for index, view in enumerate(shot['internal_shots']):
+        for key in ('action', 'camera'):
+            if key in view:
+                span = covered[f'/shot_contract/shots/0/internal_shots/{index}/{key}']
+                assert prompt[span['start']:span['end']] == view[key]
+                assert span['fragment_sha256'] == span['value_sha256'] == request.digest(view[key])
+    generic = request._compile_provider_packet(packet, provider='openart_mcp', model='byte-plus-seedance-2-mini')
+    assert 'Internal shot 2 at 2s: The same Tung turns toward the nurse.' in generic['prompt']
+    assert all(view['action'] in generic['prompt'] for view in shot['internal_shots'])
+    historical = request._compile_historical_provider_prompt(root, 'entry', provider='openart_mcp',
+        native={'model': 'fal-h3-max-turbo', 'input_assets': assets, 'body': {}})
+    assert request.historical_preparation_matches(prompt, compiled['coverage'], historical)
+    assert request.historical_preparation_matches(generic['prompt'], generic['coverage'], historical)
+    assert _tree(root) == before
+
+
+def duplicate_h3_project(tmp_path, *, padding=3000, repeated_dialogue=False):
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    root, contract = shootable_project(tmp_path)
+    shot = contract['shots'][0]
+    shot['dominant_action'] = ('Tung carries the sealed chest along the dry dock. ' * 30)[:977]
+    shot['camera'] = ('Static wide view keeping Tung, the chest and the dock edge visible. ' * 5)[:247]
+    shot['initial_state'] += ('The dock rail and waterline remain visibly separate. ' * 200)[:padding]
+    shot['internal_shots'] = [{'start_seconds': 0, 'action': shot['dominant_action'], 'camera': shot['camera']}]
+    if repeated_dialogue:
+        shot['dialogue'][1]['text'] = shot['dialogue'][0]['text']
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    for value in contract['shots']:
+        value['review']['subject_sha256'] = shot_review_subject(contract, value['id'])
+    write(root/'artifacts/shot_contract.json', contract)
+    return root, contract
+
+
+def test_oversized_h3_single_identical_view_shares_only_action_and_camera_literals(tmp_path):
+    root, contract = duplicate_h3_project(tmp_path, repeated_dialogue=True)
+    shot = contract['shots'][0]
+    packet = request.build_static_source_packet(root, 'entry', provider='openart_mcp')
+    before = copy.deepcopy(packet)
+    compiled = request._compile_provider_packet(packet, provider='openart_mcp', model='fal-h3-max-turbo')
+    prompt = compiled['prompt']; spans = {span['source_pointer']: span for span in compiled['coverage']}
+    assert len(prompt) <= 6000
+    removed = len(shot['dominant_action']) + len(shot['camera']) + len('Action in this view: \nCamera: \n')
+    assert len(prompt) + removed > 6000  # The complete original rendering exceeds the connector limit.
+    assert prompt.count(shot['dominant_action']) == prompt.count(shot['camera']) == 1
+    for leaf, target in [('action', 'dominant_action'), ('camera', 'camera')]:
+        alias = spans['/shot_contract/shots/0/internal_shots/0/' + leaf]
+        original = spans['/shot_contract/shots/0/' + target]
+        assert (alias['start'], alias['end']) == (original['start'], original['end'])
+        assert alias['occurrence_id'] != original['occurrence_id']
+    assert len(compiled['coverage']) == len([row for row in packet['occurrences']
+        if not request._h3_administrative_row(packet, row)])
+    for span in compiled['coverage']:
+        assert request.digest(prompt[span['start']:span['end']]) == span['value_sha256'] == span['fragment_sha256']
+    assert prompt.count('<d>Help me.</d>') == 2
+    first_line = spans['/shot_contract/shots/0/dialogue/0/text']
+    second_line = spans['/shot_contract/shots/0/dialogue/1/text']
+    assert (first_line['start'], first_line['end']) != (second_line['start'], second_line['end'])
+    assert 'overall_soundscape: ' + shot['sound'] in prompt
+    assert prompt.endswith('non_diegetic_music: N/A\n')
+    assert packet == before
+    generic = request._compile_provider_packet(packet, provider='openart_cli', model='fal-h3-max-turbo')
+    assert generic['prompt'].count(shot['dominant_action']) == generic['prompt'].count(shot['camera']) == 2
+
+
+@pytest.mark.parametrize('different', ['short', 'action', 'camera', 'missing_camera', 'multiple', 'nonzero', 'still_too_long'])
+def test_h3_duplicate_reduction_keeps_all_other_projection_cases(tmp_path, different):
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    root, contract = duplicate_h3_project(tmp_path, padding=0 if different == 'short' else 6000 if different == 'still_too_long' else 3000)
+    shot = contract['shots'][0]
+    if different in {'action', 'camera'}:
+        shot['internal_shots'][0][different] += ' A distinct authored detail.'
+    elif different == 'missing_camera':
+        del shot['internal_shots'][0]['camera']
+    elif different == 'multiple':
+        shot['internal_shots'].append({'start_seconds': 4.5, 'action': 'The nurse reacts.'})
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    for value in contract['shots']:
+        value['review']['subject_sha256'] = shot_review_subject(contract, value['id'])
+    write(root/'artifacts/shot_contract.json', contract)
+    packet = request.build_static_source_packet(root, 'entry', provider='openart_mcp')
+    if different == 'nonzero':
+        # Public source validation already rejects this; the pure projection must not alias it either.
+        packet['shot']['internal_shots'][0]['start_seconds'] = .001
+    compiled = request._compile_h3_packet(packet)
+    assert (len(compiled['prompt']) <= 6000) is (different == 'short')
+    assert 'Action in this view: ' + shot['internal_shots'][0]['action'] in compiled['prompt']
+    assert compiled['prompt'].count(shot['dominant_action']) == 2
+    assert compiled['prompt'].count(shot['camera']) == (1 if different == 'missing_camera' else 2)
+    assert len({(s['start'], s['end']) for s in compiled['coverage']}) == len(compiled['coverage'])
+    if different == 'short':
+        assert hashlib.sha256(json.dumps([compiled['prompt'], compiled['coverage']], sort_keys=True).encode()).hexdigest() \
+            == 'fbdc5b88913bca067d88c8f5747a4e3da86ffaf986bc2c5ff64b7f5d5e8aaeab'
+
+
+@pytest.mark.parametrize('size', [6000, 6001])
+def test_h3_single_view_reduction_only_above_exact_connector_boundary(tmp_path, size):
+    root, _ = duplicate_h3_project(tmp_path, padding=size - 3557)
+    packet = request.build_static_source_packet(root, 'entry', provider='openart_mcp')
+    compiled = request._compile_h3_packet(packet)
+    removed = 977 + 247 + len('Action in this view: \nCamera: \n')
+    assert len(compiled['prompt']) == (6000 if size == 6000 else 6001 - removed)
+    spans = compiled['coverage']
+    assert len({(s['start'], s['end']) for s in spans}) == len(spans) - (2 if size == 6001 else 0)
+
+
+@pytest.mark.parametrize('tamper', [None, 'omit_alias', 'alias_camera', 'foreign_overlap', 'extra_alias', 'prompt'])
+def test_h3_single_view_shared_coverage_requires_exact_canonical_projection(reference_free_package, tmp_path, monkeypatch, tamper):
+    from lib import openart_mcp as mcp
+    from tests.integration.test_openart_mcp_governance import fixture_observations
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    fixture_observations.__wrapped__(tmp_path, monkeypatch)
+    root, _, _, _, _, _ = reference_free_package
+    contract = json.loads((root/'artifacts/shot_contract.json').read_text())
+    contract.update(planning_mode='shot_local_v1', prompt_compiler='shootable_v1', cast_names={})
+    shot = contract['shots'][0]
+    shot.update(duration_seconds=5, camera=('A static wide view. ' * 20)[:247],
+        dominant_action=('The cube drops along the clear path. ' * 40)[:977], sound='No background music.')
+    shot['initial_state'] += 'The floor and clear path remain visible. ' * 85
+    shot['internal_shots'] = [{'start_seconds': 0, 'action': shot['dominant_action'], 'camera': shot['camera']}]
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    for value in contract['shots']:
+        value['review']['subject_sha256'] = shot_review_subject(contract, value['id'])
+    write(root/'artifacts/shot_contract.json', contract)
+    authored = request.compile_provider_prompt(root, 'entry', provider='openart_mcp', model='fal-h3-max-turbo')
+    coverage = copy.deepcopy(authored['coverage'])
+    by_pointer = {span['source_pointer']: span for span in coverage}
+    alias = by_pointer['/shot_contract/shots/0/internal_shots/0/action']
+    original = by_pointer['/shot_contract/shots/0/dominant_action']
+    assert (alias['start'], alias['end']) == (original['start'], original['end'])
+    assert len(authored['prompt']) <= 6000
+    if tamper == 'omit_alias': coverage.remove(alias)
+    elif tamper == 'alias_camera':
+        other = by_pointer['/shot_contract/shots/0/camera']
+        alias.update(start=other['start'], end=other['end'])
+    elif tamper == 'foreign_overlap':
+        by_pointer['/shot_contract/shots/0/completed_end_state'].update(start=original['start'], end=original['end'])
+    elif tamper == 'extra_alias': coverage.append(copy.deepcopy(alias))
+    prompt = authored['prompt'] + (' Changed framing.' if tamper == 'prompt' else '')
+    inputs = {'project_dir': str(root), 'governance': {'scope_id': 'approved', 'shot_id': 'entry'},
+        'operation': 'text_to_video', 'model': 'fal-h3-max-turbo', 'mode': 'text2video', 'prompt': prompt,
+        'native_params': {'duration': 5, 'resolution': '768P'}, 'output_path': str(root/'clip.mp4')}
+    profile = mcp.load_profile(inputs['model'], inputs['mode'], require='candidate')
+    native = mcp.prepare_native_request(execution._openart_mcp_controls(inputs), profile)
+    timing = {'method': 'segmented_estimate', 'duration_seconds': 5, 'language': 'en', 'margin_seconds': .05,
+        'rationale': 'Synthetic fixture', 'overlap_policy': 'serial', 'overlap_rationale': 'Synthetic fixture',
+        'segments': [], 'action_windows': [
+            {'source_pointer': '/shot_contract/shots/0/' + key, 'value_sha256': request.digest(shot[key]),
+             'start_seconds': start, 'end_seconds': end, 'rationale': 'Synthetic fixture'}
+            for key, start, end in [('dominant_action', 0, 2), ('completed_end_state', 2, 4.9)]]}
+    if tamper is None:
+        request.prepare_compiled_request(inputs, native, profile, coverage=coverage, timing=timing)
+    else:
+        with pytest.raises(ValueError, match='H3.*(coverage|prompt).*differs'):
+            request.prepare_compiled_request(inputs, native, profile, coverage=coverage, timing=timing)
+
+
+@pytest.mark.parametrize('views', [
+    [], [{'start_seconds': 1, 'action': 'A'}], [{'start_seconds': False, 'action': 'A'}],
+    [{'start_seconds': 0, 'action': ''}], [{'start_seconds': 0, 'action': 'A', 'camera': ' '}],
+    [{'start_seconds': 0, 'action': 'A', 'native_prompt': 'hidden'}],
+    [{'start_seconds': 0, 'action': 'A'}, {'start_seconds': 0, 'action': 'B'}],
+    [{'start_seconds': 0, 'action': 'A'}, {'start_seconds': -1, 'action': 'B'}],
+    [{'start_seconds': 0, 'action': 'A'}, {'start_seconds': 8, 'action': 'B'}],
+    [{'start_seconds': 0, 'action': 'A'}, {'start_seconds': float('nan'), 'action': 'B'}],
+    [{'start_seconds': 0, 'action': 'A'}, {'start_seconds': float('inf'), 'action': 'B'}],
+    [{'start_seconds': 0, 'action': 'A'}, {'start_seconds': '2', 'action': 'B'}],
+    [{'start_seconds': 0, 'action': 'A'}, {'start_seconds': 2.0001, 'action': 'B'}],
+    [{'start_seconds': 0, 'action': 'A'}, {'start_seconds': 4, 'action': 'B'}, {'start_seconds': 3, 'action': 'C'}],
+])
+def test_internal_shots_validate_explicit_shape_and_strict_times(views):
+    from lib.shot_contract import validate_internal_shots
+    with pytest.raises(ValueError, match='internal_shots'):
+        validate_internal_shots({'duration_seconds': 8, 'internal_shots': views}, prompt_compiler='shootable_v1')
+
+
+@pytest.mark.parametrize('damage', ['crossing_dialogue', 'no_compiler', 'out_of_duration'])
+def test_internal_shots_invalid_canonical_contract_cannot_compile(tmp_path, damage):
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    root, contract = shootable_project(tmp_path)
+    shot = contract['shots'][0]
+    shot['internal_shots'] = [{'start_seconds': 0, 'action': 'Opening.'}, {'start_seconds': 2, 'action': 'Reaction.'}]
+    if damage == 'crossing_dialogue': shot['dialogue'][0]['end_seconds'] = 2.1
+    elif damage == 'no_compiler': contract.pop('prompt_compiler')
+    else: shot['internal_shots'][1]['start_seconds'] = 8
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    for value in contract['shots']:
+        value['review']['subject_sha256'] = shot_review_subject(contract, value['id'])
+    write(root/'artifacts/shot_contract.json', contract)
+    with pytest.raises(ValueError): request.compile_prompt(root, 'entry')
+
+
+def test_generic_internal_shot_preparation_rejects_changed_cut_time_outside_coverage(reference_free_package):
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    root, inputs, _, profile, previous, _ = reference_free_package
+    contract = json.loads((root/'artifacts/shot_contract.json').read_text())
+    contract.update(planning_mode='shot_local_v1', prompt_compiler='shootable_v1', cast_names={})
+    contract['shots'][0]['internal_shots'] = [{'start_seconds': 0, 'action': 'The cube drops.'},
+                                             {'start_seconds': .5, 'action': 'The cube comes to rest.'}]
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    for shot in contract['shots']:
+        shot['review']['subject_sha256'] = shot_review_subject(contract, shot['id'])
+    write(root/'artifacts/shot_contract.json', contract)
+    authored = request.compile_provider_prompt(root, 'entry', provider='openart_cli')
+
+    def native_for(prompt):
+        current = copy.deepcopy(inputs); current['prompt'] = prompt
+        argv = cli.native_video_argv(prompt, model=current['model'], mode=current['mode'],
+            duration=current['duration'], aspect_ratio=current['aspect_ratio'], resolution=current['resolution'])
+        body = {'model': current['model'], 'media': 'video', 'mode': current['mode'], 'params': {
+            'prompt': prompt, 'duration': current['duration'], 'aspectRatio': current['aspect_ratio'],
+            'resolution': current['resolution']}}
+        rid, sha = retain({'endpoint': profile['dry_run_endpoint'], 'body': body},
+            argv+['--dry-run']+cli.GLOBAL_FLAGS, 'preview')
+        current.update(native_dry_run_receipt_id=rid, native_dry_run_receipt_sha256=sha)
+        return current, jobs.prepare_native_request(request.controls(current), profile)
+
+    current, native = native_for(authored['prompt'])
+    request.prepare_compiled_request(current, native, profile, coverage=authored['coverage'], timing=previous['timing'])
+    altered = authored['prompt'].replace('Internal shot 2 at 0.5s:', 'Internal shot 2 at 0.8s:')
+    assert altered != authored['prompt'] and len(altered) == len(authored['prompt'])
+    # Every covered action/camera fragment still matches; the cut wrapper alone changed.
+    assert all(altered[row['start']:row['end']] == authored['prompt'][row['start']:row['end']]
+               for row in authored['coverage'])
+    current, native = native_for(altered)
+    with pytest.raises(ValueError, match='internal-shot prompt differs from exact authored projection'):
+        request.prepare_compiled_request(current, native, profile, coverage=authored['coverage'], timing=previous['timing'])
+
+
+def test_internal_shots_compact_and_full_packages_preserve_one_clip_and_reject_tampering(neutral_package):
+    from tests.lib.test_production_package_authoring import packages
+    root, base, bind = neutral_package
+    compact, _ = packages(base)
+    compact.update(prompt_compiler='shootable_v1', cast_names={})
+    for value in compact['shots']:
+        value['duration_seconds'] = 5
+        value['action'] = '0–4.5s: ' + value['action']
+    first = compact['shots'][0]
+    first['internal_shots'] = [{'start_seconds': 0, 'action': 'Opening.', 'camera': 'Wide view.'},
+                               {'start_seconds': 2, 'action': 'The visible consequence.'}]
+    original = copy.deepcopy(compact)
+    for package in (compact, request._expand_compact_package(compact)):
+        compiled = request.compile_package(root, bind(package))
+        shots = compiled['spec']['motion_binding']['contract_template']['shots']
+        assert len(shots) == len(package['shots'])
+        assert shots[0]['internal_shots'] == first['internal_shots']
+        assert len(request.build_video_request_templates(package,
+            {'provider': 'openart_mcp', 'model': 'fal-h3-max-turbo', 'mode': 'image2video', 'resolution': '768P'})) == len(shots)
+    assert compact == original
+    compact['shots'][0]['internal_shots'][1]['start_seconds'] = first['duration_seconds']
+    with pytest.raises(ValueError, match='internal_shots'):
+        request.compile_package(root, bind(compact))
+
+
 @pytest.mark.parametrize('sound,no_music', [
     ('One brief ceramic rattle, ice sliding, a dry wooden clonk and a small startled grunt. No background music.', True),
     ('No background music; a cup clinks and the door creaks.', True),
@@ -1909,7 +2200,8 @@ def test_h3_projection_preserves_no_music_default_and_rejects_missing_required_c
     assert not request.historical_preparation_matches(compiled['prompt'], changed, historical)
 
 
-def test_h3_frozen_preparation_replays_before_explicit_music_projection(reference_free_package, tmp_path, monkeypatch):
+@pytest.mark.parametrize('internal', [False, True])
+def test_h3_frozen_preparation_replays_before_explicit_music_projection(reference_free_package, tmp_path, monkeypatch, internal):
     from lib import openart_mcp as mcp
     from tests.integration.test_openart_mcp_governance import fixture_observations
     from lib.shot_contract import project_review_subject, shot_review_subject
@@ -1918,6 +2210,9 @@ def test_h3_frozen_preparation_replays_before_explicit_music_projection(referenc
     contract = json.loads((root / 'artifacts/shot_contract.json').read_text())
     contract.update(planning_mode='shot_local_v1', prompt_compiler='shootable_v1', cast_names={})
     contract['shots'][0].update(duration_seconds=5, sound='A plate clinks. No background music.')
+    if internal:
+        contract['shots'][0]['internal_shots'] = [{'start_seconds': 0, 'action': 'A plate slides.'},
+                                                 {'start_seconds': 2, 'action': 'The plate lands safely.'}]
     contract['project_review']['subject_sha256'] = project_review_subject(contract)
     for shot in contract['shots']:
         shot['review']['subject_sha256'] = shot_review_subject(contract, shot['id'])

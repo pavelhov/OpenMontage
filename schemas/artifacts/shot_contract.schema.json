@@ -570,6 +570,21 @@
           "minLength": 1,
           "pattern": "\\S"
         },
+        "internal_shots": {
+          "type": "array",
+          "minItems": 1,
+          "description": "shootable_v1 only: ordered internal views in one generation clip; first start is zero, later millisecond cut times strictly increase within duration.",
+          "items": {
+            "type": "object",
+            "required": ["start_seconds", "action"],
+            "properties": {
+              "start_seconds": {"type": "number", "minimum": 0},
+              "action": {"type": "string", "minLength": 1, "pattern": "\\S"},
+              "camera": {"type": "string", "minLength": 1, "pattern": "\\S"}
+            },
+            "additionalProperties": false
+          }
+        },
         "completed_end_state": {
           "type": "string",
           "minLength": 1,
@@ -863,6 +878,11 @@
                       {
                         "required": [
                           "sound"
+                        ]
+                      },
+                      {
+                        "required": [
+                          "internal_shots"
                         ]
                       }
                     ]

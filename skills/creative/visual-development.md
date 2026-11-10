@@ -200,6 +200,21 @@ weakest physical relationship clearly; extra images should resolve that specific
 uncertainty. A character sheet, a composed opening
 and an ending image have different jobs even when they share source artwork.
 
+For recurring cast, the creator-selected actual source outranks a regenerated
+master or its lineage. Choose a clean isolated appearance anchor matching that
+source's face, body, material and rendering style, and reuse it for every scene.
+Compare a reusable generated anchor directly to the selected original, not merely
+to its own later boards; repeated reinterpretation is not source fidelity.
+Reuse suitable existing assets; create a useful missing view only within current
+image authority, depicting the same individual. Keep each scene's prop inventory
+and ownership explicit and local. Inherit only named attributes from earlier
+images; do not copy a global prop list or the old location's palette into a new
+setting. Use an isolated prop
+reference when a persistent design or its construction needs one, rather than
+relying on a colour description, while retaining the common clean cast
+anchors for appearance. Do not daisy-chain changing appearances or override that
+anchor with a new scene interpretation.
+
 Use the existing inventory, shot roles and prompt pack; this guidance adds no
 artifact, mandatory payoff field, generation allowance or approval boundary.
 Choose between these treatments using the exact route's current capability
@@ -220,12 +235,27 @@ reveal remains distinct. An immediate absurdity may be fully visible from the
 opening. Include only the on-screen cast needed for the event, with clear actor
 identifiers. Keep a necessary
 bystander outside the active footprint, with visible floor/support separation.
-The relevant hands/contacts read. Compose the intended movement envelope with
-margin around critical edges, rather than fitting only the starting pose. Inspect
+The relevant hands/contacts read. Stage decisive grips, snags, choices and losses
+before completion so the motion can show their cause; match expressions to the
+character's current knowledge and emotional progression. Compose the intended
+movement envelope with margin around critical edges, rather than fitting only
+the starting pose. Inspect
 the image itself for identity, relative scale, possession, geometry, occlusion and
-screen direction; a static-camera request does not guarantee a fixed frame.
+screen direction; compare face, head silhouette, proportions, base hue and material
+with the common appearance anchor during that existing inspection. A static-camera
+request does not guarantee a fixed frame.
 Source ancestry records how the image was made; only the actual native input
 binding establishes what the video model receives.
+
+When location, action geometry or the dominant task materially changes, prepare
+a useful fresh start from the same appearance anchors rather than relying on a
+later internal angle to invent that staging. A few related internal shots can
+efficiently share a request when their changing states remain legible. On a
+start-frame-plus-text route, image-generation sources do not separately guide
+identity in later internal views. Keep viewpoints purposeful and limited; prepare
+a fresh start when an important new view needs its own composition or identity
+evidence. Choose coverage for the brief and actual native inputs, without a
+blanket single-shot rule or fixed count of starts or cuts.
 
 For fast physical action, use concise action windows: one dominant physical event,
 its visible consequence, then a brief purposeful decision or visible realization.
@@ -236,8 +266,18 @@ canonical shot fields,
 keep exact spoken words in dialogue, nonverbal sounds in sound direction and
 motion in action; do not repeat the line in each. Preserve required source
 coverage and every intended utterance, then use the compiler's prompt unchanged.
-Describe the relevant body/material mechanic: a solid wooden torso moves as one
-piece while limbs rotate at their joints; a fluid may break into droplets.
+Let the actual frame carry detailed appearance, while concise hard-to-infer identity,
+silhouette and material traits stay in existing invariants (`shots[].preserve` for
+shootable packages), which reach the motion prompt. Match these to the selected
+anchor and actual frame; names plus “consistent appearance” do not specify them.
+Carry those traits across necessary internal cuts without copying a full portrait
+description into each action. Avoid needless angle reversals, close-ups and headwear
+handling while preserving brisk action and story-relevant cuts.
+Describe the relevant body/material mechanic and choose compatible poses: a
+single rigid face-and-torso form rotates as one piece, with limbs moving at its
+existing joints; it cannot stay horizontal while independently raising its face.
+Simplify contradictory pose instructions rather than adding a negative-prompt
+wall. A fluid, by contrast, may break into droplets.
 Stage the actual grip and contact surface while keeping distinctive prop edges
 and silhouette visible. For a push/pull, one continuous contact causes movement,
 followed by visible release/separation and rest. For a flexible prop contacting a
@@ -250,13 +290,16 @@ action can carry that meaning; inferred intention alone cannot replace it.
 Omit needless taps, regrips, distances, gestures and camera shifts. Keep the camera
 stable or describe one useful move separately from subject motion, with readable
 silhouettes and prop edges. Longer stories earn time through causal escalation or
-purposeful coverage rather than stretching a gesture. Plan the natural beat
-length separately from native generation length: a two-second beat may require a
-valid five-second request, without stretching its action, speech or reaction or
-adding filler. Under existing edit authority, use the registered trim path at the
-actually observed payoff plus recognition time; retain originals and meaningful
-tails, and disclose unknown audio without adding an audio gate. Never cut blindly
-at a planned timestamp. Beat windows express intent, not frame-accurate guarantees.
+purposeful coverage rather than stretching a gesture. Plan useful finished events
+before grouping them into valid native generation durations: a two-second beat may
+require a five-second request, without stretching its action, speech or reaction
+or adding filler. The brief determines the desired pace. Under existing edit
+authority, edit observed useful intervals across the sequence, including clean
+footage with dead space, while preserving completed contact, consequential
+responses and recognition. Retain originals and derived provenance; disclose
+unknown audio without adding an audio gate. Never cut blindly at a planned
+timestamp or use a blanket speed multiplier to force the intended pace. Beat
+windows express intent, not frame-accurate guarantees.
 
 When an ending image helps, derive it from the actual starting image and the same
 relevant identity/prop references, preserving the scene, geometry, camera, scale,
