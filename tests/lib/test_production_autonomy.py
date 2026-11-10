@@ -570,3 +570,126 @@ def test_retained_actor_voice_reference_rejects_role_flex(tmp_path, flex_kind):
     install_existing(tmp_path, policy, templates={'entry': template})
     with pytest.raises(pa.AutonomyError, match='conflict'):
         pa.require_active_policy(tmp_path)
+
+
+def offscreen_lock_fixture(root, monkeypatch, *, sources=('offscreen',), shared=False,
+                           missing='doctor', explicit=None, factory=True, required_visible=False):
+    """Real retained activation/planning/inputs; isolate only preparation admission.
+
+    Synthetic named board membership is test data, never a visual quality claim.
+    """
+    from lib import production_execution as execution, production_request as request
+    from tests.lib.test_production_factory import standing_fixture, write
+
+    kwargs = standing_fixture(root)
+    contract = execution.load_shot_contract(root)
+    shot = contract['shots'][0]
+    shot['cast_ids'].append('doctor')
+    shot['asset_ids'].append('doctor')
+    shot['dialogue'] = [dict(speaker_id='doctor', source=source, text='Synthetic phone reply.',
+        start_seconds=index + 1, end_seconds=index + 1.5) for index, source in enumerate(sources)]
+    shot['required_visible_speakers'] = ['doctor'] if required_visible or 'visible' in sources else []
+    doctor = next(a for a in contract['assets'] if a['id'] == 'doctor')
+    if shared:
+        doctor['cast_ids'].append('patient')
+    from lib.shot_contract import project_review_subject, shot_review_subject
+    contract['project_review']['subject_sha256'] = project_review_subject(contract)
+    shot['review']['subject_sha256'] = shot_review_subject(contract, 'entry')
+    write(root, 'artifacts/shot_contract.json', contract)
+    baseline = kwargs['baselines']['entry']
+    baseline.update(projection=pa.current_projection(root, 'entry'),
+        dialogue_coverage=pa.dialogue_occurrences(pa.current_projection(root, 'entry')),
+        approval_plan_sha256=execution.approval_plan_digest(contract, 'entry'))
+    if explicit == 'source':
+        kwargs['policy']['locked']['sources'] = [doctor['sha256']]
+    elif explicit == 'cast':
+        kwargs['policy']['locked']['cast'] = {'doctor': [{key: doctor[key] for key in ('sha256', 'role')}]}
+    if factory:
+        pa.activate_standing_run(root, **kwargs)
+    else:
+        install_existing(root, kwargs['policy'], templates={
+            'entry': baseline['planned_request_template']})
+    canonical = request.compile_provider_prompt(root, 'entry', provider='grok_cli')
+    inputs = dict(project_dir=str(root), governance={'shot_id': 'entry'},
+        image_path=str(root / 'assets/start.svg'), duration=8, prompt=canonical['prompt'],
+        compiled_request_id='offscreen', preparation_review_id='offscreen')
+    native = {'provider': 'grok_cli', 'request': {'arguments': {'prompt': canonical['prompt'], 'duration': 8}}}
+    write(root, 'artifacts/compiled_request-offscreen.json', canonical)
+    projection = pa.current_projection(root, 'entry')
+    start = next(a for a in projection['assets'] if a['id'] == 'start')
+    review = {'composite_boards': [{'sha256': start['sha256'], 'role': 'start_frame',
+        'members': [{key: a[key] for key in ('sha256', 'role', 'cast_ids')}
+                    for a in projection['assets'] if a['id'] != missing]}]}
+    write(root, 'artifacts/preparation_review-offscreen.json', review)
+    monkeypatch.setattr(request, 'validate_preparation', lambda *args: {})
+    return inputs, native, review
+
+
+def test_factory_offscreen_only_identity_needs_no_visual_ancestry(tmp_path, monkeypatch):
+    inputs, native, _ = offscreen_lock_fixture(tmp_path, monkeypatch)
+    before = snapshot(tmp_path)
+    projection = pa.current_projection(tmp_path, 'entry')
+    assert 'doctor' in projection['implicit_cast_ids']
+    assert any(a['id'] == 'doctor' for a in projection['assets'])
+    assert len(pa.lock_proof(tmp_path, 'entry', inputs=inputs, native=native, profile={})) == 64
+    assert snapshot(tmp_path) == before
+
+
+def test_offscreen_identity_still_requires_retained_source_bytes(tmp_path, monkeypatch):
+    inputs, native, _ = offscreen_lock_fixture(tmp_path, monkeypatch)
+    (tmp_path / 'assets/doctor.svg').unlink()
+    before = snapshot(tmp_path)
+    with pytest.raises((pa.AutonomyError, FileNotFoundError)):
+        pa.lock_proof(tmp_path, 'entry', inputs=inputs, native=native, profile={})
+    assert snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize('kwargs', [
+    {'factory': False},
+    {'sources': ('visible',)},
+    {'sources': ('offscreen', 'visible')},
+    {'sources': ()},
+    {'shared': True},
+    {'missing': 'patient'},
+])
+def test_missing_identity_ancestry_stays_required_outside_offscreen_exception(tmp_path, monkeypatch, kwargs):
+    inputs, native, _ = offscreen_lock_fixture(tmp_path, monkeypatch, **kwargs)
+    before = snapshot(tmp_path)
+    with pytest.raises(pa.AutonomyError, match='implicit locked source/cast'):
+        pa.lock_proof(tmp_path, 'entry', inputs=inputs, native=native, profile={})
+    assert snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize('lock', ['source', 'cast'])
+def test_offscreen_identity_keeps_explicit_locks(tmp_path, monkeypatch, lock):
+    inputs, native, _ = offscreen_lock_fixture(tmp_path, monkeypatch, explicit=lock)
+    before = snapshot(tmp_path)
+    with pytest.raises(pa.AutonomyError, match='implicit locked source/cast|explicit cast lock'):
+        pa.lock_proof(tmp_path, 'entry', inputs=inputs, native=native, profile={})
+    assert snapshot(tmp_path) == before
+
+
+def test_offscreen_line_cannot_override_explicit_required_visibility(tmp_path, monkeypatch):
+    from lib import production_request as request
+
+    # Normal source validation rejects this contradictory declaration earlier.
+    # Isolate the lock gate to prove its own required-visible exclusion as well.
+    monkeypatch.setattr(request, 'validate_shot_contract', lambda *args, **kwargs: {'eligible': True})
+    inputs, native, _ = offscreen_lock_fixture(tmp_path, monkeypatch, required_visible=True)
+    before = snapshot(tmp_path)
+    with pytest.raises(pa.AutonomyError, match='implicit locked source/cast doctor'):
+        pa.lock_proof(tmp_path, 'entry', inputs=inputs, native=native, profile={})
+    assert snapshot(tmp_path) == before
+
+
+def test_already_proven_offscreen_identity_keeps_retained_lock_digest(tmp_path, monkeypatch):
+    from lib import shot_contract
+
+    inputs, native, _ = offscreen_lock_fixture(tmp_path, monkeypatch, missing=None)
+    before = snapshot(tmp_path)
+    # Disabling only the new exception reconstructs the previous proof algorithm.
+    with monkeypatch.context() as patch:
+        patch.setattr(shot_contract, '_standing_make_video', lambda *args: False)
+        previous = pa.lock_proof(tmp_path, 'entry', inputs=inputs, native=native, profile={})
+    assert pa.lock_proof(tmp_path, 'entry', inputs=inputs, native=native, profile={}) == previous
+    assert snapshot(tmp_path) == before

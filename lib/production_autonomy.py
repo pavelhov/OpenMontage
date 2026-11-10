@@ -2770,6 +2770,13 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
     proof = {'policy_sha256': sha, 'baseline_sha256': digest(retained),
              'compiled_sha256': digest(compiled), 'review_sha256': digest(review),
              'inputs': actual, 'cast': [], 'controls': {}}
+    # Dialogue membership also includes voice-only cast. Only the activated
+    # factory may omit their implicit visual identity ancestry; explicit locks
+    # and the full retained source/planning bindings still apply below.
+    dialogue = projection['shot'].get('dialogue', [])
+    offscreen_only = ({line['speaker_id'] for line in dialogue if line.get('source') == 'offscreen'}
+        - {line['speaker_id'] for line in dialogue if line.get('source') != 'offscreen'}
+        - set(projection['shot'].get('required_visible_speakers', [])))
     ancestry_checked = False
     for asset in projection['assets']:
         if asset.get('upstream_source'):
@@ -2817,6 +2824,14 @@ def _root_lock_proof(root, shot_id, *, inputs, native, profile, historical=None,
                         and any(m['sha256'] == asset['sha256'] and m['role'] == asset['role']
                                 and m['cast_ids'] == asset['cast_ids'] for m in b['members'])]
         if not carriers:
+            relevant_cast = set(asset.get('cast_ids', [])) & set(projection['implicit_cast_ids'])
+            if (asset['role'] == 'identity_reference' and relevant_cast
+                    and relevant_cast.issubset(offscreen_only)
+                    and asset['sha256'] not in policy['locked']['sources']
+                    and _standing_make_video(root, policy)):
+                # Keep every already-proven row unchanged for old-proof replay.
+                # Shared sheets with any relevant visible cast still need proof.
+                continue
             raise AutonomyError(f'implicit locked source/cast {asset["id"]} is absent from actual inputs and named board proof')
         proof['cast'].append([asset['id'], asset['sha256'], carriers[0]['sha256']])
     for cast_id, members in policy['locked']['cast'].items():
