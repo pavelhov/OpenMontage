@@ -2089,6 +2089,8 @@ def _compile_package_value(root, package, package_binding):
         for directory in ('', 'artifacts/') for name in ('script', 'scene_plan', 'asset_manifest')}
     existing_pack = boards.load_board_pack(root) if (root / boards.ARTIFACT).exists() else None
     same_pack = existing_pack and existing_pack['specification_sha256'] == boards._digest(spec)
+    if not same_pack:
+        images.validate_board_reference_limits(spec)
     scopes_path = root / 'production_scopes.json'
     scopes = json.loads(scopes_path.read_text()).get('scopes', []) if scopes_path.exists() else []
     if not same_pack and any(scope.get('phase') != 'image' for scope in scopes):
@@ -2261,6 +2263,8 @@ def preflight_package(project_dir, package, *, package_binding):
     """
     root = Path(project_dir).expanduser().resolve()
     spec, records, _ = _compile_package_value(root, package, package_binding)
+    from lib import production_images as images
+    images.validate_board_reference_limits(spec)
     return {'spec': spec, 'records': records}
 
 

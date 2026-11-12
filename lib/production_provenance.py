@@ -22,7 +22,7 @@ from lib.shot_contract import (
 )
 from schemas.artifacts import load_schema
 from lib.production_trim_validation import (
-    trimmed_outgoing_timestamp, _validate_trimmed_cut, _validate_trim_sampling,
+    trimmed_outgoing_timestamp, _validate_trimmed_cut, _validate_trim_sampling, _validate_retimed_cut,
 )
 
 
@@ -795,7 +795,8 @@ def validate_derived_edit(project_dir, record_path, *, attempt_id, shot_id,
                 'separate preserved derived bytes required')
         outgoing = bound(value['outgoing_frame'], 'actual derived outgoing frame')
         recipe = read(value['recipe'], 'exact local recipe')
-        require(recipe.get('operation') in {'local_existing_footage_edit', 'canonical_video_trimmer_cut'}
+        require(recipe.get('operation') in {'local_existing_footage_edit', 'canonical_video_trimmer_cut',
+                                            'canonical_video_trimmer_retime'}
                 and recipe.get('input') == value['parent_output']
                 and execution._inside(recipe.get('output_path', ''), root) == output,
                 'recipe parent/output differs')
@@ -803,6 +804,8 @@ def validate_derived_edit(project_dir, record_path, *, attempt_id, shot_id,
         derived_timing = None
         if recipe['operation'] == 'canonical_video_trimmer_cut':
             derived_timing = _validate_trimmed_cut(value, recipe, receipt, native, bound, require, _aac_sha256, root)
+        elif recipe['operation'] == 'canonical_video_trimmer_retime':
+            derived_timing = _validate_retimed_cut(value, recipe, receipt, bound, require, _aac_sha256, root)
         else:
             window = recipe.get('time_window_seconds')
             require(isinstance(window, list) and len(window) == 2

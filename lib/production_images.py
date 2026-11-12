@@ -26,7 +26,47 @@ from lib.shot_contract import file_sha256
 ARTIFACT = Path('artifacts/production_image_calls.json')
 NATIVE_ROUTE = 'native_imagegen'
 NATIVE_TOOL = 'image_gen.imagegen'
+# The host tool is agent-mediated, so its input contract lives with this adapter.
+NATIVE_INPUT_SCHEMA = {'properties': {'referenced_image_paths': {
+    'type': 'array', 'items': {'type': 'string'}, 'minItems': 1, 'maxItems': 5}}}
 PENDING = {'reserved', 'submitted', 'uncertain', 'returned'}
+
+
+def image_reference_limit(route=NATIVE_ROUTE, *, form=None):
+    """Read the selected route's source-array contract without provider calls."""
+    if route == NATIVE_ROUTE:
+        schema = NATIVE_INPUT_SCHEMA['properties']['referenced_image_paths']
+    elif route == 'grok_cli':
+        from tools.graphics.grok_cli_image import GrokCLIImage
+        schema = GrokCLIImage.input_schema['properties']['image_paths']
+    elif route == 'openart_mcp' and isinstance(form, dict):
+        schema = form.get('properties', {}).get('visualReferences', {})
+    else:
+        raise ValueError('image reference contract unavailable for route ' + str(route))
+    limit = schema.get('maxItems')
+    if limit is not None and (type(limit) is not int or limit < 0):
+        raise ValueError('invalid image reference limit for route ' + str(route))
+    return limit
+
+
+def validate_image_reference_count(slot_id, references, *, route=NATIVE_ROUTE, form=None):
+    """Count actual ordered envelope entries, including repeated paths."""
+    count = len(references)
+    limit = image_reference_limit(route, form=form)
+    if limit is not None and count > limit:
+        raise ValueError(f'image slot {slot_id} route {route} has {count} references; limit {limit}')
+    return {'slot_id': slot_id, 'route': route, 'reference_count': count, 'reference_limit': limit}
+
+
+def validate_board_reference_limits(specification, *, route=NATIVE_ROUTE, form=None):
+    """Check every prospective board, including not-yet-generated dependencies.
+
+    Board packets preserve one ordered entry per declared source. Hash equality
+    does not remove an entry from the host call's reference array.
+    """
+    return [validate_image_reference_count(node['slot_id'],
+        node.get('reference_ids', []) + node.get('image_dependencies', []), route=route, form=form)
+        for node in specification['image_nodes'] if 'upstream_source' not in node]
 
 
 def _ex():
@@ -244,13 +284,16 @@ def _scope(root, scope_id):
 
 
 def prepare_native_image_envelope(project_dir, *, packet, board_plan, templates,
-                                  source_inventory, image_allowance, allowed_image_routes=None):
+                                  source_inventory, image_allowance, allowed_image_routes=None,
+                                  _check_reference_limits=True):
     """Freeze authored image inputs for explicit approval; creates no authority.
 
     Templates contain exactly prompt, transparent_background, output_path and
     ordered reference_ids. Static inventory entries are complete packet references;
     dynamic entries name id/role/path/source_slot_id/applicability. The board plan
     retains the complete authored package, including cast and review declarations.
+    Retained standing-envelope reconstruction skips prospective limits so original
+    evidence stays readable. Admission and host handoff check current limits again.
     """
     root, marker = _root(project_dir)
     _validate_packet(root, packet)
@@ -264,6 +307,9 @@ def prepare_native_image_envelope(project_dir, *, packet, board_plan, templates,
         'image_allowance':image_allowance, 'allowed_image_routes':copy.deepcopy(
             [NATIVE_ROUTE] if allowed_image_routes is None else allowed_image_routes)}
     _validate_image_envelope(root, definition)
+    if _check_reference_limits:
+        for slot, template in templates.items():
+            validate_image_reference_count(slot, template['reference_ids'])
     return definition
 
 
@@ -398,7 +444,8 @@ def _standing_image_definition(root, policy, *, check_first_pass_capacity=True, 
             raise StandingSetupRequired('native image original hash exceeds standing source inventory')
     return prepare_native_image_envelope(root, packet=pack['preboard_packet'], board_plan=pack['package_binding'],
         templates=templates, source_inventory=inventory, image_allowance=terms['image_allowance'],
-        allowed_image_routes=terms['allowed_image_routes'])
+        allowed_image_routes=terms['allowed_image_routes'],
+        _check_reference_limits=check_first_pass_capacity)
 
 
 def activate_standing_image_envelope(project_dir):
@@ -470,6 +517,8 @@ def record_native_image_envelope(project_dir, definition, *, approval):
             if data['image_envelope'] != retained:
                 raise ValueError('existing native image envelope cannot be replaced or expanded')
         else:
+            for slot, template in definition['templates'].items():
+                validate_image_reference_count(slot, template['reference_ids'])
             data['image_envelope'] = retained; _write_image_scopes(root,data)
         return copy.deepcopy(retained)
 
@@ -533,6 +582,8 @@ def _validate_derived_image_scope(root, scope, packet, slot_id, arguments, outpu
     never authorize another request."""
     if 'derived_from_image_envelope' not in scope: return
     retained = _image_envelope(root,_read(root/'production_scopes.json'))
+    for slot, template in retained['definition']['templates'].items():
+        validate_image_reference_count(slot, template['reference_ids'])
     if scope != _derived_image_scope(root,retained,packet,slot_id,arguments,output_path):
         raise ValueError('derived native image scope differs from verified envelope')
 
@@ -541,7 +592,11 @@ def derive_native_image_scope(project_dir, packet, slot_id, arguments, *, output
     """Retain the exact one-generation scope for a declared envelope image."""
     root, _ = _root(project_dir)
     with _ex()._lock(root):
+        native = _native_arguments(packet, arguments)
+        validate_image_reference_count(slot_id, native.get('referenced_image_paths', []))
         data = _read(root/'production_scopes.json'); retained = _image_envelope(root,data)
+        for slot, template in retained['definition']['templates'].items():
+            validate_image_reference_count(slot, template['reference_ids'])
         _standing_native_transfer(root, retained, packet)
         scope = _derived_image_scope(root,retained,packet,slot_id,arguments,output_path)
         matches = [s for s in data['scopes'] if s['id']==scope['id']]
@@ -703,6 +758,7 @@ def reserve_native_image(project_dir, packet, slot_id, arguments, *, output_path
         raise ValueError('image call_id must be a safe local token')
     with _ex()._lock(root):
         _validate_packet(root,packet)
+        native = _native_arguments(packet, arguments)
         matches = [s for s in packet['board_slots'] if s['id'] == slot_id and s['status'] == 'unresolved']
         if len(matches) != 1: raise ValueError('image request requires one explicit unresolved board slot')
         sha = image_request_digest(packet,slot_id,arguments,output_path=output_path)
@@ -712,6 +768,7 @@ def reserve_native_image(project_dir, packet, slot_id, arguments, *, output_path
             if existing['request_sha256'] != sha or existing['scope_id'] != scope_id:
                 raise ValueError('local call ID already binds another exact request')
             if existing['state'] == 'reserved':
+                validate_image_reference_count(slot_id, native.get('referenced_image_paths', []))
                 if existing.get('replaces_host_exception'):
                     raise ValueError('historical native exception successor is retained only; it is never dispatched')
                 scope = _scope(root, scope_id)
@@ -723,6 +780,7 @@ def reserve_native_image(project_dir, packet, slot_id, arguments, *, output_path
                         packet, exclude_call_id=call_id)
                 _admission(root, scope, slot_id, NATIVE_ROUTE, exclude_call_id=call_id)
             return {k:copy.deepcopy(v) for k,v in existing.items() if k not in {'host_arguments','packet'}}
+        validate_image_reference_count(slot_id, native.get('referenced_image_paths', []))
         if (root/'production_attempts'/call_id/'request.json').exists():
             raise ValueError('local image call ID collides with provider session')
         scope = _scope(root,scope_id)
@@ -758,6 +816,7 @@ def begin_native_image(project_dir, call_id):
         value = _load(root); call = _call(value,call_id)
         if call['state'] != 'reserved' or 'submitted_arguments' in call:
             raise ValueError('native image invocation envelope already emitted or call closed')
+        validate_image_reference_count(call['slot_id'], call['host_arguments'].get('referenced_image_paths', []))
         _validate_packet(root,call['packet'])
         scope = _scope(root,call['scope_id'])
         if digest(scope) != call['scope_sha256']:
@@ -1052,6 +1111,7 @@ def prepare_policy_fallback_image(project_dir, call_id, *, account):
         form = term['forms'].get(mode)
         if form is None:
             raise ValueError('run fallback term retains no current OpenArt ' + mode + ' form')
+        validate_image_reference_count(original['slot_id'], sources, route='openart_mcp', form=form)
         params = {**copy.deepcopy(term.get('params', {})), 'prompt': original['host_arguments']['prompt']}
         # The user approved just that one image: never a multi-image request.
         if params.get('imageCount', 1) != 1:

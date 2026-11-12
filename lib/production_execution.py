@@ -1918,12 +1918,14 @@ def _grok_native_arguments(inputs, media_kind='motion'):
     from tools._grok_cli_media import validate_prompt, validate_local_image_paths
     prompt = validate_prompt(inputs.get('prompt'))
     if media_kind == 'image':
+        from tools.graphics.grok_cli_image import GrokCLIImage
         arguments = {'prompt':prompt, 'aspect_ratio':inputs.get('aspect_ratio','auto')}
         if _grok_native_operation(inputs, media_kind) == 'image_edit':
             images = inputs.get('image_paths')
             if images is None and inputs.get('image_path') is not None:
                 images = [inputs['image_path']]
-            arguments['image'] = validate_local_image_paths(images, field='image_edit', minimum=1, maximum=5)
+            arguments['image'] = validate_local_image_paths(images, field='image_edit', minimum=1,
+                maximum=GrokCLIImage.input_schema['properties']['image_paths']['maxItems'])
         return arguments
     arguments = {'prompt': prompt, 'duration':int(inputs.get('duration',6)),
                  'resolution_name':inputs.get('resolution','480p')}

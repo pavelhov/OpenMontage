@@ -443,6 +443,7 @@ def prepare_board_pack(project_dir, specification, *, images):
             raise ValueError("current board pack already binds another specification")
         _promote_motion_bindings(root, pack)
         return deepcopy(pack)
+    images.validate_board_reference_limits(spec)
     # Upstream reuse slots never become image work; their bytes arrive only by
     # binding the actual selected outgoing frame after selection.
     slots = [{"id": n["slot_id"], "shot_id": n["shot_id"], "role": n["role"], "status": "unresolved"}
@@ -680,6 +681,7 @@ def prepare_image_request(project_dir, slot_id, *, images):
     pack = load_board_pack(root)
     node = pack["prompt_pack"][slot_id]
     _reject_upstream_slot(node)
+    images.validate_board_reference_limits(pack['specification'])
     bindings = {}
     refs = []
     reference_ids = node.get("reference_ids", []) + node.get("image_dependencies", [])

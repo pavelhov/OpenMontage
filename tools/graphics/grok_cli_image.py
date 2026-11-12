@@ -120,7 +120,7 @@ class GrokCLIImage(BaseTool):
             },
             "aspect_ratio": {"type": "string", "enum": sorted(_ASPECT_RATIOS), "default": "auto"},
             "image_path": {"type": "string"},
-            "image_paths": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+            "image_paths": {"type": "array", "items": {"type": "string"}, "minItems": 1, "maxItems": 5},
             "output_path": {"type": "string"},
             "cwd": {"type": "string"},
             "cli_session_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"},
@@ -245,7 +245,8 @@ class GrokCLIImage(BaseTool):
                 provided_images = [inputs["image_path"]]
             if operation == "image_edit":
                 arguments["image"] = validate_local_image_paths(
-                    provided_images, field="image_edit", minimum=1, maximum=5
+                    provided_images, field="image_edit", minimum=1,
+                    maximum=self.input_schema['properties']['image_paths']['maxItems']
                 )
             elif provided_images:
                 raise GrokCLIContractError(

@@ -1,8 +1,8 @@
 """Video trimmer tool wrapping FFmpeg.
 
-Provides cut, trim, speed adjustment, and concatenation of video segments.
-All operations are deterministic and produce lossless or near-lossless output
-by default.
+Provides cut, trim, speed adjustment, multi-interval retiming and concatenation
+of video segments. All operations are deterministic and produce lossless or
+near-lossless output by default.
 """
 
 from __future__ import annotations
@@ -24,6 +24,11 @@ from tools.base_tool import (
     ToolTier,
 )
 
+# Producer-chosen interval content selects the default speed; an explicit
+# per-interval speed overrides it.
+RETIME_DEFAULT_SPEEDS = {"dialogue": 1.25, "nonspeaking": 1.5}
+RETIME_SPEED_RANGE = (0.5, 4.0)
+
 
 class VideoTrimmer(BaseTool):
     name = "video_trimmer"
@@ -44,7 +49,7 @@ class VideoTrimmer(BaseTool):
     )
     agent_skills = ["ffmpeg", "video-toolkit"]
 
-    capabilities = ["cut", "trim", "speed_adjust", "concat"]
+    capabilities = ["cut", "trim", "speed_adjust", "concat", "retime"]
 
     input_schema = {
         "type": "object",
@@ -52,7 +57,7 @@ class VideoTrimmer(BaseTool):
         "properties": {
             "operation": {
                 "type": "string",
-                "enum": ["cut", "speed", "concat"],
+                "enum": ["cut", "speed", "concat", "retime"],
             },
             "input_path": {"type": "string"},
             "output_path": {"type": "string"},
@@ -72,6 +77,24 @@ class VideoTrimmer(BaseTool):
             },
             "codec": {"type": "string", "default": "copy"},
             "reason": {"type": "string", "description": "Reason for a retained local cut"},
+            "intervals": {
+                "type": "array",
+                "description": (
+                    "retime: ordered, non-overlapping retained source intervals. Omitted gaps "
+                    "(dead air) are removed. Speed defaults to 1.25 for dialogue and 1.5 for "
+                    "nonspeaking; audio uses pitch-preserving atempo."
+                ),
+                "items": {
+                    "type": "object",
+                    "required": ["start_seconds", "end_seconds", "content"],
+                    "properties": {
+                        "start_seconds": {"type": "number", "minimum": 0},
+                        "end_seconds": {"type": "number", "minimum": 0},
+                        "content": {"type": "string", "enum": ["dialogue", "nonspeaking"]},
+                        "speed": {"type": "number", "minimum": 0.5, "maximum": 4.0},
+                    },
+                },
+            },
         },
     }
 
@@ -95,6 +118,8 @@ class VideoTrimmer(BaseTool):
                 result = self._speed(inputs)
             elif operation == "concat":
                 result = self._concat(inputs)
+            elif operation == "retime":
+                result = self._retime(inputs)
             else:
                 return ToolResult(success=False, error=f"Unknown operation: {operation}")
         except Exception as e:
@@ -147,6 +172,100 @@ class VideoTrimmer(BaseTool):
                     "adapter_version": self.version, "operation": "cut",
                     "input": input_binding, "output": output_binding,
                     "submitted_inputs": dict(inputs),
+                    "command_argv": list(completed.args),
+                    "command_exit_code": completed.returncode,
+                },
+            },
+            artifacts=[str(output_path)],
+        )
+
+    @staticmethod
+    def retime_plan(inputs: dict[str, Any], *, has_audio: bool, source_duration: float) -> tuple[list[dict], list[str]]:
+        """Resolved interval time map and FFmpeg arguments after the binary.
+
+        Shared by execution and provenance replay so both derive the same
+        command from the same submitted inputs.
+        """
+        import math
+
+        intervals = inputs.get("intervals")
+        codec = inputs.get("codec", "libx264")
+        if not isinstance(intervals, list) or not intervals:
+            raise ValueError("retime requires at least one interval")
+        if not isinstance(codec, str) or not codec or codec == "copy":
+            raise ValueError("retime requires a re-encoding video codec")
+        resolved, previous_end, cursor = [], 0.0, 0.0
+        for interval in intervals:
+            if (not isinstance(interval, dict)
+                    or not {"start_seconds", "end_seconds", "content"} <= set(interval)
+                    or not set(interval) <= {"start_seconds", "end_seconds", "content", "speed"}):
+                raise ValueError("retime interval needs start_seconds, end_seconds, content and optional speed")
+            content = interval["content"]
+            if content not in RETIME_DEFAULT_SPEEDS:
+                raise ValueError("retime interval content must be dialogue or nonspeaking")
+            start, end = interval["start_seconds"], interval["end_seconds"]
+            speed = interval.get("speed", RETIME_DEFAULT_SPEEDS[content])
+            if any(type(v) not in (int, float) or not math.isfinite(v) for v in (start, end, speed)):
+                raise ValueError("retime interval bounds and speed must be finite numbers")
+            if not (previous_end <= start < end <= source_duration + 0.0001):
+                raise ValueError("retime intervals must be ordered, non-overlapping and inside the source")
+            if not RETIME_SPEED_RANGE[0] <= speed <= RETIME_SPEED_RANGE[1]:
+                raise ValueError("retime speed must be between 0.5 and 4.0")
+            output_end = round(cursor + (end - start) / speed, 6)
+            resolved.append({"source_start_seconds": start, "source_end_seconds": end, "content": content,
+                             "speed": speed, "output_start_seconds": cursor, "output_end_seconds": output_end})
+            previous_end, cursor = end, output_end
+        graph = []
+        for index, item in enumerate(resolved):
+            bounds = f"start={item['source_start_seconds']}:end={item['source_end_seconds']}"
+            graph.append(f"[0:v]trim={bounds},setpts=(PTS-STARTPTS)/{item['speed']}[v{index}]")
+            if has_audio:
+                graph.append(f"[0:a]atrim={bounds},asetpts=PTS-STARTPTS,atempo={item['speed']}[a{index}]")
+        pads = "".join(f"[v{i}][a{i}]" if has_audio else f"[v{i}]" for i in range(len(resolved)))
+        graph.append(f"{pads}concat=n={len(resolved)}:v=1:a={1 if has_audio else 0}"
+                     + ("[v][a]" if has_audio else "[v]"))
+        arguments = ["-y", "-i", str(inputs["input_path"]), "-filter_complex", ";".join(graph), "-map", "[v]"]
+        arguments += ["-map", "[a]", "-c:v", codec, "-c:a", "aac"] if has_audio else ["-c:v", codec, "-an"]
+        return resolved, arguments
+
+    @staticmethod
+    def source_facts(path: Path) -> tuple[float, bool]:
+        """Probed container duration and whether an audio stream exists."""
+        import subprocess
+        probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type",
+                                "-of", "json", str(path)], capture_output=True, text=True, timeout=30, check=True)
+        data = json.loads(probe.stdout)
+        streams = data.get("streams", [])
+        return float(data["format"]["duration"]), any(s.get("codec_type") == "audio" for s in streams)
+
+    def _retime(self, inputs: dict[str, Any]) -> ToolResult:
+        """Keep producer-chosen intervals, each at its own pitch-preserved speed."""
+        from lib.shot_contract import file_sha256
+
+        input_path = Path(inputs["input_path"])
+        if not input_path.exists():
+            return ToolResult(success=False, error=f"Input not found: {input_path}")
+        if "output_path" not in inputs:
+            return ToolResult(success=False, error="retime requires an explicit output_path")
+        output_path = Path(inputs["output_path"])
+        source_duration, has_audio = self.source_facts(input_path)
+        resolved, arguments = self.retime_plan(inputs, has_audio=has_audio, source_duration=source_duration)
+        input_binding = {"path": str(input_path), "sha256": file_sha256(input_path)}
+        completed = self.run_command(["ffmpeg", *arguments, str(output_path)])
+        output_binding = {"path": str(output_path), "sha256": file_sha256(output_path)}
+        return ToolResult(
+            success=True,
+            data={
+                "operation": "retime",
+                "input": str(input_path),
+                "output": str(output_path),
+                "intervals": resolved,
+                "retime_receipt": {
+                    "version": "1.0", "tool": self.name, "provider": self.provider,
+                    "adapter_version": self.version, "operation": "retime",
+                    "input": input_binding, "output": output_binding,
+                    "submitted_inputs": dict(inputs), "intervals": resolved,
+                    "source_has_audio": has_audio,
                     "command_argv": list(completed.args),
                     "command_exit_code": completed.returncode,
                 },

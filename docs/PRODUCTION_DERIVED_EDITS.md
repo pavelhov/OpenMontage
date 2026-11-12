@@ -219,3 +219,52 @@ The parent must pass its existing native-parent provenance adapter, including
 OpenArt MCP's original connector proof. MCP cut bounds use the hash-bound
 original's probed duration, since requested duration is not observed media timing.
 No new provider adapter or non-AAC audio adapter is introduced.
+
+## Multi-interval retiming
+
+The registered `video_trimmer` and derived-edit sequence also support
+`operation="retime"`. Supply explicit `input_path`, separate `output_path`,
+re-encoding `codec`, `reason` and ordered `intervals`. Each interval has
+`start_seconds`, `end_seconds`, `content` and optional `speed`. Content is
+`dialogue` or `nonspeaking`, selecting default speeds of 1.25 and 1.5
+respectively. An explicit speed between 0.5 and 4 overrides that default.
+Intervals must be finite, inside the actual source and non-overlapping in
+source order. Gaps between retained intervals are omitted.
+
+```python
+inputs = {
+    "operation": "retime", "input_path": parent["path"],
+    "output_path": str(output_path), "codec": "libx264",
+    "reason": "Retain reviewed speech and reaction while omitting dead air.",
+    "intervals": [
+        {"start_seconds": 0.4, "end_seconds": 3.2, "content": "dialogue"},
+        {"start_seconds": 4.0, "end_seconds": 5.5, "content": "nonspeaking"},
+    ],
+}
+result = registry.get("video_trimmer").execute(inputs)
+assert result.success, result.error
+time_map = result.data["intervals"]
+```
+
+Use recipe operation `canonical_video_trimmer_retime`, retaining those exact
+submitted inputs and the actual `ToolResult` containing `data.retime_receipt`.
+The execution envelope otherwise follows the cut example above. For a source
+with audio, its audio evidence has mode
+`retimed_intervals_pitch_preserved_aac`, elementary AAC `input_sha256` and
+`output_sha256`, and `intervals=time_map`. Silent sources use `mode="no_audio"`,
+`input_has_audio=False`, `output_has_audio=False` and `intervals=time_map`.
+
+The map records each source interval, content and resolved speed, plus its
+`output_start_seconds` and `output_end_seconds`. Video uses `setpts` and audio
+uses pitch-preserving `atempo` per retained interval before concatenation.
+Validation recomputes the map from the current parent, checks the exact command
+and audio evidence, replays the edit and checks the output hash. Actual video
+duration may round at interval frame boundaries and is checked within
+`(interval_count + 1) / output_fps + 0.0001` seconds. The map retains the ideal
+interval clock. `derived_timing.duration_seconds` retains measured video
+duration, and outgoing sampling still uses the actual final decoded frame.
+
+Keep the original, authorization, approval, fresh selection review and outgoing
+sampling under the same sequence above. Existing canonical-cut and legacy
+local-edit records retain their validation paths. Exact replay has the same
+local encode cost and FFmpeg environment dependency described above.

@@ -440,3 +440,60 @@ For the Studio entry and identity-owned authority, see Social Studio's
 `AUTOPILOT.md`, consent, semantic-QC and delivery owners. For any other production
 request, follow Rule Zero in [`AGENT_GUIDE.md`](../AGENT_GUIDE.md) and the selected
 pipeline.
+
+## Editorial cards and separately authorized completion clips
+
+`compose_first_cut` and `deliver_standalone` accept `title_cards` on the normal
+factory delivery path. Each card has exactly `before_shot_id`, `text` and
+`duration_seconds`. The shot must be placed in this cut, the text must contain
+1–120 characters, and duration must be greater than zero and at most three
+seconds. At most one card precedes each shot. Cards render as silent white text
+on black at the delivery geometry and pass through normal `VideoCompose`.
+The retained card records bind the requested duration, measured
+`rendered_duration_seconds`, output hash and actual placement. All subsequent
+clip placements and expected total duration include the measured card duration.
+Frame boundaries can make a very short requested card longer than requested.
+
+Omitting `title_cards` or supplying `None` reuses the latest cut's specifications.
+An empty list removes all cards, and a nonempty list replaces the specifications.
+Replaying the unchanged latest delivery returns its existing record. Explicitly
+returning to an older specification creates a new current cut sequence while
+preserving all earlier cuts and their cards. Changed retained card bytes invalidate
+currency and require a fresh local delivery record.
+
+For separately authorized footage already generated in another project, supply
+`source_clips` rows with `shot_id`, absolute `project_dir`, `attempt_id` and
+`output={"path": relative_source_path, "sha256": exact_sha256}`. Optional
+`source_shot_id` maps a differently named source shot. The destination shot must
+exist and have no playable own clip. Source media must pass the source project's
+current candidate/provenance checks, which continue to bind its original attempt,
+story revision, findings and any registered derivative. Source transfer authority
+remains with the existing creator setup and exact production authorization.
+
+The engine retains a verified byte copy at
+`production_source_clips/<sha256>/output.mp4` and an immutable registration history.
+Interrupted copies can retry without publishing partial final bytes. A changed
+final copy or a different project, source shot or native parent attempt fails,
+preserving the existing file.
+Identical registration revalidates the copy and current source provenance.
+Delivery maps and current review disclosures include `source_project` attribution.
+The source project and its current-byte provenance remain required on later reads.
+A playable own clip takes precedence if it subsequently becomes available.
+These delivery options create no provider generation or new source authority.
+
+An explicit `source_clips` update may select a validated derived output from the
+same source project, story revision, source shot and native parent attempt. The
+source project must already have registered and selected that exact derivative
+with its required current review. The engine validates both retained source
+provenances and requires identical native parent path and hash. A playable own
+clip still prevents replacement. Returning to a different native original or
+changing the source project, shot or parent attempt remains refused.
+
+Each binding is retained under
+`production_source_clips/registrations/<shot_id>/<registration_digest>.json`.
+The existing `production_source_clips/<shot_id>.json` remains the current binding
+and changes atomically only after both registrations and verified media copies
+are retained. Interrupted updates preserve a complete old or new current binding
+and can retry. Earlier cuts continue to bind their original source records and
+media copies. Omitting `source_clips` reads the current binding, and an exact
+repeat revalidates it without creating another registration or delivery cut.

@@ -155,6 +155,98 @@ def _validate_trimmed_cut(value, recipe, receipt, native, bound, require, aac_sh
         require(False, 'cannot verify actual canonical trim media: ' + str(exc))
 
 
+def _validate_retimed_cut(value, recipe, receipt, bound, require, aac_sha256, root=None):
+    """Bind and replay an exact canonical multi-interval retime on every validation.
+
+    The time map is recomputed from the submitted intervals and the probed
+    parent; receipt claims are compared to it, never trusted.
+    """
+    import math
+    import subprocess
+    import tempfile
+    from fractions import Fraction
+    from tools.video.video_trimmer import VideoTrimmer
+
+    require(set(recipe) == {'version', 'operation', 'input', 'output_path', 'submitted_inputs', 'reason'}
+            and recipe['version'] == '1.0', 'complete typed canonical retime recipe required')
+    submitted = recipe['submitted_inputs']
+    require(_canonical_inputs(submitted, {
+        'operation', 'input_path', 'output_path', 'intervals', 'codec', 'reason'}, root),
+        'exact canonical retime inputs required')
+    require(submitted['operation'] == 'retime' and submitted['input_path'] == value['parent_output']['path']
+            and submitted['output_path'] == value['output']['path']
+            and isinstance(recipe['reason'], str) and bool(recipe['reason'].strip())
+            and submitted['reason'] == recipe['reason'], 'canonical retime input/output/reason differs')
+    require(receipt.get('tool') == VideoTrimmer.name and receipt.get('provider') == VideoTrimmer.provider
+            and receipt.get('canonical_registry_used') is True and receipt.get('success') is True
+            and receipt.get('generation') is False and receipt.get('input') == value['parent_output']
+            and receipt.get('recipe') == value['recipe'] and receipt.get('output') == value['output'],
+            'successful canonical existing-footage retime receipt required')
+    parent, output = bound(value['parent_output'], 'native retime input'), bound(value['output'], 'retime output')
+    try:
+        source_duration, source_audio = VideoTrimmer.source_facts(parent)
+        try:
+            resolved, arguments = VideoTrimmer.retime_plan(
+                submitted, has_audio=source_audio, source_duration=source_duration)
+        except ValueError as exc:
+            require(False, 'invalid retime intervals: ' + str(exc))
+        result = receipt.get('tool_result', {})
+        data = result.get('data', {})
+        actual = data.get('retime_receipt', {})
+        require(result.get('success') is True and value['output']['path'] in result.get('artifacts', [])
+                and data.get('operation') == 'retime' and data.get('input') == submitted['input_path']
+                and data.get('output') == submitted['output_path'] and data.get('intervals') == resolved,
+                'actual canonical retime return differs')
+        command = actual.get('command_argv')
+        require(isinstance(command, list) and all(isinstance(arg, str) for arg in command)
+                and bool(command) and Path(command[0]).name.lower() in {'ffmpeg', 'ffmpeg.exe'},
+                'actual canonical FFmpeg invocation required')
+        expected = [command[0], *arguments, submitted['output_path']]
+        adapter_version = actual.get('adapter_version')
+        require(isinstance(adapter_version, str)
+                and bool(re.fullmatch(r'\d+\.\d+\.\d+(?:[-+][\w.-]+)?', adapter_version)),
+                'retained retime adapter version required')
+        require(actual == {'version': '1.0', 'tool': VideoTrimmer.name, 'provider': VideoTrimmer.provider,
+            'adapter_version': adapter_version, 'operation': 'retime', 'input': value['parent_output'],
+            'output': value['output'], 'submitted_inputs': submitted, 'intervals': resolved,
+            'source_has_audio': source_audio, 'command_argv': expected, 'command_exit_code': 0},
+            'actual canonical retime command/return/bindings differ')
+        probe = subprocess.run(['ffprobe', '-v', 'error', '-show_entries',
+            'stream=codec_type,duration,avg_frame_rate', '-of', 'json', str(output)],
+            capture_output=True, text=True, timeout=30, check=True)
+        streams = json.loads(probe.stdout)['streams']
+        video = next(stream for stream in streams if stream.get('codec_type') == 'video')
+        duration, fps = float(video['duration']), float(Fraction(video['avg_frame_rate']))
+        require(math.isfinite(duration) and math.isfinite(fps) and duration > 0 and fps > 0,
+                'actual retime video timing invalid')
+        # Each interval may round to its own frame boundary.
+        require(abs(duration - resolved[-1]['output_end_seconds']) <= (len(resolved) + 1) / fps + 0.0001,
+                'actual retimed duration differs from the interval time map')
+        output_audio = any(stream.get('codec_type') == 'audio' for stream in streams)
+        require(source_audio == output_audio, 'native source audio was lost or added by retime')
+        audio = receipt.get('audio', {})
+        if source_audio:
+            require(audio == {'mode': 'retimed_intervals_pitch_preserved_aac',
+                'input_sha256': aac_sha256(parent), 'output_sha256': aac_sha256(output),
+                'intervals': resolved}, 'actual retimed interval AAC evidence differs')
+        else:
+            require(audio == {'mode': 'no_audio', 'input_has_audio': False, 'output_has_audio': False,
+                'intervals': resolved}, 'actual no-audio retime evidence differs')
+        with tempfile.TemporaryDirectory(prefix='openmontage-retime-proof-') as temporary:
+            replayed = Path(temporary) / output.name
+            # Never execute a caller-supplied binary path during verification.
+            subprocess.run(['ffmpeg', *arguments, str(replayed)], capture_output=True, timeout=300, check=True)
+            require(file_sha256(replayed) == value['output']['sha256'],
+                    'output is not the canonical retimed interval edit')
+        return {'duration_seconds': duration, 'fps': fps,
+                'final_frame_timestamp_seconds': trimmed_outgoing_timestamp(output), 'time_map': resolved}
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, IndexError, ZeroDivisionError,
+            StopIteration) as exc:
+        if type(exc).__name__ == 'ProductionGovernanceError':
+            raise
+        require(False, 'cannot verify actual canonical retime media: ' + str(exc))
+
+
 def _validate_trim_sampling(value, sampled, timing, outgoing, require, root=None):
     """Require the actual final retained frame, not the native endpoint."""
     import subprocess

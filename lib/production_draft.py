@@ -228,6 +228,9 @@ def append_creator_draft_exception(project_dir, record):
 # Explicit calls only; never writes checkpoints, reserves attempts or repairs.
 
 _CUTS, _ACCEPTANCES = 'production_first_cuts', 'production_first_cut_acceptances'
+_SOURCES = 'production_source_clips'
+_TITLE_CARD_KEYS = ('before_shot_id', 'text', 'duration_seconds')
+_SAFE_ID = r'[A-Za-z0-9][A-Za-z0-9_-]*'
 
 
 def _probe(path):
@@ -473,6 +476,15 @@ def first_cut_candidates(project_dir):
                         row = _candidate(root, sid, attempt['attempt_id'], state['output'], revision, selected)
                     except errors as exc:
                         states[-1] = 'unplayable:' + str(exc)[:200]
+        external = root / _SOURCES / (sid + '.json')
+        if row is None and external.is_file():
+            # A registered completion clip from another project fills only a
+            # shot this project cannot place; its own playable row always wins.
+            try:
+                row = _source_clip_row(root, execution._read(external))
+            except errors as exc:
+                row = {'shot_id': sid, 'status': 'missing', 'reason': 'unplayable',
+                       'detail': {'error': 'external source clip: ' + str(exc)[:200]}}
         if row is None:
             # An upstream counts only when its own row is a playable candidate
             # (current bytes and provenance) and its review passes the canonical gate.
@@ -503,6 +515,191 @@ def first_cut_candidates(project_dir):
         by_shot[sid] = row
         rows.append(row)
     return rows
+
+
+def _source_clip_row(root, record):
+    """Current candidate row for a registered external completion clip.
+
+    The source project's own candidate rules decide provenance, duration,
+    review and findings. The final project places its retained byte copy.
+    """
+    from lib import production_execution as execution
+    source = record['source_project']
+    copy = record['copy']
+    path = (root / copy['path']).resolve()
+    if (path != root / _SOURCES / source['output']['sha256'] / 'output.mp4' or not path.is_file()
+            or copy['sha256'] != source['output']['sha256'] or file_sha256(path) != copy['sha256']):
+        raise ValueError('external source clip copy is missing or changed')
+    source_root = Path(source['project_dir'])
+    marker = execution._read(source_root / 'project.json')
+    if (marker['project_id'], marker['story_revision']) != (source['project_id'], source['story_revision']):
+        raise ValueError('external source project identity or story revision changed')
+    row = _candidate(source_root, source['shot_id'], source['attempt_id'], source['output'],
+                     source['story_revision'], execution.load_selected_attempts(source_root))
+    return {**row, 'shot_id': record['shot_id'], 'output': dict(copy), 'source_project': source}
+
+
+def _register_source_clips(root, source_clips):
+    """Retain exact external completion clips for shots this project cannot place.
+
+    Preserve every registration and copy. A current registration may advance
+    only to a validated derivative of the same source project's native attempt.
+    """
+    import re
+    import shutil
+    import tempfile
+    from lib import production_execution as execution
+    if not isinstance(source_clips, list):
+        raise ValueError('source_clips must be a list')
+    marker = execution._read(root / 'project.json')
+    rows = {row['shot_id']: row for row in first_cut_candidates(root)}
+    for entry in source_clips:
+        if (not isinstance(entry, dict) or not {'shot_id', 'project_dir', 'attempt_id', 'output'} <= set(entry)
+                or not set(entry) <= {'shot_id', 'project_dir', 'attempt_id', 'output', 'source_shot_id'}):
+            raise ValueError('source clip needs shot_id, project_dir, attempt_id, output and optional source_shot_id')
+        shot_id, source_shot = entry['shot_id'], entry.get('source_shot_id', entry['shot_id'])
+        output = entry['output']
+        if (any(not isinstance(v, str) or not re.fullmatch(_SAFE_ID, v)
+                for v in (shot_id, source_shot, entry['attempt_id']))
+                or not isinstance(entry['project_dir'], str) or not Path(entry['project_dir']).is_absolute()
+                or not isinstance(output, dict) or set(output) != {'path', 'sha256'}
+                or not isinstance(output['path'], str) or not output['path'] or Path(output['path']).is_absolute()
+                or not isinstance(output['sha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', output['sha256'])):
+            raise ValueError('source clip identity or output binding is invalid')
+        if shot_id not in rows:
+            raise ValueError('source clip shot is not planned in this project: ' + shot_id)
+        source_root = Path(entry['project_dir']).resolve()
+        source_path = (source_root / output['path']).resolve()
+        if (source_root == root or not source_path.is_relative_to(source_root)
+                or not source_path.is_file() or file_sha256(source_path) != output['sha256']):
+            raise ValueError('source clip must be exact bytes inside a different project')
+        source_marker = execution._read(source_root / 'project.json')
+        source = {'project_dir': str(source_root), 'project_id': source_marker['project_id'],
+                  'story_revision': source_marker['story_revision'], 'attempt_id': entry['attempt_id'],
+                  'shot_id': source_shot,
+                  'output': {'path': _rel(source_root, source_path), 'sha256': output['sha256']}}
+        record = {'version': '1.0', 'kind': 'external_source_clip', 'project_id': marker['project_id'],
+                  'shot_id': shot_id, 'source_project': source,
+                  'copy': {'path': f"{_SOURCES}/{output['sha256']}/output.mp4", 'sha256': output['sha256']}}
+        path = root / _SOURCES / (shot_id + '.json')
+        previous = execution._read(path) if path.exists() else None
+        if path.exists():
+            if previous == record:
+                _source_clip_row(root, record)
+                continue
+            stable = ('project_dir', 'project_id', 'story_revision', 'attempt_id', 'shot_id')
+            if any(previous['source_project'][key] != source[key] for key in stable):
+                raise ValueError('shot already has a different registered external source clip: ' + shot_id)
+        if rows[shot_id]['status'] == 'candidate' and 'source_project' not in rows[shot_id]:
+            raise ValueError('shot already has a playable clip in this project: ' + shot_id)
+        # Validate under the source project's own candidate rules before copying.
+        _candidate(source_root, source_shot, entry['attempt_id'], source['output'],
+                   source['story_revision'], execution.load_selected_attempts(source_root))
+        if previous is not None:
+            proof, _ = _candidate_provenance(source_root, source_shot, source['attempt_id'],
+                                            source['output'], source['story_revision'])
+            derived = proof.get('derived_edit')
+            if not derived or derived['parent_attempt_id'] != source['attempt_id']:
+                raise ValueError('external source reselection requires a validated same-parent derivative')
+            old_source = previous['source_project']
+            old_proof, _ = _candidate_provenance(source_root, source_shot, source['attempt_id'],
+                                                old_source['output'], source['story_revision'])
+            old_parent = old_proof.get('derived_edit', {}).get('parent_output', old_source['output'])
+            old_parent = {**old_parent, 'path': str((source_root / old_parent['path']).resolve())}
+            if old_parent != derived['parent_output']:
+                raise ValueError('external source reselection changed the native parent')
+        copy = root / record['copy']['path']
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        if not copy.exists():
+            temporary = None
+            try:
+                with tempfile.NamedTemporaryFile(dir=copy.parent, suffix='.tmp', delete=False) as retained:
+                    temporary = Path(retained.name)
+                    with source_path.open('rb') as incoming:
+                        shutil.copyfileobj(incoming, retained)
+                    retained.flush()
+                    os.fsync(retained.fileno())
+                if file_sha256(temporary) != output['sha256']:
+                    raise ValueError('external source bytes changed while copying')
+                temporary.chmod(0o444)
+                # Publish complete verified bytes without replacing any final
+                # file another writer may already have retained.
+                try:
+                    os.link(temporary, copy)
+                except FileExistsError:
+                    if file_sha256(copy) != output['sha256']:
+                        raise ValueError('external source clip copy is changed')
+            finally:
+                if temporary is not None:
+                    temporary.unlink(missing_ok=True)
+        _source_clip_row(root, record)
+        history = root / _SOURCES / 'registrations' / shot_id
+        history.mkdir(parents=True, exist_ok=True)
+        for retained_record in ([previous, record] if previous is not None else [record]):
+            retained_path = history / (execution._digest(retained_record) + '.json')
+            if retained_path.exists():
+                if execution._read(retained_path) != retained_record:
+                    raise ValueError('retained external source registration changed')
+            else:
+                execution._write_new(retained_path, retained_record)
+        # Every immutable historical binding exists before the current pointer
+        # changes. A crash leaves either the old or the complete new record.
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, suffix='.tmp', delete=False) as current:
+                temporary = Path(current.name)
+                json.dump(record, current, indent=2, allow_nan=False)
+                current.flush()
+                os.fsync(current.fileno())
+            temporary.chmod(0o444)
+            temporary.replace(path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+
+def _resolve_title_cards(root, title_cards):
+    """Explicit card specs; None keeps the latest first cut's cards, [] removes them."""
+    import math
+    from lib import production_execution as execution
+    if title_cards is None:
+        latest = latest_first_cut(root)
+        return [{key: card[key] for key in _TITLE_CARD_KEYS} for card in (latest or {}).get('title_cards', [])]
+    shots = {shot['id'] for shot in execution.load_shot_contract(root)['shots']}
+    if not isinstance(title_cards, list):
+        raise ValueError('title_cards must be a list')
+    cards = []
+    for card in title_cards:
+        if not isinstance(card, dict) or set(card) != set(_TITLE_CARD_KEYS):
+            raise ValueError('title card needs exactly before_shot_id, text and duration_seconds')
+        duration, text = card['duration_seconds'], card['text']
+        if (card['before_shot_id'] not in shots or not isinstance(text, str) or not text.strip()
+                or len(text) > 120 or type(duration) not in (int, float)
+                or not math.isfinite(duration) or not 0 < duration <= 3):
+            raise ValueError('title card needs a planned shot, 1-120 characters and 0 < duration <= 3 seconds')
+        cards.append({key: card[key] for key in _TITLE_CARD_KEYS})
+    if len({card['before_shot_id'] for card in cards}) != len(cards):
+        raise ValueError('at most one title card may precede each shot')
+    return cards
+
+
+def _render_title_card(path, card, width, height):
+    """Silent black FFmpeg drawtext card at the cut geometry; written atomically."""
+    lines = card['text'].splitlines() or [card['text']]
+    size = int(min(height / 14, width * 0.9 / (0.6 * max(len(line) for line in lines))))
+    text = path.with_suffix('.txt')
+    text.write_text(card['text'])
+    temporary = path.with_name(path.stem + '.tmp.mp4')
+    duration = card['duration_seconds']
+    subprocess.run(['ffmpeg', '-v', 'error', '-y',
+        '-f', 'lavfi', '-i', f'color=c=black:s={width}x{height}:r=30:d={duration}',
+        '-f', 'lavfi', '-i', 'anullsrc=channel_layout=stereo:sample_rate=48000',
+        '-vf', f'drawtext=textfile={text.name}:fontcolor=white:fontsize={max(size, 12)}'
+               ':line_spacing=8:expansion=none:x=(w-text_w)/2:y=(h-text_h)/2',
+        '-t', str(duration), '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac',
+        '-map_metadata', '-1', temporary.name],
+        cwd=path.parent, capture_output=True, check=True, timeout=120)
+    temporary.replace(path)
 
 
 def _cut_records(root):
@@ -596,15 +793,27 @@ def _export_intact(root, record):
     return path.is_file() and file_sha256(path) == export['sha256']
 
 
-def _compose_bindings(root, clips, export_profile):
+def _title_cards_intact(root, record):
+    """Every inserted card file still has its recorded bytes."""
+    return all((root / card['output']['path']).is_file()
+               and file_sha256(root / card['output']['path']) == card['output']['sha256']
+               for card in record.get('title_cards', []))
+
+
+def _compose_bindings(root, clips, export_profile, title_cards=()):
     """Exact inputs a compose intent binds: current clip bytes and profile.
 
     Keep the historical ``audio: null`` slot so already-saved no-music intents
     retain their digest. The factory no longer writes or accepts external audio.
+    Title cards and external source projects appear only when used, so older
+    operation digests are unchanged.
     """
-    bindings = {'clips': [{'shot_id': row['shot_id'], 'attempt_id': row['attempt_id'], 'output': row['output']}
+    bindings = {'clips': [{'shot_id': row['shot_id'], 'attempt_id': row['attempt_id'], 'output': row['output'],
+                           **({'source_project': row['source_project']} if 'source_project' in row else {})}
                           for row in clips],
                 'export_profile': export_profile, 'audio': None}
+    if title_cards:
+        bindings['title_cards'] = [{key: card[key] for key in _TITLE_CARD_KEYS} for card in title_cards]
     for row in clips:
         source = root / row['output']['path']
         if not source.is_file() or file_sha256(source) != row['output']['sha256']:
@@ -612,14 +821,20 @@ def _compose_bindings(root, clips, export_profile):
     return bindings
 
 
-def _clip_media_bindings(clips, *, placed=False):
-    """Ordered placement identity and timing, excluding mutable review notes."""
+def _clip_media_bindings(clips, *, placed=False, title_cards=()):
+    """Ordered placement identity and timing, excluding mutable review notes.
+
+    Unplaced candidates are shifted by the retained card durations so they
+    compare with a placed record that inserted those cards."""
+    before = {card['before_shot_id']: card['master_end'] - card['master_start'] for card in title_cards}
     cursor, bindings = 0.0, []
     for clip in clips:
+        if not placed:
+            cursor = round(cursor + before.get(clip['shot_id'], 0), 3)
         start = clip['master_start'] if placed else cursor
         end = clip['master_end'] if placed else round(cursor + clip['duration_seconds'], 3)
-        bindings.append({key: clip[key] for key in ('shot_id', 'attempt_id', 'output')} |
-                        {'master_start': round(start, 3), 'master_end': end})
+        bindings.append({key: clip[key] for key in ('shot_id', 'attempt_id', 'output', 'source_project')
+                         if key in clip} | {'master_start': round(start, 3), 'master_end': end})
         cursor = end
     return bindings
 
@@ -640,7 +855,8 @@ def _find_intent(root, operation_id):
 
 @_write
 @_delivery_serialized
-def compose_first_cut(project_dir, *, compose=None, export_profile=None, operation_id=None):
+def compose_first_cut(project_dir, *, compose=None, export_profile=None, operation_id=None,
+                      title_cards=None, source_clips=None):
     """Render a versioned preview from current candidates and record it immutably.
 
     ``export_profile`` (explicit media profile name) is validated before any
@@ -650,7 +866,12 @@ def compose_first_cut(project_dir, *, compose=None, export_profile=None, operati
     existing record is returned, a complete local render is recorded without
     re-rendering. A confirmed technical mismatch or incomplete MP4 preserves
     the original beside its replacement; probe uncertainty preserves it for retry.
-    Changed clip/profile bindings reject the stale intent."""
+    Changed clip/profile bindings reject the stale intent.
+
+    ``title_cards`` inserts short silent edit-only cards before named shots
+    (None keeps the latest cut's cards, [] removes them). ``source_clips``
+    registers exact external completion clips for shots this project cannot
+    place; registrations persist for later calls."""
     from lib import production_execution as execution
     from lib.shot_contract import contract_digest
     from lib.events import emit_event
@@ -661,12 +882,19 @@ def compose_first_cut(project_dir, *, compose=None, export_profile=None, operati
         raise ValueError('compose operation_id must be a nonempty string')
     marker = execution._read(root / 'project.json')
     contract = execution.load_shot_contract(root)
+    if source_clips is not None:
+        _register_source_clips(root, source_clips)
+    cards = _resolve_title_cards(root, title_cards)
     rows = first_cut_candidates(root)
     clips = [row for row in rows if row['status'] == 'candidate']
     missing = [row for row in rows if row['status'] == 'missing']
-    bindings = _compose_bindings(root, clips, export_profile) if operation_id is not None else None
+    placed_shots = {row['shot_id'] for row in clips}
+    if any(card['before_shot_id'] not in placed_shots for card in cards):
+        raise ValueError('title card must precede a shot placed in this cut')
+    bindings = _compose_bindings(root, clips, export_profile, cards) if operation_id is not None else None
     bindings_sha256 = execution._digest(bindings) if operation_id is not None else None
     recorded = set()
+    latest_sequence = max([record['sequence'] for _, record in _cut_records(root)], default=0)
     if operation_id is not None:
         # Same operation replays only with identical clip/profile bindings.
         # A retained render failure stays as history; the operation resumes with a
@@ -679,8 +907,11 @@ def compose_first_cut(project_dir, *, compose=None, export_profile=None, operati
             if record.get('compose_bindings_sha256') != bindings_sha256:
                 raise ValueError('compose operation was recorded with different clips, profile or audio')
             recorded.add(record['sequence'])
-            if (record['status'] != 'render_failed' and _export_intact(root, record)
-                    and _clip_media_bindings(record['clips'], placed=True) == _clip_media_bindings(clips)):
+            if (record['sequence'] == latest_sequence and record['status'] != 'render_failed'
+                    and _export_intact(root, record)
+                    and _title_cards_intact(root, record)
+                    and _clip_media_bindings(record['clips'], placed=True)
+                    == _clip_media_bindings(clips, title_cards=record.get('title_cards', []))):
                 return {'path': str(path), 'sha256': file_sha256(path), **record}
     intent_path, intent = _find_intent(root, operation_id) if operation_id is not None else (None, None)
     if intent is not None:
@@ -699,12 +930,31 @@ def compose_first_cut(project_dir, *, compose=None, export_profile=None, operati
                 break
             except FileExistsError:
                 sequence += 1
-    cursor, placed = 0.0, []
+    card_geometry = None
+    if cards:
+        profile_geometry = (profile.width, profile.height) if profile is not None else None
+        first = _probe(root / clips[0]['output']['path'])
+        card_geometry = profile_geometry or (first['width'], first['height'])
+    cursor, placed, placed_cards = 0.0, [], []
+    by_shot = {card['before_shot_id']: card for card in cards}
     for row in clips:
+        card = by_shot.get(row['shot_id'])
+        if card is not None:
+            card_path = directory / f"title-{row['shot_id']}.mp4"
+            if not card_path.is_file():
+                _render_title_card(card_path, card, *card_geometry)
+            rendered_duration = _probe(card_path)['duration_seconds']
+            start, cursor = cursor, round(cursor + rendered_duration, 3)
+            placed_cards.append({**card, 'output': {'path': _rel(root, card_path), 'sha256': file_sha256(card_path)},
+                                 'rendered_duration_seconds': rendered_duration,
+                                 'master_start': round(start, 3), 'master_end': cursor})
         start, cursor = cursor, round(cursor + row['duration_seconds'], 3)
         placed.append({'shot_id': row['shot_id'], 'attempt_id': row['attempt_id'], 'output': row['output'],
                        'master_start': round(start, 3), 'master_end': cursor,
-                       'review': row['review'], 'findings': row['findings']})
+                       'review': row['review'], 'findings': row['findings'],
+                       **({'source_project': row['source_project']} if 'source_project' in row else {})})
+    segments = sorted([*placed, *placed_cards], key=lambda item: item['master_start'])
+    segment_count = len(segments)
     output = directory / 'first_cut.mp4'
     if operation_id is not None and intent is None:
         intent = {'version': '1.0', 'kind': 'first_cut_compose_intent', 'operation_id': operation_id,
@@ -718,7 +968,7 @@ def compose_first_cut(project_dir, *, compose=None, export_profile=None, operati
     if placed:
         resumed = None
         if operation_id is not None and output.is_file():
-            technical, problem = _verify_render(output, profile, cursor, len(placed))
+            technical, problem = _verify_render(output, profile, cursor, segment_count)
             if problem is None:
                 resumed = technical
                 emit_event(root, {'event': 'first-cut-compose-resumed', **observation, 'operation_id': operation_id})
@@ -739,8 +989,9 @@ def compose_first_cut(project_dir, *, compose=None, export_profile=None, operati
             if profile is None:
                 metadata['compose_target'] = {'width': first['width'], 'height': first['height'], 'fit': 'pad'}
             edit = {'version': '1.0', 'render_runtime': 'ffmpeg',
-                    'cuts': [{'id': clip['shot_id'], 'source': str(root / clip['output']['path']), 'in_seconds': 0,
-                              'out_seconds': clip['master_end'] - clip['master_start']} for clip in placed],
+                    'cuts': [{'id': item.get('shot_id') or 'title-' + item['before_shot_id'],
+                              'source': str(root / item['output']['path']), 'in_seconds': 0,
+                              'out_seconds': item['master_end'] - item['master_start']} for item in segments],
                     'metadata': metadata}
             inputs = {'operation': 'compose', 'edit_decisions': edit, 'output_path': str(output)}
             if profile is not None:
@@ -759,7 +1010,7 @@ def compose_first_cut(project_dir, *, compose=None, export_profile=None, operati
             if resumed is None:
                 if not result.success:
                     raise RuntimeError(result.error or 'compose failed')
-                technical, problem = _verify_render(output, profile, cursor, len(placed), verify_duration=False)
+                technical, problem = _verify_render(output, profile, cursor, segment_count, verify_duration=False)
                 if problem:
                     raise ValueError('export technical check failed: ' + problem)
             export = {'path': _rel(root, output), 'sha256': file_sha256(output)}
@@ -776,7 +1027,7 @@ def compose_first_cut(project_dir, *, compose=None, export_profile=None, operati
     # Audio presence remains available as factual probe metadata, but dialogue
     # streams and audio quality never gate this draft delivery.
     complete = (export is not None and not missing
-                and abs(technical['duration_seconds'] - cursor) <= 0.05 + 0.04 * len(placed))
+                and abs(technical['duration_seconds'] - cursor) <= 0.05 + 0.04 * segment_count)
     record = {'version': '1.0', 'kind': 'first_cut', 'sequence': sequence, 'project_id': marker['project_id'],
               'story_revision': marker['story_revision'], 'contract_sha256': contract_digest(contract),
               'status': ('complete' if complete else 'render_failed' if error
@@ -784,6 +1035,8 @@ def compose_first_cut(project_dir, *, compose=None, export_profile=None, operati
               'export': export, 'technical': technical, 'clips': placed, 'missing': missing,
               'audio': 'native_source',
               'render_error': error, 'render_log': log}
+    if placed_cards:
+        record['title_cards'] = placed_cards
     if export_profile is not None:
         record['export_profile'] = export_profile
     if operation_id is not None:
@@ -803,21 +1056,25 @@ def compose_first_cut(project_dir, *, compose=None, export_profile=None, operati
 
 @_write
 @_delivery_serialized
-def deliver_standalone(project_dir, *, export_profile=None, operation_id=None, compose=None):
+def deliver_standalone(project_dir, *, export_profile=None, operation_id=None, compose=None,
+                       title_cards=None, source_clips=None):
     """Engine-only saved draft cut from current candidates; no Studio, Drive or account.
 
     Idempotent per ``operation_id`` (default derives from current clip and
-    profile bindings). Reports honest per-clip review/findings and
+    profile/title-card bindings). Reports honest per-clip review/findings and
     missing shots; never certification, publication or provider work."""
     from lib import production_execution as execution
     root = Path(project_dir).resolve()
+    if source_clips is not None:
+        _register_source_clips(root, source_clips)
+    cards = _resolve_title_cards(root, title_cards)
     if operation_id is None:
         if export_profile is not None:
             from lib.media_profiles import get_profile
             get_profile(export_profile)
         clips = [row for row in first_cut_candidates(root) if row['status'] == 'candidate']
-        operation_id = 'deliver-' + execution._digest(_compose_bindings(root, clips, export_profile))[:24]
-    cut = compose_first_cut(root, compose=compose,
+        operation_id = 'deliver-' + execution._digest(_compose_bindings(root, clips, export_profile, cards))[:24]
+    cut = compose_first_cut(root, compose=compose, title_cards=cards,
                             export_profile=export_profile, operation_id=operation_id)
     binding = {'path': _rel(root, cut['path']), 'sha256': cut['sha256']}
     status = first_cut_media_status(root, binding)
@@ -831,6 +1088,7 @@ def deliver_standalone(project_dir, *, export_profile=None, operation_id=None, c
                       for row, clip, (findings, review) in zip(disclosure_clip_map(cut), cut['clips'],
                                                                _current_clip_rows(root, cut['clips']))],
             'missing': cut['missing'], 'audio': cut['audio'], 'render_error': cut['render_error'],
+            'title_cards': cut.get('title_cards', []),
             'not_certification': True, 'posted': False, 'provider_calls': 0}
 
 
@@ -838,7 +1096,14 @@ def _current_clip_projection(root, clip, revision, selected):
     """One current resolution of a placed clip: (findings, review status).
 
     Resolves findings and provenance once, exactly like ``_candidate``, for both
-    annotation currency and the delivered per-clip review."""
+    annotation currency and the delivered per-clip review. An external clip
+    resolves inside its source project, exactly like that project's own row."""
+    if 'source_project' in clip:
+        from lib import production_execution as execution
+        source = clip['source_project']
+        root, revision = Path(source['project_dir']), source['story_revision']
+        selected = execution.load_selected_attempts(root)
+        clip = {**clip, 'shot_id': source['shot_id'], 'output': source['output']}
     review, values = _current_findings(root, clip['shot_id'], clip['attempt_id'], clip['output']['sha256'],
                                        revision, selected)
     try:
@@ -906,6 +1171,8 @@ def _cut_reasons(root, cut, *, include_findings=True):
         source = root / clip['output']['path']
         if not source.is_file() or file_sha256(source) != clip['output']['sha256']:
             reasons.append('source_changed:' + clip['shot_id'])
+    if not _title_cards_intact(root, record):
+        reasons.append('title_card_changed')
     if execution._read(root / 'project.json')['story_revision'] != record['story_revision']:
         reasons.append('story_revision_changed')
     if contract_digest(execution.load_shot_contract(root)) != record['contract_sha256']:
@@ -914,7 +1181,8 @@ def _cut_reasons(root, cut, *, include_findings=True):
     if not reasons:
         candidates = first_cut_candidates(root)
         current_clips = [row for row in candidates if row['status'] == 'candidate']
-        if _clip_media_bindings(current_clips) != _clip_media_bindings(record['clips'], placed=True):
+        if (_clip_media_bindings(current_clips, title_cards=record.get('title_cards', []))
+                != _clip_media_bindings(record['clips'], placed=True)):
             reasons.append('candidate_bindings_changed')
         else:
             # Identical placed clips: each candidate row already resolved these
@@ -971,9 +1239,11 @@ def first_cut_missing_status(project_dir, cut):
 
 def disclosure_clip_map(record):
     """Complete stable clip map a disclosure binds: 1-based number, identity,
-    exact source output and master interval for every placed clip, in order."""
+    exact source output and master interval for every placed clip, in order.
+    External completion clips also name their source project."""
     return [{'number': index, 'shot_id': clip['shot_id'], 'attempt_id': clip['attempt_id'],
-             'output': clip['output'], 'master_start': clip['master_start'], 'master_end': clip['master_end']}
+             'output': clip['output'], 'master_start': clip['master_start'], 'master_end': clip['master_end'],
+             **({'source_project': clip['source_project']} if 'source_project' in clip else {})}
             for index, clip in enumerate(record['clips'], 1)]
 
 
@@ -985,6 +1255,8 @@ def _check_disclosure(root, cut, record, disclosure):
         raise ValueError('disclosure does not describe this exact first cut and export')
     if sidecar.get('clips') != disclosure_clip_map(record):
         raise ValueError('disclosure clip map differs from the complete first-cut record')
+    if sidecar.get('title_cards', []) != record.get('title_cards', []):
+        raise ValueError('disclosure title cards differ from the first-cut record')
     return sidecar
 
 
