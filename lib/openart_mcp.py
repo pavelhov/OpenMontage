@@ -390,7 +390,8 @@ def prepare_native_request(controls, profile, *, _retained_input_assets=None, _r
             if 'upload_id' not in resolver_asset:
                 resolver_asset['upload_id']=retained['receipt_sha256']
         binding = copy.deepcopy(jobs.resolve_input_asset(controls.get('project_dir'), resolver_asset, account_binding=account,
-            openart_project_id=controls.get('openart_project_id')))
+            openart_project_id=controls.get('openart_project_id'),
+            **({'_historical': True} if _retained_input_assets is not None else {})))
         raw = binding.pop('visual_reference')
         field,kind = ROLES[role]
         if raw.get('type') != kind: _fail('reference_invalid','ready reference type differs from input role')

@@ -252,8 +252,43 @@ def _historical_source_packet(project_dir, shot_id, *, provider="openart_cli", n
     contract/preparation snapshots. No current listening or dispatch authority
     follows from this packet; prospective readers always use ``source_packet``.
     """
+    contract = _read(Path(project_dir).resolve(), 'shot_contract.json')
+    selected = _original_upstream_selections(project_dir, contract, shot_id)
     return _source_packet(project_dir, shot_id, provider=provider, native=native,
-        check_native_controls=check_native_controls, historical=True, reference_bindings=reference_bindings)
+        check_native_controls=check_native_controls, historical=True,
+        original_sources=(contract, selected), reference_bindings=reference_bindings)
+
+
+def _original_upstream_selections(project_dir, contract, shot_id):
+    """Resolve exact retained source tuples; never choose the latest edited cut.
+
+    This source-only projection grants no current dispatch/selection eligibility.
+    Callers still prove the enclosing original packet, authority and ancestry.
+    """
+    from lib.production_execution import load_selected_attempts
+    root = Path(project_dir).resolve()
+    selected = load_selected_attempts(root)
+    shot = next(s for s in contract['shots'] if s['id'] == shot_id)
+    for binding in shot['upstream']:
+        if 'attempt_id' in binding:
+            selected[binding['shot_id']] = _original_upstream_selection(root, binding)
+    return selected
+
+
+def _original_upstream_selection(project_dir, binding):
+    from lib.production_execution import load_selected_attempts
+    root = Path(project_dir).resolve()
+    sid = binding['shot_id']
+    histories = [json.loads(path.read_text()) for path in (root / 'production_selections').glob('*.json')]
+    candidates = [load_selected_attempts(root).get(sid)] + [row.get('selection') for row in histories if row.get('shot_id') == sid]
+    matches = {digest(row): row for row in candidates if isinstance(row, dict)
+        and row.get('attempt_id') == binding['attempt_id']
+        and row.get('output', {}).get('sha256') == binding['output_sha256']
+        and row.get('outgoing_frame', {}).get('sha256') == binding['outgoing_frame_sha256']
+        and review_digest(row.get('review')) == binding['review_sha256']}
+    if len(matches) != 1:
+        raise ValueError('original upstream selection history missing or changed')
+    return next(iter(matches.values()))
 
 
 def _original_source_packet(project_dir, shot_id, *, native, contract, selected,

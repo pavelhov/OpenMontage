@@ -923,7 +923,7 @@ def _media_type(path):
     if kind not in {'image','video','audio'}: _fail('source_invalid','source must be an identified image, video, or audio file')
     return kind
 
-def _upload_authority(root, files, declaration, account, project_id):
+def _upload_authority(root, files, declaration, account, project_id, *, _historical=False):
     if not isinstance(declaration,dict) or set(declaration)!={'upload_authorization_id'}:
         _fail('upload_authority_required','select one retained fresh upload authorization ID; caller declarations cannot grant authority')
     aid=_id(declaration['upload_authorization_id'])
@@ -943,7 +943,8 @@ def _upload_authority(root, files, declaration, account, project_id):
     if authority.get('derived_from_standing_run') is not None:
         from lib.production_autonomy import validate_standing_mcp_upload
         try:
-            validate_standing_mcp_upload(root, authority, files=files, account=account, openart_project_id=project_id)
+            validate_standing_mcp_upload(root, authority, files=files, account=account, openart_project_id=project_id,
+                **({'_historical': True} if _historical else {}))
         except (ValueError, OSError, KeyError, TypeError) as exc:
             _fail('upload_authority_invalid', 'current standing source-transfer authority invalid: ' + str(exc))
     return authority,mcp.digest(authority)
@@ -1201,7 +1202,7 @@ def reuse_uploaded_input_asset(project_dir, asset, *, account_binding, openart_p
 
 
 def resolve_input_asset(project_dir, asset, *, account_binding, openart_project_id=None,
-                        policy_fallback_call_id=None):
+                        policy_fallback_call_id=None, _historical=False):
     root=_root(project_dir);path=_inside(root,asset['source_path']);sha=_sha(path)
     if asset.get('source_sha256',sha)!=sha:_fail('source_changed','caller source hash differs from actual bytes')
     # The original upload proved transfer eligibility. Native rebuilds recheck
@@ -1248,7 +1249,8 @@ def resolve_input_asset(project_dir, asset, *, account_binding, openart_project_
             or batch['result']['projectId']!=r['project_id']
             or frozen['authorization_sha256']!=r['authorization_sha256']):
         _fail('upload_receipt_invalid','reference differs from the immutable original ordered upload batch')
-    authority,authsha=_upload_authority(root,frozen['manifest'],frozen['billing_declaration'],account_binding,frozen['project_id'])
+    authority,authsha=_upload_authority(root,frozen['manifest'],frozen['billing_declaration'],account_binding,frozen['project_id'],
+        _historical=_historical)
     if authsha!=frozen['authorization_sha256']:
         _fail('upload_authority_invalid','original source-transfer authority changed')
     if policy_fallback_call_id is not None:

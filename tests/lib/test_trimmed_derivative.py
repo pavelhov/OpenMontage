@@ -105,9 +105,11 @@ def trimmed(production, monkeypatch, request):
 
 def cut_fixture(production, aid, directory, parent, options):
     root = production.root
+    name = options.get('name', 'trim')
+    shot_id = options.get('shot_id', 'entry')
     registry.discover()
     tool = registry.get('video_trimmer')
-    output = root / 'assets/video/retained-cut.mp4'
+    output = root / ('assets/video/retained-' + (name + '-' if name != 'trim' else '') + 'cut.mp4')
     output.parent.mkdir(parents=True, exist_ok=True)
     # Studio production_entry.dispatch submits its resolved project as context.
     contexts = {None: {}, 'correct': {'project_dir': str(root.resolve())},
@@ -119,11 +121,11 @@ def cut_fixture(production, aid, directory, parent, options):
         **contexts[options.get('cut_context')]}
     result = tool.execute(inputs)
     assert result.success, result.error
-    recipe = root / 'artifacts/trim-recipe.json'
+    recipe = root / ('artifacts/' + name + '-recipe.json')
     save(recipe, {'version': '1.0', 'operation': 'canonical_video_trimmer_cut',
         'input': parent, 'output_path': str(output), 'submitted_inputs': inputs,
         'reason': inputs['reason']})
-    receipt = root / 'artifacts/trim-receipt.json'
+    receipt = root / ('artifacts/' + name + '-receipt.json')
     interval = [inputs['start_seconds'], inputs['end_seconds']]
     audio = {'mode': 'retained_interval_stream_copy' if inputs['codec'] == 'copy' else 'retained_interval_aac_reencode',
         'input_sha256': _aac_sha256(parent['path']), 'output_sha256': _aac_sha256(output),
@@ -135,7 +137,7 @@ def cut_fixture(production, aid, directory, parent, options):
         'input': parent, 'recipe': binding(recipe), 'output': binding(output),
         'audio': audio,
         'tool_result': asdict(result)})
-    frames = root / 'artifacts/trim-outgoing'
+    frames = root / ('artifacts/' + name + '-outgoing')
     sample_inputs = {'input_path': str(output), 'strategy': 'timestamps',
         'timestamps': [final_timestamp(output)], 'format': 'png', 'output_dir': str(frames),
         **contexts[options.get('sample_context')]}
@@ -143,18 +145,18 @@ def cut_fixture(production, aid, directory, parent, options):
     sampled_result = sampler.execute(sample_inputs)
     assert sampled_result.success, sampled_result.error
     outgoing = binding(Path(sampled_result.data['frames'][0]['path']))
-    sampled = root / 'artifacts/trim-sampling.json'
+    sampled = root / ('artifacts/' + name + '-sampling.json')
     save(sampled, {'tool': sampler.name, 'provider': sampler.provider, 'input': binding(output),
         'submitted_inputs': sample_inputs, 'outgoing_frame': outgoing, 'tool_result': asdict(sampled_result)})
-    record = {'version': '1.0', 'project_id': root.name,
-        'story_revision': production.story['story_revision'], 'shot_id': 'entry',
+    record = {'version': '1.0', 'project_id': production.story.get('project_id', root.name),
+        'story_revision': production.story['story_revision'], 'shot_id': shot_id,
         'parent_attempt_id': aid, 'parent_output': parent, 'recipe': binding(recipe),
         'execution_receipt': binding(receipt), 'output': binding(output),
         'preserved_output': {'path': str(root / 'production_derived_edits' / file_sha256(output) / 'output.mp4'),
             'sha256': file_sha256(output)}, 'outgoing_frame': outgoing, 'outgoing_receipt': binding(sampled)}
-    authority = root / 'artifacts/local-edit-authorization.txt'
+    authority = root / ('artifacts/' + (name + '-' if name != 'trim' else '') + 'local-edit-authorization.txt')
     authority.write_text(f'SYNTHETIC retained local-edit approval: trim this exact entry attempt from {interval[0]} to {interval[1]} seconds.')
-    approval = root / 'artifacts/trim-approval.json'
+    approval = root / ('artifacts/' + name + '-approval.json')
     save(approval, {'status': 'approved', 'approved_by': 'synthetic exact trim reviewer',
         'derived_edit_sha256': _digest(record), 'authorization': binding(authority)})
     record['approval'] = {'approved_by': 'synthetic exact trim reviewer', 'evidence': binding(approval)}

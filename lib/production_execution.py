@@ -2704,9 +2704,10 @@ def record_derived_edit(project_dir, record):
             with source.open('rb') as incoming, preserved.open('xb') as retained:
                 shutil.copyfileobj(incoming, retained)
             preserved.chmod(0o444)
+        from lib.shot_contract import factory_project
         checked = validate_derived_edit(root, path, attempt_id=record['parent_attempt_id'],
             shot_id=record['shot_id'], story_revision=record['story_revision'],
-            expected_output=record['output'], record=record)
+            expected_output=record['output'], record=record, _historical_source=factory_project(root))
         if path.exists():
             if _read(path) != record:
                 _fail('immutable derived record already exists with different evidence')
@@ -2757,7 +2758,7 @@ def sample_local_render_outgoing(project_dir, attempt_id):
         return frame
 
 
-def _factory_outgoing_selection(root, shot_id, attempt_id, *, sample=False):
+def _factory_outgoing_selection(root, shot_id, attempt_id, *, sample=False, _historical_source=False):
     """Retain the last decoded original frame, never a semantic acceptance."""
     import subprocess
     from lib.production_provenance import validate_attempt_provenance
@@ -2767,6 +2768,11 @@ def _factory_outgoing_selection(root, shot_id, attempt_id, *, sample=False):
         _fail('automatic outgoing handoff requires activated standing make_video authority')
     marker = _read(root / 'project.json')
     original = load_attempt_result(root, attempt_id)
+    if _historical_source:
+        if sample:
+            _fail('historical outgoing proof cannot sample or dispatch')
+        from lib.production_provenance import historical_source_provenance
+        validate_attempt_provenance = historical_source_provenance
     proven = validate_attempt_provenance(root, attempt_id, shot_id=shot_id,
         story_revision=marker['story_revision'], expected_output=original.get('output'))
     if not factory_project(root) and not frozen_factory_authority(root, proven['request'].get('scope')):
@@ -2905,6 +2911,13 @@ def record_selection(project_dir, shot_id, selection):
             directory = connector_directory
         marker = _read(root / 'project.json')
         from lib.production_provenance import validate_attempt_provenance
+        from lib.shot_contract import factory_project
+        output_hash = (selection.get('output') or {}).get('sha256', '')
+        if (factory_project(root) and selection.get('review', {}).get('status') in {'unknown', 'fail'}
+                and isinstance(output_hash, str) and len(output_hash) == 64
+                and (root / 'production_derived_edits' / output_hash / 'record.json').is_file()):
+            from lib.production_provenance import historical_source_provenance
+            validate_attempt_provenance = historical_source_provenance
         validated = validate_attempt_provenance(root, attempt_id, shot_id=shot_id,
             story_revision=marker['story_revision'], expected_output=selection.get('output'))
         request, result = validated['request'], validated['result']

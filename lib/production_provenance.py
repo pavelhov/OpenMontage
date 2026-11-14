@@ -934,6 +934,10 @@ def _validate_mcp_attempt(project_dir, attempt_id, *, shot_id, story_revision, e
     current_contract = execution.load_shot_contract(root)
     packet = snapshot['source_packet']
     if not _historical_source:
+        current_selected = execution.load_selected_attempts(root)
+        require(all(preparation.digest(current_selected.get(binding['shot_id'])) == binding['selection_sha256']
+                    for binding in packet['binding']['upstream']),
+                'canonical reviewed source/reference/upstream changed')
         source = preparation._historical_source_packet(root, shot_id, provider='openart_mcp', native=native,
             reference_bindings=packet['binding']['references'])
     frozen_shots = [item for item in frozen_contract['shots'] if item['id'] == shot_id]

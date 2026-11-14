@@ -1306,11 +1306,15 @@ def _policy_fallback_sources(root, policy, call_id, files, *, shot_id):
 
 
 def _standing_upload_material(root, *, shot_id, provider, files, account, openart_project_id=None,
-                              policy_fallback_call_id=None):
+                              policy_fallback_call_id=None, _historical_binding=None):
     """Pure existing-format source-transfer authority from the real standing run."""
     import mimetypes
     from lib import production_execution as execution, production_request as preparation
-    policy, sha, decision_id = require_active_policy(root, shot_id=shot_id)
+    if _historical_binding is None:
+        policy, sha, decision_id = require_active_policy(root, shot_id=shot_id)
+    else:
+        policy, sha, decision_id = _load_historical_policy(root,
+            {'derived_from_policy': _historical_binding}, _source_shot_id=shot_id)
     if not policy.get('activation_basis') or provider not in {'openart_cli', 'openart_mcp'}:
         raise StandingSetupRequired('standing OpenArt source transfer authority required')
     spec = _provider_spec(policy, provider)
@@ -1333,7 +1337,10 @@ def _standing_upload_material(root, *, shot_id, provider, files, account, openar
         references, fallback = _policy_fallback_sources(root, policy, policy_fallback_call_id, files, shot_id=shot_id)
         packet = {'binding': {'references': copy.deepcopy(references)}}
     else:
-        packet = preparation.source_packet(root, shot_id, provider=provider, check_native_controls=False)
+        packet_reader = preparation.source_packet if _historical_binding is None else preparation._historical_source_packet
+        packet = packet_reader(root, shot_id, provider=provider, check_native_controls=False,
+            **({'reference_bindings': _historical_binding['source_binding']['references']}
+               if _historical_binding is not None else {}))
         consumer_assets = {a['id']: a for a in execution.load_shot_contract(root)['assets']}
     manifest, assets = [], []
     for supplied in files:
@@ -1427,11 +1434,12 @@ def derive_standing_upload_authority(project_dir, *, shot_id, provider, files, a
             'replayed': False, 'provider_calls': 0}
 
 
-def validate_standing_mcp_upload(root, authority, *, files, account, openart_project_id):
+def validate_standing_mcp_upload(root, authority, *, files, account, openart_project_id, _historical=False):
     binding = authority.get('derived_from_standing_run', {})
     _, expected, _ = _standing_upload_material(Path(root).resolve(), shot_id=binding['shot_id'], provider='openart_mcp',
         files=[r['path'] for r in files], account=binding['account'], openart_project_id=openart_project_id,
-        policy_fallback_call_id=(binding.get('policy_fallback') or {}).get('call_id'))
+        policy_fallback_call_id=(binding.get('policy_fallback') or {}).get('call_id'),
+        **({'_historical_binding': binding} if _historical else {}))
     if authority != expected or account.get('uid_sha256') != authority['account_uid_sha256'] or files != authority['files']:
         raise StandingSetupRequired('current upload account/source/run authority differs')
 
@@ -2606,9 +2614,12 @@ def _outgoing_carrier_sources(root, pack, frame, *, visited=None, historical=Fal
         raise AutonomyError('outgoing carrier lacks an exact declared video dependency')
     selected = execution.load_selected_attempts(root)[source['shot_id']]
     if historical:
+        from lib.production_request import _original_upstream_selection
+        selected = _original_upstream_selection(root, source)
         # Original collection may use frozen standing authority after current
         # dispatch authority changes; this path cannot admit another clip.
-        factual = execution._factory_outgoing_selection(root, source['shot_id'], source['attempt_id'])
+        factual = execution._factory_outgoing_selection(root, source['shot_id'], source['attempt_id'],
+            _historical_source=True)
         if any(selected.get(key) != factual[key] for key in ('attempt_id', 'output', 'outgoing_frame')):
             raise AutonomyError('retained outgoing ancestry differs from original sampling')
         from lib.shot_contract import review_digest
@@ -2628,7 +2639,9 @@ def _outgoing_carrier_sources(root, pack, frame, *, visited=None, historical=Fal
     if aid in visited:
         raise AutonomyError('outgoing carrier ancestry has a cycle')
     visited.add(aid)
-    selected = execution.load_selected_attempts(root)[source['shot_id']]
+    if historical:
+        from lib.production_provenance import historical_source_provenance
+        validate_attempt_provenance = historical_source_provenance
     proof = validate_attempt_provenance(root, aid, shot_id=source['shot_id'],
         story_revision=pack['story_revision'], expected_output=selected['output'])
     records = proof['request'].get('input_assets')
