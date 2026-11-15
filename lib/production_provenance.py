@@ -727,6 +727,11 @@ def historical_source_provenance(project_dir, attempt_id, *, shot_id,
 
 
 def _aac_sha256(path):
+    from lib.production_trim_validation import _status_media_fact
+    return _status_media_fact('aac_sha256', [str(path)], [path], lambda: _aac_sha256_fresh(path))
+
+
+def _aac_sha256_fresh(path):
     """Recompute elementary AAC bytes, rather than trusting a receipt claim."""
     import hashlib
     import subprocess

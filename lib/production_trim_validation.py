@@ -1,15 +1,87 @@
 """Exact media replay for approved canonical cuts and outgoing frame sampling.
 
 Callers retain authority/parent/disk bindings and supply their bound-file and
-require callbacks. Every read still replays current cut and outgoing bytes.
+require callbacks. Each validation checks current bindings and comparisons;
+unchanged subprocess facts may be reused within one bounded read scope.
+Writers retain fresh replay through the existing no_status_reuse boundary.
 """
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 from pathlib import Path
 
 from lib.shot_contract import file_sha256
+
+
+
+def _record_media_files(value, root):
+    files = []
+    for binding in [value.get(name) for name in ('parent_output', 'output', 'preserved_output',
+            'outgoing_frame', 'recipe', 'execution_receipt', 'outgoing_receipt')] + [
+                value.get('approval', {}).get('evidence')]:
+        if isinstance(binding, dict) and isinstance(binding.get('path'), str):
+            path = Path(binding['path'])
+            files.append(path if path.is_absolute() or root is None else Path(root) / path)
+    if root is not None:
+        files.append(Path(root) / 'production_derived_edits' / value['output']['sha256'] / 'record.json')
+    return files
+
+
+def _status_media_fact(kind, arguments, files, compute):
+    """Bounded reuse of subprocess-produced facts, never a validation verdict.
+
+    Record/recipe/receipt comparisons and bound/require callbacks still execute
+    freshly in their callers. Every read-scope hit rechecks physical inputs,
+    implementation and resolved tools; writers/locks always recompute.
+    """
+    import subprocess
+    from lib.production_autonomy import _active_reuse, status_reused
+    # A root-less relative binding may be resolved by the caller's bound helper
+    # somewhere other than CWD. Without the actual absolute source, stay fresh.
+    if _active_reuse() is None or any(not Path(path).is_absolute() for path in files):
+        return compute()
+    from lib.production_execution import _digest
+    from tools.video import video_trimmer
+    from lib import production_provenance
+    tool = video_trimmer.VideoTrimmer
+    programs = tuple(shutil.which(name) for name in ('ffmpeg', 'ffprobe'))
+    if not all(programs):
+        return compute()
+    dependencies = [*files, Path(__file__), Path(production_provenance.__file__),
+                    Path(video_trimmer.__file__), *programs]
+    environment = [(name, os.environ.get(name)) for name in
+        ('PATH', 'LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH', 'DYLD_FALLBACK_LIBRARY_PATH')]
+    helpers = (subprocess.run, file_sha256, production_provenance.file_sha256,
+        trimmed_outgoing_timestamp, _trimmed_outgoing_timestamp_fresh, _canonical_inputs,
+        _probe_json, _replayed_sha256, production_provenance._aac_sha256,
+        production_provenance._aac_sha256_fresh, tool.source_facts, tool.retime_plan,
+        getattr(compute, '__code__', compute))
+    configuration = [tool.name, tool.provider, video_trimmer.RETIME_DEFAULT_SPEEDS,
+                     video_trimmer.RETIME_SPEED_RANGE, environment]
+    key = ('local_media_fact', kind, _digest([arguments, configuration]), programs,
+           tuple(id(helper) for helper in helpers))
+    return status_reused(key, dependencies, compute)
+
+
+def _probe_json(arguments, files, context):
+    import subprocess
+    return _status_media_fact('probe_json', [arguments, context], files,
+        lambda: json.loads(subprocess.run(arguments, capture_output=True, text=True,
+                                          timeout=30, check=True).stdout))
+
+
+def _replayed_sha256(arguments, filename, files, context, *, prefix, timeout):
+    import subprocess
+    import tempfile
+    def compute():
+        with tempfile.TemporaryDirectory(prefix=prefix) as temporary:
+            replayed = Path(temporary) / filename
+            subprocess.run([*arguments, str(replayed)], capture_output=True, timeout=timeout, check=True)
+            return file_sha256(replayed)
+    return _status_media_fact('replayed_sha256', [arguments, filename, context], files, compute)
 
 
 def _canonical_inputs(submitted, canonical_keys, root):
@@ -29,6 +101,11 @@ def _canonical_inputs(submitted, canonical_keys, root):
 
 
 def trimmed_outgoing_timestamp(path):
+    return _status_media_fact('final_pts', [str(path)], [path],
+                              lambda: _trimmed_outgoing_timestamp_fresh(path))
+
+
+def _trimmed_outgoing_timestamp_fresh(path):
     """Actual final decoded video PTS in FrameSampler's input-seek timeline.
 
     Producers use this for timestamp sampling of CFR and VFR trims. The format
@@ -61,7 +138,6 @@ def _validate_trimmed_cut(value, recipe, receipt, native, bound, require, aac_sh
     """
     import math
     import subprocess
-    import tempfile
     from fractions import Fraction
     from tools.video.video_trimmer import VideoTrimmer
 
@@ -114,10 +190,9 @@ def _validate_trimmed_cut(value, recipe, receipt, native, bound, require, aac_sh
     parent, output = bound(value['parent_output'], 'native trim input'), bound(value['output'], 'trim output')
 
     def media(path):
-        probe = subprocess.run(['ffprobe', '-v', 'error',
+        streams = _probe_json(['ffprobe', '-v', 'error',
             '-show_entries', 'stream=codec_type,duration,avg_frame_rate', '-of', 'json', str(path)],
-            capture_output=True, text=True, timeout=30, check=True)
-        streams = json.loads(probe.stdout)['streams']
+            _record_media_files(value, root), [value, recipe, receipt])['streams']
         stream = next(stream for stream in streams if stream.get('codec_type') == 'video')
         duration, fps = float(stream['duration']), float(Fraction(stream['avg_frame_rate']))
         require(math.isfinite(duration) and math.isfinite(fps) and duration > 0 and fps > 0,
@@ -141,14 +216,13 @@ def _validate_trimmed_cut(value, recipe, receipt, native, bound, require, aac_sh
                 'retained_interval_seconds': [start, end]}, 'actual no-audio interval evidence differs')
         # On-disk records and in-memory imports have the same caller-writable
         # evidence. Neither proves that registration ran, so both must replay.
-        with tempfile.TemporaryDirectory(prefix='openmontage-trim-proof-') as temporary:
-            replayed = Path(temporary) / output.name
-            # Receipt facts may name a resolved executable; never execute a
-            # caller-supplied binary path during verification.
-            subprocess.run(['ffmpeg', *expected[1:-1], str(replayed)],
-                           capture_output=True, timeout=120, check=True)
-            require(file_sha256(replayed) == value['output']['sha256'],
-                    'output is not the canonical retained interval cut')
+        # Receipt facts may name a resolved executable; replay only the
+        # registered binary, and compare its observed hash freshly on every call.
+        actual_sha256 = _replayed_sha256(['ffmpeg', *expected[1:-1]], output.name,
+            _record_media_files(value, root), [value, recipe, receipt],
+            prefix='openmontage-trim-proof-', timeout=120)
+        require(actual_sha256 == value['output']['sha256'],
+                'output is not the canonical retained interval cut')
         output_timing['final_frame_timestamp_seconds'] = trimmed_outgoing_timestamp(output)
         return output_timing
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, IndexError, ZeroDivisionError, StopIteration) as exc:
@@ -163,7 +237,6 @@ def _validate_retimed_cut(value, recipe, receipt, bound, require, aac_sha256, ro
     """
     import math
     import subprocess
-    import tempfile
     from fractions import Fraction
     from tools.video.video_trimmer import VideoTrimmer
 
@@ -184,7 +257,9 @@ def _validate_retimed_cut(value, recipe, receipt, bound, require, aac_sha256, ro
             'successful canonical existing-footage retime receipt required')
     parent, output = bound(value['parent_output'], 'native retime input'), bound(value['output'], 'retime output')
     try:
-        source_duration, source_audio = VideoTrimmer.source_facts(parent)
+        source_duration, source_audio = _status_media_fact('source_facts',
+            [str(parent), value, recipe, receipt], _record_media_files(value, root),
+            lambda: VideoTrimmer.source_facts(parent))
         try:
             resolved, arguments = VideoTrimmer.retime_plan(
                 submitted, has_audio=source_audio, source_duration=source_duration)
@@ -211,10 +286,9 @@ def _validate_retimed_cut(value, recipe, receipt, bound, require, aac_sha256, ro
             'output': value['output'], 'submitted_inputs': submitted, 'intervals': resolved,
             'source_has_audio': source_audio, 'command_argv': expected, 'command_exit_code': 0},
             'actual canonical retime command/return/bindings differ')
-        probe = subprocess.run(['ffprobe', '-v', 'error', '-show_entries',
+        streams = _probe_json(['ffprobe', '-v', 'error', '-show_entries',
             'stream=codec_type,duration,avg_frame_rate', '-of', 'json', str(output)],
-            capture_output=True, text=True, timeout=30, check=True)
-        streams = json.loads(probe.stdout)['streams']
+            _record_media_files(value, root), [value, recipe, receipt])['streams']
         video = next(stream for stream in streams if stream.get('codec_type') == 'video')
         duration, fps = float(video['duration']), float(Fraction(video['avg_frame_rate']))
         require(math.isfinite(duration) and math.isfinite(fps) and duration > 0 and fps > 0,
@@ -232,12 +306,12 @@ def _validate_retimed_cut(value, recipe, receipt, bound, require, aac_sha256, ro
         else:
             require(audio == {'mode': 'no_audio', 'input_has_audio': False, 'output_has_audio': False,
                 'intervals': resolved}, 'actual no-audio retime evidence differs')
-        with tempfile.TemporaryDirectory(prefix='openmontage-retime-proof-') as temporary:
-            replayed = Path(temporary) / output.name
-            # Never execute a caller-supplied binary path during verification.
-            subprocess.run(['ffmpeg', *arguments, str(replayed)], capture_output=True, timeout=300, check=True)
-            require(file_sha256(replayed) == value['output']['sha256'],
-                    'output is not the canonical retimed interval edit')
+        # Never execute a caller-supplied binary path during verification.
+        actual_sha256 = _replayed_sha256(['ffmpeg', *arguments], output.name,
+            _record_media_files(value, root), [value, recipe, receipt],
+            prefix='openmontage-retime-proof-', timeout=300)
+        require(actual_sha256 == value['output']['sha256'],
+                'output is not the canonical retimed interval edit')
         return {'duration_seconds': duration, 'fps': fps,
                 'final_frame_timestamp_seconds': trimmed_outgoing_timestamp(output), 'time_map': resolved}
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, IndexError, ZeroDivisionError,
@@ -250,7 +324,6 @@ def _validate_retimed_cut(value, recipe, receipt, bound, require, aac_sha256, ro
 def _validate_trim_sampling(value, sampled, timing, outgoing, require, root=None):
     """Require the actual final retained frame, not the native endpoint."""
     import subprocess
-    import tempfile
     timestamp = timing['final_frame_timestamp_seconds']
     inputs = {'input_path': value['output']['path'], 'strategy': 'timestamps', 'timestamps': [timestamp],
         'format': 'png', 'output_dir': str(outgoing.parent)}
@@ -266,12 +339,12 @@ def _validate_trim_sampling(value, sampled, timing, outgoing, require, root=None
                 'path': str(outgoing), 'timestamp_seconds': timestamp, 'index': 0}],
             'actual final retained-frame sampling differs')
     try:
-        with tempfile.TemporaryDirectory(prefix='openmontage-trim-outgoing-') as temporary:
-            replayed = Path(temporary) / 'outgoing.png'
-            subprocess.run(['ffmpeg', '-y', '-ss', str(timestamp), '-i', value['output']['path'],
-                '-frames:v', '1', str(replayed)], capture_output=True, timeout=60, check=True)
-            require(file_sha256(replayed) == value['outgoing_frame']['sha256'],
-                    'outgoing bytes are not the actual final retained frame')
+        actual_sha256 = _replayed_sha256(['ffmpeg', '-y', '-ss', str(timestamp), '-i',
+            value['output']['path'], '-frames:v', '1'], 'outgoing.png',
+            _record_media_files(value, root), [value, sampled, timing],
+            prefix='openmontage-trim-outgoing-', timeout=60)
+        require(actual_sha256 == value['outgoing_frame']['sha256'],
+                'outgoing bytes are not the actual final retained frame')
     except (OSError, subprocess.SubprocessError) as exc:
         require(False, 'cannot verify retained outgoing frame: ' + str(exc))
 

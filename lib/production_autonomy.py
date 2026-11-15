@@ -1667,6 +1667,19 @@ def _reuse_stamp(*bases):
     return tuple(rows)
 
 
+
+def _status_json_value(value):
+    """Only exact JSON values have an unambiguous mechanical-validation key."""
+    if type(value) in (str, int, bool) or value is None:
+        return True
+    if type(value) is float:
+        return math.isfinite(value)
+    if type(value) is list:
+        return all(_status_json_value(item) for item in value)
+    return type(value) is dict and all(type(key) is str and _status_json_value(item)
+                                      for key, item in value.items())
+
+
 def status_reused(key, bases, compute):
     """Inside the owning :func:`status_reuse` scope, return a deep copy of a prior
     successful ``compute()`` for the exact ``key`` only while every file under

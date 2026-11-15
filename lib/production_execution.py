@@ -3343,6 +3343,13 @@ def _validated_upstream_binding(root, contract, shot_id, upstream_id, selection)
 
 
 def next_production_action(project_dir):
+    """One read scope for the existing zero-write canonical action projection."""
+    from lib.production_autonomy import status_reuse
+    with status_reuse():
+        return _next_production_action(project_dir)
+
+
+def _next_production_action(project_dir):
     """One typed projection of existing canonical state; zero writes or host calls."""
     from lib import production_images as images, production_boards as boards
     from lib.shot_contract import project_review_subject, shot_review_subject, required_asset_ids

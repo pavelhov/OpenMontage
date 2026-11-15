@@ -147,7 +147,24 @@ def _validator(schema):
         _fail('form_invalid','pure connector schemas cannot resolve external references')
     try:
         base = validators.validator_for(schema)
-        base.check_schema(schema)
+        from lib.production_autonomy import _active_reuse, _status_json_value, status_reused
+        if _active_reuse() is not None and _status_json_value(schema):
+            # Cache only the pure schema self-check. Current registry/base,
+            # strict integer checker and FormatChecker are rebuilt below.
+            current = copy.deepcopy(schema)
+            checker = getattr(base.check_schema, '__func__', base.check_schema)
+            formats = tuple(sorted((name, id(check), repr(raises)) for name, (check, raises)
+                                   in getattr(base.FORMAT_CHECKER, 'checkers', {}).items()))
+            key = ('openart_schema_check', digest(current), digest(base.META_SCHEMA), id(base),
+                   id(checker), id(validators.validator_for), id(_status_json_value), id(copy.deepcopy),
+                   id(base.TYPE_CHECKER),
+                   id(base.FORMAT_CHECKER), id(type(base.FORMAT_CHECKER).check),
+                   id(base._APPLICABLE_VALIDATORS), id(base.evolve), formats,
+                   tuple(sorted((name, id(check)) for name, check in base.VALIDATORS.items())))
+            status_reused(key, (Path(__file__), Path(validators.__file__)),
+                          lambda: base.check_schema(current))
+        else:
+            base.check_schema(schema)
         # bools and floats are never native integers, even when Python compares equal.
         checker = base.TYPE_CHECKER.redefine('integer', lambda c,v: type(v) is int)
         return validators.extend(base, type_checker=checker)(schema, format_checker=FormatChecker())

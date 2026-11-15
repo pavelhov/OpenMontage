@@ -129,7 +129,8 @@ def test_explicit_speed_overrides_content_default_and_copy_is_refused():
         VideoTrimmer.retime_plan(dict(inputs, codec='copy'), has_audio=False, source_duration=3)
 
 
-def test_retime_registers_through_existing_derived_edit_boundary(trimmed):
+@pytest.fixture
+def registered_retime(trimmed):
     from lib.production_execution import record_derived_edit
     from lib.production_trim_validation import trimmed_outgoing_timestamp
     value, _, _, record, _ = trimmed
@@ -159,6 +160,11 @@ def test_retime_registers_through_existing_derived_edit_boundary(trimmed):
     sample_record(record, trimmed_outgoing_timestamp(output))
     reseal(record)
     checked = record_derived_edit(value.root, record)
+    return value, record, result, checked
+
+
+def test_retime_registers_through_existing_derived_edit_boundary(registered_retime):
+    value, record, result, checked = registered_retime
     assert checked['derived_timing']['duration_seconds'] == pytest.approx(3, abs=0.1)
     assert checked['derived_timing']['time_map'] == result.data['intervals']
     assert checked['selected_output'] == record['output']
@@ -175,3 +181,116 @@ def test_retime_self_consistent_output_hash_cannot_bypass_replay(retimed):
     receipt['tool_result']['data']['retime_receipt']['output'] = changed
     with pytest.raises(ValueError, match='canonical retimed interval edit'):
         validate((value, recipe, receipt, has_audio))
+
+
+def test_registered_retime_replay_reused_only_in_one_read_scope_and_not_writers(registered_retime, monkeypatch):
+    from lib import production_autonomy as autonomy
+    from lib.production_execution import record_derived_edit
+    from tests.lib.test_trimmed_derivative import check
+    value, record, _, _ = registered_retime
+    run = subprocess.run
+    calls = []
+    def observed(argv, **kwargs):
+        calls.append(list(argv))
+        return run(argv, **kwargs)
+    monkeypatch.setattr(subprocess, 'run', observed)
+    def replays():
+        return [argv for argv in calls if '-filter_complex' in argv]
+    with autonomy.status_reuse():
+        first = check(value, record)
+        first['derived_timing']['time_map'][0]['speed'] = 99
+        assert check(value, record)['derived_timing']['time_map'][0]['speed'] == 1.25
+        assert len(replays()) == 1
+        assert len([argv for argv in calls if '-show_frames' in argv]) == 1
+        # The real idempotent registration boundary must still replay freshly
+        # under its existing project lock/no_status_reuse, twice.
+        record_derived_edit(value.root, record)
+        record_derived_edit(value.root, record)
+        assert len(replays()) == 3
+    with autonomy.status_reuse():
+        check(value, record)
+    assert len(replays()) == 4  # A later public read gets a fresh proof.
+
+
+@pytest.mark.parametrize('target', ['parent_output', 'output', 'preserved_output', 'recipe',
+    'execution_receipt', 'outgoing_frame', 'outgoing_receipt', 'approval', 'parent_request'])
+def test_registered_retime_same_read_changed_input_never_reuses_a_pass(registered_retime, target):
+    import os
+    from lib import production_autonomy as autonomy
+    from tests.lib.test_trimmed_derivative import check
+    value, record, _, _ = registered_retime
+    if target == 'approval': path = Path(record['approval']['evidence']['path'])
+    elif target == 'parent_request': path = value.root / 'production_attempts' / record['parent_attempt_id'] / 'request.json'
+    else: path = Path(record[target]['path'])
+    with autonomy.status_reuse():
+        check(value, record)
+        stamp = path.stat()
+        data = path.read_bytes()
+        # Adversarial mutation is confined to this disposable synthetic fixture.
+        # Same-size bytes and restored mtime cannot hide changed ctime.
+        path.chmod(0o644)
+        path.write_bytes(bytes([data[0] ^ 1]) + data[1:])
+        os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        with pytest.raises(ValueError): check(value, record)
+
+
+def test_registered_retime_changed_inline_recipe_or_receipt_cannot_reuse_facts(registered_retime):
+    from lib import production_autonomy as autonomy
+    from lib.production_trim_validation import _validate_retimed_cut
+    value, record, _, _ = registered_retime
+    recipe = json.loads(Path(record['recipe']['path']).read_text())
+    receipt = json.loads(Path(record['execution_receipt']['path']).read_text())
+    def bound(item, label):
+        path = Path(item['path'])
+        require(file_sha256(path) == item['sha256'], label + ' changed')
+        return path
+    with autonomy.status_reuse():
+        _validate_retimed_cut(record, recipe, receipt, bound, require, _aac_sha256, value.root)
+        def changed_bound(*args): raise ValueError('SYNTHETIC current bound check')
+        with pytest.raises(ValueError, match='current bound check'):
+            _validate_retimed_cut(record, recipe, receipt, changed_bound, require, _aac_sha256, value.root)
+        def changed_require(*args): raise ValueError('SYNTHETIC current require check')
+        with pytest.raises(ValueError, match='current require check'):
+            _validate_retimed_cut(record, recipe, receipt, bound, changed_require, _aac_sha256, value.root)
+        wrong_receipt = copy.deepcopy(receipt)
+        wrong_receipt['tool_result']['data']['retime_receipt']['command_exit_code'] = 1
+        with pytest.raises(ValueError):
+            _validate_retimed_cut(record, recipe, wrong_receipt, bound, require, _aac_sha256, value.root)
+        wrong_recipe = copy.deepcopy(recipe)
+        wrong_recipe['submitted_inputs']['intervals'][0]['speed'] = 2
+        with pytest.raises(ValueError):
+            _validate_retimed_cut(record, wrong_recipe, receipt, bound, require, _aac_sha256, value.root)
+
+
+def test_registered_retime_current_helpers_and_treatment_defaults_stay_fresh(registered_retime, monkeypatch):
+    from lib import production_autonomy as autonomy, production_trim_validation as trim
+    from tools.video import video_trimmer
+    from tests.lib.test_trimmed_derivative import check
+    value, record, _, _ = registered_retime
+    with autonomy.status_reuse():
+        check(value, record)
+        with monkeypatch.context() as changed:
+            changed.setattr(trim, 'trimmed_outgoing_timestamp', lambda _: .01)
+            with pytest.raises(ValueError): check(value, record)
+        with monkeypatch.context() as changed:
+            changed.setitem(video_trimmer.RETIME_DEFAULT_SPEEDS, 'dialogue', 2)
+            with pytest.raises(ValueError): check(value, record)
+        with monkeypatch.context() as changed:
+            changed.setattr(trim, '_canonical_inputs', lambda *args: False)
+            with pytest.raises(ValueError): check(value, record)
+
+
+def test_registered_retime_new_subprocess_failure_cannot_reuse_prior_sample(registered_retime, monkeypatch):
+    from lib import production_autonomy as autonomy
+    from tests.lib.test_trimmed_derivative import check
+    value, record, _, _ = registered_retime
+    run = subprocess.run
+    with autonomy.status_reuse():
+        check(value, record)
+        def failed_sample(argv, **kwargs):
+            if '-frames:v' in argv:
+                raise subprocess.CalledProcessError(1, argv, stderr=b'SYNTHETIC decode error')
+            return run(argv, **kwargs)
+        monkeypatch.setattr(subprocess, 'run', failed_sample)
+        with pytest.raises(ValueError, match='cannot verify retained outgoing frame'):
+            check(value, record)

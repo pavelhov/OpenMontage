@@ -458,3 +458,89 @@ def test_board_transaction_suppresses_outer_reuse(root, hashes):
         boards._current(r, binding)
         op(r)
     assert len(hashes) == 4
+
+
+def test_artifact_schema_changed_data_and_schema_stay_fresh(monkeypatch):
+    import copy
+    from lib import production_request as preparation
+    schema = {'type': 'object', 'properties': {'count': {'type': 'integer'}},
+              'required': ['count'], 'additionalProperties': False}
+    monkeypatch.setattr(preparation, 'load_schema', lambda _: copy.deepcopy(schema))
+    with pa.status_reuse():
+        preparation._schema('script', {'count': 1})
+        for _ in range(2):
+            with pytest.raises(ValueError): preparation._schema('script', {'count': 'invalid'})
+        schema['properties']['count']['minimum'] = 2
+        with pytest.raises(ValueError): preparation._schema('script', {'count': 1})
+        preparation._schema('script', {'count': 2})
+        schema.clear(); schema.update(type='array', items={'type': 'integer'})
+        preparation._schema('script', [1])
+        with pytest.raises(ValueError): preparation._schema('script', (1,))
+
+
+def test_openart_schema_self_check_reuse_rebuilds_current_validator_and_rejects_changes(monkeypatch):
+    from jsonschema import Draft202012Validator
+    from lib import openart_mcp as connector
+    original = Draft202012Validator.check_schema
+    calls = []
+    def observed(cls, schema, *args, **kwargs):
+        calls.append(1)
+        return original(schema, *args, **kwargs)
+    monkeypatch.setattr(Draft202012Validator, 'check_schema', classmethod(observed))
+    schema = {'type': 'object', 'properties': {'n': {'type': 'integer'}}}
+    with pa.status_reuse():
+        first = connector._validator(schema)
+        second = connector._validator(schema)
+        assert first is not second and len(calls) == 1
+        first.schema['properties']['n']['minimum'] = 2
+        # The returned instance is fresh and does not own a reused schema object.
+        third = connector._validator({'type': 'object', 'properties': {'n': {'type': 'integer'}}})
+        assert len(calls) == 1
+        third.validate({'n': 1})
+        for invalid in ({'n': 1.0}, {'n': True}):
+            assert list(third.iter_errors(invalid))
+        schema['properties']['n']['minimum'] = 3
+        connector._validator(schema)
+        assert len(calls) == 2
+        with pa.no_status_reuse():
+            connector._validator(schema); connector._validator(schema)
+        assert len(calls) == 4
+        def changed(cls, schema): raise ValueError('SYNTHETIC changed checker')
+        monkeypatch.setattr(Draft202012Validator, 'check_schema', classmethod(changed))
+        with pytest.raises(ValueError): connector._validator(schema)
+        with pytest.raises(ValueError): connector._validator({'$ref': 'https://fixture.invalid/external'})
+
+
+def test_local_media_fact_tracks_helper_and_resolved_binary_changes(root, monkeypatch):
+    from lib import production_trim_validation as trim
+    for program in ('ffmpeg', 'ffprobe'):
+        (root / program).write_text('SYNTHETIC binary v1')
+    monkeypatch.setattr(trim.shutil, 'which', lambda name: str(root / name))
+    monkeypatch.setattr(trim, 'trimmed_outgoing_timestamp', lambda _: 1.0)
+    calls = []
+    def compute():
+        calls.append(1)
+        return trim.trimmed_outgoing_timestamp(root / 'policy.json')
+    def read():
+        return trim._status_media_fact('SYNTHETIC-probe', ['same-input'], [root / 'policy.json'], compute)
+    with pa.status_reuse():
+        assert read() == read() == 1.0 and len(calls) == 1
+        monkeypatch.setattr(trim, 'trimmed_outgoing_timestamp', lambda _: 2.0)
+        assert read() == 2.0 and len(calls) == 2
+        binary = root / 'ffmpeg'; stamp = binary.stat()
+        binary.write_text('SYNTHETIC binary v2')
+        os.utime(binary, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+        assert read() == 2.0 and len(calls) == 3
+
+
+def test_relative_media_paths_without_resolved_bound_source_disable_fact_reuse(root, monkeypatch):
+    from lib import production_trim_validation as trim
+    monkeypatch.chdir(root)
+    (root / 'clip.mp4').write_bytes(b'SYNTHETIC unrelated CWD file')
+    actual = root / 'actual-bound-source' / 'clip.mp4'
+    actual.parent.mkdir(); actual.write_bytes(b'original')
+    def compute(): return actual.read_bytes()
+    with pa.status_reuse():
+        assert trim._status_media_fact('relative', ['same'], ['clip.mp4'], compute) == b'original'
+        actual.write_bytes(b'changed!')
+        assert trim._status_media_fact('relative', ['same'], ['clip.mp4'], compute) == b'changed!'
