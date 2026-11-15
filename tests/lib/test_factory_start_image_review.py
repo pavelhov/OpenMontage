@@ -135,19 +135,16 @@ def test_spare_image_allowance_exhaustion_blocks_correction_without_mutation(neu
     assert execution._attempts(root) == []
 
 
-@pytest.mark.parametrize('change', ['wrong_aspect', 'mechanical', 'missing_check', 'wrong_hash'])
+@pytest.mark.parametrize('change', ['mechanical', 'missing_check', 'wrong_hash'])
 def test_current_image_requirements_reject_bad_evidence(neutral_package, change):
     root = factory(neutral_package)
-    step = to_start_review(root, size=(16, 9) if change == 'wrong_aspect' else (9, 16))
+    step = to_start_review(root)
     row = review_outcome(root)
     if change == 'missing_check':
         row['review']['predicates'] = [p for p in row['review']['predicates'] if p['name'] != 'no_future_beat_state']
     elif change == 'wrong_hash':
         row['review']['subject_sha256'] = '0' * 64
-    if change == 'wrong_aspect':
-        execution.complete_action(root, step['action'], outcome={'board_reviews': [row]})
-        assert any('9:16 pixel dimensions' in reason for reason in boards.starting_image_blockers(root, 's1'))
-    elif change == 'mechanical':
+    if change == 'mechanical':
         assert boards.starting_image_blockers(root, 's1')
     elif change == 'wrong_hash':
         with pytest.raises(ValueError, match='stale bytes'):
@@ -267,15 +264,39 @@ def test_changed_current_command_preserves_collection_without_fresh_authority(ne
     assert execution._attempts(root) == []
 
 
-@pytest.mark.parametrize('size, accepted', [((941, 1672), True), ((943, 1672), False),
-                                           ((1024, 1536), False), ((1672, 941), False)])
-def test_start_geometry_accepts_only_one_pixel_rounding(neutral_package, size, accepted):
+@pytest.mark.parametrize('size', [(768, 1344), (941, 1672), (943, 1672), (1024, 1536), (1672, 941)])
+def test_start_review_reports_actual_dimensions_without_universal_shape_quota(neutral_package, size):
     root = factory(neutral_package)
     step = to_start_review(root, size=size)
     outcome = review_outcome(root)
+    framing = next(p for p in outcome['review']['predicates'] if p['name'] == 'required_framing')
+    framing['evidence'] = ('SYNTHETIC authored close-up observation: face and hand holding the single prop '
+        'are visible; irrelevant feet are intentionally outside frame; essential contact and '
+        'planned action remain inside requested portrait delivery crop. Actual encoded size '
+        + str(size) + '; no claim of exact 9:16 input pixels.')
     execution.complete_action(root, step['action'], outcome={'board_reviews': [outcome]})
-    blockers = boards.starting_image_blockers(root, 's1')
-    assert (not any('9:16 pixel dimensions' in reason for reason in blockers)) == accepted
+    current = boards.starting_image_reviews(root, 's1')[0]
+    assert current['dimensions'] == list(size) and not current['blockers']
+    assert 'portrait_full_cast' not in current['required_predicates']
+    assert 'geometry_note' not in current
+    assert execution._attempts(root) == []  # native route still must prepare/admit normally
+
+
+def test_essential_foot_contact_crop_blocks_and_corrects_before_video(neutral_package):
+    root = factory(neutral_package)
+    step = to_start_review(root, size=(768, 1344))
+    outcome = review_outcome(root, failed=True, failed_predicate='required_framing')
+    framing = next(p for p in outcome['review']['predicates'] if p['name'] == 'required_framing')
+    framing['evidence'] = ('SYNTHETIC actual full-body shot observation: the planted foot and its '
+        'required floor contact are cropped out; the planned kick cannot be read.')
+    result = execution.complete_action(root, step['action'], outcome={'board_reviews': [outcome]})
+    assert any('required_framing' in reason for reason in boards.starting_image_blockers(root, 's1'))
+    assert execution._attempts(root) == []
+    result = execution.complete_action(root, result['action'], outcome={'image_correction': {
+        'asset_id': 'start', 'prompt': 'SYNTHETIC show the essential planted foot and floor contact'}})
+    assert result['action']['kind'] == 'receive_native_image'
+    assert images.image_usage(root)['total'] == 3
+    assert execution._attempts(root) == []
 
 
 @pytest.mark.parametrize('failed_predicate', ['cast_identity', 'asset_quality', 'unrelated_cosmetic'])
@@ -335,4 +356,62 @@ def test_fresh_correction_reservation_preserves_missing_first_image_capacity(neu
     scope = images.derive_native_image_scope(root, packet['packet'], 'end', packet['arguments'], output_path=packet['output_path'])
     boards.reserve_board_image(root, 'end', scope_id=scope, call_id='SYNTHETIC-final-first-image', images=images)
     assert images.image_usage(root)['total'] == 5
+    assert execution._attempts(root) == []
+
+
+def test_legacy_review_name_is_retained_without_becoming_future_universal_requirement(neutral_package):
+    root = factory(neutral_package)
+    step = to_start_review(root)
+    legacy = review_outcome(root, suffix='legacy-full-cast')
+    framing = next(p for p in legacy['review']['predicates'] if p['name'] == 'required_framing')
+    framing.update(name='portrait_full_cast', status='fail',
+        evidence='SYNTHETIC retained historical full-cast failure; no current framing judgment')
+    legacy['review']['status'] = 'fail'
+    boards.record_board_review(root, 'start', legacy['review'], roles=['start_frame'], images=images)
+    before = copy.deepcopy(boards.load_board_pack(root)['observations'])
+    current = boards.starting_image_reviews(root, 's1')[0]
+    assert 'required_framing' in current['required_predicates']
+    assert 'portrait_full_cast' not in current['required_predicates']
+    assert current['status'] == 'fail' and current['blockers']
+    assert boards.load_board_pack(root)['observations'] == before
+    # A new actual shot-specific judgment appends evidence; it never erases the
+    # old failed review, even when a close-up legitimately crops irrelevant feet.
+    fresh = review_outcome(root, suffix='current-close-up')
+    boards.record_board_review(root, 'start', fresh['review'], roles=['start_frame'], images=images)
+    assert not boards.starting_image_blockers(root, 's1')
+    assert all(old in boards.load_board_pack(root)['observations'] for old in before)
+    assert execution._attempts(root) == []
+
+
+def test_explicit_authored_legacy_full_cast_requirement_still_blocks(neutral_package):
+    root, package, bind = neutral_package
+    package = copy.deepcopy(package)
+    next(n for n in package['boards']['image_nodes'] if n['slot_id'] == 'start')['required_predicates'].append('portrait_full_cast')
+    root = factory((root, package, bind))
+    step = to_start_review(root)
+    outcome = review_outcome(root, failed=True, failed_predicate='portrait_full_cast')
+    execution.complete_action(root, step['action'], outcome={'board_reviews': [outcome]})
+    current = boards.starting_image_reviews(root, 's1')[0]
+    assert {'required_framing', 'portrait_full_cast'} <= set(current['required_predicates'])
+    assert any('portrait_full_cast' in reason for reason in current['blockers'])
+    assert execution._attempts(root) == []
+
+
+def test_corrected_changed_bytes_need_their_own_current_hash_observation(neutral_package):
+    root = factory(neutral_package)
+    step = to_start_review(root, size=(768, 1344))
+    old = copy.deepcopy(boards.load_board_pack(root)['board_bindings']['start'])
+    result = execution.complete_action(root, step['action'], outcome={
+        'board_reviews': [review_outcome(root, failed=True)],
+        'image_correction': {'asset_id': 'start', 'prompt': 'SYNTHETIC correct material prop ownership'}})
+    result = execution.complete_action(root, result['action'], outcome={
+        'host_receipt': receipt(root, result, size=(720, 1264))})
+    current = boards.starting_image_reviews(root, 's1')[0]
+    assert current['sha256'] != old['sha256'] and current['dimensions'] == [720, 1264]
+    assert current['blockers'] and current['status'] == 'unknown'
+    outcome = review_outcome(root, suffix='changed-bytes')
+    assert outcome['review']['subject_sha256'] == current['sha256']
+    execution.complete_action(root, result['action'], outcome={'board_reviews': [outcome]})
+    assert not boards.starting_image_blockers(root, 's1')
+    assert images.image_usage(root)['total'] == 4
     assert execution._attempts(root) == []

@@ -341,30 +341,36 @@ predicates, alongside the board's existing required predicates:
 - `prop_ownership_count`: who holds/owns each visible prop and the correct count.
 - `no_future_beat_state`: no prop, action result or state from a later beat is
   present prematurely.
-- `portrait_full_cast`: the image is 9:16 and both intended cast members are fully
-  inside the frame; for another declared cast, check every intended member.
+- `required_framing`: describe the actual authored shot scale and composition,
+  required visible subjects/props, essential action/contact surfaces and room for
+  the planned movement and requested final export. A deliberate close-up may crop
+  a nonessential foot. A full-body foot action, essential grip/contact or other
+  required visible detail cropped out of its shot fails. Material cast identity,
+  prop count/ownership and essential contact defects require correction before
+  video; the board's other required predicates still apply.
 
 Do not claim viewing from a prompt, file existence, generated result or mechanical
-`unknown` observation. Name concrete evidence and honest pass/fail/unknown outcomes.
-Python checks exact current image binding, declared reviewer, complete predicates
-and 9:16 pixel dimensions, allowing at most one pixel of width rounding
-(for example 941×1672). The producer owns semantic judgment of pixels.
+`unknown` observation. Load the current shot contract and scene-plan framing;
+name concrete observed evidence and honest pass/fail/unknown outcomes. Python
+checks exact current image binding, declared reviewer and complete critical
+predicates and reports actual encoded `dimensions`. It does not require full
+bodies or exact 9:16 input pixels, infer pixel meaning, or relabel an input's ratio.
+The producer owns that shot-specific visual judgment, including protection of the
+planned action in the requested portrait final export.
 
-One narrow native-output compatibility case retains its actual geometry: a
-proven current upstream sampled frame encoded at **768×1344 (4:7)** by OpenArt
-`fal-h3-max-turbo` image2video at `768P`, whose authenticated frozen first image
-passes the ordinary 9:16 pixel rule and whose retained authored prompt explicitly
-requests portrait 9:16. H3 inherits aspect from that source; no unsupported native
-aspect control is invented. A registered derived video qualifies only while both
-its native parent and selected output retain 768×1344. Exact canonical selected
-frame/source provenance remains required. The action exposes the observed
-`dimensions` and `geometry_note`; retain that explicit native-format disclosure
-in the actual `portrait_full_cast` observation. Never call these exact 9:16 pixels.
-This exception changes only the objective geometry check: a cropped foot, failed
-full-cast/contact/prop review or any other failed required predicate still blocks
-motion. Direct generated starting images and every other provider/model/resolution
-or unverified format retain the ordinary one-pixel rule. No source bytes, sampling
-receipts, selections, frozen requests or generation allowances change.
+The selected route's existing capability contract and normal input validator own
+physical support: native image roles, formats, sizes and other supported controls.
+Sources outside that selected contract fail preparation before a provider
+request; do not invent a native aspect control or broaden a route's accepted inputs. A 768×1344 source
+remains 768×1344, whether generated directly or sampled from a proven upstream
+original; it needs no model/shape exception when the selected route accepts it.
+Retain canonical source/hash/provenance and validate the actual selected route;
+unknown native limits remain unknown rather than becoming new shape quotas.
+
+New reviews use `required_framing`; `portrait_full_cast` is retained in historical
+observations and remains required when explicitly authored in the existing board
+node. Cleanup neither rewrites old records nor removes failed reviews, and an old
+full-cast claim does not substitute for a missing current shot-framing observation.
 
 Use `record_board_review` directly and obtain its fresh action with `advance`, or
 complete the current action with
@@ -437,6 +443,25 @@ loop returns the applicable same-job recovery action, including
 independent eligible slots within the existing account, source, route and generation
 limits.
 
+For OpenArt, `receive_openart_original` accepts either the exact original host
+result or a bound `history_evidence` file under the existing
+[MCP recovery contract](OPENART_MCP.md). Full actual same-account/project history
+must positively match every frozen submitted native control and ordered source
+binding to one unique creation; incomplete settings or pagination remain unknown.
+Immutable history evidence and match proof precede receipt promotion. Recovery
+keeps the original transport error, request, consumed begin and cumulative
+allowances, then uses the existing same-ID poll/download/collect path. An HTTP
+gateway error, empty history, missing marker or thrown entered callback never
+proves non-submission and never authorizes another generation.
+
+Independent staged shots are the default for cutaways, reactions and later
+moments. Shared identity references preserve identity without creating a video
+dependency. Declare an outgoing-frame dependency only for genuine continuous
+action; an illustration of an intended endpoint is not an outgoing video frame.
+The existing producer dispatches eligible independent originals while others
+render and after an unrelated original fails. Do not infer dependencies merely
+from chronological story order or rewrite frozen historical requests.
+
 `resume_original_attempt` also collects an exact Grok CLI native download transport
 failure when the retained failed update binds one original `vidgen.x.ai` video URL
 to the frozen call, arguments and session. Dry-run validates that evidence without
@@ -454,6 +479,31 @@ defect, missing coverage and actual duration. Missing or corrupt footage produce
 an honest partial cut; no usable clip produces an incomplete result. Findings are
 disclosures, not acceptance or repair gates. Preserve original media, rejected or
 superseded historical media, records and derived edits.
+
+A saved partial is an early recovery artifact, not completion of the assignment.
+Continue all recoverable originals and eligible unattempted shots. Saving or
+copying an export cannot end that work; normal resume still chooses eligible
+preparation, dispatch and same-original collection before its saved-cut state.
+Before final handoff, the same producer compares actual current footage with the
+essential story cause, consequential action and payoff. Keep its three named
+observations in the existing exact-cut disclosure: optional `name` is `cause`,
+`consequential_action` or `payoff`, paired with `status` `pass`, `fail` or `unknown`.
+Use the ordinary viewing/basis fields for actual observed evidence and
+defect/proposed fields for precise missing beats and the concrete blocker.
+Unobserved beats never receive a fabricated pass. This is producer judgment and
+outcome reporting, not another reviewer, blocking pipeline, creator approval or
+audio gate; no judgment grants a replacement generation or certification.
+
+New public delivery/advance results use `status: cut_saved` and retain media
+coverage in `cut_status`. One separate `task_status` reports `in_progress` while
+eligible or recoverable work remains, `needs_story_assessment` when essential
+story evidence is absent/unknown, `incomplete` for missing essential events or no
+playable export, and `completed` only with explicit current visual evidence of
+all three essential events and no remaining eligible/recoverable work. Optional
+missing coverage can remain disclosed if the essential story is complete.
+Unknown audio quality stays unknown and does not create another gate. Legacy
+serialized cut statuses and old `complete` actions remain readable; no historical
+records or media are migrated.
 
 When existing local-edit authority covers shortening dead space, review actual
 useful intervals across the whole sequence, including otherwise clean clips, and
@@ -512,8 +562,9 @@ The factory saves a cut and reports evidence. It does not publish or schedule.
 Account delivery, still attribution, backup and publishing confirmation remain
 with the identity's delivery owner and Studio policy. The existing
 `deliver_standalone` path handles delivery; a queued backup is not a verified
-backup. Cut outcomes use the engine's `complete`, `partial`, `incomplete` or
-`render_failed` status.
+backup. Retained cut records and public `cut_status` use `complete`, `partial`,
+`incomplete` or `render_failed`; the public saved-artifact state is `cut_saved`,
+with the separate producer story/task outcome described above.
 
 For the Studio entry and identity-owned authority, see Social Studio's
 `docs/video-production-factory.md`. For a concrete identity, follow its `AGENTS.md`,

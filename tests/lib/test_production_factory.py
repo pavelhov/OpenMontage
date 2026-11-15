@@ -1879,8 +1879,8 @@ def test_running_cli_original_returns_pending_then_one_final_assembly(p, monkeyp
         return ToolResult(success=True)
 
     delivered = draft.deliver_standalone(p.root, compose=compose)
-    assert delivered['status'] == 'complete'
-    assert execution.advance(p.root)['status'] == 'complete'
+    assert delivered['status'] == 'cut_saved' and delivered['cut_status'] == 'complete'
+    assert execution.advance(p.root)['status'] == 'cut_saved'
     assert len(renders) == 1 and len(transport.native_requests) == 3
 
 
@@ -1925,8 +1925,8 @@ def test_interrupted_cli_original_recovers_terminal_result_before_final_assembly
         return ToolResult(success=True)
 
     cut = draft.deliver_standalone(p.root, compose=compose)
-    assert cut['status'] == ('partial' if terminal_failed else 'complete')
-    assert execution.advance(p.root)['status'] == 'complete'
+    assert cut['status'] == 'cut_saved' and cut['cut_status'] == ('partial' if terminal_failed else 'complete')
+    assert execution.advance(p.root)['status'] == 'cut_saved'
     assert len(renders) == 1 and len(p.transport.native_requests) == 3
 
 
@@ -2011,7 +2011,7 @@ def test_next_action_validates_candidates_once_for_current_cut(p, monkeypatch, c
     assert file_bytes(p.root) == before
     assert len(candidate_calls) == 1
     if cut_state == 'current':
-        assert action['kind'] == 'complete'
+        assert action['kind'] == 'cut_saved'
     else:
         assert action['kind'] == 'compose_cut'
         assert action['inputs']['candidates'] == candidate_calls[0]
@@ -3777,9 +3777,9 @@ def test_u2_lost_unsaved_next_handoff_stays_consumed_and_closes_out_partial(neut
     assert action['inputs']['recoverable_originals'] == [deferred]
     from lib import production_draft as draft
     cut = draft.deliver_standalone(root, compose=lambda _: pytest.fail('no playable clips to render'))
-    assert cut['status'] == 'incomplete' and not cut['clips']
+    assert cut['status'] == 'cut_saved' and cut['cut_status'] == 'incomplete' and not cut['clips']
     closed = execution.advance(root)
-    assert closed['status'] == 'complete'
+    assert closed['status'] == 'cut_saved'
     assert closed['action']['inputs']['recoverable_originals'] == [deferred]
     assert images.image_usage(root)['total'] == count + begun
     late = execution.complete_action(root, deferred,
@@ -3864,6 +3864,16 @@ def _openart_success_wrapper(payload):
     return {'content': [{'type': 'text', 'text': json.dumps(payload)},
         {'type': 'text', 'text': 'Generation submitted; display instructions are not authority.'}],
         'structuredContent': copy.deepcopy(payload), 'isError': False}
+
+
+@pytest.mark.parametrize('evidence', [None, [], 'SYNTHETIC-unbound-history'])
+def test_openart_completion_ingress_rejects_nonobject_history_evidence_before_writes(
+        tmp_path, monkeypatch, fixture_observations, evidence):
+    root, jobs, frozen, action = _openart_completion_fixture(tmp_path, monkeypatch, 'receive_openart_original')
+    before = file_bytes(root)
+    with pytest.raises(ValueError, match='history evidence requires an exact file binding'):
+        execution.complete_action(root, action, outcome={'history_evidence': evidence})
+    assert file_bytes(root) == before and jobs._load(root, 'one')['frozen'] == frozen
 
 
 @pytest.mark.parametrize('kind', ['receive_openart_original', 'poll_openart_original'])

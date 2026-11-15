@@ -95,6 +95,54 @@ Local upload and generation authority artifacts remain distinct, and an older ge
 
 Generation preparation returns one begin envelope for the installed connector. Call its exact tool with its exact arguments once, then retain the original structured result against that local attempt. Errors, missing history IDs, or lost receipts leave the attempt uncertain and must never trigger another generation. Polling and collection stay bound to that original history ID. If the connector's result card is self-polling, let it complete without launching a second poll. Text-only polling follows the connector cadence for the same ID.
 
+`scripts/native_host_receipt.js` saves the exact OpenArt host request and raw
+response before canonical completion, including an HTTP/error response with no
+history ID. A saved return can be replayed after host-store loss without invoking
+generation again. Its `.invoked` marker proves only an exclusive local claim;
+neither that marker nor its absence proves provider submission. An entered
+callback that throws remains uncertain. Only an observed failure after a fresh
+exclusive claim and before callback entry records `confirmed_not_submitted`;
+this grants no automatic generation retry.
+
+For a consumed original without a submission receipt, the existing
+`receive_openart_original` completion also accepts exactly
+`{history_evidence: {path: "/absolute/private/evidence.json", sha256: "<file SHA-256>"}}`.
+It calls `openart_mcp_jobs.resume_original(..., request_sha256=<frozen digest>,
+history_evidence=<binding>)`; it never resubmits. The JSON bundle is:
+
+```text
+{version: "1.0", kind: "openart_same_original_history", project_root,
+ attempt_id, frozen_sha256, request_sha256, begin_envelope_sha256,
+ account: {tool_name, arguments, result},
+ history: {tool_name, arguments, result},
+ history_pages?: [{tool_name, arguments, result}, ...],
+ details?: [{tool_name, arguments, result}, ...]}
+```
+
+Each observation contains the actual unchanged typed MCP host reply. Tool names
+are the installed `mcp__codex_apps__openart_openart_account_get`,
+`..._creation_list`, and optional `..._creation_get`. History starts with an
+explicit frozen `projectId`; optional pages must follow its actual `nextCursor`
+chain through `hasMore: false`. The account UID and any workspace must match the
+retained original account; every page must retain that project and workspace.
+Identification requires one unique `historyId` after resource-row deduplication,
+exact model/mode and every submitted native control in the row's saved `input`
+(flat native params or a nested `params` object), including ordered source IDs
+and URLs. Missing saved controls, another attempt's ID, conflicting rows,
+incomplete pagination and ambiguity reject without changing the unknown original.
+Timestamps, thumbnails, credit changes and output dimensions are insufficient.
+H3 has no native aspect-ratio control; generated-resource aspect ratio cannot
+supply one. Optional creation details must concern that same matched ID.
+
+The existing attempt retains immutable `history-evidence.json` and
+`history-match-proof.json` before promotion, labels its receipt
+`same_original_history_match`, and preserves the frozen request, original
+transport error, consumed begin and cumulative count. The history-derived
+receipt is never presented as the original generation reply. After promotion,
+normal same-ID polling/download/collection applies. A promotion interrupted
+after proof saving exposes the local evidence replay through `resume_original`.
+These remain locally recorded host observations, not provider attestations.
+
 After recording a terminal `COMPLETED` status for the original history, call account action `download` to fetch its exact retained resource URL into the private download area. Then pass that action's returned `downloaded_path` to `collect` for the same attempt; collection verifies the retained download receipt and copies only those bytes to the approved output path. Do not supply an arbitrary local video as if it were the provider result. The URL/history/resource/hash binding is locally retained agent evidence, not a cryptographic attestation from OpenArt.
 
 ## H3 Max Turbo schema example

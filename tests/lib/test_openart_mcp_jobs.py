@@ -619,3 +619,220 @@ def test_original_receipt_before_publish_resumes_verified_staging_without_get(fi
         assert Path(result['downloaded_path']).read_bytes()==source.read_bytes()
         assert jobs.download_original(root,'one')==result
     assert len(jobs.list_attempts(root))==1
+
+# Synthetic offline host captures use the actual account/list/get schema. No
+# personal account responses or production request/settings enter this fixture.
+def history_original(tmp_path):
+    root = tmp_path/'SYNTHETIC-history-project'; root.mkdir(mode=0o700)
+    (root/'project.json').write_text('{}')
+    jobs._private_dir(root/'openart_mcp')
+    with jobs._lock(root): pass
+    params = {'prompt': 'SYNTHETIC exact H3 prompt', 'duration': 5, 'resolution': '720p',
+              'videoCount': 1, 'promptExpansionMode': 'off',
+              'startFrame': {'id': 'SYNTHETIC-upload', 'url': 'https://fixture.invalid/source.png', 'type': 'image'}}
+    account = mcp.account_summary()
+    native = {'model': 'fal-h3-max-turbo', 'mode': 'image2video',
+              'body': {'model': 'fal-h3-max-turbo', 'mode': 'image2video', 'projectId': 'SYNTHETIC-openart-project', 'params': params},
+              'account_binding': {k: account[k] for k in ('uid_sha256', 'account_observation_sha256')},
+              'input_assets': [{'role': 'first_frame'}]}
+    frozen = {'native': native, 'authority': {'request_sha256': mcp.digest('SYNTHETIC request'),
+               'scope': {'phase': 'first_pass'}, 'scope_id': 'SYNTHETIC-scope', 'shot_id': 'SYNTHETIC-shot', 'scope_attempt_index': 1,
+               'output_path': str(root/'original.mp4')}, 'generation_inputs': {'output_path': str(root/'original.mp4')}}
+    envelope = {'tool': 'mcp__codex_apps__openart_openart_generate_video', 'arguments': copy.deepcopy(native['body'])}
+    state = {'attempt_id': 'one', 'status': 'uncertain', 'frozen': frozen, 'frozen_sha256': mcp.digest(frozen),
+             'authority_sha256': mcp.digest(frozen['authority']),
+             'begin_envelope': envelope, 'receipt': None, 'status_observations': [], 'output': None,
+             'events': [{'kind': 'begin_consumed_before_handoff', 'attempt_id': 'one', 'envelope_sha256': mcp.digest(envelope),
+                         'observed_at': '2026-11-15T05:11:10.029875+00:00'},
+                        {'kind': 'uncertain', 'error': 'SYNTHETIC actual HTTP gateway transport failure'}]}
+    jobs._save(root, 'one', state)
+    def observation(tool, args, payload):
+        return {'tool_name': 'mcp__codex_apps__openart_openart_'+tool, 'arguments': args,
+                'result': {'isError': False, 'structuredContent': payload, 'content': [{'type': 'text', 'text': 'SYNTHETIC raw host reply'}]}}
+    row = {'id': 'SYNTHETIC-resource', 'historyId': 'SYNTHETIC-original', 'model': native['model'], 'mode': native['mode'],
+           'input': copy.deepcopy(params), 'inputImages': [{'role': 'start', 'url': params['startFrame']['url']}],
+           'createdAt': 1794719471000, 'sourceType': 'generation', 'mediaType': 'video', 'status': 'completed',
+           'url': 'https://fixture.invalid/original.mp4', 'metadata': {'width': 1280, 'height': 720}}
+    evidence = {'version': '1.0', 'kind': 'openart_same_original_history', 'project_root': str(root),
+                'attempt_id': 'one', 'frozen_sha256': state['frozen_sha256'], 'request_sha256': frozen['authority']['request_sha256'],
+                'begin_envelope_sha256': mcp.digest(envelope),
+                'account': observation('account_get', {}, copy.deepcopy(mcp.load_account()['data'])),
+                'history': observation('creation_list', {'projectId': native['body']['projectId']},
+                    {'projectId': native['body']['projectId'], 'hasMore': False, 'items': [row]})}
+    return root, state, evidence, observation
+
+
+def save_history(root, evidence, name='SYNTHETIC-host-history.json'):
+    path = root/name; jobs._write(path, evidence)
+    return {'path': str(path), 'sha256': jobs._sha(path)}
+
+
+def test_history_unique_complete_H3_flat_input_adopts_once_with_explicit_provenance(fixture_observations, tmp_path):
+    root, original, evidence, _ = history_original(tmp_path)
+    # Same history may have multiple output-resource rows; count the original once.
+    duplicate = copy.deepcopy(evidence['history']['result']['structuredContent']['items'][0]); duplicate['id'] = 'SYNTHETIC-poster'
+    duplicate['mediaType'] = 'image'; duplicate.pop('input')
+    evidence['history']['result']['structuredContent']['items'].append(duplicate)
+    binding = save_history(root, evidence)
+    result = jobs.resume_original(root, 'one', request_sha256=evidence['request_sha256'], history_evidence=binding)
+    assert result['history_id'] == 'SYNTHETIC-original' and result['status'] == 'completed'
+    retained = jobs._load(root, 'one')
+    assert retained['receipt_provenance'] == 'same_original_history_match'
+    assert retained['frozen'] == original['frozen'] and retained['events'][:2] == original['events']
+    assert not (jobs._path(root, 'one').parent/'original-host-reply.json').exists()
+    assert jobs.resume_original(root, 'one')['next_action']['arguments'] == {'historyId': 'SYNTHETIC-original'}
+    before = retained_bytes(root)
+    assert jobs.resume_original(root, 'one', request_sha256=evidence['request_sha256'], history_evidence=binding) == result
+    assert retained_bytes(root) == before
+    with pytest.raises(ValueError, match='original_consumed'):
+        jobs.begin(root, 'one', authority_fn=lambda *_: pytest.fail('no authority re-reservation'))
+    attempts = jobs.list_attempts(root)
+    assert len(attempts) == 1 and attempts[0]['scope_attempt_index'] == 1
+
+
+@pytest.mark.parametrize('mutation', ['account', 'workspace', 'project', 'model', 'mode', 'prompt', 'duration', 'resolution',
+    'expansion', 'count', 'source_url', 'source_id', 'input_images', 'missing_input', 'missing_duration', 'missing_expansion',
+    'missing_count', 'ambiguous', 'truncated', 'skipped_first_page', 'wrong_filter', 'frozen', 'request', 'reused', 'get_id', 'get_model', 'hash', 'row_conflict'])
+def test_history_missing_ambiguous_foreign_or_incomplete_evidence_never_adopts(fixture_observations, tmp_path, mutation):
+    root, state, evidence, observe = history_original(tmp_path)
+    history = evidence['history']['result']['structuredContent']; row = history['items'][0]
+    if mutation == 'account': evidence['account']['result']['structuredContent']['user']['uid'] = 'SYNTHETIC-other'
+    elif mutation == 'workspace': history['workspace'] = {'id': 'SYNTHETIC-other-team'}
+    elif mutation == 'project': history['projectId'] = 'SYNTHETIC-other'
+    elif mutation in {'model', 'mode'}: row[mutation] = 'SYNTHETIC-other'
+    elif mutation in {'prompt', 'duration', 'resolution'}: row['input'][mutation] = 'SYNTHETIC-other'
+    elif mutation == 'expansion': row['input']['promptExpansionMode'] = 'on'
+    elif mutation == 'count': row['input']['videoCount'] = 2
+    elif mutation in {'source_url', 'source_id'}: row['input']['startFrame'][mutation.split('_')[1]] = 'SYNTHETIC-other'
+    elif mutation == 'input_images': row['inputImages'][0]['url'] = 'https://fixture.invalid/other.png'
+    elif mutation == 'missing_input': row.pop('input')
+    elif mutation.startswith('missing_'): row['input'].pop({'missing_duration': 'duration', 'missing_expansion': 'promptExpansionMode', 'missing_count': 'videoCount'}[mutation])
+    elif mutation == 'ambiguous':
+        other = copy.deepcopy(row); other['historyId'] = 'SYNTHETIC-second'; history['items'].append(other)
+    elif mutation == 'row_conflict':
+        other = copy.deepcopy(row); other['input']['duration'] = 6; history['items'].append(other)
+    elif mutation == 'truncated': history.update(hasMore=True, nextCursor='SYNTHETIC-next')
+    elif mutation == 'skipped_first_page': evidence['history']['arguments']['cursor'] = 'SYNTHETIC-last-page'
+    elif mutation == 'wrong_filter': evidence['history']['arguments']['mediaType'] = 'image'
+    elif mutation in {'frozen', 'request'}: evidence[mutation+'_sha256'] = '0'*64
+    elif mutation == 'reused':
+        other = copy.deepcopy(state); other['attempt_id'] = 'two'; other['receipt'] = {'historyId': row['historyId'], 'status': 'PENDING'}
+        other['receipt_sha256'] = mcp.digest(other['receipt']); jobs._save(root, 'two', other)
+    elif mutation.startswith('get_'):
+        detail = {'historyId': row['historyId'], 'status': 'COMPLETED'}
+        detail['historyId' if mutation == 'get_id' else 'model'] = 'SYNTHETIC-other'
+        evidence['details'] = [observe('creation_get', {'historyId': row['historyId']}, detail)]
+    binding = save_history(root, evidence)
+    if mutation == 'hash': binding['sha256'] = '0'*64
+    before = retained_bytes(root)
+    with pytest.raises(ValueError): jobs.resume_original(root, 'one', request_sha256=state['frozen']['authority']['request_sha256'], history_evidence=binding)
+    assert retained_bytes(root) == before
+    assert jobs.attempt_state(root, 'one')['history_id'] is None
+    assert jobs.attempt_state(root, 'one')['status'] == 'uncertain'
+
+
+def test_history_actual_cursor_chain_requires_exhaustion_and_unique_id(fixture_observations, tmp_path):
+    root, state, evidence, observe = history_original(tmp_path)
+    first = evidence['history']['result']['structuredContent']; row = first['items'].pop()
+    first.update(hasMore=True, nextCursor='SYNTHETIC-cursor')
+    evidence['history_pages'] = [observe('creation_list', {'projectId': first['projectId'], 'cursor': 'SYNTHETIC-cursor'},
+        {'projectId': first['projectId'], 'hasMore': False, 'items': [row]})]
+    binding = save_history(root, evidence)
+    assert jobs.resume_original(root, 'one', request_sha256=evidence['request_sha256'], history_evidence=binding)['history_id'] == row['historyId']
+
+
+def test_history_proof_survives_promotion_crash_and_external_receipt_loss(fixture_observations, tmp_path, monkeypatch):
+    root, state, evidence, _ = history_original(tmp_path)
+    binding = save_history(root, evidence)
+    save = jobs._save
+    with monkeypatch.context() as crash:
+        crash.setattr(jobs, '_save', lambda *args: (_ for _ in ()).throw(RuntimeError('SYNTHETIC promotion interruption')))
+        with pytest.raises(RuntimeError): jobs.resume_original(root, 'one', request_sha256=evidence['request_sha256'], history_evidence=binding)
+    Path(binding['path']).unlink()
+    action = jobs.resume_original(root, 'one')['next_action']
+    assert action['action'] == 'receive_original' and 'history_evidence' in action
+    assert jobs.resume_original(root, 'one', request_sha256=action['request_sha256'], history_evidence=action['history_evidence'])['history_id'] == 'SYNTHETIC-original'
+    assert len([e for e in jobs._load(root, 'one')['events'] if e['kind'] == 'begin_consumed_before_handoff']) == 1
+
+
+@pytest.mark.parametrize('mutation', ['wrong_cursor', 'wrong_project', 'wrong_workspace', 'cycle', 'duplicate_page', 'still_truncated', 'late_ambiguity'])
+def test_history_pagination_rejects_broken_or_ambiguous_chain(fixture_observations, tmp_path, mutation):
+    root, _, evidence, observe = history_original(tmp_path)
+    first = evidence['history']['result']['structuredContent']; row = copy.deepcopy(first['items'][0])
+    first.update(hasMore=True, nextCursor='SYNTHETIC-next')
+    page = {'projectId': first['projectId'], 'hasMore': False, 'items': []}
+    observation = observe('creation_list', {'projectId': first['projectId'], 'cursor': 'SYNTHETIC-next'}, page)
+    evidence['history_pages'] = [observation]
+    if mutation == 'wrong_cursor': observation['arguments']['cursor'] = 'SYNTHETIC-wrong'
+    elif mutation == 'wrong_project': page['projectId'] = 'SYNTHETIC-wrong'
+    elif mutation == 'wrong_workspace': page['workspace'] = {'id': 'SYNTHETIC-wrong'}
+    elif mutation == 'duplicate_page': observation['result']['structuredContent'] = copy.deepcopy(first)
+    elif mutation == 'still_truncated': page.update(hasMore=True, nextCursor='SYNTHETIC-more')
+    elif mutation == 'late_ambiguity':
+        row['historyId'] = 'SYNTHETIC-another-matching-original'; page['items'] = [row]
+    elif mutation == 'cycle':
+        page.update(hasMore=True, nextCursor='SYNTHETIC-next')
+        evidence['history_pages'].append(observe('creation_list', {'projectId': first['projectId'], 'cursor': 'SYNTHETIC-next'},
+            {'projectId': first['projectId'], 'hasMore': False, 'items': []}))
+    binding = save_history(root, evidence); before = retained_bytes(root)
+    with pytest.raises(mcp.OpenArtMCPError):
+        jobs.resume_original(root, 'one', request_sha256=evidence['request_sha256'], history_evidence=binding)
+    assert retained_bytes(root) == before and jobs.attempt_state(root, 'one')['history_id'] is None
+
+
+def test_history_adoption_follows_normal_same_id_detail_download_and_collection(fixture_observations, tmp_path, monkeypatch):
+    from tests.integration.test_openart_first_pass_workflow import real_av_clip
+    root, original, evidence, observe = history_original(tmp_path)
+    detail = {'historyId': 'SYNTHETIC-original', 'status': 'COMPLETED', 'resources': [
+        {'id': 'SYNTHETIC-video', 'mediaType': 'video', 'status': 'COMPLETED', 'url': 'https://fixture.invalid/original.mp4'}]}
+    evidence['details'] = [observe('creation_get', {'historyId': 'SYNTHETIC-original'}, detail)]
+    jobs.resume_original(root, 'one', request_sha256=evidence['request_sha256'], history_evidence=save_history(root, evidence))
+    assert jobs.resume_original(root, 'one')['next_action']['action'] == 'download_original'
+    clip = real_av_clip(tmp_path/'SYNTHETIC-original.mp4', seconds=1)
+    install_fake_download(monkeypatch, jobs, clip)
+    downloaded = jobs.download_original(root, 'one')
+    jobs.collect(root, 'one', downloaded_path=downloaded['downloaded_path'])
+    assert jobs.attempt_state(root, 'one')['status'] == 'collected'
+    provenance = jobs.provenance_record(root, 'one')
+    assert provenance['receipt_provenance'] == 'same_original_history_match'
+    assert provenance['history_match_proof']['evidence']['details'][0]['result']['structuredContent'] == detail
+    assert jobs._load(root, 'one')['frozen'] == original['frozen']
+    assert len(jobs.list_attempts(root)) == 1 and jobs.list_attempts(root)[0]['scope_attempt_index'] == 1
+
+
+def test_history_exact_but_pre_begin_creation_cannot_be_adopted(fixture_observations, tmp_path):
+    root, _, evidence, _ = history_original(tmp_path)
+    evidence['history']['result']['structuredContent']['items'][0]['createdAt'] = 1
+    binding = save_history(root, evidence); before = retained_bytes(root)
+    with pytest.raises(mcp.OpenArtMCPError, match='original_binding_unavailable'):
+        jobs.resume_original(root, 'one', request_sha256=evidence['request_sha256'], history_evidence=binding)
+    assert retained_bytes(root) == before and jobs.attempt_state(root, 'one')['history_id'] is None
+
+
+@pytest.mark.parametrize('missing', ['duration', 'promptExpansionMode', 'videoCount', 'input', 'source_id', 'historyId', 'model', 'mode'])
+def test_history_compatible_incomplete_other_original_stays_ambiguous(fixture_observations, tmp_path, missing):
+    root, _, evidence, _ = history_original(tmp_path)
+    rows = evidence['history']['result']['structuredContent']['items']
+    second = copy.deepcopy(rows[0]); second.update(id='SYNTHETIC-second-resource', historyId='SYNTHETIC-possible-second')
+    if missing == 'input': second.pop('input')
+    elif missing == 'source_id': second['input']['startFrame'].pop('id')
+    elif missing in {'historyId', 'model', 'mode'}: second.pop(missing)
+    else: second['input'].pop(missing)
+    rows.append(second)
+    binding = save_history(root, evidence); before = retained_bytes(root)
+    with pytest.raises(mcp.OpenArtMCPError, match='original_binding_unavailable'):
+        jobs.resume_original(root, 'one', request_sha256=evidence['request_sha256'], history_evidence=binding)
+    assert retained_bytes(root) == before and jobs.attempt_state(root, 'one')['history_id'] is None
+
+
+@pytest.mark.parametrize('excluded', ['pre_begin', 'different_duration', 'different_prompt'])
+def test_history_known_contradiction_excludes_other_creation_without_using_time_as_identity(fixture_observations, tmp_path, excluded):
+    root, _, evidence, _ = history_original(tmp_path)
+    rows = evidence['history']['result']['structuredContent']['items']
+    second = copy.deepcopy(rows[0]); second.update(id='SYNTHETIC-other-resource', historyId='SYNTHETIC-other')
+    if excluded == 'pre_begin': second['createdAt'] = 1
+    elif excluded == 'different_duration': second['input']['duration'] = 10
+    else: second['input'].pop('duration'); second['prompt'] = 'SYNTHETIC definitely different prompt'
+    rows.append(second)
+    binding = save_history(root, evidence)
+    assert jobs.resume_original(root, 'one', request_sha256=evidence['request_sha256'], history_evidence=binding)['history_id'] == 'SYNTHETIC-original'

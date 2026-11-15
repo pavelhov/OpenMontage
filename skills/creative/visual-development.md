@@ -243,9 +243,13 @@ bystander outside the active footprint, with visible floor/support separation.
 The relevant hands/contacts read. Stage decisive grips, snags, choices and losses
 before completion so the motion can show their cause; match expressions to the
 character's current knowledge and emotional progression. For a vertical 9:16
-brief, explicitly say **vertical 9:16** in every starting-image prompt and keep all required cast fully inside that composition. Choose camera
-angle and distance within the vertical frame; avoid “wider” directions that can
-imply another aspect ratio. Compose the intended
+brief, explicitly say **vertical 9:16** in every starting-image prompt. Choose the
+shot scale the action needs and keep that shot's essential bodies, props and
+contacts inside the frame; a deliberate close or medium shot may crop what does
+not matter, so full bodies are not a universal requirement. The selected route's
+actual input contract governs pixel size and ratio mechanics; do not demand an
+exact input ratio it does not require. Protect the critical action in the requested
+portrait export. Avoid “wider” directions that can imply another aspect ratio. Compose the intended
 movement envelope with margin around critical edges, rather than fitting only
 the starting pose. Inspect
 the image itself for identity, relative scale, possession, geometry, occlusion and
@@ -255,9 +259,13 @@ request does not guarantee a fixed frame.
 Source ancestry records how the image was made; only the actual native input
 binding establishes what the video model receives.
 
-When location, action geometry or the dominant task materially changes, prepare
-a useful fresh start from the same appearance anchors rather than relying on a
-later internal angle to invent that staging. A few related internal shots can
+By default, plan clips as independently staged starts from the same appearance
+anchors and an explicit current state (positions, possession, pose), so they can
+be prepared in parallel and the story does not depend on one upstream job. Use an
+actual outgoing frame only for genuinely continuous action, and never present a
+planned illustration as an actual outgoing frame. When location, action geometry
+or the dominant task materially changes, prepare a useful fresh start rather than
+relying on a later internal angle to invent that staging. A few related internal shots can
 efficiently share a request when their changing states remain legible. On a
 start-frame-plus-text route, image-generation sources do not separately guide
 identity in later internal views. Keep viewpoints purposeful and limited; prepare

@@ -164,6 +164,13 @@ def _load(root, aid):
         if (mcp.digest(correction)!=state['receipt_correction_sha256']
                 or mcp.digest(state['receipt'])!=correction['outcome_sha256']):
             _fail('original_reply_mismatch','audited original receipt correction changed')
+    proof_path = _path(root, aid).parent/'history-match-proof.json'
+    if state.get('history_match_proof_sha256') is not None:
+        proof = _read(proof_path)
+        if (mcp.digest(proof) != state['history_match_proof_sha256']
+                or _history_match(root, state, proof['evidence']) != proof.get('outcome')
+                or state.get('receipt') != proof['outcome']):
+            _fail('original_reply_mismatch', 'retained same-original history proof changed')
     return state
 
 def _save(root, aid, state): _write(_path(root, aid), state)
@@ -373,7 +380,218 @@ def _retain_submission_terminal(state, outcome):
         _event(state, 'status_observed', history_id=outcome.get('historyId'), status=outcome['status'])
         state['status'] = 'completed' if outcome['status'] == 'COMPLETED' else 'failed'
 
-def resume_original(project_dir, attempt_id, *, outcome=None, request_sha256=None, correct_receipt=False, host_result=None):
+def _history_payload(observation, tool):
+    """Read an actual typed read-only reply, retaining its unmodified wrapper."""
+    if (not isinstance(observation, dict)
+            or observation.get('tool_name') != 'mcp__codex_apps__openart_openart_' + tool
+            or not isinstance(observation.get('arguments'), dict)):
+        _fail('original_binding_unavailable', 'actual account/history host observation required')
+    reply = observation.get('result')
+    if (not isinstance(reply, dict) or reply.get('isError', False) is not False
+            or not isinstance(reply.get('structuredContent'), dict)
+            or 'error' in reply or 'error_code' in reply):
+        _fail('original_binding_unavailable', 'successful typed account/history reply required')
+    return reply['structuredContent']
+
+
+def _history_match(root, state, evidence):
+    """Positive saved-input identification only; output geometry is never input."""
+    native = state['frozen']['native']; body = native['body']
+    expected = {'version': '1.0', 'kind': 'openart_same_original_history',
+        'project_root': str(root), 'attempt_id': state['attempt_id'],
+        'frozen_sha256': state['frozen_sha256'],
+        'request_sha256': state['frozen']['authority']['request_sha256'],
+        'begin_envelope_sha256': mcp.digest(state['begin_envelope'])}
+    if not isinstance(evidence, dict) or any(evidence.get(k) != v for k, v in expected.items()):
+        _fail('original_request_mismatch', 'history evidence differs from the original frozen handoff')
+    if (state['begin_envelope'] is None
+            or len([e for e in state['events'] if e['kind'] == 'begin_consumed_before_handoff']) != 1):
+        _fail('not_begun', 'one consumed original begin is required for history recovery')
+    account = _history_payload(evidence.get('account'), 'account_get')
+    history = _history_payload(evidence.get('history'), 'creation_list')
+    original_account = mcp.load_account(
+        _retained_sha256=native['account_binding']['account_observation_sha256'])['data']
+    uid = account.get('user', {}).get('uid') if isinstance(account.get('user'), dict) else None
+    if (not isinstance(uid, str) or not uid
+            or mcp.digest(uid) != native['account_binding']['uid_sha256']
+            or uid != original_account.get('user', {}).get('uid')):
+        _fail('original_identity_mismatch', 'history account differs from the original authenticated UID')
+    # Team scope is identity, not the mutable account plan/credit balance.
+    def workspace(data):
+        value = data.get('workspace')
+        if value is None: return None
+        if not isinstance(value, dict) or not isinstance(value.get('id'), str) or not value['id']:
+            _fail('original_binding_unavailable', 'workspace identity unavailable')
+        return value['id']
+    if not workspace(original_account) == workspace(account) == workspace(history):
+        _fail('original_identity_mismatch', 'history workspace differs from the original account workspace')
+    project = body.get('projectId')
+    if (not isinstance(project, str) or not project or history.get('projectId') != project
+            or evidence['history']['arguments'].get('projectId') != project
+            or 'cursor' in evidence['history']['arguments']
+            or evidence['history']['arguments'].get('mediaType', 'all') not in {'all', 'video'}):
+        _fail('original_identity_mismatch', 'actual history must be scoped to the frozen OpenArt project')
+    rows = list(history.get('items', [])) if isinstance(history.get('items'), list) else None
+    pages = evidence.get('history_pages', [])
+    if rows is None or not isinstance(pages, list):
+        _fail('original_binding_unavailable', 'actual project history items required')
+    previous = history
+    seen_cursors = set()
+    seen_pages = {mcp.digest(history)}
+    for observation in pages:
+        page = _history_payload(observation, 'creation_list')
+        cursor = previous.get('nextCursor')
+        if (previous.get('hasMore') is not True or not isinstance(cursor, str) or not cursor
+                or cursor in seen_cursors or observation['arguments'].get('cursor') != cursor
+                or observation['arguments'].get('projectId') != project or page.get('projectId') != project
+                or observation['arguments'].get('mediaType', 'all') != evidence['history']['arguments'].get('mediaType', 'all')
+                or workspace(page) != workspace(account) or not isinstance(page.get('items'), list)
+                or mcp.digest(page) in seen_pages):
+            _fail('original_binding_unavailable', 'history pagination must retain the actual same-project cursor chain')
+        seen_cursors.add(cursor); seen_pages.add(mcp.digest(page)); rows.extend(page['items']); previous = page
+    if previous.get('hasMore') is not False:
+        _fail('original_binding_unavailable', 'complete project history required to exclude ambiguous originals')
+    # Time never identifies a job, but a known creation before this consumed
+    # begin cannot be its original. OpenArt history createdAt is epoch millis.
+    begin_millis = None
+    begin_event = next(e for e in state['events'] if e['kind'] == 'begin_consumed_before_handoff')
+    try:
+        begin_time = datetime.fromisoformat(begin_event['observed_at'].replace('Z', '+00:00'))
+        if begin_time.tzinfo is not None: begin_millis = begin_time.timestamp() * 1000
+    except (KeyError, TypeError, ValueError, AttributeError): pass
+    def before_begin(row):
+        created = row.get('createdAt')
+        return (begin_millis is not None and type(created) in (int, float)
+                and math.isfinite(created) and created < math.floor(begin_millis))
+    def contradicts(observed, expected):
+        # Missing nested source IDs/settings leave uncertainty, rather than
+        # excluding a second otherwise compatible history from consideration.
+        if isinstance(observed, dict) and isinstance(expected, dict):
+            return any(k in observed and contradicts(observed[k], v) for k, v in expected.items())
+        if isinstance(observed, list) and isinstance(expected, list):
+            return len(observed) != len(expected) or any(contradicts(a, b) for a, b in zip(observed, expected))
+        return mcp.digest(observed) != mcp.digest(expected)
+    candidates = {}; compatible_ids = set(); unidentified_compatible = False
+    for row in rows:
+        if not isinstance(row, dict):
+            _fail('original_binding_unavailable', 'malformed history item')
+        if any(key in row and row[key] != value for key, value in
+               (('model', native['model']), ('mode', native['mode']))):
+            continue
+        if row.get('sourceType') != 'generation' or row.get('mediaType') != 'video' or before_begin(row): continue
+        saved = row.get('input')
+        # Providers may retain either the native body or its flat params. Never
+        # infer missing settings from timestamps, thumbnails or output metadata.
+        params = saved.get('params', saved) if isinstance(saved, dict) else None
+        if isinstance(params, dict) and contradicts(params, body['params']): continue
+        if isinstance(saved, dict) and any(key in saved and saved[key] != value for key, value in
+               (('model', native['model']), ('mode', native['mode']), ('projectId', project))):
+            continue
+        prompt = body['params'].get('prompt', body['params'].get('sceneDescription'))
+        if 'prompt' in row and row['prompt'] != prompt: continue
+        history_id = row.get('historyId')
+        if 'inputImages' in row:
+            frames = [{'role': role, 'url': body['params'][field]['url']} for field, role in
+                      (('startFrame', 'start'), ('endFrame', 'end')) if field in body['params']]
+            if frames and row['inputImages'] != frames: continue
+        if not isinstance(history_id, str) or not history_id:
+            unidentified_compatible = True; continue
+        compatible_ids.add(history_id)
+        if row.get('model') != native['model'] or row.get('mode') != native['mode']: continue
+        if not isinstance(params, dict) or any(key not in params or mcp.digest(params[key]) != mcp.digest(value)
+                for key, value in body['params'].items()): continue
+        candidates.setdefault(history_id, []).append(row)
+    if len(candidates) != 1 or unidentified_compatible or compatible_ids != set(candidates):
+        _fail('original_binding_unavailable', 'history must positively identify one unique original with all submitted controls and sources')
+    history_id, matches = next(iter(candidates.items()))
+    # Resource rows from one creation are a single candidate. A poster row may
+    # omit settings already proved by its video's full saved input; supplied
+    # contradictory settings may never disappear during deduplication.
+    for row in rows:
+        if row.get('historyId') != history_id: continue
+        saved = row.get('input', {})
+        params = saved.get('params', saved) if isinstance(saved, dict) else None
+        prompt = body['params'].get('prompt', body['params'].get('sceneDescription'))
+        frames = [{'role': role, 'url': body['params'][field]['url']} for field, role in
+                  (('startFrame', 'start'), ('endFrame', 'end')) if field in body['params']]
+        if (before_begin(row) or any(key in row and row[key] != value for key, value in
+                (('model', native['model']), ('mode', native['mode']), ('sourceType', 'generation')))
+                or not isinstance(params, dict)
+                or any(key in params and mcp.digest(params[key]) != mcp.digest(value)
+                       for key, value in body['params'].items())
+                or any(key in saved and saved[key] != value for key, value in
+                       (('model', native['model']), ('mode', native['mode']), ('projectId', project)))
+                or 'prompt' in row and row['prompt'] != prompt
+                or frames and 'inputImages' in row and row['inputImages'] != frames):
+            _fail('original_identity_mismatch', 'same-history resource rows contradict or omit saved original inputs')
+    details = evidence.get('details', [])
+    if not isinstance(details, list): _fail('original_binding_unavailable', 'history details must be actual host observations')
+    detail = None
+    for observation in details:
+        data = _history_payload(observation, 'creation_get')
+        if observation['arguments'].get('historyId') != history_id or data.get('historyId') != history_id:
+            _fail('original_identity_mismatch', 'creation detail must belong to the uniquely matched original')
+        if detail is not None and detail != data:
+            _fail('original_binding_unavailable', 'conflicting creation detail observations')
+        _validate_original_metadata(state, data)
+        detail = data
+    if detail is not None: return completion_payload(detail)
+    statuses = {str(row.get('status', '')).upper() for row in matches}
+    if len(statuses) != 1 or not statuses <= {'PENDING', 'RUNNING', *TERMINAL}:
+        _fail('original_binding_unavailable', 'actual recognized original status required; retrieve that same creation')
+    # This is explicitly history-derived state, never a fabricated generation
+    # reply. Normal same-ID get/download/collection remains responsible for media.
+    return {'historyId': history_id, 'status': next(iter(statuses))}
+
+
+def _resume_history(root, aid, request_sha256, binding):
+    with _lock(root):
+        state = _load(root, aid)
+        if request_sha256 != state['frozen']['authority']['request_sha256']:
+            _fail('original_request_mismatch', 'history recovery requires the exact original request digest')
+        if (not isinstance(binding, dict) or set(binding) != {'path', 'sha256'}
+                or not isinstance(binding['path'], str) or not Path(binding['path']).is_absolute()):
+            _fail('original_binding_unavailable', 'bound absolute history evidence file required')
+        path = Path(binding['path'])
+        evidence = _read(path)
+        if _sha(path) != binding['sha256']:
+            _fail('original_binding_unavailable', 'history evidence bytes changed')
+        outcome = _history_match(root, state, evidence)
+        if _history_owners(root, outcome['historyId'], aid):
+            _fail('original_history_reused', 'matched history already belongs to another retained attempt')
+        proof = {'version': '1.0', 'kind': 'same_original_history_match',
+                 'evidence': evidence, 'evidence_sha256': mcp.digest(evidence), 'outcome': outcome}
+        proof_path = _path(root, aid).parent/'history-match-proof.json'
+        if proof_path.exists():
+            if _read(proof_path) != proof:
+                _fail('receipt_exists', 'immutable history match proof cannot be replaced')
+        elif (state['status'] != 'uncertain' or state['receipt'] is not None
+              or state['status_observations'] or state.get('output') or state.get('download_receipt')
+              or (_path(root, aid).parent/'original-host-reply.json').exists()):
+            _fail('original_recovery_unavailable', 'history recovery requires a consumed uncertain original without a submission receipt')
+        if state.get('history_match_proof_sha256'):
+            return attempt_state(root, aid)
+        # Keep a local immutable replay file as well as the match proof; neither
+        # depends on the host's temporary evidence path surviving a restart.
+        retained_evidence = _path(root, aid).parent/'history-evidence.json'
+        if retained_evidence.exists():
+            if _read(retained_evidence) != evidence:
+                _fail('receipt_exists', 'immutable history evidence cannot be replaced')
+        else: _write(retained_evidence, evidence)
+        # Immutable proof first: a crash here replays this proof, never begin.
+        if not proof_path.exists(): _write(proof_path, proof)
+        state.update(receipt=copy.deepcopy(outcome), receipt_sha256=mcp.digest(outcome),
+                     status='submitted', history_match_proof_sha256=mcp.digest(proof),
+                     receipt_provenance='same_original_history_match')
+        _event(state, 'same_original_history_matched', history_id=outcome['historyId'],
+               proof_sha256=state['history_match_proof_sha256'])
+        _retain_submission_terminal(state, outcome)
+        _save(root, aid, state)
+        return attempt_state(root, aid)
+
+
+def resume_original(project_dir, attempt_id, *, outcome=None, request_sha256=None, correct_receipt=False, host_result=None,
+                    history_evidence=None):
     """Inspect the original handoff, or replay its exact retrievable host reply.
 
     No plain inspection writes, connector calls, polling, new reservations or
@@ -381,6 +599,10 @@ def resume_original(project_dir, attempt_id, *, outcome=None, request_sha256=Non
     original host response for this exact frozen handoff, never a replacement.
     """
     root = _root(project_dir); aid = _id(attempt_id)
+    if history_evidence is not None:
+        if outcome is not None or correct_receipt or host_result is not None:
+            _fail('invalid_argument', 'history evidence is an alternative to original-reply replay')
+        return _resume_history(root, aid, request_sha256, history_evidence)
     if correct_receipt:
         with _lock(root):
             state=_load(root,aid);original_request=state['frozen']['authority']['request_sha256']
@@ -470,11 +692,17 @@ def resume_original(project_dir, attempt_id, *, outcome=None, request_sha256=Non
         result['next_action'] = {'action': 'begin_original', 'function': 'lib.openart_mcp_jobs.begin',
                                  'attempt_id': aid, 'authority_revalidation_required': True}
     elif state['receipt'] is None:
-        result['next_action'] = ({'action': 'receive_original', 'function': 'lib.openart_mcp_jobs.resume_original',
+        history_path = _path(root, aid).parent/'history-evidence.json'
+        if (_path(root, aid).parent/'history-match-proof.json').exists() and history_path.exists():
+            result['next_action'] = {'action': 'receive_original', 'function': 'lib.openart_mcp_jobs.resume_original',
+                'attempt_id': aid, 'request_sha256': original_request,
+                'history_evidence': {'path': str(history_path), 'sha256': _sha(history_path)}}
+        else:
+            result['next_action'] = ({'action': 'receive_original', 'function': 'lib.openart_mcp_jobs.resume_original',
                                   'attempt_id': aid, 'request_sha256': original_request,
                                   'outcome': copy.deepcopy(reply['outcome'])} if reply else
                                  {'action': 'blocked_original_host_reply_unavailable',
-                                  'reason': 'Consumed original handoff has no retrievable historyId; retrieve its exact host reply and replay receive. Never begin again.',
+                                  'reason': 'Consumed original handoff has no retrievable historyId; recover its exact host reply or positively match complete same-account/project history evidence. Never begin again.',
                                   'attempt_id': aid, 'request_sha256': original_request})
     elif state['receipt'].get('status') in TERMINAL and not state['status_observations']:
         # Older receive retained a terminal first reply as submitted. Expose
@@ -678,6 +906,9 @@ def provenance_record(project_dir, attempt_id):
         'begin_envelope':copy.deepcopy(s['begin_envelope']),'receipt':copy.deepcopy(s['receipt']),
         'status_observations':copy.deepcopy(s['status_observations']), 'output':copy.deepcopy(s['output']),
         'download_receipt':copy.deepcopy(s.get('download_receipt')), 'download_receipt_sha256':s.get('download_receipt_sha256'),
+        **({'receipt_provenance': s['receipt_provenance'],
+            'history_match_proof': _read(_path(project_dir,attempt_id).parent/'history-match-proof.json'),
+            'history_match_proof_sha256': s['history_match_proof_sha256']} if s.get('history_match_proof_sha256') else {}),
         **({'receipt_correction':_read(_path(project_dir,attempt_id).parent/'receipt-correction.json'),
             'receipt_correction_sha256':s['receipt_correction_sha256']} if s.get('receipt_correction_sha256') else {})}
 

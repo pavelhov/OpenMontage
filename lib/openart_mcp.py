@@ -82,8 +82,8 @@ def _observation(kind, *, _retained_sha256=None):
 def load_schema():
     return _observation('schema')[0]
 
-def load_account():
-    return _observation('account')[0]
+def load_account(*, _retained_sha256=None):
+    return _observation('account', _retained_sha256=_retained_sha256)[0]
 
 def load_cost_observation():
     # Catalog credit advertisements are not request-specific quotes.

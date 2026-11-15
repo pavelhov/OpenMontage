@@ -204,8 +204,12 @@ The one-shot factory writes one plan and dispatches each declared video once
 through the existing producer. Future creator-bound
 `image_start_review: "current_bytes_v1"` runs require actual starting-image review
 and allow only failed starting-image correction inside the existing episode image
-allowance. Its `make_video`, `advance` and
-`complete_action` path owns work. Use `validate_standing_setup` before fresh
+allowance. Review the actual authored framing, visible identity/props and essential
+contacts; intended close-ups may crop nonessential body parts. Preserve observed
+input dimensions and provenance. The selected route's normal capability/input
+validation owns physical support; portrait final delivery does not impose exact
+9:16 starting-image pixels or universal full-body framing. Its `make_video`,
+`advance` and `complete_action` path owns work. Use `validate_standing_setup` before fresh
 dispatch, recover only the same original job after interruption, then use the
 existing `deliver_standalone` delivery path. Preserve account, source, route, transfer and
 attempt limits. Assemble every playable original, report defects, and keep evidence

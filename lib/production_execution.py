@@ -3203,7 +3203,7 @@ ACTION_KINDS = frozenset({'restore_derived_views', 'prepare_board_image', 'begin
     'promote_imported_board', 'receive_native_image', 'prepare_motion', 'bind_upstream_frame',
     'collect_grok_original', 'collect_openart_original', 'collect_spicy_original', 'begin_openart_original',
     'receive_openart_original', 'poll_openart_original', 'download_openart_original',
-    'compose_cut', 'complete', 'blocked'})
+    'compose_cut', 'cut_saved', 'complete', 'blocked'})
 
 
 def _reply_unavailable_action(root, aid, binding, operation):
@@ -3614,8 +3614,11 @@ def next_production_action(project_dir):
     if cut and cut.get('status') in FIRST_CUT_TERMINAL:
         current = first_cut_media_status(root, cut)
         if current.get('status') == 'current':
-            return action('complete', 'cut', {'first_cut': {'path': cut['path'], 'sha256': cut['sha256']}},
-                          inputs=dict(current, recoverable_originals=recoverable_originals))
+            binding = {'path': cut['path'], 'sha256': cut['sha256']}
+            return action('cut_saved', 'cut', {'first_cut': binding},
+                          inputs=dict(current, cut_status=cut['status'],
+                              blocked_shots=blocked_shots, recoverable_originals=recoverable_originals),
+                          reason='Current media artifact saved; story/task outcome is reported separately. Recover original replies and continue eligible work.')
     candidates = first_cut_candidates(root)
     return action('compose_cut', 'cut', {'selections_sha256': _digest(selected),
         'contract_sha256': contract_digest(contract), 'candidates_sha256': _digest(candidates)},
@@ -3627,7 +3630,7 @@ FIRST_CUT_TERMINAL = frozenset({'complete', 'partial', 'incomplete'})
 
 
 def _action_status(action):
-    return ('ready_to_compose' if action['kind'] == 'compose_cut' else 'complete' if action['kind'] == 'complete'
+    return ('ready_to_compose' if action['kind'] == 'compose_cut' else 'cut_saved' if action['kind'] in {'cut_saved', 'complete'}
             else 'blocked' if action['kind'] == 'blocked' else 'host_action' if action['host_required'] else 'mechanical')
 
 
@@ -3650,7 +3653,12 @@ def advance(project_dir, *, max_steps=8):
         kind = action['kind']
         status = _action_status(action)
         if status != 'mechanical':
-            return {'status': status, 'action': action, 'steps': step, 'provider_calls': 0}
+            outcome = {}
+            if status == 'cut_saved':
+                from lib.production_draft import first_cut_outcome
+                outcome = first_cut_outcome(root, action['binding']['first_cut'],
+                    recoverable_originals=action['inputs'].get('recoverable_originals', []))
+            return {'status': status, **outcome, 'action': action, 'steps': step, 'provider_calls': 0}
         try:
             if kind == 'restore_derived_views':
                 preparation.prepare_package(root, action['binding']['package'])
@@ -3689,8 +3697,12 @@ def advance(project_dir, *, max_steps=8):
                         or next_production_action(root),
                         'host_envelope': envelope, 'steps': step + 1, 'provider_calls': 0}
             elif kind == 'receive_openart_original':
-                jobs.resume_original(root, action['subject'], outcome=action['inputs']['outcome'],
-                    request_sha256=action['binding']['request_sha256'])
+                if 'history_evidence' in action['inputs']:
+                    jobs.resume_original(root, action['subject'], history_evidence=action['inputs']['history_evidence'],
+                        request_sha256=action['binding']['request_sha256'])
+                else:
+                    jobs.resume_original(root, action['subject'], outcome=action['inputs']['outcome'],
+                        request_sha256=action['binding']['request_sha256'])
             elif kind == 'download_openart_original':
                 receipt = jobs.download_original(root, action['subject'])
                 jobs.collect(root, action['subject'], downloaded_path=receipt['downloaded_path'])
@@ -3926,11 +3938,17 @@ def complete_action(project_dir, action, *, outcome):
         jobs.record_status(root, aid, result=jobs.completion_payload(outcome['result']),
             host_result=outcome['result'] if 'structuredContent' in outcome['result'] else None)
     elif kind == 'receive_openart_original':
-        if set(outcome) != {'result'}:
-            _fail('original receive requires exact host result')
-        jobs.resume_original(root, aid, outcome=jobs.completion_payload(outcome['result']),
-            host_result=outcome['result'] if 'structuredContent' in outcome['result'] else None,
-            request_sha256=action['binding']['request_sha256'])
+        if set(outcome) == {'history_evidence'}:
+            if not isinstance(outcome['history_evidence'], dict):
+                _fail('same-original history evidence requires an exact file binding')
+            jobs.resume_original(root, aid, history_evidence=outcome['history_evidence'],
+                request_sha256=action['binding']['request_sha256'])
+        elif set(outcome) == {'result'}:
+            jobs.resume_original(root, aid, outcome=jobs.completion_payload(outcome['result']),
+                host_result=outcome['result'] if 'structuredContent' in outcome['result'] else None,
+                request_sha256=action['binding']['request_sha256'])
+        else:
+            _fail('original receive requires exact host result or bound same-original history evidence')
     elif kind == 'prepare_motion':
         if 'board_reviews' in outcome or 'image_correction' in outcome:
             if set(outcome) - {'board_reviews', 'image_correction'}:

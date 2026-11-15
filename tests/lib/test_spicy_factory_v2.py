@@ -570,7 +570,7 @@ def test_actual_v2_roundtrip_preserves_counted_original_and_validates_delivery(t
     assert proof['result']['output'] == completed['output']
     from lib import production_draft
     delivery = production_draft.deliver_standalone(root, operation_id='SYNTHETIC-v2-' + task_name)
-    assert delivery['status'] in {'complete', 'partial'} and delivery['provider_calls'] == 0
+    assert delivery['status'] == 'cut_saved' and delivery['cut_status'] in {'complete', 'partial'} and delivery['provider_calls'] == 0
     assert delivery['not_certification'] is True and delivery['posted'] is False
     assert len(http.creates) == 2 and len(execution._attempts(root)) == 1
     assert bool(list(root.glob('artifacts/spicy_source_transfer-*.json'))) is bool(source_row)

@@ -676,7 +676,7 @@ def test_factory_trim_flows_to_standard_delivery_without_strict_pass(factory_tri
     assert candidate['output']['sha256'] == record['output']['sha256']
     assert all(f['status'] == status for f in candidate['findings'])
     delivered = draft.deliver_standalone(value.root)
-    assert delivered['status'] == 'complete' and delivered['not_certification'] is True
+    assert delivered['status'] == 'cut_saved' and delivered['cut_status'] == 'complete' and delivered['not_certification'] is True
     assert delivered['provider_calls'] == 0 and delivered['posted'] is False
     assert delivered['clips'][0]['output']['sha256'] == record['output']['sha256']
     assert delivered['clips'][0]['review'] == status and delivered['clips'][0]['findings']

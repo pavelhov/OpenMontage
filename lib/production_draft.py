@@ -1078,7 +1078,7 @@ def deliver_standalone(project_dir, *, export_profile=None, operation_id=None, c
                             export_profile=export_profile, operation_id=operation_id)
     binding = {'path': _rel(root, cut['path']), 'sha256': cut['sha256']}
     status = first_cut_media_status(root, binding)
-    return {'status': cut['status'], 'currency': status,
+    return {'status': 'cut_saved', **first_cut_outcome(root, binding), 'currency': status,
             'annotation_currency': first_cut_status(root, binding),
             'first_cut': {'path': _rel(root, cut['path']), 'sha256': cut['sha256']},
             'operation_id': operation_id, 'export': cut['export'],
@@ -1272,7 +1272,8 @@ def current_cut_disclosure(project_dir, cut):
     from lib.events import read_events
     root = Path(project_dir).resolve()
     currency = first_cut_status(root, cut)
-    if currency['status'] != 'current' and currency['reasons'] != ['findings_changed']:
+    if (currency['status'] != 'current'
+            and not set(currency['reasons']) <= {'findings_changed', 'missing_disposition_changed'}):
         return None
     record = execution._read(_bound(root, cut))
     for event in reversed(read_events(root)):
@@ -1296,12 +1297,50 @@ def current_cut_disclosure(project_dir, cut):
                 _findings_digest(root, record['clips'], current=False))
             if findings_digest != _findings_digest(root, record['clips'], current=True):
                 return None
+            if sidecar.get('current_missing', record['missing']) != first_cut_missing_status(root, cut)['missing']:
+                return None
             return {'disclosure': binding, 'observations': sidecar['observations']}
         except (OSError, ValueError, TypeError, KeyError):
             # Do not resurrect an older review when the latest matching retained
             # disclosure has changed or no longer describes current annotations.
             return None
     return None
+
+
+@_status_read
+def first_cut_outcome(project_dir, cut, *, recoverable_originals=None, work_remaining=False):
+    """Separate a saved media artifact from the producer's whole-story outcome.
+
+    Legacy cut ``complete`` describes technical coverage only. Missing semantic
+    observations stay unknown; this projection neither requests another review
+    nor blocks generation, original collection, composition or closeout.
+    """
+    from lib import production_execution as execution
+    root = Path(project_dir).resolve()
+    path = _bound(root, cut)
+    record = execution._read(path)
+    cut = {'path': _rel(root, path), 'sha256': cut['sha256']}
+    if recoverable_originals is None:
+        action = execution.next_production_action(root)
+        recoverable_originals = action['inputs'].get('recoverable_originals', [])
+        work_remaining = action['kind'] not in {'cut_saved', 'complete', 'blocked'}
+    disclosure = current_cut_disclosure(root, cut)
+    current = first_cut_media_status(root, cut)['status'] == 'current'
+    observations = disclosure['observations'] if disclosure and current else []
+    essential = {name: [row for row in observations if isinstance(row, dict) and row.get('name') == name]
+                 for name in ('cause', 'consequential_action', 'payoff')}
+    story_complete = all(len(rows) == 1 and rows[0].get('status') == 'pass'
+                         and rows[0].get('viewing') == 'viewed'
+                         and all(isinstance(rows[0].get(field), str) and rows[0][field].strip()
+                                 for field in ('basis', 'reviewer', 'defect', 'proposed'))
+                         for rows in essential.values())
+    story_incomplete = any(row.get('status') == 'fail'
+                           for rows in essential.values() for row in rows)
+    task_status = ('in_progress' if recoverable_originals or work_remaining or not current else
+                   'completed' if record.get('export') and story_complete else
+                   'incomplete' if not record.get('export') or story_incomplete else
+                   'needs_story_assessment')
+    return {'cut_status': record['status'], 'task_status': task_status}
 
 
 @_write

@@ -155,7 +155,7 @@ def test_changed_clip_bytes_reject_stale_intent(p, clips):
 def test_standalone_delivery_needs_no_studio(p, clips):
     import sys
     result = draft.deliver_standalone(p.root, export_profile='generic_hd', operation_id='op-standalone')
-    assert result['status'] == 'complete' and Path(result['export_path']).is_file()
+    assert result['status'] == 'cut_saved' and result['cut_status'] == 'complete' and Path(result['export_path']).is_file()
     assert result['export_profile'] == 'generic_hd' and result['technical']['width'] == 1920
     assert result['not_certification'] is True and result['provider_calls'] == 0
     assert [row['shot_id'] for row in result['clips']] == list(clips)
@@ -337,7 +337,7 @@ def test_producer_completes_after_real_rejection_annotation_without_changing_med
         return ToolResult(success=True)
 
     first = draft.deliver_standalone(p.root, compose=compose)
-    assert first['status'] == 'complete' and execution.next_production_action(p.root)['kind'] == 'complete'
+    assert first['status'] == 'cut_saved' and first['cut_status'] == 'complete' and execution.next_production_action(p.root)['kind'] == 'cut_saved'
     cut = draft.latest_first_cut(p.root)
     evidence = p.root / 'artifacts/creator-watched.txt'
     evidence.write_text('SYNTHETIC creator watched the exact export and disclosure')
@@ -360,8 +360,8 @@ def test_producer_completes_after_real_rejection_annotation_without_changing_med
     assert again['annotation_currency'] == {'status': 'stale', 'reasons': ['findings_changed']}
     assert sorted(again['clips'][-1]['findings'], key=lambda value: value['evidence']) == sorted(
         [note, changed], key=lambda value: value['evidence'])
-    assert execution.next_production_action(p.root)['kind'] == 'complete'
-    assert execution.advance(p.root)['status'] == 'complete'
+    assert execution.next_production_action(p.root)['kind'] == 'cut_saved'
+    assert execution.advance(p.root)['status'] == 'cut_saved'
     assert draft.first_cut_acceptance_status(p.root, acceptance) == {
         'status': 'stale', 'reasons': ['findings_changed']}
     assert all(file_sha256(path) == sha for path, sha in retained_hashes.items())
@@ -400,7 +400,7 @@ def test_refused_repair_preserves_saved_cut_and_acceptance(p, monkeypatch, accep
         return ToolResult(success=True)
 
     first = draft.deliver_standalone(p.root, compose=compose)
-    assert execution.next_production_action(p.root)['kind'] == 'complete'
+    assert execution.next_production_action(p.root)['kind'] == 'cut_saved'
     historical_paths = [p.root / first['first_cut']['path'], Path(first['export_path'])]
     if accept_baseline:
         evidence = p.root / 'artifacts/accept-baseline.txt'
@@ -426,7 +426,7 @@ def test_refused_repair_preserves_saved_cut_and_acceptance(p, monkeypatch, accep
     candidate = draft.first_cut_candidates(p.root)[-1]
     assert candidate['attempt_id'] == original
     assert draft.first_cut_media_status(p.root, first['first_cut']) == {'status': 'current', 'reasons': []}
-    assert execution.next_production_action(p.root)['kind'] == 'complete'
+    assert execution.next_production_action(p.root)['kind'] == 'cut_saved'
     replay = draft.deliver_standalone(p.root, compose=compose)
     assert replay['first_cut'] == first['first_cut'] and len(calls) == 1
     assert all(file_sha256(path) == digest for path, digest in retained.items())
@@ -445,7 +445,7 @@ def test_changed_candidate_timing_does_not_replay_an_obsolete_placement(p, clips
     monkeypatch.setattr(draft, 'first_cut_candidates', lambda root: current_rows)
     assert 'candidate_bindings_changed' in draft.first_cut_media_status(p.root, first['first_cut'])['reasons']
     fresh = draft.deliver_standalone(p.root, compose=counting(calls))
-    assert len(calls) == 2 and fresh['status'] == 'complete'
+    assert len(calls) == 2 and fresh['status'] == 'cut_saved' and fresh['cut_status'] == 'complete'
     assert fresh['operation_id'] == first['operation_id'], 'unchanged clip/profile/audio intent identity retained'
     assert fresh['clips'][0]['master_end'] == 0.5 and fresh['technical']['duration_seconds'] == pytest.approx(2.5, abs=0.05)
     assert fresh['currency'] == {'status': 'current', 'reasons': []}

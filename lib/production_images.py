@@ -940,7 +940,7 @@ def record_native_image_host_exception(project_dir, call_id, *, host_exception):
 
 
 OPENART_IMAGE_TOOL = 'mcp__codex_apps__openart_openart_generate_image'
-_STEP_STATUSES = frozenset({'mechanical', 'host_action', 'ready_to_compose', 'complete', 'blocked', 'pending', 'dispatched'})
+_STEP_STATUSES = frozenset({'mechanical', 'host_action', 'ready_to_compose', 'cut_saved', 'complete', 'blocked', 'pending', 'dispatched'})
 _DIAGNOSTIC_FIELDS = frozenset({'exit_code', 'output', 'stderr', 'session_id'})
 
 
@@ -957,7 +957,7 @@ def _saved_step_state(path):
     # Studio's finished composition state carries no action; it is still valid.
     # Mirrors canonicalProductionStep in scripts/native_host_receipt.js.
     if (isinstance(step, dict) and 'action' not in step and isinstance(step.get('status'), str)
-            and step['status'] in {'complete','partial','incomplete'}):
+            and step['status'] in {'cut_saved','complete','partial','incomplete'}):
         cut, delivery = step.get('first_cut'), step.get('delivery')
         if (isinstance(cut, dict) and isinstance(cut.get('path'), str) and cut['path']
                 and isinstance(cut.get('sha256'), str) and re.fullmatch(r'[0-9a-f]{64}', cut['sha256'])

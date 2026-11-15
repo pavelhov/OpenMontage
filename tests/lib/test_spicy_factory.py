@@ -604,7 +604,7 @@ def test_actual_core_factory_lost_create_response_recovers_one_original_and_sele
     assert next(row for row in rows if row['shot_id'] == 'entry')['status'] == 'candidate'
     counts_before_delivery = (len(http.creates), len(downloads), len(execution._attempts(root)))
     delivery = draft.deliver_standalone(root, operation_id='SYNTHETIC-spicy-draft-delivery')
-    assert delivery['status'] in {'complete', 'partial'}
+    assert delivery['status'] == 'cut_saved' and delivery['cut_status'] in {'complete', 'partial'}
     assert Path(delivery['export_path']).is_file()
     assert delivery['not_certification'] is True and delivery['provider_calls'] == 0 and delivery['posted'] is False
     assert delivery['clips'][0]['attempt_id'] == original['attempt_id']

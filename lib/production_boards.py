@@ -483,77 +483,17 @@ def _observation(pack, asset_id, role=None):
 
 
 
-START_IMAGE_PREDICATES = ('prop_ownership_count', 'no_future_beat_state', 'portrait_full_cast')
+# The producer judges the authored shot, not a universal full-body composition.
+# Explicit legacy node predicates and all retained observations remain intact.
+START_IMAGE_PREDICATES = ('prop_ownership_count', 'no_future_beat_state', 'required_framing')
 
-
-
-def _portrait_pixel_geometry(dimensions):
-    width, height = dimensions
-    return width < height and abs(width * 16 - height * 9) <= 16
-
-
-def _native_upstream_portrait_rounding(root, pack, asset_id, dimensions):
-    """One observed H3 768P output shape, never a general aspect tolerance.
-
-    H3 image2video inherits aspect from its first image. The retained prompt must
-    explicitly request portrait 9:16, and that exact frozen source must satisfy
-    the ordinary pixel rule. Existing canonical resolution proves the sampled
-    frame and any registered derivative before this compatibility check.
-    """
-    if dimensions != [768, 1344]:
-        return None
-    from lib import production_execution as execution
-    from lib.production_provenance import validate_attempt_provenance
-    from tools.video._shared import probe_output
-    from PIL import Image
-    import re
-    try:
-        binding = pack['board_bindings'][asset_id]
-        node = pack['prompt_pack'][asset_id]
-        source = binding.get('upstream_source') or {}
-        if (binding.get('origin') != 'reuse' or not node.get('upstream_source')
-                or node['upstream_source'] != {'shot_id': source.get('shot_id'), 'role': 'outgoing_frame'}):
-            return None
-        current = execution.resolve_board_input(root, {'asset_id': asset_id})
-        if current != {'path': str(_inside(root, binding['path'])), 'sha256': binding['sha256']}:
-            return None
-        selected = execution.load_selected_attempts(root)[source['shot_id']]
-        proven = validate_attempt_provenance(root, source['attempt_id'], shot_id=source['shot_id'],
-            story_revision=pack['story_revision'], expected_output=selected['output'])
-        connector = proven.get('connector_provenance') or {}
-        native = connector.get('native') or {}
-        params = native.get('body', {}).get('params', {})
-        if (connector.get('provenance') != 'agent_recorded_connector'
-                or native.get('provider') != 'openart_mcp' or native.get('model') != 'fal-h3-max-turbo'
-                or native.get('mode') != 'image2video' or params.get('resolution') != '768P'
-                or any(params.get(key, '9:16') != '9:16' for key in ('aspectRatio', 'videoAspectRatio'))
-                or not re.search(r'\bportrait\s+9:16\b', params.get('prompt', ''), re.IGNORECASE)):
-            return None
-        first = [asset for asset in native.get('input_assets', []) if asset.get('role') == 'first_frame']
-        if len(first) != 1:
-            return None
-        path = _inside(root, first[0]['source_path'])
-        if hashlib.sha256(path.read_bytes()).hexdigest() != first[0]['source_sha256']:
-            return None
-        with Image.open(path) as image:
-            if not _portrait_pixel_geometry(image.size):
-                return None
-        # A registered trim/retime qualifies only while retaining native size.
-        for output in (connector['output'], selected['output']):
-            info = probe_output(_inside(root, output['path']))
-            if (info.get('video_width'), info.get('video_height')) != (768, 1344):
-                return None
-        return ('Observed encoded 768x1344 (4:7): authenticated OpenArt H3 Max Turbo '
-                '768P image2video native output from an explicitly requested portrait 9:16 '
-                'source; not exact 9:16 pixels. Full-cast and all semantic checks still apply.')
-    except (ValueError, OSError, KeyError, TypeError, AttributeError):
-        return None
 
 def starting_image_reviews(project_dir, shot_id, *, pack=None):
     """Current-byte review requirements for an explicitly opted-in future run.
 
     The agent views pixels and authors observations. This checks their bindings,
-    named checks and objective geometry; it never infers cast/prop semantics.
+    named checks and readable dimensions; selected-route preparation validates native
+    input support. Neither operation infers cast/prop/contact/framing semantics.
     """
     from lib.production_autonomy import standing_image_start_review
     root = Path(project_dir).resolve()
@@ -587,16 +527,11 @@ def starting_image_reviews(project_dir, shot_id, *, pack=None):
         if review.get('status') != 'pass':
             blockers.append('starting image review is not pass')
         dimensions = None
-        geometry_note = None
         if binding and _current(root, binding):
             try:
                 from PIL import Image
                 with Image.open(_inside(root, binding['path'])) as image:
                     dimensions = list(image.size)
-                if not _portrait_pixel_geometry(dimensions):
-                    geometry_note = _native_upstream_portrait_rounding(root, pack, aid, dimensions)
-                    if geometry_note is None:
-                        blockers.append('starting image must have 9:16 pixel dimensions')
             except (ValueError, OSError):
                 blockers.append('starting image dimensions unavailable')
         packet = pack['image_packets'].get(aid, {})
@@ -607,7 +542,7 @@ def starting_image_reviews(project_dir, shot_id, *, pack=None):
             'path': binding.get('path') if binding else None,
             'sha256': binding.get('sha256') if binding else None,
             'reviewer': pack['specification']['reviewer'], 'required_predicates': required,
-            'dimensions': dimensions, **({'geometry_note': geometry_note} if geometry_note else {}),
+            'dimensions': dimensions,
             'status': review.get('status', 'unknown'),
             'review_sha256': _digest(review) if review else None,
             'blockers': list(dict.fromkeys(blockers))})

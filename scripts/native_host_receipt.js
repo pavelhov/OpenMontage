@@ -128,6 +128,8 @@ function nativeHostReceiptBinding(saved) {
 }
 
 async function claimNativeHostInvocation(tools, receiptPath, action, invocation) {
+  // This marker proves a claim, not callback entry or provider submission. Its
+  // absence on an older/crashed run is likewise not proof of non-submission.
   // This local ownership guard is not a tool result or engine authority. The
   // canonical original is already submitted; an interrupted owner must collect
   // it rather than calling a saved envelope again, even after host-store loss.
@@ -151,22 +153,24 @@ async function claimNativeHostInvocation(tools, receiptPath, action, invocation)
 // One shared shape check for every completion consumer. Only a legitimate
 // canonical engine step counts as progress; empty objects, raw exec results,
 // arrays and malformed states never advance the producer.
-const CANONICAL_STEP_STATUSES = ['mechanical', 'host_action', 'ready_to_compose', 'complete', 'blocked', 'pending', 'dispatched'];
+const CANONICAL_STEP_STATUSES = ['mechanical', 'host_action', 'ready_to_compose', 'cut_saved', 'complete', 'blocked', 'pending', 'dispatched'];
 const CANONICAL_ACTION_KINDS = ['restore_derived_views', 'prepare_board_image', 'begin_native_image',
   'promote_imported_board', 'receive_native_image', 'prepare_motion', 'bind_upstream_frame',
   'collect_grok_original', 'collect_openart_original', 'collect_spicy_original', 'begin_openart_original',
   'receive_openart_original', 'poll_openart_original', 'download_openart_original',
-  'compose_cut', 'complete', 'blocked'];
+  'compose_cut', 'cut_saved', 'complete', 'blocked'];
 // Studio's finished composition state is the other legitimate return form:
 // {status: complete|partial|incomplete, first_cut:{path,sha256}, clips:[...],
 // delivery:{status, closeout_complete}, recoverable_originals:[...]} with no
 // action; closeout may legitimately be pending or failed. It is accepted as-is; no action id is invented for it.
-const TERMINAL_COMPOSITION_STATUSES = ['complete', 'partial', 'incomplete'];
+const TERMINAL_COMPOSITION_STATUSES = ['cut_saved', 'complete', 'partial', 'incomplete'];
 function canonicalProductionStep(value) {
   const isObject = item => item !== null && typeof item === 'object' && !Array.isArray(item);
   const action = isObject(value) ? value.action : undefined;
   const cut = isObject(value) ? value.first_cut : undefined, delivery = isObject(value) ? value.delivery : undefined;
   if (isObject(value) && !('action' in value) && TERMINAL_COMPOSITION_STATUSES.includes(value.status)
+      && (value.status !== 'cut_saved' || (['complete', 'partial', 'incomplete'].includes(value.cut_status)
+          && typeof value.task_status === 'string' && value.task_status))
       && isObject(cut) && typeof cut.path === 'string' && cut.path
       && typeof cut.sha256 === 'string' && /^[0-9a-f]{64}$/.test(cut.sha256)
       && Array.isArray(value.clips) && isObject(delivery) && typeof delivery.status === 'string' && delivery.status
@@ -210,10 +214,27 @@ async function consumeNativeHostAction(tools, step, options) {
     throw new Error('Native image envelope differs from current receive action');
   if (typeof receiptPath !== 'string' || !receiptPath.startsWith('/'))
     throw new Error('An absolute receipt path is required before native invocation');
+  const invoke = nativeTool.invoke;
+  let retainedReceipt;
   const key = 'native-host:' + action.subject;
   const timing = typeof options.observeTiming === 'function'
     ? event => options.observeTiming({...event, subject: action.subject}) : undefined;
   let observed = await getObservation(key);
+  if ((!observed || observed.invocation_pending) && !image) {
+    // A completed disk save can outlive the host's in-memory observation store.
+    // Recover its exact raw return before considering the once-only claim.
+    const code = `await (async () => {
+      const fs = await import('node:fs/promises');
+      try { nodeRepl.write(JSON.stringify({observation: JSON.parse(await fs.readFile(${JSON.stringify(receiptPath)}, 'utf8'))})); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; nodeRepl.write('{"missing":true}'); }
+    })();`;
+    const saved = await tools.mcp__node_repl__js({code, title: 'Recover actual OpenArt host receipt', timeout_ms: 30000});
+    if (saved?.isError) throw new Error('Saved original observation unavailable; original submission remains unknown');
+    const text = saved?.content?.find(block => block.type === 'text')?.text;
+    const restored = JSON.parse(text);
+    if (!restored.missing && !restored.observation) throw new Error('Saved original receipt is malformed');
+    if (restored.observation) observed = restored.observation;
+  }
   const recoveringOriginal = Boolean(observed);
   if (observed?.invocation_pending)
     throw new Error('Native invocation already attempted; collect original without replaying its envelope');
@@ -227,21 +248,48 @@ async function consumeNativeHostAction(tools, step, options) {
     const actualArguments = freeze(JSON.parse(JSON.stringify(argumentsSnapshot)));
     // Fence in this host session before invoking; if either retention or the
     // durable exclusive claim fails, no native callback is entered.
-    await retainObservation(key, {invocation_pending: true, tool_name: nativeTool.tool_name, arguments: argumentsSnapshot});
+    const pending = {invocation_pending: true, tool_name: nativeTool.tool_name, arguments: argumentsSnapshot};
+    if (image) await retainObservation(key, pending);
     await claimNativeHostInvocation(tools, receiptPath, action,
       {tool_name: nativeTool.tool_name, arguments: argumentsSnapshot});
+    if (!image) {
+      try { await retainObservation(key, pending); }
+      catch (error) {
+        // This fresh exclusive claim succeeded, and the callback was never
+        // entered. Record that observed failure; it grants no automatic retry.
+        const beforeEntry = {...pending, invocation_pending: false, callback_entered: false,
+          submission_status: 'confirmed_not_submitted',
+          exception: {message: String(error?.message ?? error), type: String(error?.name || typeof error)}};
+        const proof = nativeHostReceiptBinding(await saveNativeHostReceipt(tools, beforeEntry, receiptPath, timing));
+        return {status: 'host_exception', action, host_exception: proof,
+          submission_status: 'confirmed_not_submitted', provider_calls: 0};
+      }
+    }
     let result, raised, didRaise = false;
     observeNativeHostTiming(timing, 'native_call');
-    try { result = await nativeTool.invoke(actualArguments); }
+    try { result = await invoke.call(nativeTool, actualArguments); }
     catch (error) { raised = error; didRaise = true; }
     observeNativeHostTiming(timing, 'native_return', {raised: didRaise});
     observed = {tool_name: nativeTool.tool_name, arguments: argumentsSnapshot};
+    if (!image) Object.assign(observed, {callback_entered: true, submission_status: 'unknown'});
     if (didRaise) {
       observed.call_id = action.subject;
       observed.exception = {message: String(raised?.message ?? raised), type: String(raised?.name || typeof raised)};
     } else observed.result = result;
     // Retain the actual return before any saving/completion RPC can be interrupted.
     observeNativeHostTiming(timing, 'retention_start');
+    // For OpenArt, save the actual return even when the host observation store
+    // itself fails. Completion never precedes this immutable raw request/reply.
+    if (!image) {
+      try { retainedReceipt = nativeHostReceiptBinding(await saveNativeHostReceipt(tools, observed, receiptPath, timing)); }
+      catch (saveError) {
+        // A disk/RPC failure must not leave a known actual reply stranded behind
+        // the pending marker when the independent host store is still healthy.
+        try { await retainObservation(key, observed); }
+        catch (retentionError) { saveError.retention_error = String(retentionError?.message ?? retentionError); }
+        throw saveError;
+      }
+    }
     await retainObservation(key, observed);
     observeNativeHostTiming(timing, 'retention_end');
   }
@@ -251,7 +299,7 @@ async function consumeNativeHostAction(tools, step, options) {
   if (recoveringOriginal) observeNativeHostTiming(timing, 'same_original_recovery');
   observeNativeHostTiming(timing, 'native_classified', {disposition: observed.exception ? 'exception'
     : observed.result?.isError === true ? 'error_result' : 'returned_result'});
-  const receipt = nativeHostReceiptBinding(await saveNativeHostReceipt(tools, observed, receiptPath, timing));
+  const receipt = retainedReceipt || nativeHostReceiptBinding(await saveNativeHostReceipt(tools, observed, receiptPath, timing));
   const complete = async outcome => {
     observeNativeHostTiming(timing, 'completion_start');
     const next = await completeAction(action, outcome);
@@ -265,7 +313,9 @@ async function consumeNativeHostAction(tools, step, options) {
     if (image) return complete({host_exception: receipt});
     // OpenArt's engine keeps the begun original uncertain. It has no exception
     // completion outcome; retain evidence and stop for original collection.
-    return {status: 'host_exception', action, host_exception: receipt, provider_calls: null};
+    return {status: 'host_exception', action, host_exception: receipt,
+      submission_status: observed.submission_status || 'unknown',
+      provider_calls: observed.callback_entered === false && observed.submission_status === 'confirmed_not_submitted' ? 0 : null};
   }
   return complete(image ? {host_receipt: receipt} : {result: observed.result});
 }

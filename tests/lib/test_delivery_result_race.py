@@ -93,9 +93,9 @@ def test_running_original_publishes_after_delivery_then_full_cut_converges(produ
 
     assert retained.success
     assert read(pending / 'result.json')['status'] == 'generated'
-    assert partial['status'] == 'partial'
+    assert partial['status'] == 'cut_saved' and partial['cut_status'] == 'partial'
     full = draft.deliver_standalone(p.root, compose=compose)
-    assert full['status'] == 'complete'
+    assert full['status'] == 'cut_saved' and full['cut_status'] == 'complete'
     assert full['currency'] == {'status': 'current', 'reasons': []}
     assert [clip['shot_id'] for clip in full['clips']] == ['entry', 'interior', 'payoff']
     assert full['technical']['duration_seconds'] == sum(durations.values())

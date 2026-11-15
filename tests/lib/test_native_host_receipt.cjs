@@ -555,3 +555,115 @@ for (const disposition of ['returned_result', 'error_result', 'exception']) {
     assert.deepEqual(await fs.readFile(f.receiptPath), original);
   });
 }
+
+function openartStep() {
+  return {status: 'host_action', action: {kind: 'receive_openart_original', subject: 'SYNTHETIC-motion', action_id: 'a'.repeat(64)},
+    host_envelope: {tool: 'mcp__codex_apps__openart_openart_generate_video',
+      arguments: {model: 'SYNTHETIC-native', mode: 'image2video', params: {prompt: 'SYNTHETIC exact'}}}};
+}
+function openartOptions(f, invoke, complete) {
+  const options = hostOptions(f, invoke, complete);
+  options.nativeTool.tool_name = openartStep().host_envelope.tool;
+  return options;
+}
+test('OpenArt exact raw reply survives completion crash and host-store loss without reinvocation', async t => {
+  const f = await fixture(t), step = openartStep(); let invocations = 0;
+  const result = {isError: false, structuredContent: {historyId: 'SYNTHETIC-original', status: 'PENDING'},
+    content: [{type: 'text', text: 'SYNTHETIC actual original return'}]};
+  const options = openartOptions(f, async () => { invocations++; return result; }, async () => {
+    assert.deepEqual(JSON.parse(await fs.readFile(f.receiptPath)).result, result);
+    throw new Error('SYNTHETIC completion crashed');
+  });
+  await assert.rejects(consumeNativeHostAction(f.tools, step, options), /completion crashed/);
+  const raw = await fs.readFile(f.receiptPath);
+  const restarted = openartOptions(f, () => assert.fail('no second invocation'), async (_, outcome) => {
+    assert.deepEqual(outcome, {result}); return doneStep;
+  });
+  assert.deepEqual(await consumeNativeHostAction(f.tools, step, restarted), {...doneStep, provider_calls: null});
+  assert.equal(invocations, 1); assert.deepEqual(await fs.readFile(f.receiptPath), raw);
+});
+test('OpenArt raw gateway return persists before invalid canonical completion and remains uncertain', async t => {
+  const f = await fixture(t), step = openartStep(); let invocations = 0;
+  const result = {isError: true, content: [{type: 'text', text: 'SYNTHETIC HTTP gateway error; no historyId'}]};
+  const options = openartOptions(f, async () => { invocations++; return result; }, async (_, outcome) => {
+    assert.deepEqual(outcome.result, result); return {};
+  });
+  await assert.rejects(consumeNativeHostAction(f.tools, step, options), /not a canonical production step/);
+  const saved = JSON.parse(await fs.readFile(f.receiptPath));
+  assert.deepEqual(saved.arguments, step.host_envelope.arguments); assert.deepEqual(saved.result, result);
+  assert.equal(saved.callback_entered, true); assert.equal(saved.submission_status, 'unknown');
+  assert.equal(invocations, 1);
+});
+test('OpenArt saves raw result even if post-return host retention fails', async t => {
+  const f = await fixture(t), step = openartStep();
+  const result = {structuredContent: {historyId: 'SYNTHETIC-job', status: 'PENDING'}, isError: false};
+  const options = openartOptions(f, async () => result, () => assert.fail('no completion'));
+  const retain = options.retainObservation;
+  options.retainObservation = (key, value) => {
+    if ('result' in value) throw new Error('SYNTHETIC host store lost after return');
+    return retain(key, value);
+  };
+  await assert.rejects(consumeNativeHostAction(f.tools, step, options), /store lost after return/);
+  assert.deepEqual(JSON.parse(await fs.readFile(f.receiptPath)).result, result);
+  options.completeAction = async () => doneStep;
+  assert.deepEqual(await consumeNativeHostAction(f.tools, step, options), {...doneStep, provider_calls: null});
+  const restarted = openartOptions(f, () => assert.fail('no duplicate'), async () => doneStep);
+  assert.deepEqual(await consumeNativeHostAction(f.tools, step, restarted), {...doneStep, provider_calls: null});
+});
+test('OpenArt confirmed non-submission requires observed failure after own fresh claim before callback entry', async t => {
+  const f = await fixture(t), step = openartStep(); let calls = 0;
+  const options = openartOptions(f, async () => { calls++; }, () => assert.fail('no completion'));
+  options.retainObservation = () => { throw new Error('SYNTHETIC pre-entry store failure'); };
+  const result = await consumeNativeHostAction(f.tools, step, options);
+  assert.equal(calls, 0); assert.equal(result.submission_status, 'confirmed_not_submitted');
+  assert.equal(result.provider_calls, 0);
+  const proof = JSON.parse(await fs.readFile(result.host_exception.path));
+  assert.equal(proof.callback_entered, false); assert.equal(proof.submission_status, 'confirmed_not_submitted');
+  assert.ok(!('result' in proof));
+  // Neither an extant marker nor callback throw proves non-submission.
+  const other = await fixture(t); await fs.writeFile(other.receiptPath+'.invoked', '{}');
+  await assert.rejects(consumeNativeHostAction(other.tools, step,
+    openartOptions(other, () => assert.fail('already claimed'), () => assert.fail())), /EEXIST/);
+  const entered = await fixture(t);
+  const uncertain = await consumeNativeHostAction(entered.tools, step,
+    openartOptions(entered, () => { throw new Error('SYNTHETIC entered transport failure'); }, () => assert.fail()));
+  const observed = JSON.parse(await fs.readFile(uncertain.host_exception.path));
+  assert.equal(observed.callback_entered, true); assert.equal(uncertain.submission_status, 'unknown');
+  assert.equal(uncertain.provider_calls, null);
+});
+test('cut_saved callback and standalone states are canonical while legacy serialized states remain readable', async t => {
+  const f = await fixture(t), step = openartStep();
+  const saved = {status: 'cut_saved', action: {kind: 'cut_saved', subject: 'cut', action_id: 'c'.repeat(64)},
+    cut_status: 'partial', task_status: 'in_progress'};
+  const options = openartOptions(f, async () => ({structuredContent: {historyId: 'SYNTHETIC-id', status: 'COMPLETED'}}), async () => saved);
+  assert.deepEqual(await consumeNativeHostAction(f.tools, step, options), {...saved, provider_calls: null});
+  const standalone = {status: 'cut_saved', cut_status: 'partial', task_status: 'in_progress', first_cut: {path: '/SYNTHETIC/cut.mp4', sha256: 'c'.repeat(64)},
+    clips: [], delivery: {status: 'saved', closeout_complete: true}, recoverable_originals: []};
+  assert.strictEqual(canonicalProductionStep(standalone), standalone);
+  for (const status of ['complete', 'partial', 'incomplete']) {
+    const legacy = {...standalone, status}; delete legacy.cut_status; delete legacy.task_status;
+    assert.strictEqual(canonicalProductionStep(legacy), legacy);
+  }
+  assert.throws(() => canonicalProductionStep({...standalone, cut_status: undefined}), /not a canonical/);
+});
+
+test('OpenArt disk-save failure preserves actual known reply in healthy host store and replays once', async t => {
+  const f = await fixture(t), step = openartStep(); let invocations = 0, failSave = true, completions = 0;
+  const result = {structuredContent: {historyId: 'KNOWN-SYNTHETIC-ORIGINAL', status: 'PENDING'}, isError: false};
+  const bridge = f.tools.mcp__node_repl__js;
+  f.tools.mcp__node_repl__js = async request => {
+    if (failSave && request.title === 'Save actual native host receipt')
+      throw new Error('SYNTHETIC save RPC unavailable before write');
+    return bridge(request);
+  };
+  const options = openartOptions(f, async () => { invocations++; return result; }, async () => { completions++; return doneStep; });
+  await assert.rejects(consumeNativeHostAction(f.tools, step, options), /save RPC unavailable before write/);
+  const retained = await options.getObservation('native-host:' + step.action.subject);
+  assert.deepEqual(retained.result, result); assert.equal(retained.callback_entered, true);
+  assert.ok(!retained.invocation_pending); assert.equal(completions, 0);
+  await assert.rejects(fs.access(f.receiptPath), {code: 'ENOENT'});
+  failSave = false;
+  assert.deepEqual(await consumeNativeHostAction(f.tools, step, options), {...doneStep, provider_calls: null});
+  assert.deepEqual(JSON.parse(await fs.readFile(f.receiptPath)).result, result);
+  assert.equal(invocations, 1); assert.equal(completions, 1);
+});

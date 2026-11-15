@@ -178,7 +178,7 @@ def test_factory_generated_descendant_keeps_frozen_sources_after_upstream_edit(f
     assert rows['s2']['strict_selected'] is False and rows['s2']['duration_seconds'] == pytest.approx(2.5, abs=.1)
     assert any(f['name'] == 'upstream_source_changed' for f in rows['s2']['findings'])
     delivered = draft.deliver_standalone(root)
-    assert delivered['status'] == 'partial' and delivered['provider_calls'] == 0
+    assert delivered['status'] == 'cut_saved' and delivered['cut_status'] == 'partial' and delivered['provider_calls'] == 0
     assert next(c for c in delivered['clips'] if c['shot_id'] == 's2')['output']['sha256'] == record['output']['sha256']
     assert autonomy.root_attempt_counts(root, policy) == counts
     assert all(p.read_bytes() == raw for p, raw in originals.items())
