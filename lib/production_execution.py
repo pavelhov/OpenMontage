@@ -1011,6 +1011,12 @@ def preflight(tool, inputs, *, _local_continuation=None):
             story_revision=marker['story_revision'], selected_upstream=load_selected_attempts(root))
         if not checked['eligible']:
             _fail('; '.join(checked['errors']))
+        if kind == 'motion' and _local_continuation is None:
+            from lib import production_boards as boards
+            if (root / boards.ARTIFACT).exists():
+                start_blockers = boards.starting_image_blockers(root, shot_id)
+                if start_blockers:
+                    _fail('; '.join(start_blockers))
         effective = contract
         local_applicable = (_local_continuation is not None
             and _same_original_local_grok_applicability(root, _local_continuation))
@@ -3420,11 +3426,14 @@ def next_production_action(project_dir):
                 board_actions.setdefault(call['slot_id'], original_action)
             board_action = board_action or original_action
     if pack:
-        # Current bound boards are ready mechanically; semantic observations
-        # are disclosed later and never stop or correct the pass.
+        # Historical runs keep mechanical readiness. Future opted-in starts
+        # additionally follow their real review and scoped correction boundary.
         counted_slots = {row['slot_id'] for row in images.image_usage(root)['occurrences'] if row['counted']}
         ready_images = [slot for slot in boards.board_schedule(root, images=images)['ready_images']
-                        if slot not in counted_slots]
+                        if slot not in counted_slots or (boards._correction_pending(pack, slot)
+                            and not any(call['slot_id'] == slot and call['state'] != 'never_submitted'
+                                and call['request_sha256'] == pack['image_packets'][slot]['request_sha256']
+                                for call in image_calls))]
         for slot in ready_images:
             board_actions.setdefault(slot, action('prepare_board_image', slot,
                 {'specification_sha256': pack['specification_sha256'],
@@ -3540,12 +3549,40 @@ def next_production_action(project_dir):
         sid = shot['id']
         if sid in attempted_shots or sid in selected:
             continue
+        reviews = boards.starting_image_reviews(root, sid, pack=pack) if pack else []
+        uncorrectable = [row for row in reviews if row['status'] == 'fail'
+            and not pack['board_bindings'].get(row['asset_id'], {}).get('call_id')]
+        if uncorrectable:
+            blocked_shots[sid] = boards.starting_image_blockers(root, sid) + [
+                'failed reused starting source has no generated-image correction authority']
+            continue
+        if (reviews and any(row['status'] == 'fail' for row in reviews)
+                and not any(boards._correction_pending(pack, row['asset_id']) for row in reviews)
+                and boards.start_image_correction_allowance(root, images=images, pack=pack)['spare'] < 1):
+            blocked_shots[sid] = boards.starting_image_blockers(root, sid) + [
+                'approved episode image allowance exhausted; affected video remains blocked']
+            continue
+        # View a starting image before preparing dependent images. A failed
+        # start can then be corrected without invalidating an already made end.
+        if (reviews and any(row['blockers'] for row in reviews)
+                and all(row['path'] and boards._binding_current(root, pack, row['asset_id'])
+                        and not boards._correction_pending(pack, row['asset_id']) for row in reviews)):
+            return action('prepare_motion', sid, {'shot_subject': shot_review_subject(contract, sid),
+                'start_image_reviews_sha256': _digest(reviews)}, host=True,
+                inputs={'shot_id': sid, 'start_image_reviews': reviews},
+                reason='View the exact starting image and retain the three actual checks before motion or dependent image preparation.')
         checked = validate_shot_contract(contract, project_dir=root, shot_id=sid,
             story_revision=marker['story_revision'], selected_upstream=selected)
         if checked['eligible']:
+            if any(boards._correction_pending(pack, row['asset_id']) for row in reviews):
+                blocked_shots[sid] = boards.starting_image_blockers(root, sid)
+                continue
             # Independent ready shots dispatch while other originals render.
-            return action('prepare_motion', sid, {'shot_subject': shot_review_subject(contract, sid)}, host=True,
-                inputs={'shot_id': sid}, reason='Producer prepares the one exact registered-route original request for this planned clip; engine admits and dispatches it.')
+            return action('prepare_motion', sid, {'shot_subject': shot_review_subject(contract, sid),
+                **({'start_image_reviews_sha256': _digest(reviews)} if reviews else {})}, host=True,
+                inputs={'shot_id': sid, **({'start_image_reviews': reviews} if reviews else {})},
+                reason=('Producer views the current starting image, records its actual checks, then prepares the one exact registered-route original request for this planned clip; engine admits and dispatches it.' if reviews else
+                    'Producer prepares the one exact registered-route original request for this planned clip; engine admits and dispatches it.'))
         blocked_shots[sid] = blocked_shots.get(sid, []) + checked['errors']
     from lib.production_draft import first_cut_candidates, first_cut_media_status, latest_first_cut
     # Resolve exact original evidence before final assembly. An absent adapter
@@ -3841,7 +3878,9 @@ def complete_action(project_dir, action, *, outcome):
                 _fail('original image replay binding differs')
             images.import_native_image(root, action['subject'], host_receipt=outcome['host_receipt'], supplemental_to=outcome.get('supplemental_to'))
             if (root / boards.ARTIFACT).exists():
-                boards.bind_imported_board(root, call['slot_id'], action['subject'], images=images)
+                pack = boards.load_board_pack(root)
+                if boards.imported_board_eligibility(root, pack, call['slot_id'], action['subject'], images=images) in {'current', 'restore'}:
+                    boards.bind_imported_board(root, call['slot_id'], action['subject'], images=images)
             current = next_production_action(root)
             return {'status': _action_status(current), 'action': current, 'provider_calls': 0, 'replayed': True}
     if (valid and action.get('kind') == 'receive_native_image' and isinstance(outcome, dict)
@@ -3893,6 +3932,30 @@ def complete_action(project_dir, action, *, outcome):
             host_result=outcome['result'] if 'structuredContent' in outcome['result'] else None,
             request_sha256=action['binding']['request_sha256'])
     elif kind == 'prepare_motion':
+        if 'board_reviews' in outcome or 'image_correction' in outcome:
+            if set(outcome) - {'board_reviews', 'image_correction'}:
+                _fail('retain starting-image observations/correction before preparing motion')
+            rows = boards.starting_image_reviews(root, aid)
+            allowed = {row['asset_id']: row for row in rows}
+            reviews = outcome.get('board_reviews', [])
+            if (not isinstance(reviews, list) or any(not isinstance(r, dict) for r in reviews)
+                    or len({r.get('asset_id') for r in reviews}) != len(reviews)):
+                _fail('starting-image reviews require unique applicable assets')
+            for row in reviews:
+                if (not isinstance(row, dict) or set(row) != {'asset_id', 'review', 'roles'}
+                        or row['asset_id'] not in allowed or row['roles'] != ['start_frame']):
+                    _fail('starting-image review lies outside the current shot')
+                boards.record_board_review(root, row['asset_id'], row['review'], roles=row['roles'], images=images)
+            if 'image_correction' in outcome:
+                correction = outcome['image_correction']
+                if (not isinstance(correction, dict) or set(correction) != {'asset_id', 'prompt'}
+                        or correction['asset_id'] not in allowed):
+                    _fail('starting-image correction lies outside the current shot')
+                boards.prepare_start_image_correction(root, correction['asset_id'], correction['prompt'], images=images)
+            return advance(root)
+        start_blockers = boards.starting_image_blockers(root, aid)
+        if start_blockers:
+            _fail('; '.join(start_blockers))
         if set(outcome) == {'preparation'}:
             # Authored timing and actual image judgment stay with the producer;
             # mechanical binding and the current native projection belong here.

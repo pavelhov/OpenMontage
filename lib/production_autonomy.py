@@ -436,6 +436,29 @@ def _validate_standing_basis(root, policy, baselines, *, check_first_pass_capaci
 
 
 IMAGE_POLICY_FALLBACK = 'image_policy_fallback'
+IMAGE_START_REVIEW = 'image_start_review'
+
+
+def standing_image_start_review(root):
+    """Future opt-in from the exact creator-bound command; never mutable defaults."""
+    path = Path(root) / POLICY_ARTIFACT
+    if not path.exists():
+        return False
+    policy = _json(path)
+    basis = policy.get('activation_basis') or {}
+    if basis.get('kind') != 'standing_run' or not basis.get('run_command'):
+        return False
+    try:
+        command = _bound_document(root, basis['run_command'], 'run command')
+        if command.get(IMAGE_START_REVIEW) != 'current_bytes_v1':
+            return False
+        _bound_authorization(root, command, basis.get('identity_id'))
+        return True
+    except (ValueError, OSError, KeyError, TypeError):
+        # A revoked/missing current command cannot hide collection of an already
+        # counted original. Fresh admission independently requires active policy;
+        # it never obtains correction authority from this read-only projection.
+        return False
 
 
 def _image_policy_fallback_term(term):
@@ -495,9 +518,10 @@ def _validate_standing_basis_impl(root, policy, baselines, *, check_first_pass_c
             or setup.get('version') != '1.0' or setup.get('enabled') is not True
             or setup.get('identity_id') != identity):
         raise StandingSetupRequired('complete enabled one-time identity setup required')
-    if (not isinstance(command, dict) or set(command) - {IMAGE_POLICY_FALLBACK} != {'version', 'identity_id', 'project_id',
+    if (not isinstance(command, dict) or set(command) - {IMAGE_POLICY_FALLBACK, IMAGE_START_REVIEW} != {'version', 'identity_id', 'project_id',
             'story_revision', 'command', 'standing_setup_sha256', 'authorization'}
             or IMAGE_POLICY_FALLBACK in command and not _image_policy_fallback_term(command[IMAGE_POLICY_FALLBACK])
+            or IMAGE_START_REVIEW in command and command[IMAGE_START_REVIEW] != 'current_bytes_v1'
             or command.get('version') != '1.0' or command.get('identity_id') != identity
             or command.get('command') != 'make_video'
             or command.get('standing_setup_sha256') != basis['standing_setup']['sha256']

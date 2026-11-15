@@ -2856,7 +2856,7 @@ def file_sha256_of(path):
 
 
 def board_factory_fixture(neutral_package, *, image_allowance=8, required_start=(), extra_start_role=False,
-                          image_policy_fallback=None, text_only_boards=False):
+                          image_policy_fallback=None, text_only_boards=False, image_start_review=False):
     """Activated synthetic board run; every host return below is fixture bytes."""
     root, package, bind = neutral_package
     package = prospective_package(package)
@@ -2903,7 +2903,8 @@ def board_factory_fixture(neutral_package, *, image_allowance=8, required_start=
     command = creator_fixture(root, 'command-boards', {'version': '1.0', 'identity_id': 'fixture-identity',
         'project_id': contract['project_id'], 'story_revision': 'r1', 'command': 'make_video',
         'standing_setup_sha256': standing['sha256'],
-        **({'image_policy_fallback': image_policy_fallback} if image_policy_fallback is not None else {})})
+        **({'image_policy_fallback': image_policy_fallback} if image_policy_fallback is not None else {}),
+        **({'image_start_review': 'current_bytes_v1'} if image_start_review else {})})
     pa.activate_standing_run(root, policy=policy, baselines=baselines,
         standing_setup=standing, run_command=command, identity_id='fixture-identity')
     images.activate_standing_image_envelope(root)

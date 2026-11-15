@@ -139,8 +139,9 @@ and eligible; otherwise obtain the missing exact approval. In generic pipelines,
 terminal missing result permits an alternate only when the current manifest and
 retained authority explicitly allow it; never substitute for usable footage. The
 one-shot factory has no video route fallback and recovers only the same original
-job. Its only image exception is an explicitly authorized native content-policy
-fallback under [production-factory.md](docs/production-factory.md).
+job. Future explicitly opted-in starting-image corrections stay inside existing
+image allowance; native content-policy fallback retains its separate exact
+authority under [production-factory.md](docs/production-factory.md).
 
 ## Orchestrator
 
@@ -199,15 +200,18 @@ and visual-development owner for exact supported native bindings.
 
 ### One-shot factory
 
-The one-shot factory writes one plan and dispatches each declared image and video
-once through the existing producer. Its `make_video`, `advance` and
+The one-shot factory writes one plan and dispatches each declared video once
+through the existing producer. Future creator-bound
+`image_start_review: "current_bytes_v1"` runs require actual starting-image review
+and allow only failed starting-image correction inside the existing episode image
+allowance. Its `make_video`, `advance` and
 `complete_action` path owns work. Use `validate_standing_setup` before fresh
 dispatch, recover only the same original job after interruption, then use the
 existing `deliver_standalone` delivery path. Preserve account, source, route, transfer and
 attempt limits. Assemble every playable original, report defects, and keep evidence
-and certification distinct. The factory has no correction, replacement, route
-fallback for video or review-approval loop, and adds no timer or orchestration
-service. Native images permit only the creator-bound content-policy exception in
+and certification distinct. The factory has no video correction, replacement, route fallback or human
+review-approval loop, and adds no timer or orchestration service. Its future
+starting-image rule and separate creator-bound content-policy exception live in
 [production-factory.md](docs/production-factory.md); access and unknown failures
 never authorize fallback.
 
@@ -218,7 +222,8 @@ saved bytes, but cleanup does not migrate them or authorize new generation.
 ## Reviewer Protocol
 
 This protocol applies to manifest pipeline review and certification. The one-shot
-factory saves and reports its cut without a review or approval gate; a certification
+factory saves and reports its cut without a final review or approval gate;
+future opted-in starting images follow the pre-video checks above. A certification
 claim remains separate and must follow its own actual evidence contract.
 
 [reviewer](skills/meta/reviewer.md) owns semantic evidence and certification. Follow

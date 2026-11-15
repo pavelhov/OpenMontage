@@ -531,6 +531,18 @@ def _derived_image_scope(root, retained, packet, slot_id, arguments, output_path
     if slot_id not in templates:
         raise ValueError('native image slot is outside approved envelope')
     template = templates[slot_id]; native = _native_arguments(packet,arguments)
+    correction = None
+    from lib import production_boards as boards
+    if (root / boards.ARTIFACT).exists():
+        pack = boards.load_board_pack(root)
+        record = pack['image_packets'].get(slot_id, {})
+        if record.get('board_correction_intent'):
+            sha = image_request_digest(packet, slot_id, arguments, output_path=output_path)
+            if record.get('request_sha256') != sha:
+                raise ValueError('native image request differs from current correction packet')
+            from lib import production_images
+            correction = boards.validate_start_image_correction(root, pack, record, images=production_images)
+            template = {**template, 'prompt': correction['prompt'], 'output_path': record['output_path']}
     prompt = template['prompt']; reference_ids = template['reference_ids']
     if {k:v for k,v in native.items() if k != 'referenced_image_paths'} != {
             'prompt':prompt,'transparent_background':template['transparent_background']}:
@@ -567,7 +579,10 @@ def _derived_image_scope(root, retained, packet, slot_id, arguments, output_path
         raise ValueError('native image source arguments differ from frozen inventory')
     binding = {'envelope_sha256':retained['envelope_sha256'],'slot_id':slot_id,
                'replace_exception_call_id':None}
-    return {'id':'native-envelope-'+digest(binding)[:32], 'phase':'image','status':'approved',
+    if correction is not None:
+        binding['board_correction_intent_sha256'] = digest(correction)
+    return {**({'board_correction_intent': copy.deepcopy(correction)} if correction is not None else {}),
+        'id':'native-envelope-'+digest(binding)[:32], 'phase':'image','status':'approved',
         'project_id':definition['project_id'],'story_revision':definition['story_revision'],
         'approved_by':retained['approval']['approved_by'],'evidence':copy.deepcopy(retained['approval']),
         'provider':NATIVE_ROUTE,'allowed_image_routes':copy.deepcopy(definition['allowed_image_routes']),
@@ -577,9 +592,8 @@ def _derived_image_scope(root, retained, packet, slot_id, arguments, output_path
 
 
 def _validate_derived_image_scope(root, scope, packet, slot_id, arguments, output_path):
-    """Admit only first-generation envelope scopes. Retained historical
-    exception-successor or correction scopes stay readable through _scope but
-    never authorize another request."""
+    """Admit frozen first images or an explicitly opted-in exact failed-start correction.
+    Historical exception successors remain read-only and never authorize retry."""
     if 'derived_from_image_envelope' not in scope: return
     retained = _image_envelope(root,_read(root/'production_scopes.json'))
     for slot, template in retained['definition']['templates'].items():
@@ -711,10 +725,17 @@ def _admission(root, scope, slot_id, route, *, exclude_call_id=None):
         raise ValueError('image route is outside the approved supported routes')
     rows = [r for r in image_usage(root)['occurrences'] if r['counted'] and r['call_id'] != exclude_call_id]
     binding = scope.get('derived_from_image_envelope')
-    if binding and route == NATIVE_ROUTE and any(r['slot_id']==slot_id for r in rows):
+    if (binding and route == NATIVE_ROUTE and not scope.get('board_correction_intent')
+            and any(r['slot_id']==slot_id for r in rows)):
         raise ValueError('native image envelope slot allowance exhausted')
     if any(r['slot_id'] == slot_id and r['state'] in PENDING for r in rows):
         raise ValueError('an uncertain or pending original image blocks replacement')
+    if scope.get('board_correction_intent'):
+        from lib import production_boards as boards, production_images
+        capacity = boards.start_image_correction_allowance(root, images=production_images,
+            exclude_call_id=exclude_call_id)
+        if capacity['spare'] < 1:
+            raise ValueError('approved episode image allowance exhausted; missing first images retain capacity')
     # The ceiling is episode-wide. Historic supported image journals count too;
     # moving a request to another exact scope cannot reset cumulative usage.
     if len(rows) >= limit:

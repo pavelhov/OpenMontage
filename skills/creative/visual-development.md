@@ -209,7 +209,12 @@ Reuse suitable existing assets; create a useful missing view only within current
 image authority, depicting the same individual. Keep each scene's prop inventory
 and ownership explicit and local. Inherit only named attributes from earlier
 images; do not copy a global prop list or the old location's palette into a new
-setting. Use an isolated prop
+setting. Each image prompt and its `preserve` clauses describe only the current
+state: what exists, its count, who holds it and any important absences. Put later
+forms, ownership changes and completed results only in the action/shot where they
+occur. A setting or scale reference must explicitly exclude prior props no longer
+present; name empty hands when earlier ownership has ended. Do not carry a global
+sequence of prop forms into every board or invariant. Use an isolated prop
 reference when a persistent design or its construction needs one, rather than
 relying on a colour description, while retaining the common clean cast
 anchors for appearance. Do not daisy-chain changing appearances or override that
@@ -237,7 +242,10 @@ identifiers. Keep a necessary
 bystander outside the active footprint, with visible floor/support separation.
 The relevant hands/contacts read. Stage decisive grips, snags, choices and losses
 before completion so the motion can show their cause; match expressions to the
-character's current knowledge and emotional progression. Compose the intended
+character's current knowledge and emotional progression. For a vertical 9:16
+brief, explicitly say **vertical 9:16** in every starting-image prompt and keep all required cast fully inside that composition. Choose camera
+angle and distance within the vertical frame; avoid “wider” directions that can
+imply another aspect ratio. Compose the intended
 movement envelope with margin around critical edges, rather than fitting only
 the starting pose. Inspect
 the image itself for identity, relative scale, possession, geometry, occlusion and
@@ -334,9 +342,12 @@ counter and releases it, leaving the parcel standing upright.
 
 This is an illustrative planning example, not an observed successful generation
 or a guarantee of physical correctness. Review the returned action honestly.
-The one-shot factory keeps its once-only authored attempts and same-original
-recovery; the method never authorizes rerolls or repairs. Generic manifest
-pipelines keep their existing authority and review requirements.
+The one-shot factory keeps its once-only video attempts and same-original
+recovery. Only future creator-bound `image_start_review: "current_bytes_v1"`
+runs permit starting-image corrections under the
+[starting-image contract](../../docs/production-factory.md#future-starting-image-review-and-correction)
+within remaining image authority. Historical runs retain report-only findings.
+Generic manifest pipelines keep their existing authority and review requirements.
 
 **Story fit and cost snapshot — 2026-10-15, America/New_York.** A bounded product
 interaction or reaction can suit H3 Max Turbo when a strong opening carries the
@@ -418,13 +429,22 @@ references already cover the brief. Do not invent a payoff image to satisfy a
 field or minimize useful preparation to a fixed image count. Choose the images
 for the story and model, without an arbitrary minimum or quality ceiling.
 
-Each image prompt states visible geometry, possession/contact and what changes
+Each image prompt states its current visible geometry, prop presence/count,
+possession/contact and important absences, with only the named attributes inherited
 from its source; its intended role does not prove those facts. Inspect generated
 bytes before using them and retain the actual observation. A board showing wrong
 physics must not be passed as the required action state merely because its label
-says “payoff.” The factory reports defects within its once-only plan and existing
-authority; this method adds no correction, retry or approval loop. Manifest
-pipelines keep their existing reviewed preparation gates below.
+says “payoff.” For future creator-bound `image_start_review: "current_bytes_v1"`
+factory runs, before video uses a starting image, view its actual bytes and record
+the real current-SHA review through the
+[starting-image contract](../../docs/production-factory.md#future-starting-image-review-and-correction).
+Correct a materially wrong starting prompt and regenerate only through that
+existing image flow within the run's remaining image allowance, then review the
+replacement. Retain superseded originals and node journals; never replay an
+uncertain request. This grants no extra video attempt, expanded cap, account or
+fallback route, and adds no creator approval stage. Native content-policy fallback
+keeps its separate authority. Historical factory runs retain report-only findings;
+manifest pipelines keep their existing reviewed preparation gates below.
 
 Schedule image dependencies separately: an end-from-start image needs the
 actual imported start image, while unrelated prompts/nodes can proceed. Shared

@@ -478,8 +478,190 @@ def _observation(pack, asset_id, role=None):
     binding = pack["board_bindings"].get(asset_id)
     return next((o for o in reversed(pack["observations"]) if o["asset_id"] == asset_id
         and binding and o["review"]["subject_sha256"] == binding["sha256"]
+        and ("image_binding" not in o or o["image_binding"] == binding)
         and (role is None or role in o["roles"])), None)
 
+
+
+START_IMAGE_PREDICATES = ('prop_ownership_count', 'no_future_beat_state', 'portrait_full_cast')
+
+
+def starting_image_reviews(project_dir, shot_id, *, pack=None):
+    """Current-byte review requirements for an explicitly opted-in future run.
+
+    The agent views pixels and authors observations. This checks their bindings,
+    named checks and objective geometry; it never infers cast/prop semantics.
+    """
+    from lib.production_autonomy import standing_image_start_review
+    root = Path(project_dir).resolve()
+    if not standing_image_start_review(root):
+        return []
+    pack = load_board_pack(root) if pack is None else pack
+    shot = next(s for s in pack['specification']['shots'] if s['shot_id'] == shot_id)
+    rows = []
+    for role in shot['roles'] + pack['specification'].get('shared_roles', []):
+        if role['role'] != 'start_frame':
+            continue
+        aid = role['asset_id']; binding = pack['board_bindings'].get(aid)
+        observation = _observation(pack, aid, 'start_frame')
+        review = (observation or {}).get('review', {})
+        blockers = []
+        if not binding or not _binding_current(root, pack, aid):
+            blockers.append('missing/stale starting image bytes')
+        if (not observation or observation.get('origin') != 'designated_reviewer'
+                or review.get('reviewer') != pack['specification']['reviewer']
+                or review.get('story_revision') != pack['story_revision']
+                or observation.get('image_binding') != binding):
+            blockers.append('producer must view this starting image and retain its actual review')
+        predicates = review.get('predicates', [])
+        required = list(dict.fromkeys(list(START_IMAGE_PREDICATES)
+            + pack['prompt_pack'].get(aid, {}).get('required_predicates', [])))
+        for name in required:
+            checks = [p for p in predicates if p['name'] == name]
+            if (len(checks) != 1 or checks[0]['status'] != 'pass'
+                    or checks[0].get('severity') != 'critical' or not checks[0].get('evidence', '').strip()):
+                blockers.append(name + ': actual passing current-image observation required')
+        if review.get('status') != 'pass':
+            blockers.append('starting image review is not pass')
+        dimensions = None
+        if binding and _current(root, binding):
+            try:
+                from PIL import Image
+                with Image.open(_inside(root, binding['path'])) as image:
+                    dimensions = list(image.size)
+                # Providers may round a 9:16 width by at most one pixel.
+                if dimensions[0] >= dimensions[1] or abs(dimensions[0] * 16 - dimensions[1] * 9) > 16:
+                    blockers.append('starting image must have 9:16 pixel dimensions')
+            except (ValueError, OSError):
+                blockers.append('starting image dimensions unavailable')
+        packet = pack['image_packets'].get(aid, {})
+        intent = packet.get('board_correction_intent')
+        if intent and binding == intent['rejected_binding']:
+            blockers.append('corrected starting image original has not been imported')
+        rows.append({'asset_id': aid, 'roles': ['start_frame'],
+            'path': binding.get('path') if binding else None,
+            'sha256': binding.get('sha256') if binding else None,
+            'reviewer': pack['specification']['reviewer'], 'required_predicates': required,
+            'dimensions': dimensions, 'status': review.get('status', 'unknown'),
+            'review_sha256': _digest(review) if review else None,
+            'blockers': list(dict.fromkeys(blockers))})
+    return rows
+
+
+def starting_image_blockers(project_dir, shot_id):
+    return [row['asset_id'] + ': ' + reason for row in starting_image_reviews(project_dir, shot_id)
+            for reason in row['blockers']]
+
+
+
+def start_image_correction_allowance(project_dir, *, images, pack=None, exclude_call_id=None):
+    """Spare shared allowance after retaining capacity for missing first images."""
+    root = Path(project_dir).resolve()
+    pack = load_board_pack(root) if pack is None else pack
+    scopes_path = root / 'production_scopes.json'
+    scopes = json.loads(scopes_path.read_text()) if scopes_path.exists() else {}
+    limit = scopes.get('image_envelope', {}).get('definition', {}).get('image_allowance', 0)
+    usage = images.image_usage(root)
+    counted_rows = [r for r in usage['occurrences'] if r['counted'] and r['call_id'] != exclude_call_id]
+    counted = {r['slot_id'] for r in counted_rows}
+    missing = [slot for slot, item in pack['prompt_pack'].items() if 'upstream_source' not in item
+        and slot not in counted and not _binding_current(root, pack, slot)]
+    return {'used': len(counted_rows), 'limit': limit, 'reserved_first_images': len(missing),
+            'spare': max(0, limit - len(counted_rows) - len(missing))}
+
+
+def _correction_pending(pack, slot_id):
+    intent = pack['image_packets'].get(slot_id, {}).get('board_correction_intent')
+    return bool(intent and pack['board_bindings'].get(slot_id) == intent['rejected_binding'])
+
+
+def validate_start_image_correction(root, pack, record, *, images):
+    """Revalidate the retained correction against the current failed original."""
+    from lib import production_autonomy as autonomy
+    if not autonomy.standing_image_start_review(root):
+        raise ValueError('starting-image correction requires explicit future run authority')
+    intent = record.get('board_correction_intent')
+    if not isinstance(intent, dict) or set(intent) != {'slot_id', 'shot_id', 'rejected_binding', 'review_sha256', 'prompt'}:
+        raise ValueError('starting-image correction proof incomplete')
+    slot = intent['slot_id']; node = pack['prompt_pack'][slot]
+    if node['shot_id'] != intent['shot_id'] or 'upstream_source' in node:
+        raise ValueError('only the declared generated starting image can be corrected')
+    from lib.production_video_guard import read_video_duplicate_blocks
+    if read_video_duplicate_blocks(root, intent['shot_id']):
+        raise ValueError('a counted or uncertain video original forbids starting-image correction')
+    if pack['board_bindings'].get(slot) != intent['rejected_binding'] or not _binding_current(root, pack, slot):
+        raise ValueError('starting-image correction no longer binds its current original')
+    if not intent['rejected_binding'].get('call_id'):
+        raise ValueError('starting-image correction requires a generated image original, not a reused source')
+    original = images.image_call_status(root, intent['rejected_binding']['call_id'])
+    if original['state'] != 'imported' or not original.get('output_current'):
+        raise ValueError('starting-image correction needs settled imported original bytes')
+    observation = _observation(pack, slot, 'start_frame')
+    review = (observation or {}).get('review', {})
+    row = next((r for r in starting_image_reviews(root, intent['shot_id'], pack=pack) if r['asset_id'] == slot), None)
+    required = row['required_predicates'] if row is not None else []
+    if (not observation or observation.get('origin') != 'designated_reviewer'
+            or review.get('reviewer') != pack['specification']['reviewer']
+            or review.get('status') != 'fail' or _digest(review) != intent['review_sha256']
+            or not any(p['name'] in required and p['status'] == 'fail' and p.get('severity') == 'critical'
+                for p in review.get('predicates', []))):
+        raise ValueError('starting-image correction needs its actual named failed current-byte review')
+    if row is None or any(len([p for p in review['predicates'] if p['name'] == name
+            and p.get('severity') == 'critical' and p.get('evidence', '').strip()]) != 1 for name in required):
+        raise ValueError('starting-image correction requires all actual required image checks')
+    if (record['slot_id'] != slot or record['arguments']['prompt'] != intent['prompt']
+            or not isinstance(intent['prompt'], str) or not intent['prompt'].strip()
+            or not _packet_sources_current(root, pack, record)):
+        raise ValueError('starting-image correction packet differs from reviewed intent')
+    if any(row['slot_id'] == slot and row['state'] in images.PENDING
+            and images.image_call_status(root, row['call_id'])['request_sha256'] != record['request_sha256']
+            for row in images.image_usage(root)['occurrences']):
+        raise ValueError('uncertain original image blocks correction')
+    return deepcopy(intent)
+
+
+def prepare_start_image_correction(project_dir, asset_id, prompt, *, images):
+    """Serialize correction admission with fresh video reservation and board writes."""
+    from lib.production_execution import _lock
+    root = Path(project_dir).resolve()
+    with _lock(root):
+        return _prepare_start_image_correction(root, asset_id, prompt, images=images)
+
+
+@_board_transaction
+def _prepare_start_image_correction(project_dir, asset_id, prompt, *, images):
+    """Correct only this failed starting image through the existing image queue."""
+    from lib import production_autonomy as autonomy
+    root = Path(project_dir).resolve()
+    autonomy.require_active_policy(root)
+    pack = load_board_pack(root)
+    previous = pack['image_packets'][asset_id]
+    if _correction_pending(pack, asset_id):
+        validate_start_image_correction(root, pack, previous, images=images)
+        if previous['arguments']['prompt'] != prompt:
+            raise ValueError('pending correction already binds another exact prompt; collect its original')
+        return deepcopy(previous)
+    node = pack['prompt_pack'][asset_id]
+    observation = _observation(pack, asset_id, 'start_frame')
+    intent = {'slot_id': asset_id, 'shot_id': node['shot_id'],
+        'rejected_binding': deepcopy(pack['board_bindings'][asset_id]),
+        'review_sha256': _digest((observation or {}).get('review', {})), 'prompt': prompt}
+    record = deepcopy(previous)
+    record['board_correction_intent'] = intent
+    record['arguments']['prompt'] = prompt
+    output = Path(node['output_path'])
+    record['output_path'] = str(output.with_name(output.stem + '-correction-' + _digest(intent)[:20] + output.suffix))
+    record['request_sha256'] = images.image_request_digest(record['packet'], asset_id,
+        record['arguments'], output_path=record['output_path'])
+    validate_start_image_correction(root, pack, record, images=images)
+    if start_image_correction_allowance(root, images=images, pack=pack)['spare'] < 1:
+        raise ValueError('approved episode image allowance exhausted; affected video remains blocked')
+    pack['image_packet_history'].append(previous)
+    pack['image_packets'][asset_id] = record
+    _event(pack, 'image_packet_ready', slot_id=asset_id, request_sha256=record['request_sha256'],
+        board_correction_intent_sha256=_digest(intent))
+    _save(root, pack)
+    return deepcopy(record)
 
 def _source_depends_on_slot(pack, asset_id, slot_id, visiting=None):
     """Include actual retained sources and authored dependencies in cycle checks."""
@@ -564,10 +746,18 @@ def board_schedule(project_dir, *, images):
     for slot, node in nodes.items():
         if slot in pending or "upstream_source" in node:
             continue
-        if slot in pack["board_bindings"] and slot not in stale:
+        if slot in pack["board_bindings"] and slot not in stale and not _correction_pending(pack, slot):
             continue
         missing = [asset_id for asset_id in node.get("reference_ids", []) + node.get("image_dependencies", [])
                    if asset_id not in pack["board_bindings"] or asset_id in stale]
+        from lib.production_autonomy import standing_image_start_review
+        if not missing and standing_image_start_review(root):
+            for source in node.get('reference_ids', []) + node.get('image_dependencies', []):
+                source_node = nodes.get(source)
+                if source_node and source_node['role'] == 'start_frame':
+                    rows = starting_image_reviews(root, source_node['shot_id'], pack=pack)
+                    if any(row['asset_id'] == source and row['blockers'] for row in rows):
+                        missing.append(source + ': starting-image review is not pass')
         if missing:
             blocked[slot] = missing
         else:
@@ -681,6 +871,17 @@ def prepare_image_request(project_dir, slot_id, *, images):
     pack = load_board_pack(root)
     node = pack["prompt_pack"][slot_id]
     _reject_upstream_slot(node)
+    if _correction_pending(pack, slot_id):
+        record = pack["image_packets"][slot_id]
+        validate_start_image_correction(root, pack, record, images=images)
+        return deepcopy(record)
+    previous = pack['image_packets'].get(slot_id)
+    if previous and previous.get('board_correction_intent'):
+        binding = pack['board_bindings'].get(slot_id)
+        if binding and _binding_current(root, pack, slot_id):
+            original = images.image_call_status(root, binding['call_id'])
+            if original['request_sha256'] == previous['request_sha256']:
+                return deepcopy(previous)
     images.validate_board_reference_limits(pack['specification'])
     bindings = {}
     refs = []
@@ -723,7 +924,7 @@ def reserve_board_image(project_dir, slot_id, *, scope_id, call_id=None, images)
     pack = load_board_pack(root)
     _reject_upstream_slot(pack["prompt_pack"][slot_id])
     binding = pack["board_bindings"].get(slot_id)
-    if binding and _binding_current(root, pack, slot_id):
+    if binding and _binding_current(root, pack, slot_id) and not _correction_pending(pack, slot_id):
         if call_id and call_id == binding.get("call_id"):
             original = images.image_call_status(root, call_id)
             if original["scope_id"] != scope_id:
@@ -870,8 +1071,19 @@ def _record_mechanical_observation(pack, slot_id, binding):
                 "evidence": "not reviewed; exact imported bytes from canonical call " + binding["call_id"]}]}})
 
 
-@_board_transaction
 def record_board_review(project_dir, asset_id, review, *, roles, started_at=None, images):
+    """Retain the actual observation, serializing future review with dispatch."""
+    from lib.production_autonomy import standing_image_start_review
+    from lib.production_execution import _lock
+    root = Path(project_dir).resolve()
+    if standing_image_start_review(root):
+        with _lock(root):
+            return _record_board_review(root, asset_id, review, roles=roles, started_at=started_at, images=images)
+    return _record_board_review(root, asset_id, review, roles=roles, started_at=started_at, images=images)
+
+
+@_board_transaction
+def _record_board_review(project_dir, asset_id, review, *, roles, started_at=None, images):
     """Retain the designated review once; essential unknown/failure stays visible."""
     from jsonschema import Draft202012Validator
     from schemas.artifacts import load_schema
@@ -890,6 +1102,9 @@ def record_board_review(project_dir, asset_id, review, *, roles, started_at=None
         raise ValueError("review must name applicable declared board roles")
     existing = next((o for o in pack["observations"] if o["review"]["review_id"] == review["review_id"] and o["asset_id"] == asset_id), None)
     observation = {"asset_id": asset_id, "roles": list(dict.fromkeys(roles)), "review": deepcopy(review), "origin": "designated_reviewer"}
+    from lib.production_autonomy import standing_image_start_review
+    if standing_image_start_review(root):
+        observation["image_binding"] = deepcopy(binding)
     if existing:
         if any(existing[key] != observation[key] for key in observation):
             raise ValueError("retained observation ID already binds another verdict")

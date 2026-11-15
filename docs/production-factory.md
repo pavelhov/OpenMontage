@@ -10,7 +10,7 @@ projects. Generic pipelines keep their own stage, review, approval and route rul
 The producer writes one complete plan, prepares its declared images, requests one
 video per planned slot, collects those original jobs and assembles the playable
 results in story order. Follow the action returned by `make_video`, `advance` or
-`complete_action` immediately: once a clip's declared images are ready, prepare
+`complete_action` immediately: once a clip's declared images and applicable starting-image observations are ready, prepare
 and dispatch it before unrelated boards, then prepare other images while originals
 render. Do not wait for every episode image before the first video request.
 Retain each full host response directly with the existing receipt helper; surface
@@ -200,8 +200,9 @@ For a current singleton Grok or OpenArt MCP `prepare_motion` action, complete it
 CLI or loads the current supported OpenArt model/mode profile and resolves its
 already retained upload receipts, builds the native request, validates the authored timing and exactly bound
 judgment, and retains both immutable sidecars before normal scope admission and
-dispatch. Supply actual image judgment, including unknowns or failures; semantic findings
-are report-only in this activated factory. This convenience creates no predicates
+dispatch. Supply actual preparation judgment, including unknowns or failures. The
+future starting-image check below is a prerequisite for its opted-in runs; other
+semantic findings remain report-only in this activated factory. This convenience creates no predicates
 or timing estimates and performs no upload. Complete the upload handoff above
 first when sources are missing. Modified/stale actions reject, and retrying after dispatch does
 not regenerate. Interrupted preparation retains the same IDs and exact records.
@@ -314,12 +315,75 @@ existing request/account/history bindings. Error results, missing or malformed
 identity/status, nested wrappers and conflicting wrapper identity/status are
 rejected; display text is never parsed for a history ID or treated as authority.
 
-There are no corrective takes, creative revisions, video route fallbacks or board
-corrections in this factory. The sole image exception is the creator-authorized
-native content-policy fallback described below. Do not add another producer,
+There are no corrective video takes, video creative revisions or video route
+fallbacks in this factory. Future explicitly opted-in runs may correct a failed
+starting image within their existing image allowance as described below. The
+separate creator-authorized native content-policy fallback remains unchanged. Do not add another producer,
 controller, timer, daemon or approval loop. Use the existing producer and current
 project pointers. A new creator-command episode starts through the identity's
 existing `make video` entry; a resume continues that same project's current state.
+
+## Future starting-image review and correction
+
+Only a future creator-bound `make_video` run command containing
+`image_start_review: "current_bytes_v1"` enables this rule. Mutable identity defaults
+and prose cannot activate it for an existing project. Retain the actual creator
+message authorization with the exact command. Existing setup, image allowance,
+source and transfer limits, account, video caps and route remain unchanged.
+Historical commands without this term retain their recorded interpretation.
+
+The producer actually opens and views **each current starting image** before its
+video or dependent generated images. Use the existing `prepare_motion` action's
+`inputs.start_image_reviews` paths, hashes and reviewer, and retain the observation
+in the existing board review fields. Observe and describe these three critical
+predicates, alongside the board's existing required predicates:
+
+- `prop_ownership_count`: who holds/owns each visible prop and the correct count.
+- `no_future_beat_state`: no prop, action result or state from a later beat is
+  present prematurely.
+- `portrait_full_cast`: the image is 9:16 and both intended cast members are fully
+  inside the frame; for another declared cast, check every intended member.
+
+Do not claim viewing from a prompt, file existence, generated result or mechanical
+`unknown` observation. Name concrete evidence and honest pass/fail/unknown outcomes.
+Python checks exact current image binding, declared reviewer, complete predicates
+and 9:16 pixel dimensions, allowing at most one pixel of width rounding
+(for example 941×1672). The producer owns semantic judgment of pixels.
+
+Use `record_board_review` directly and obtain its fresh action with `advance`, or
+complete the current action with
+`outcome={"board_reviews": [{"asset_id": id, "roles": ["start_frame"],
+"review": review}]}`. `review` is the existing shot-contract review shape with
+current `story_revision`, `subject_sha256`, a unique `review_id`, designated
+`reviewer`, truthful `status` and critical named predicates with observed evidence.
+This completion returns the next normal action; complete motion preparation only
+when its current starting-image blockers are empty. A changed path/original needs
+its own actual review even if the image bytes happen to hash identically.
+
+A failed current starting image can use
+`outcome={"image_correction": {"asset_id": id, "prompt": corrected_prompt}}`
+on that same action, optionally alongside its actual `board_reviews`. Correct
+only the current shot's image prompt, preserving approved scene, sources and
+references. The normal image queue reserves and emits its once-only native call,
+then imports and promotes that original through the existing receipt path. View
+and review the corrected image again before video. No new human approval stage,
+producer/controller, timer or background service is introduced.
+
+All earlier prompts, packets, image calls, full bytes, observations, source transfers
+and cumulative counters remain retained. A distinct output path and correction
+proof bind the failed original, its real review and corrected prompt. A late old
+return cannot replace the current correction. Interrupted generation always
+collects the same original; pending/uncertain calls, access errors and lost replies
+never authorize another call. Native policy refusal uses only the separately
+retained content-policy exception below.
+
+Only spare allowance inside the **existing episode image ceiling** can cover a
+correction; capacity for still-missing first images stays reserved. Exhaustion
+blocks the affected video with the existing allowance blocker. Report it and
+continue independent eligible originals; never silently increase allowance or
+request a second video. A starting frame sampled from an upstream video still
+needs actual review, but this image-only permission does not authorize changing
+that video or inventing a replacement continuity source.
 
 ## Native images and the policy exception
 
