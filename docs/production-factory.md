@@ -350,6 +350,22 @@ Python checks exact current image binding, declared reviewer, complete predicate
 and 9:16 pixel dimensions, allowing at most one pixel of width rounding
 (for example 941×1672). The producer owns semantic judgment of pixels.
 
+One narrow native-output compatibility case retains its actual geometry: a
+proven current upstream sampled frame encoded at **768×1344 (4:7)** by OpenArt
+`fal-h3-max-turbo` image2video at `768P`, whose authenticated frozen first image
+passes the ordinary 9:16 pixel rule and whose retained authored prompt explicitly
+requests portrait 9:16. H3 inherits aspect from that source; no unsupported native
+aspect control is invented. A registered derived video qualifies only while both
+its native parent and selected output retain 768×1344. Exact canonical selected
+frame/source provenance remains required. The action exposes the observed
+`dimensions` and `geometry_note`; retain that explicit native-format disclosure
+in the actual `portrait_full_cast` observation. Never call these exact 9:16 pixels.
+This exception changes only the objective geometry check: a cropped foot, failed
+full-cast/contact/prop review or any other failed required predicate still blocks
+motion. Direct generated starting images and every other provider/model/resolution
+or unverified format retain the ordinary one-pixel rule. No source bytes, sampling
+receipts, selections, frozen requests or generation allowances change.
+
 Use `record_board_review` directly and obtain its fresh action with `advance`, or
 complete the current action with
 `outcome={"board_reviews": [{"asset_id": id, "roles": ["start_frame"],
