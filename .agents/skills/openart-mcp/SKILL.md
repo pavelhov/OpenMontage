@@ -25,6 +25,26 @@ do not change the selected transport, authority or once-only factory contract.
 6. For a normal image-to-video shot built from a board, bind the starting board as `first_frame`. Treat the ending board as the reviewed target state for the shot. It does not require a native `last_frame` pin. Add both native `first_frame` and `last_frame` assets with operation `first_last_frame` only when the user or approved contract explicitly requires an exact pinned ending; the selected `image2video` form must expose its ending-frame control.
 7. Reference-guided generation is a distinct scene treatment. Record `reference_mode: "reference_guided"` on the shot contract or its project default. Use operation `reference_to_video` with mode `element2video`, or operation `shot_video` with SmartShot's `generate-shot-video` mode. Bind cast or environment identity references through those exact native roles. They establish visual identity in a newly generated scene; they are not literal first-frame pins. Switching a boarded shot to this treatment requires a fresh approved contract and a new governed request. Do not downgrade a reference-guided request to image-to-video without approval.
 
+## Sound without background music
+
+When the current brief requires native dialogue or sound effects and excludes
+background music, include this single clear clause in every relevant video prompt:
+
+> Audio: dry character dialogue and only the physical sound effects named for this shot. No background music, soundtrack, musical score, melody, beat, singing or musical stingers, including during pauses and transitions. Between speech and physical effects, quiet natural ambience only.
+
+Also name a few useful physical effects specific to the shot, such as a latch
+click, a shoe scrape or a parcel landing, timed to the visible action. Remove
+contradictory audio instructions requesting music, a score, an upbeat backing or
+rhythmic accompaniment; visual mood and camera direction may remain visual.
+Keep native audio enabled for dialogue and effects. Use a native music-exclusion
+control only if the selected route's exact form exposes it; do not invent a
+switch or disable all audio to suppress music.
+
+This wording reduces unwanted music but cannot guarantee its absence. Without
+listening to the actual result, do not claim that no generated music was verified.
+This conditional guidance preserves other briefs' approved music and adds no
+audio certification gate or authority to regenerate or repair delivered media.
+
 ## Cost, authority, and source uploads
 
 At episode proposal, name the episode/shots, exact MCP account/project and model/mode scope, needed board/reference categories, and bounded source and upload-batch counts. Disclose unknown upload exposure and show available request-applicable generation credit estimates as estimates; actual charge is unknown with no enforceable ceiling. A single explicit episode approval may cover that bounded source-transfer plan and named generation policy; do not ask for a routine second billing/upload approval after it. Once reviewed source bytes exist, verify each batch's shots, roles and categories plus cumulative source-file and batch counts against that approval. The wrapper does not parse these human episode boundaries. Then create the existing exact per-batch upload authorization with current file paths/hashes and link its evidence to that approval. Keep local upload and generation authority artifacts separate. If an approved boundary changes, seek fresh approval.

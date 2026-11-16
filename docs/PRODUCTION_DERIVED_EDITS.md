@@ -199,12 +199,18 @@ original may remain available under the factory's existing candidate rules.
 When the current delivery brief requires original, speed-only and paced
 comparisons, retain them in that order through this same selection/delivery
 method. Save the full-original 1x assembly before selecting speed-only edits;
-save the speed-only assembly before selecting the paced primary. Bind every
+save the speed-only assembly before selecting the paced candidate. Bind every
 edit directly to its retained original parent, rather than retiming an already
 retimed comparison. Speed-only interval maps cover the entire parent, in order
 without gaps; the paced edit may omit observed idle intervals. Retain each saved
 export's exact path/hash, measured duration and existing source/edit provenance
-before changing selections, and leave the primary selected for final delivery.
+before changing selections. Compare the actual A (original), B (speed-only) and
+C (trim plus speed) exports against the brief and creator preference; any of
+them may be the best primary. C is a candidate, not an automatic winner. Trim
+only observed dead time; useful coverage and 1x delivery may win. Do not
+manufacture edits merely to make the variants different. After preserving the
+required comparisons, leave the chosen primary selected last for final delivery
+through the same normal path.
 Use descriptive comparison copies in the registered delivery folder so a later
 delivery cannot overwrite them. This adds no generation run, policy, approval
 stage or alternate renderer; the identity brief owns which exports are required.
