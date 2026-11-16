@@ -249,6 +249,181 @@ def amend_allowance(root, activation, predecessor, candidate):
         expected_setup_sha256=predecessor['sha256'], standing_setup=candidate)
 
 
+def image_successor(root, predecessor, *, limit=5, batches=5, change=None, name='image-successor'):
+    setup = json.loads((root / predecessor['path']).read_text())
+    setup.pop('authorization')
+    setup['native_images']['image_allowance'] = limit
+    next(t for t in setup['source_transfer'] if t['provider'] == 'native_imagegen')['max_batches'] = batches
+    if change:
+        change(setup)
+    return creator_fixture(root, name, setup)
+
+
+def image_allowance_fixture(neutral_package, monkeypatch):
+    from tests.lib import test_production_factory as factory
+    original = factory.creator_fixture
+    def creator(root, name, record):
+        record = copy.deepcopy(record)
+        if name == 'standing-boards':
+            next(t for t in record['source_transfer'] if t['provider'] == 'native_imagegen')['max_batches'] = 4
+        return original(root, name, record)
+    with monkeypatch.context() as patch:
+        patch.setattr(factory, 'creator_fixture', creator)
+        root = factory.board_factory_fixture(neutral_package, image_allowance=4, image_start_review=True)
+    policy, sha, decision = pa.require_active_policy(root)
+    return root, policy, {'policy_sha256': sha, 'decision_id': decision}, policy['activation_basis']['standing_setup']
+
+
+def test_image_allowance_successor_admits_exactly_fifth_correction_preserving_four_originals(neutral_package, monkeypatch):
+    from lib import production_boards as boards, production_images as images
+    from tests.lib.test_factory_start_image_review import receipt, review_outcome
+    root, policy, activation, predecessor = image_allowance_fixture(neutral_package, monkeypatch)
+    for slot in ('payoff', 'start', 'end', 'other'):
+        packet = boards.prepare_image_request(root, slot, images=images)
+        scope = images.derive_native_image_scope(root, packet['packet'], slot, packet['arguments'], output_path=packet['output_path'])
+        original = boards.reserve_board_image(root, slot, scope_id=scope, call_id='SYNTHETIC-first-' + slot, images=images)
+        envelope = images.begin_native_image(root, original['call_id'])
+        images.import_native_image(root, original['call_id'], host_receipt=receipt(root, {'host_envelope': envelope}))
+        boards.bind_imported_board(root, slot, original['call_id'], images=images)
+        if slot in ('start', 'other'):
+            review = review_outcome(root, asset_id=slot, shot_id='s1' if slot == 'start' else 's3', suffix=slot)
+            boards.record_board_review(root, slot, review['review'], roles=review['roles'], images=images)
+    failed = review_outcome(root, failed=True, suffix='failed-current')
+    boards.record_board_review(root, 'start', failed['review'], roles=failed['roles'], images=images)
+    usage = images.image_usage(root)
+    assert usage['total'] == 4
+    assert images.effective_image_allowance(root) == 4
+    with pytest.raises(ValueError, match='image allowance exhausted'):
+        boards.prepare_start_image_correction(root, 'start', 'SYNTHETIC exact approved correction', images=images)
+    candidate = image_successor(root, predecessor)
+    frozen = file_bytes(root)
+    with pytest.raises(pa.StandingSetupRequired, match='changes only max_batches'):
+        amend(root, activation, predecessor, candidate)
+    result = amend_allowance(root, activation, predecessor, candidate)
+    assert result['changes'] == [
+        {'provider': 'native_imagegen', 'account': 'fixture-native', 'before': 4, 'after': 5},
+        {'field': 'native_images.image_allowance', 'before': 4, 'after': 5}]
+    assert result['provider_calls'] == 0
+    for path, content in frozen.items():
+        if path.name != 'production_scopes.json':
+            assert (root / path).read_bytes() == content
+    scopes = json.loads((root / 'production_scopes.json').read_text())
+    old_scopes = json.loads(next(content for path, content in frozen.items() if path.name == 'production_scopes.json'))
+    assert {k: scopes[k] for k in old_scopes} == old_scopes
+    assert images.image_usage(root) == usage
+    assert pa.require_active_policy(root) == (policy, activation['policy_sha256'], activation['decision_id'])
+    assert images.effective_image_allowance(root) == 5
+    assert images.activate_standing_image_envelope(root) == scopes['image_envelope']
+    assert amend_allowance(root, activation, predecessor, candidate) == dict(result, replayed=True)
+    with pytest.raises(pa.StandingSetupRequired, match='source batch amendment changes only max_batches'):
+        amend(root, activation, predecessor, candidate)
+    packet = boards.prepare_start_image_correction(root, 'start', 'SYNTHETIC exact approved correction', images=images)
+    scope = images.derive_native_image_scope(root, packet['packet'], 'start', packet['arguments'], output_path=packet['output_path'])
+    call = boards.reserve_board_image(root, 'start', scope_id=scope, call_id='SYNTHETIC-fifth', images=images)
+    assert images.image_usage(root)['total'] == 5
+    assert boards.reserve_board_image(root, 'start', scope_id=scope, call_id=call['call_id'], images=images) == call
+    envelope = images.begin_native_image(root, call['call_id'])
+    with pytest.raises(ValueError, match='already emitted'):
+        images.begin_native_image(root, call['call_id'])
+    images.import_native_image(root, call['call_id'], host_receipt=receipt(root, {'host_envelope': envelope}))
+    boards.bind_imported_board(root, 'start', call['call_id'], images=images)
+    failed = review_outcome(root, failed=True, suffix='failed-fifth')
+    boards.record_board_review(root, 'start', failed['review'], roles=failed['roles'], images=images)
+    before = file_bytes(root)
+    with pytest.raises(ValueError, match='image allowance exhausted'):
+        boards.prepare_start_image_correction(root, 'start', 'SYNTHETIC forbidden sixth', images=images)
+    assert file_bytes(root) == before
+    assert images.image_usage(root)['total'] == 5
+    assert execution._attempts(root) == []
+
+
+@pytest.mark.parametrize('change', [
+    lambda s: s['native_images'].update(account='another-account'),
+    lambda s: s['native_images'].update(allowed_image_routes=['grok_cli']),
+    lambda s: s['approved_source_sha256'].append('0' * 64),
+    lambda s: s['providers'][0].update(billing='another-billing'),
+    lambda s: s['caps'].update(max_attempts_per_shot=3),
+    lambda s: s['source_transfer'][0].update(max_files=99),
+])
+def test_image_allowance_rejects_unrelated_changes(neutral_package, monkeypatch, change):
+    root, _, activation, predecessor = image_allowance_fixture(neutral_package, monkeypatch)
+    candidate = image_successor(root, predecessor, change=change)
+    frozen = file_bytes(root)
+    with pytest.raises(pa.StandingSetupRequired, match='changes only'):
+        amend_allowance(root, activation, predecessor, candidate)
+    assert file_bytes(root) == frozen
+
+
+@pytest.mark.parametrize('limit', [0, -1, True, 3, 5.0])
+def test_image_allowance_rejects_nonmonotonic_or_noninteger_limits(neutral_package, monkeypatch, limit):
+    root, _, activation, predecessor = image_allowance_fixture(neutral_package, monkeypatch)
+    candidate = image_successor(root, predecessor, limit=limit)
+    frozen = file_bytes(root)
+    with pytest.raises(pa.StandingSetupRequired, match='positive nondecreasing image_allowance'):
+        amend_allowance(root, activation, predecessor, candidate)
+    assert file_bytes(root) == frozen
+
+
+def test_image_allowance_requires_current_policy_and_predecessor(neutral_package, monkeypatch):
+    from lib import production_images as images
+    root, _, activation, predecessor = image_allowance_fixture(neutral_package, monkeypatch)
+    candidate = image_successor(root, predecessor)
+    frozen = file_bytes(root)
+    with pytest.raises(pa.StandingSetupRequired, match='policy SHA'):
+        amend_allowance(root, dict(activation, policy_sha256='0' * 64), predecessor, candidate)
+    with pytest.raises(pa.StandingSetupRequired, match='stale'):
+        amend_allowance(root, activation, dict(predecessor, sha256='0' * 64), candidate)
+    assert file_bytes(root) == frozen
+    amend_allowance(root, activation, predecessor, candidate)
+    next_candidate = image_successor(root, candidate, limit=6, batches=6, name='image-next')
+    frozen = file_bytes(root)
+    with pytest.raises(pa.StandingSetupRequired, match='stale'):
+        amend_allowance(root, activation, predecessor, next_candidate)
+    assert file_bytes(root) == frozen
+    assert images.effective_image_allowance(root) == 5
+    assert images.image_usage(root)['total'] == 0
+
+
+@pytest.mark.parametrize('tamper', ['setup', 'authorization', 'predecessor', 'envelope', 'scope'])
+def test_effective_image_allowance_rejects_changed_authority(neutral_package, monkeypatch, tamper):
+    import hashlib
+    from lib import production_boards as boards, production_images as images
+    root, _, activation, predecessor = image_allowance_fixture(neutral_package, monkeypatch)
+    # Retain an exact original scope before the amendment, as existing calls do.
+    packet = boards.prepare_image_request(root, 'payoff', images=images)
+    sid = images.derive_native_image_scope(root, packet['packet'], 'payoff', packet['arguments'], output_path=packet['output_path'])
+    scope = images._scope(root, sid)
+    candidate = image_successor(root, predecessor)
+    result = amend_allowance(root, activation, predecessor, candidate)
+    assert images.effective_image_allowance(root, scope=scope) == 5
+    if tamper == 'setup':
+        setup = json.loads((root / candidate['path']).read_text())
+        setup['native_images']['image_allowance'] = 6
+        write(root, candidate['path'], setup)
+    elif tamper == 'authorization':
+        setup = json.loads((root / candidate['path']).read_text())
+        write(root, setup['authorization']['path'], {'revoked': True})
+    elif tamper == 'predecessor':
+        record = json.loads((root / result['amendment']['path']).read_text())
+        record['predecessor_setup'] = candidate
+        (root / result['amendment']['path']).chmod(0o600)  # Deliberate corrupt-history fixture.
+        write(root, result['amendment']['path'], record)
+        data = json.loads((root / 'production_scopes.json').read_text())
+        data['standing_allowance_amendments'][0]['sha256'] = hashlib.sha256((root / result['amendment']['path']).read_bytes()).hexdigest()
+        write(root, 'production_scopes.json', data)
+    elif tamper == 'envelope':
+        data = json.loads((root / 'production_scopes.json').read_text())
+        data['image_envelope']['definition']['image_allowance'] = 5
+        data['image_envelope']['envelope_sha256'] = pa.digest(data['image_envelope']['definition'])
+        write(root, 'production_scopes.json', data)
+    else:
+        scope = dict(scope, image_allowance=5)
+    frozen = file_bytes(root)
+    with pytest.raises((pa.AutonomyError, ValueError)):
+        images.effective_image_allowance(root, scope=scope)
+    assert file_bytes(root) == frozen
+
+
 def test_total_allowance_five_counted_including_failed_plus_four_remaining_requires_nine(tmp_path):
     kwargs, activation = cap_fixture(tmp_path)
     policy, _, _ = pa.require_active_policy(tmp_path)

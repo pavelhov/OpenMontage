@@ -331,6 +331,12 @@ and prose cannot activate it for an existing project. Retain the actual creator
 message authorization with the exact command. Existing setup, image allowance,
 source and transfer limits, account, video caps and route remain unchanged.
 Historical commands without this term retain their recorded interpretation.
+Here, the existing or remaining image allowance means the effective
+creator-authorized allowance, including a supported allowance amendment. A
+correction covered by the current episode's approved scene, account, route, source
+and spending scope does not need a new approval because a planned image count was
+reached. Generic accounts keep their binding cap approvals, and any new source,
+account, route or spend still needs explicit authority.
 
 The producer actually opens and views **each current starting image** before its
 video or dependent generated images. Use the existing `prepare_motion` action's

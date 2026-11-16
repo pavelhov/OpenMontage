@@ -497,6 +497,31 @@ def _standing_native_transfer(root, retained, packet, *, exclude_call_id=None):
         raise StandingSetupRequired('native source batch allowance exhausted')
 
 
+def effective_image_allowance(project_dir, *, scope=None):
+    """Current authenticated ceiling without rewriting frozen image authority.
+
+    Exact scopes and the original envelope retain their initial allowance. Only
+    an authenticated standing successor may expand admission; cumulative image
+    usage, packet checks and each scope's once-only allowance remain unchanged.
+    """
+    root = Path(project_dir).resolve()
+    if scope is not None and not scope.get('derived_from_image_envelope'):
+        return scope.get('image_allowance')
+    data = _read(root / 'production_scopes.json')
+    if not data.get('image_envelope'):
+        return 0 if scope is None else scope.get('image_allowance')
+    retained = _image_envelope(root, data)
+    if (scope is not None and (scope['derived_from_image_envelope'].get('envelope_sha256')
+            != retained['envelope_sha256']
+            or scope.get('image_allowance') != retained['definition']['image_allowance'])):
+        raise ValueError('image allowance scope differs from retained envelope')
+    if not retained.get('activation_basis'):
+        return retained['definition']['image_allowance']
+    from lib.production_autonomy import require_active_policy, effective_standing_setup
+    policy, _, _ = require_active_policy(root)
+    return effective_standing_setup(root, policy)['native_images']['image_allowance']
+
+
 def record_native_image_envelope(project_dir, definition, *, approval):
     """Activate only a creator-approved exact package; never infer prior consent.
 
@@ -716,7 +741,7 @@ def image_call_status(project_dir, call_id):
 
 
 def _admission(root, scope, slot_id, route, *, exclude_call_id=None):
-    limit = scope.get('image_allowance')
+    limit = effective_image_allowance(root, scope=scope)
     if type(limit) is not int or limit < 1:
         raise ValueError('approved image scope lacks a positive image allowance')
     routes = scope.get('allowed_image_routes')
@@ -1123,7 +1148,7 @@ def prepare_policy_fallback_image(project_dir, call_id, *, account):
                     output_path=original['output_path']) != original['request_sha256']
                 or original['submitted_arguments'].get('prompt') != original['host_arguments'].get('prompt')):
             raise ValueError('policy-denied original no longer matches its retained current request')
-        limit = scope.get('image_allowance')
+        limit = effective_image_allowance(root, scope=scope)
         used = image_usage(root)['total']
         if type(limit) is not int or used >= limit:
             raise ValueError('approved episode image allowance exhausted')

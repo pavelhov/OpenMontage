@@ -447,7 +447,8 @@ factory runs, before video uses a starting image, view its actual bytes and reco
 the real current-SHA review through the
 [starting-image contract](../../docs/production-factory.md#future-starting-image-review-and-correction).
 Correct a materially wrong starting prompt and regenerate only through that
-existing image flow within the run's remaining image allowance, then review the
+existing image flow within the run's effective image allowance (including a
+supported amendment under the episode's approved scope), then review the
 replacement. Retain superseded originals and node journals; never replay an
 uncertain request. This grants no extra video attempt, expanded cap, account or
 fallback route, and adds no creator approval stage. Native content-policy fallback

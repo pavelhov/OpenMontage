@@ -1074,8 +1074,17 @@ def _standing_allowance_changes(previous, candidate, *, source_only=False, shot_
             new_caps['max_attempts_by_shot'] = copy.deepcopy(old_shots)
         else:
             new_caps.pop('max_attempts_by_shot', None)
+        old_images, new_images = before.get('native_images'), after.get('native_images')
+        if isinstance(old_images, dict) and isinstance(new_images, dict):
+            old_limit, new_limit = old_images.get('image_allowance'), new_images.get('image_allowance')
+            if (type(old_limit) is not int or type(new_limit) is not int
+                    or old_limit < 1 or new_limit < old_limit):
+                raise StandingSetupRequired('standing image allowance requires positive nondecreasing image_allowance')
+            if new_limit != old_limit:
+                changes.append({'field': 'native_images.image_allowance', 'before': old_limit, 'after': new_limit})
+            new_images['image_allowance'] = old_limit
     if before != after or not changes:
-        allowed = 'max_batches' if source_only else 'max_batches and max_total_attempts'
+        allowed = 'max_batches' if source_only else 'max_batches and max_total_attempts and native_images.image_allowance'
         raise StandingSetupRequired('standing allowance changes only ' + allowed + '; no other caps, sources, rights or protections')
     if not historical and any(c.get('field') == 'caps.max_attempts_by_shot' for c in changes):
         raise StandingSetupRequired('named-shot attempt expansion is retired; only retained history is readable')
@@ -1149,7 +1158,7 @@ def amend_standing_source_max_batches(project_dir, *, expected_policy_sha256,
 
 def amend_standing_allowance(project_dir, *, expected_policy_sha256,
                              expected_setup_sha256, standing_setup):
-    """Append exact creator-approved source batch or total attempt increases.
+    """Append exact creator-approved source batch, total attempt or image increases.
 
     Fresh named-shot (caps.max_attempts_by_shot) expansion is retired; already
     retained named-shot records stay readable through _standing_setup_state.
@@ -1179,7 +1188,8 @@ def _amend_standing_allowance(project_dir, *, expected_policy_sha256,
             latest_binding, latest = records[-1]
             if (latest['standing_setup'] == standing_setup
                     and latest['predecessor_setup']['sha256'] == expected_setup_sha256):
-                if source_only and any(c.get('field') in {'caps.max_total_attempts', 'caps.max_attempts_by_shot'}
+                if source_only and any(c.get('field') in {'caps.max_total_attempts', 'caps.max_attempts_by_shot',
+                                                        'native_images.image_allowance'}
                                        for c in latest['changes']):
                     raise StandingSetupRequired('source batch amendment changes only max_batches')
                 if any(c.get('field') == 'caps.max_attempts_by_shot' for c in latest['changes']):

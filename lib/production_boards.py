@@ -559,9 +559,7 @@ def start_image_correction_allowance(project_dir, *, images, pack=None, exclude_
     """Spare shared allowance after retaining capacity for missing first images."""
     root = Path(project_dir).resolve()
     pack = load_board_pack(root) if pack is None else pack
-    scopes_path = root / 'production_scopes.json'
-    scopes = json.loads(scopes_path.read_text()) if scopes_path.exists() else {}
-    limit = scopes.get('image_envelope', {}).get('definition', {}).get('image_allowance', 0)
+    limit = images.effective_image_allowance(root) if (root / 'production_scopes.json').exists() else 0
     usage = images.image_usage(root)
     counted_rows = [r for r in usage['occurrences'] if r['counted'] and r['call_id'] != exclude_call_id]
     counted = {r['slot_id'] for r in counted_rows}
