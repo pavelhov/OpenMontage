@@ -196,6 +196,19 @@ local-tool provenance remain mandatory on registration and read. A changed or
 stale derived selection cannot silently retain its eligibility; an intact
 original may remain available under the factory's existing candidate rules.
 
+When the current delivery brief requires original, speed-only and paced
+comparisons, retain them in that order through this same selection/delivery
+method. Save the full-original 1x assembly before selecting speed-only edits;
+save the speed-only assembly before selecting the paced primary. Bind every
+edit directly to its retained original parent, rather than retiming an already
+retimed comparison. Speed-only interval maps cover the entire parent, in order
+without gaps; the paced edit may omit observed idle intervals. Retain each saved
+export's exact path/hash, measured duration and existing source/edit provenance
+before changing selections, and leave the primary selected for final delivery.
+Use descriptive comparison copies in the registered delivery folder so a later
+delivery cannot overwrite them. This adds no generation run, policy, approval
+stage or alternate renderer; the identity brief owns which exports are required.
+
 ## Audio and cut boundaries
 
 AAC parents use the elementary AAC hashes above, even when the retained output
