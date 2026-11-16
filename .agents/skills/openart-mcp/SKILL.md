@@ -28,22 +28,34 @@ do not change the selected transport, authority or once-only factory contract.
 ## Sound without background music
 
 When the current brief requires native dialogue or sound effects and excludes
-background music, include this single clear clause in every relevant video prompt:
+background music, include this clear audio clause in every relevant video prompt
+and exhaustively name the permitted dialogue and isolated physical sounds:
 
-> Audio: dry character dialogue and only the physical sound effects named for this shot. No background music, soundtrack, musical score, melody, beat, singing or musical stingers, including during pauses and transitions. Between speech and physical effects, quiet natural ambience only.
+> Audio: close, dry dialogue and isolated physical sounds only. Only the exact dialogue and physical sound events specified for this shot are permitted. Otherwise silence, including underneath dialogue, between actions, during pauses and through transitions. No background music, soundtrack, score, melody, beat, singing, rhythmic backing, continuous tonal beds, drones or musical transition effects.
 
-Also name a few useful physical effects specific to the shot, such as a latch
-click, a shoe scrape or a parcel landing, timed to the visible action. Remove
+List each speaker's exact approved words and the few useful physical effects
+specific to the visible action, with their timing or count. Preserve meaningful
+effects; do not replace dialogue or action sound with silence. A machine whirr
+is permitted only during its visible operation and stops with the machine.
+Do not invite open-ended natural ambience or a continuous tonal sound bed. Remove
 contradictory audio instructions requesting music, a score, an upbeat backing or
 rhythmic accompaniment; visual mood and camera direction may remain visual.
-Keep native audio enabled for dialogue and effects. Use a native music-exclusion
-control only if the selected route's exact form exposes it; do not invent a
-switch or disable all audio to suppress music.
+Keep native audio enabled for dialogue and effects, using `generateAudio: true`
+when that is the selected form's native switch. Use a native music-exclusion
+control only if the selected route's exact form exposes it; do not invent a switch
+or disable all audio to suppress music.
 
-This wording reduces unwanted music but cannot guarantee its absence. Without
+Example for a shot with these exact approved words and actions (adapt the speaker,
+words and sound events to the actual shot; never copy unrelated example content):
+
+> Audio: close, dry dialogue and isolated physical sounds only. Tung says "Move. I'm first." One wooden foot thump, suitcase wheels, two footsteps. Otherwise silence—including underneath dialogue and between actions, during pauses and transitions. No music, score, melody, rhythmic backing, tonal drone or musical transition effects.
+
+This wording aims to reduce unwanted music but cannot guarantee its absence. Without
 listening to the actual result, do not claim that no generated music was verified.
-This conditional guidance preserves other briefs' approved music and adds no
-audio certification gate or authority to regenerate or repair delivered media.
+Creator-reported music remains a report, not independent audiovisual validation.
+This conditional guidance preserves other briefs' explicitly approved ambience or
+music and adds no audio certification gate or authority to regenerate or repair
+delivered media.
 
 ## Cost, authority, and source uploads
 
