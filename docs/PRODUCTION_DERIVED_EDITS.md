@@ -11,6 +11,33 @@ utilities retain and validate the evidence; there is no separate workflow tool.
 Read the pipeline's current editing/review instructions and the tools' Layer 3
 skills before executing production edits.
 
+## Pacing from observed footage
+
+When the current assignment authorizes local pacing, the same producer inspects
+the actual originals and their assembled story context before final handoff.
+Use an initial assembly to see how cause, action, response and payoff connect;
+a saved unpaced cut is an intermediate artifact. Trim idle holds, repeated looks
+and redundant setup where they add no useful meaning. Keep completed actions,
+consequential responses and enough time to recognize them. An idle gap between
+two useful events should be omitted with separate retained intervals, rather
+than merely speeding up the entire span containing that gap.
+
+Author the action for its useful screen time, with full action, dialogue and
+recognition, and request the shortest currently supported native duration that
+covers it. Discover that duration from the selected route's current capability
+contract. A provider minimum does not require stretching a shorter action to
+fill the clip; extra tail is expendable coverage for the actual edit.
+
+After choosing the retained intervals, choose each speed from the observed
+movement, expression and delivery. Keep 1x where useful; 1.25x and 1.5x are
+candidates to assess, not universal dialogue and nonspeaking policies. Preserve
+natural motion, pitch and complete words. Do not invent heard words or word
+boundaries: use actual audio observations for speech cuts, or retain uncertain
+speech conservatively and report the uncertainty under the current review scope.
+Inspect the resulting sequence in context and adjust the local edit if needed.
+This uses existing edit authority, selection and delivery, without another
+generation, creator approval stage or audio certification gate.
+
 ## Sequence
 
 1. Identify the exact generated parent attempt, shot and story revision. Obtain
@@ -159,6 +186,9 @@ standard final cut, per-clip disclosure and Studio handoff use those derived
 bytes; no separate manual short-cut export or additional generation is needed.
 Repeated selection and delivery of the same bytes reuse existing records and
 cut operation. An existing operation ID bound to different clips still rejects.
+If the normal entry has already saved the initial assembly, register the paced
+selections and resume that same delivery path before final handoff; its current
+candidate bindings pick up the changed bytes and duration.
 
 This remains an editorial selection, not audiovisual certification or publishing
 authority. Exact current parent, output, approval, outgoing frame, native and
@@ -226,8 +256,10 @@ The registered `video_trimmer` and derived-edit sequence also support
 `operation="retime"`. Supply explicit `input_path`, separate `output_path`,
 re-encoding `codec`, `reason` and ordered `intervals`. Each interval has
 `start_seconds`, `end_seconds`, `content` and optional `speed`. Content is
-`dialogue` or `nonspeaking`, selecting default speeds of 1.25 and 1.5
-respectively. An explicit speed between 0.5 and 4 overrides that default.
+`dialogue` or `nonspeaking`. For compatibility, omitting `speed` selects the
+tool defaults of 1.25 and 1.5 respectively; those API defaults are not an editing
+policy. Supply explicit observed speeds, including 1.0 where appropriate.
+An explicit speed between 0.5 and 4 overrides the default.
 Intervals must be finite, inside the actual source and non-overlapping in
 source order. Gaps between retained intervals are omitted.
 
@@ -235,10 +267,10 @@ source order. Gaps between retained intervals are omitted.
 inputs = {
     "operation": "retime", "input_path": parent["path"],
     "output_path": str(output_path), "codec": "libx264",
-    "reason": "Retain reviewed speech and reaction while omitting dead air.",
+    "reason": "Keep observed delivery at 1x; omit the idle gap, then tighten the observed reaction.",
     "intervals": [
-        {"start_seconds": 0.4, "end_seconds": 3.2, "content": "dialogue"},
-        {"start_seconds": 4.0, "end_seconds": 5.5, "content": "nonspeaking"},
+        {"start_seconds": 0.4, "end_seconds": 3.2, "content": "dialogue", "speed": 1.0},
+        {"start_seconds": 4.0, "end_seconds": 5.5, "content": "nonspeaking", "speed": 1.25},
     ],
 }
 result = registry.get("video_trimmer").execute(inputs)

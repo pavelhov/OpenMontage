@@ -16,6 +16,11 @@ This stage turns the beat map into a paced cinematic timeline. Rhythm and restra
 
 ### 1. Cut By Emotion First
 
+Inspect the actual footage and assembled story context. Under existing local-edit
+authority, trim idle holds, repeated looks and redundant setup before choosing
+selective retiming. Omit an empty gap between useful events with separate
+retained intervals; speeding the whole span leaves that gap in the story.
+
 Cuts should follow:
 
 - emotional emphasis,
@@ -28,6 +33,12 @@ Do not optimize only for information density.
 ### 2. Protect Strong Moments
 
 If a look, line, or gesture is doing the work, let it live. Do not over-cover it with extra inserts.
+Keep 1x when it serves the moment. Treat 1.25x and 1.5x as candidates judged from
+actual motion and delivery, with pitch-preserving audio and complete words.
+Do not invent heard words or speech-boundary timestamps. Retain uncertain speech
+conservatively and keep observations honest under the current review scope.
+Use [canonical derived edits](../../../docs/PRODUCTION_DERIVED_EDITS.md) to retain
+authorized cuts and retimes, then inspect the resulting sequence before handoff.
 
 ### 3. Use Sound To Push The Edit
 

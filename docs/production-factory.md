@@ -514,15 +514,24 @@ records or media are migrated.
 When existing local-edit authority covers shortening dead space, review actual
 useful intervals across the whole sequence, including otherwise clean clips, and
 use the registered `video_trimmer` with explicit retained intervals and reasons
-before assembly. Native duration supplies footage; the authored finished events
-and observed completion determine screen time. Keep completed action, consequential
-responses and enough recognition time; never remove a fixed head interval or
+before final assembly. Native duration supplies footage; the authored finished events
+and observed completion determine screen time. Author useful action time and
+request the shortest currently supported native duration covering the full action,
+dialogue and recognition. Discover supported durations from the selected route;
+do not stretch action to fill its minimum or request an unsupported shorter clip.
+Keep completed action, consequential responses and enough recognition time;
+never remove a fixed head interval or
 blindly cut at the planned completion time. Retiming, where separately supported
 by the existing tool and edit authority, must suit the actual movement and audio;
 a blanket multiplier does not replace an edit.
 Retain full originals and [canonical derived provenance](PRODUCTION_DERIVED_EDITS.md)
-under the project's existing edit and review/audio scope. Register the edit with
-`record_derived_edit`, then retain its fresh exact-byte named observations with
+under the project's existing edit and review/audio scope. When the assignment
+authorizes local pacing, the same producer follows that editing owner before
+final handoff: inspect actual footage in assembled context, trim empty intervals,
+then choose selective explicit rates, retaining 1x where useful. A cut already
+saved by the normal entry supplies that context; register paced selections and
+resume the same delivery path rather than treating the unpaced save as finished.
+Register the edit with `record_derived_edit`, then retain its fresh exact-byte named observations with
 `record_selection`. For this activated factory and its standing-authorized parent,
 unknown/failed findings may select the registered cut without a strict pass. The
 existing candidates, `deliver_standalone` cut and Studio delivery then use that
