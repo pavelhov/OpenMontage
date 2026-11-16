@@ -148,7 +148,10 @@ def _validator(schema):
     try:
         base = validators.validator_for(schema)
         from lib.production_autonomy import _active_reuse, _status_json_value, status_reused
-        if _active_reuse() is not None and _status_json_value(schema):
+        # Applicability metadata is private and absent in some jsonschema
+        # versions. Without the full cache key, run the normal self-check.
+        if (_active_reuse() is not None and _status_json_value(schema)
+                and hasattr(base, '_APPLICABLE_VALIDATORS')):
             # Cache only the pure schema self-check. Current registry/base,
             # strict integer checker and FormatChecker are rebuilt below.
             current = copy.deepcopy(schema)

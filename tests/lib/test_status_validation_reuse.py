@@ -511,6 +511,73 @@ def test_openart_schema_self_check_reuse_rebuilds_current_validator_and_rejects_
         with pytest.raises(ValueError): connector._validator({'$ref': 'https://fixture.invalid/external'})
 
 
+@pytest.mark.parametrize('draft_name', [
+    'Draft3Validator', 'Draft4Validator', 'Draft6Validator', 'Draft7Validator',
+    'Draft201909Validator', 'Draft202012Validator',
+])
+@pytest.mark.parametrize('cache_metadata', [True, False])
+def test_openart_schema_validation_drafts_and_optional_cache_metadata(monkeypatch, draft_name, cache_metadata):
+    import builtins
+    import jsonschema
+    from lib import openart_mcp as connector
+
+    base = getattr(jsonschema, draft_name)
+    original = base.check_schema
+    calls = []
+
+    def observed(cls, schema, *args, **kwargs):
+        calls.append(1)
+        return original(schema, *args, **kwargs)
+
+    monkeypatch.setattr(base, 'check_schema', classmethod(observed))
+    if not cache_metadata:
+        # Exercise only our optional metadata lookup: retain the installed
+        # draft's actual check_schema, extend and instance-validation behavior.
+        monkeypatch.setattr(connector, 'hasattr', lambda obj, name:
+                            False if obj is base and name == '_APPLICABLE_VALIDATORS'
+                            else builtins.hasattr(obj, name), raising=False)
+    schema_uri = base.META_SCHEMA.get('$id', base.META_SCHEMA.get('id'))
+    schema = {'$schema': schema_uri, 'type': 'object', 'properties': {
+        'n': {'type': 'integer'}, 'code': {'type': 'string', 'format': 'current-test-code'},
+    }}
+    monkeypatch.setitem(jsonschema.FormatChecker.checkers, 'current-test-code',
+                        (lambda value: value == 'accepted', ()))
+    with pa.status_reuse():
+        first = connector._validator(schema)
+        second = connector._validator(schema)
+        assert first is not second
+        expected = 1 if cache_metadata and hasattr(base, '_APPLICABLE_VALIDATORS') else 2
+        assert len(calls) == expected
+        for validator in (first, second):
+            validator.validate({'n': 1, 'code': 'accepted'})
+            for invalid in ({'n': 1.0}, {'n': True}, {'n': '1'}, {'code': 'rejected'}):
+                with pytest.raises(jsonschema.ValidationError):
+                    validator.validate(invalid)
+        # Even a reused schema self-check builds today's format checker anew.
+        monkeypatch.setitem(jsonschema.FormatChecker.checkers, 'current-test-code',
+                            (lambda value: False, ()))
+        with pytest.raises(jsonschema.ValidationError):
+            connector._validator(schema).validate({'code': 'accepted'})
+        for _ in range(2):
+            with pytest.raises(connector.OpenArtMCPError, match='SchemaError'):
+                connector._validator({'$schema': schema_uri, 'type': 17})
+        before = len(calls)
+        with pa.no_status_reuse():
+            for _ in range(2):
+                validator = connector._validator(schema)
+                validator.validate({'n': 1})
+                with pytest.raises(jsonschema.ValidationError):
+                    validator.validate({'n': True})
+                with pytest.raises(connector.OpenArtMCPError, match='SchemaError'):
+                    connector._validator({'$schema': schema_uri, 'type': 17})
+        assert len(calls) == before + 4
+        def changed(cls, schema):
+            raise ValueError('SYNTHETIC changed checker')
+        monkeypatch.setattr(base, 'check_schema', classmethod(changed))
+        with pytest.raises(connector.OpenArtMCPError, match='ValueError'):
+            connector._validator(schema)
+
+
 def test_local_media_fact_tracks_helper_and_resolved_binary_changes(root, monkeypatch):
     from lib import production_trim_validation as trim
     for program in ('ffmpeg', 'ffprobe'):
